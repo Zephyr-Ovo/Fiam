@@ -1,0 +1,50 @@
+[
+  {
+    "role": "user",
+    "text": "Hey, how's it going?"
+  },
+  {
+    "role": "assistant",
+    "text": "Good, just here. What's up?"
+  },
+  {
+    "role": "user",
+    "text": "I was thinking about that design we discussed last time."
+  },
+  {
+    "role": "assistant",
+    "text": "The memory system architecture? Yeah, what about it?"
+  },
+  {
+    "role": "user",
+    "text": "I finally figured out why the synthesis layer wasn't working!"
+  },
+  {
+    "role": "assistant",
+    "text": "Oh! What was it?"
+  },
+  {
+    "role": "user",
+    "text": "The issue was the prompt structure — we were mixing first-person and third-person framing."
+  },
+  {
+    "role": "assistant",
+    "text": "That makes so much sense. God, we spent three days on that."
+  },
+  {
+    "role": "user",
+    "text": "Anyway, want to grab coffee later?"
+  },
+  {
+    "role": "assistant",
+    "text": "Sure, sounds good."
+  },
+  {
+    "role": "user",
+    "text": "Wait, did you see that the deployment broke production?"
+  },
+  {
+    "role": "assistant",
+    "text": "What?? No — when did this happen?"
+  }
+]

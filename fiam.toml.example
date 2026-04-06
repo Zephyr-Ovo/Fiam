@@ -1,0 +1,34 @@
+# fiam configuration — copy to fiam.toml and run `fiam init` to fill in paths
+# Or run `fiam init` directly; it will generate fiam.toml interactively.
+
+home_path = ""           # set by fiam init (e.g. "/home/user/ai-home" or "D:/ai-home")
+ai_name = ""             # set by fiam init
+user_name = ""           # set by fiam init
+language_profile = "multi"  # zh / en / multi (multi = bilingual, recommended)
+
+[models]
+# Auto-filled from language_profile. Override here to use custom models.
+embedding = "BAAI/bge-m3"
+sentiment = "cardiffnlp/twitter-xlm-roberta-base-sentiment"
+emotion = ""             # empty = use cardiffnlp neutral-proxy for arousal
+embedding_dim = 1024
+
+[retrieval]
+top_k = 5
+semantic_weight = 0.5
+recency_weight = 0.3
+temporal_link_weight = 0.2
+diversity_threshold = 0.88
+min_event_age_hours = 6      # set to 0 for smoke testing
+temporal_window_hours = 4.0
+
+[extraction]
+arousal_threshold = 0.6      # lower = store more events
+half_life_base = 14.0
+
+[daemon]
+idle_timeout_minutes = 30    # post-session triggers after this many idle minutes
+poll_interval_seconds = 30
+
+[features]
+git_enabled = true
