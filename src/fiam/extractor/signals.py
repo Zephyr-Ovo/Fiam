@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from fiam.classifier.emotion import EmotionClassifier
+    from fiam.classifier.emotion import EmotionClassifier, ApiEmotionClassifier
 
 
 @dataclass
@@ -57,7 +57,7 @@ _TEMP_GAP_THRESHOLD = 0.3
 
 def extract_session_signals(
     conversation: list[dict[str, str]],
-    classifier: EmotionClassifier,
+    classifier: EmotionClassifier | ApiEmotionClassifier,
     session_start: datetime | None = None,
     session_end: datetime | None = None,
 ) -> SessionSignals:

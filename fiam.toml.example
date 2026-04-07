@@ -5,12 +5,13 @@ home_path = ""           # set by fiam init (e.g. "/home/user/ai-home" or "D:/ai
 ai_name = ""             # set by fiam init
 user_name = ""           # set by fiam init
 language_profile = "multi"  # zh / en / multi (multi = bilingual, recommended)
+emotion_provider = "local"  # local = WDI models / api = LLM API (skip emotion model download)
 
 [models]
 # Auto-filled from language_profile. Override here to use custom models.
 embedding = "BAAI/bge-m3"
-sentiment = "cardiffnlp/twitter-xlm-roberta-base-sentiment"
-emotion = ""             # empty = use cardiffnlp neutral-proxy for arousal
+emotion_zh = "Johnson8187/Chinese-Emotion-Small"  # zh/multi: 8-class Chinese emotion (WDI) — or "Johnson8187/Chinese-Emotion" for large
+emotion_en = "SamLowe/roberta-base-go_emotions"  # en/multi: 28-class GoEmotions (WDI)
 embedding_dim = 1024
 
 [retrieval]

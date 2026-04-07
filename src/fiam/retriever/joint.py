@@ -1,12 +1,15 @@
 """
-Joint retriever \u2014 semantic + retention + temporal linking.
+Joint retriever — semantic + retention + temporal linking + integrated MMR.
 
 Scoring formula per event:
-  score = w_sem  * cosine(query_vec, event_vec)
+  base  = w_sem  * cosine(query_vec, event_vec)
         + w_rec  * retention(event)              # Ebbinghaus curve
         + w_link * temporal_bonus(event)          # co-occurrence boost
 
-After scoring: diversity penalty → greedy embedding dedup → access record update.
+Selection uses greedy MMR (Maximal Marginal Relevance):
+  mmr(e) = λ * base(e)  −  (1−λ) * max_sim(e, selected)
+
+This integrates diversity INTO the ranking rather than filtering afterward.
 """
 
 from __future__ import annotations
@@ -17,11 +20,13 @@ import numpy as np
 
 from fiam.config import FiamConfig
 from fiam.retriever.decay import compute_retention, diversity_penalty, record_access
-from fiam.retriever.diversity import diversify
 from fiam.retriever.embedder import Embedder
 from fiam.retriever.temporal import temporal_boost
 from fiam.store.formats import EventRecord
 from fiam.store.home import HomeStore
+
+# MMR trade-off: 1.0 = pure relevance, 0.0 = pure diversity
+_MMR_LAMBDA = 0.7
 
 
 def search(
@@ -33,8 +38,9 @@ def search(
 ) -> list[EventRecord]:
     """Retrieve the most relevant events for the upcoming conversation.
 
-    If *conversation_text* is empty (cold start), ranking uses only
-    recency weight (no semantic component).
+    Uses integrated MMR: diversity is part of the selection loop,
+    not a post-hoc filter. Each step picks the candidate that maximises
+    λ·relevance − (1−λ)·max_similarity_to_already_selected.
     """
     now = datetime.now(timezone.utc)
     all_events = store.all_events()
@@ -51,7 +57,7 @@ def search(
     if not eligible:
         return []
 
-    # --- Prepare query vectors (only if conversation_text is non-empty) ---
+    # --- Prepare query vector ---
     query_vec: np.ndarray | None = None
     if conversation_text.strip():
         embedder = Embedder(config)
@@ -62,70 +68,120 @@ def search(
     w_rec = config.recency_weight
     w_link = config.temporal_link_weight
 
-    # If no query text, redistribute semantic weight to recency
     if query_vec is None:
         w_rec = w_rec + w_sem
         w_sem = 0.0
 
-    # --- First pass: score without temporal links ---
-    first_pass: list[tuple[EventRecord, float]] = []
+    # --- First pass: base scores + cache vectors ---
+    candidates: list[tuple[EventRecord, float, np.ndarray | None]] = []
 
     for event in eligible:
-        # Semantic similarity
         sem_score = 0.0
+        event_vec = None
         if query_vec is not None and event.embedding:
             event_vec = _load_vec(event, config)
             if event_vec is not None:
                 sem_score = _cosine(query_vec, event_vec)
 
-        # Retention (Ebbinghaus decay)
         retention = compute_retention(event, now, half_life_base=config.half_life_base)
-
         base = w_sem * sem_score + w_rec * retention
 
-        # Apply diversity penalty for recently-accessed events
         penalty = diversity_penalty(event, now, recent_days=3)
-        first_pass.append((event, base * penalty))
+        candidates.append((event, base * penalty, event_vec))
 
     # --- Second pass: temporal link boost ---
-    # Top candidates from first pass seed the link bonus
-    first_pass.sort(key=lambda t: t[1], reverse=True)
-    seed_ids = {e.event_id for e, _ in first_pass[:effective_top_k * 2]}
+    candidates.sort(key=lambda t: t[1], reverse=True)
+    seed_ids = {e.event_id for e, _, _ in candidates[:effective_top_k * 2]}
 
-    scored: list[tuple[EventRecord, float]] = []
-    for event, base_score in first_pass:
+    scored: list[tuple[EventRecord, float, np.ndarray | None]] = []
+    for event, base_score, vec in candidates:
         link_bonus = temporal_boost(event, seed_ids)
         final = base_score + w_link * link_bonus
-        scored.append((event, final))
+        scored.append((event, final, vec))
 
-    # Sort descending by score
     scored.sort(key=lambda t: t[1], reverse=True)
 
-    # Coarse cut before expensive diversity filter
-    coarse_k = effective_top_k * 4
-    top_candidates = [e for e, _ in scored[:coarse_k]]
+    # --- Greedy MMR selection ---
+    # Coarse cut to limit the MMR loop
+    pool = scored[:effective_top_k * 4]
 
-    # Embedding-based diversity filter
-    selected = diversify(
-        top_candidates,
-        config.embeddings_dir,
-        top_k=effective_top_k,
-        similarity_threshold=config.diversity_threshold,
-    )
+    selected = _mmr_select(pool, effective_top_k, _MMR_LAMBDA)
 
-    # Record access for selected events (strength boost + persist)
+    # Record access for selected events
     for event in selected:
         record_access(event, now)
         store.update_metadata(event)
 
     if config.debug_mode:
         print(f"[joint] {len(all_events)} total → {len(eligible)} eligible "
-              f"→ {len(selected)} selected (top_k={effective_top_k})")
+              f"→ {len(selected)} selected (top_k={effective_top_k}, λ={_MMR_LAMBDA})")
         for ev in selected:
             print(f"  {ev.filename}  str={ev.strength:.2f}  "
                   f"acc={ev.access_count}  a={ev.arousal:.2f}")
 
     return selected
+
+
+# ------------------------------------------------------------------
+# MMR: Maximal Marginal Relevance (integrated diversity)
+# ------------------------------------------------------------------
+
+def _mmr_select(
+    pool: list[tuple[EventRecord, float, np.ndarray | None]],
+    top_k: int,
+    lam: float,
+) -> list[EventRecord]:
+    """Greedy MMR selection.
+
+    At each step, pick the candidate maximising:
+      mmr(c) = λ * norm_score(c) − (1−λ) * max_cos(c, selected)
+
+    Candidates without embeddings are accepted with max_sim = 0.
+    """
+    if not pool:
+        return []
+
+    # Normalise scores to [0, 1] for fair λ trade-off
+    max_score = max(s for _, s, _ in pool)
+    min_score = min(s for _, s, _ in pool)
+    score_range = max_score - min_score if max_score > min_score else 1.0
+
+    remaining = list(range(len(pool)))
+    selected_idx: list[int] = []
+    selected_vecs: list[np.ndarray] = []
+
+    for _ in range(min(top_k, len(pool))):
+        best_i = -1
+        best_mmr = -float("inf")
+
+        for idx in remaining:
+            event, score, vec = pool[idx]
+            norm_score = (score - min_score) / score_range
+
+            # Max similarity to already-selected
+            max_sim = 0.0
+            if vec is not None and selected_vecs:
+                for sv in selected_vecs:
+                    sim = _cosine(vec, sv)
+                    if sim > max_sim:
+                        max_sim = sim
+
+            mmr_val = lam * norm_score - (1.0 - lam) * max_sim
+
+            if mmr_val > best_mmr:
+                best_mmr = mmr_val
+                best_i = idx
+
+        if best_i < 0:
+            break
+
+        selected_idx.append(best_i)
+        remaining.remove(best_i)
+        vec = pool[best_i][2]
+        if vec is not None:
+            selected_vecs.append(vec)
+
+    return [pool[i][0] for i in selected_idx]
 
 
 # ------------------------------------------------------------------
@@ -145,7 +201,7 @@ def _load_vec(event: EventRecord, config: FiamConfig) -> np.ndarray | None:
         return None
     vec = np.load(npy_path).astype(np.float32).flatten()
     if vec.shape[0] != config.embedding_dim:
-        return None  # dimension mismatch → skip semantic score
+        return None
     return vec
 
 

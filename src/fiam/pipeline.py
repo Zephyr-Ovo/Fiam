@@ -19,7 +19,7 @@ from typing import Any
 import numpy as np
 
 from fiam.config import FiamConfig
-from fiam.classifier.emotion import EmotionClassifier
+from fiam.classifier.emotion import get_classifier
 from fiam.extractor import event as event_extractor
 from fiam.extractor.signals import extract_session_signals
 from fiam.injector import claude_code as injector
@@ -103,7 +103,7 @@ def post_session(
     """Run the post-session pipeline: classify → extract → embed → store → report."""
     trace = Trace(logs_root=config.logs_dir, session_id=session_id)
     store = HomeStore(config)
-    classifier = EmotionClassifier(config)
+    classifier = get_classifier(config)
     embedder = Embedder(config)
 
     # Build full text for debug save
@@ -181,9 +181,14 @@ def post_session(
         event_id = store.new_event_id()
         now = datetime.now(timezone.utc)
 
-        # Embed
+        # Embed (text only — thinking is excluded from retrieval)
         vec = embedder.embed(ext_event.text)
         emb_path = embedder.save(vec, event_id)
+
+        # Event body: conversation text + thinking chain (if any)
+        body = ext_event.text
+        if ext_event.thinking:
+            body += "\n\n--- thinking ---\n\n" + ext_event.thinking
 
         # Build stats
         flat = vec.flatten().astype(float)
@@ -205,9 +210,10 @@ def post_session(
             valence=ext_event.emotion.valence,
             arousal=ext_event.emotion.arousal,
             confidence=ext_event.emotion.confidence,
+            dominant_label=ext_event.emotion.dominant_label,
             embedding=emb_path,
             embedding_dim=vec.shape[-1],
-            body=ext_event.text,
+            body=body,
         )
 
         # Write to store

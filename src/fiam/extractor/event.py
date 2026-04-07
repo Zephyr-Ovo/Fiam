@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 if TYPE_CHECKING:
-    from fiam.classifier.emotion import EmotionClassifier, EmotionResult
+    from fiam.classifier.emotion import EmotionClassifier, ApiEmotionClassifier, EmotionResult
     from fiam.retriever.embedder import Embedder
 
 
@@ -31,8 +31,9 @@ class Significance:
 
 @dataclass
 class ExtractedEvent:
-    text: str               # full user+assistant conversation fragment
+    text: str               # full user+assistant conversation fragment (for embedding)
     emotion: EmotionResult  # emotion for this segment
+    thinking: str = ""      # assistant thinking chain (stored, NOT embedded)
     topic_hint: str = ""    # keywords for topic overlap check
     pair_count: int = 1     # how many pairs were merged into this event
     significance: Significance | None = None
@@ -46,6 +47,13 @@ _ELABORATION_THRESHOLD = 1.5
 # --- Merge thresholds ---
 _MERGE_AROUSAL_DIFF = 0.2
 _MERGE_KEYWORD_OVERLAP = 1     # at least this many shared keywords to merge
+
+# --- Paste detection ---
+# If user text has high code/markup ratio vs original prose, discount elaboration
+_RE_CODEBLOCK = re.compile(r"```[\s\S]*?```")
+_RE_TERMINAL = re.compile(r"(?:^[\$>].*$|^\s{2,}[\w/\\]+)", re.MULTILINE)
+_RE_MARKDOWN_HEADER = re.compile(r"^#{1,6}\s", re.MULTILINE)
+_PASTE_INDICATOR_COUNT = 3  # 3+ code blocks or terminal lines = likely paste
 
 
 @dataclass
@@ -62,7 +70,7 @@ class _Pair:
 
 def segment(
     conversation: list[dict[str, str]],
-    classifier: EmotionClassifier,
+    classifier: EmotionClassifier | ApiEmotionClassifier,
     *,
     arousal_threshold: float = _AROUSAL_THRESHOLD,
     novelty_threshold: float = _NOVELTY_THRESHOLD,
@@ -177,6 +185,19 @@ def _compute_significance(
     else:
         elaboration = 0.0
 
+    # Paste discount: if user text is mostly pasted code/terminal/markdown,
+    # the length is misleading — discount elaboration signal
+    user_text = "\n".join(
+        t.get("text", "") for t in pair.turns if t.get("role") == "user"
+    )
+    paste_signals = (
+        len(_RE_CODEBLOCK.findall(user_text))
+        + len(_RE_TERMINAL.findall(user_text))
+        + len(_RE_MARKDOWN_HEADER.findall(user_text))
+    )
+    if paste_signals >= _PASTE_INDICATOR_COUNT:
+        elaboration *= 0.3  # heavy discount — paste ≠ elaboration
+
     return Significance(
         emotional=emotional,
         novelty=novelty,
@@ -217,6 +238,30 @@ def _is_meta_reference(pair: _Pair) -> bool:
 
 
 # ------------------------------------------------------------------
+# Paste dump detection
+# ------------------------------------------------------------------
+
+_PASTE_DUMP_MIN_CHARS = 500  # only check messages above this length
+
+
+def _is_paste_dump(text: str) -> bool:
+    """Detect if a user message is a bulk paste (code / markdown / terminal dump).
+
+    Returns True when the text contains enough structural indicators
+    (code fences, terminal prompts, markdown headers) to be confidently
+    classified as pasted rather than typed.
+    """
+    if len(text) < _PASTE_DUMP_MIN_CHARS:
+        return False
+    paste_signals = (
+        len(_RE_CODEBLOCK.findall(text))
+        + len(_RE_TERMINAL.findall(text))
+        + len(_RE_MARKDOWN_HEADER.findall(text))
+    )
+    return paste_signals >= _PASTE_INDICATOR_COUNT
+
+
+# ------------------------------------------------------------------
 # Merge check
 # ------------------------------------------------------------------
 
@@ -241,7 +286,7 @@ def _should_merge(prev: _Pair, cur: _Pair) -> bool:
 
 def _make_pairs(
     conversation: list[dict[str, str]],
-    classifier: EmotionClassifier,
+    classifier: EmotionClassifier | ApiEmotionClassifier,
 ) -> list[_Pair]:
     """Group turns into user-assistant pairs and classify each."""
     pairs: list[_Pair] = []
@@ -272,7 +317,7 @@ def _make_pairs(
 
 def _classify_pair(
     turns: list[dict[str, str]],
-    classifier: EmotionClassifier,
+    classifier: EmotionClassifier | ApiEmotionClassifier,
 ) -> _Pair:
     """Classify one pair and extract keywords."""
     user_text = "\n".join(
@@ -327,15 +372,30 @@ def _build_event(pairs: list[_Pair]) -> ExtractedEvent:
     """Build an ExtractedEvent from a group of pairs.
 
     For merged events: arousal = max, valence = average.
+    Paste-heavy user turns are replaced with (略) — the AI response
+    already summarises what the user pasted.
     """
     all_turns: list[dict[str, str]] = []
     for p in pairs:
         all_turns.extend(p.turns)
 
-    text = "\n\n".join(
-        f"[{t.get('role', 'unknown')}]\n{t.get('text', '')}"
-        for t in all_turns
-    )
+    # Build conversation text; redact paste-heavy user turns
+    parts: list[str] = []
+    for t in all_turns:
+        role = t.get("role", "unknown")
+        body = t.get("text", "")
+        if role == "user" and _is_paste_dump(body):
+            body = "(略)"
+        parts.append(f"[{role}]\n{body}")
+    text = "\n\n".join(parts)
+
+    # Collect thinking chains from assistant turns (stored, not embedded)
+    thinking_parts: list[str] = []
+    for t in all_turns:
+        th = t.get("thinking", "")
+        if th:
+            thinking_parts.append(th)
+    thinking = "\n\n".join(thinking_parts)
 
     # Merge rule: max arousal, average valence, average confidence
     max_a = max(p.arousal for p in pairs)
@@ -360,6 +420,7 @@ def _build_event(pairs: list[_Pair]) -> ExtractedEvent:
 
     return ExtractedEvent(
         text=text,
+        thinking=thinking,
         emotion=emotion,
         topic_hint=hint,
         pair_count=len(pairs),
