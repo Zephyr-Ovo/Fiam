@@ -130,6 +130,13 @@ def main() -> None:
                          help="Cosine similarity threshold for clustering (default: 0.82)")
     sub_rem.set_defaults(func=_cmd_rem)
 
+    # import (Claude Web export)
+    sub_import = subparsers.add_parser("import", help="Import Claude Web export (conversations.json)")
+    add_common(sub_import)
+    sub_import.add_argument("file", type=str,
+                            help="Path to conversations.json from Claude Web export")
+    sub_import.set_defaults(func=_cmd_import)
+
     args = parser.parse_args()
     args.func(args)
 
@@ -197,6 +204,10 @@ def _cmd_graph(args):
 def _cmd_rem(args):
     from fiam_lib.rem import cmd_rem
     cmd_rem(args)
+
+def _cmd_import(args):
+    from fiam_lib.web_import import cmd_import
+    cmd_import(args)
 
 
 if __name__ == "__main__":

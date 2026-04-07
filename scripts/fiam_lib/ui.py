@@ -80,36 +80,64 @@ def _conjure() -> None:
 # ------------------------------------------------------------------
 
 _ANIM_IDLE = [
-    "( ˘ω˘ )  zzZ  ",
-    "( ˘ω˘ ) zzZ   ",
-    "( ˘ω˘ )  Zzz  ",
-    "( ˘ω˘ )   zz  ",
-    "( ˘ω˘ )    z  ",
-    "( ˘ω˘ )       ",
-    "( ˘ω˘ )       ",
-    "( ˘ω˘ )  zzZ  ",
+    "       z   ▄████▄ \n        z ████████ \n    ▄▄▄███▀▀██▀██\n    ▀▀▀██████████\n        ████████ \n         ██  ██  ",
+    "      z    ▄████▄ \n       z  ████████ \n    ▄▄▄███▀▀██▀██\n    ▀▀▀██████████\n        ████████ \n         ██  ██  ",
+    "     z     ▄████▄ \n      z   ████████ \n    ▄▄▄███▀▀██▀██\n    ▀▀▀██████████\n        ████████ \n         ██  ██  ",
+    "    Z      ▄████▄ \n     z    ████████ \n    ▄▄▄███▀▀██▀██\n    ▀▀▀██████████\n        ████████ \n         ██  ██  ",
 ]
 _ANIM_ACTIVE = [
-    "( O ω O )   ·   ",
-    "( - ω - )  ··   ",
-    "( O ω O )  ···  ",
-    "( - ω - )  ··   ",
+    "           ▄████▄ \n      !   ████████ \n    ▄▄▄███▀▀██▀██\n    ▀▀▀██████████\n        ████████ \n         ██  ██  ",
+    "           ▄████▄ \n          ████████ \n    ▄▄▄███▀▀██▀██\n   ▀▀▀▀██████████\n        ████████ \n         ██  ██  ",
 ]
 
 
-def _animated_sleep(seconds: float, frames: list[str], stop_check=None) -> None:
-    """Animate one line with flowing colour for `seconds`.
-
-    Runs at 8 fps (0.125 s/frame).  offset increments every frame to sweep
-    the palette continuously — the full 40-stop cycle takes ~5 s.
+def animate_while(func, frames: list[str]) -> any:
+    """Run `func` in a separate thread while showing the animation frames.
+    
+    Returns the result of `func` or raises its exception.
     """
+    import threading
+    res = []
+    err = []
+    
+    def _worker():
+        try:
+            res.append(func())
+        except Exception as e:
+            err.append(e)
+            
+    t = threading.Thread(target=_worker)
+    t.start()
+    
+    # Sleep pseudo-infinitely until thread exits
+    _animated_sleep(999999, frames, stop_check=lambda: not t.is_alive())
+    
+    t.join()
+    if err:
+        raise err[0]
+    return res[0]
+
+def _animated_sleep(seconds: float, frames: list[str], stop_check=None) -> None:
+    """Animate flowing colours over multi-line text for `seconds`."""
     step = 0.125
     n = max(1, int(seconds / step))
     with _Live("", refresh_per_second=10, console=_console, transient=True) as live:
         for i in range(n):
             if stop_check and stop_check():
                 break
-            ts = time.strftime("%H:%M")
-            line = _flow(f"  {frames[i % len(frames)]}  {ts}", i)
-            live.update(line)
+            
+            frame_lines = frames[i % len(frames)].split("\n")
+            
+            # Reconstruct with proper vertical centering, padding with spaces so we don't mess up rendering
+            out_lines = []
+            for line in frame_lines:
+                out_lines.append(_flow(f"  {line}", i))
+            
+            # Combine into single Rich text object
+            t = out_lines[0]
+            for ln in out_lines[1:]:
+                t.append("\n")
+                t.append(ln)
+                
+            live.update(t)
             time.sleep(step)

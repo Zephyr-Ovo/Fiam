@@ -32,12 +32,12 @@ def cmd_feedback(args: argparse.Namespace) -> None:
     recent = list(reversed(events))[:count]
 
     try:
-        _run_tui(recent, store)
+        _run_tui(recent, store, config)
     except KeyboardInterrupt:
         print("\n  Cancelled.")
 
 
-def _run_tui(events: list, store) -> None:
+def _run_tui(events: list, store, config) -> None:
     """Rich-based TUI for event rating."""
     import re
     from datetime import datetime, timezone
@@ -205,10 +205,44 @@ def _run_tui(events: list, store) -> None:
             ev.user_weight = max(_WEIGHT_MIN, min(_WEIGHT_MAX, ev.user_weight + deltas[i]))
             store.update_metadata(ev)
             applied += 1
-
+    # Silently collect training data for future personalized model
+    _log_feedback_training(events, deltas, config.code_path)
     console.print()
     if applied:
         console.print(f"  ✓ Updated {applied} event(s)")
     else:
         console.print("  (no changes)")
     console.print()
+
+
+def _log_feedback_training(events: list, deltas: list[float], code_path) -> None:
+    """Silently log all reviewed events as a cohort training signal."""
+    from datetime import datetime, timezone
+    from fiam.store.training import log_feedback_cohort
+
+    now = datetime.now(timezone.utc)
+    candidates = []
+    has_labels = False
+
+    for i, ev in enumerate(events):
+        d = deltas[i]
+        label = 1 if d > 0 else (-1 if d < 0 else 0)
+        if label != 0:
+            has_labels = True
+
+        age_hours = (now - ev.time).total_seconds() / 3600
+        candidates.append({
+            "event_id": ev.event_id,
+            "label": label,
+            "event_arousal": round(ev.arousal, 4),
+            "event_valence": round(ev.valence, 4),
+            "event_age_hours": round(age_hours, 2),
+            "user_weight": round(ev.user_weight, 4),
+        })
+
+    if has_labels:
+        log_feedback_cohort(
+            code_path, 
+            trigger_context="tui_recent_events", 
+            candidates=candidates
+        )

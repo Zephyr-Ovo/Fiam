@@ -224,14 +224,13 @@ def _run_tui(clusters: list[list], config, store) -> None:
             key = _getch()
             if key in ('\r', '\n', 'enter'):
                 # Consolidate this cluster
-                console.print("  [dim]Calling LLM...[/dim]", end="")
+                from fiam_lib.ui import animate_while, _ANIM_IDLE
                 try:
-                    summary = _consolidate_via_llm(cluster, config)
+                    summary = animate_while(lambda: _consolidate_via_llm(cluster, config), _ANIM_IDLE)
                 except Exception as e:
                     console.print(f"\n  [red]Error: {e}[/]")
                     break
 
-                console.print(" done.")
                 console.print()
                 console.print(Panel(summary, title="[bold #f7e08a]Consolidated[/]",
                                     border_style="#f7e08a", width=80))
@@ -252,13 +251,12 @@ def _run_tui(clusters: list[list], config, store) -> None:
                         break
                     elif key2 == 'r':
                         # Regenerate
-                        console.print("  [dim]Regenerating...[/dim]", end="")
+                        from fiam_lib.ui import animate_while, _ANIM_IDLE
                         try:
-                            summary = _consolidate_via_llm(cluster, config)
+                            summary = animate_while(lambda: _consolidate_via_llm(cluster, config), _ANIM_IDLE)
                         except Exception as e:
                             console.print(f"\n  [red]Error: {e}[/]")
                             break
-                        console.print(" done.")
                         console.print()
                         console.print(Panel(summary, title="[bold #f7e08a]Consolidated[/]",
                                             border_style="#f7e08a", width=80))

@@ -77,7 +77,7 @@ Fiam 记住的不只是对话，还包括 AI home 目录里发生了什么。当
 
 **实时路径（会话中）**：daemon 检测到 JSONL 有新内容 → 提取最近用户文本 → 嵌入 → 与上次 recall 查询比较余弦相似度 → 低于 0.65 = 话题漂移 → 重新检索 → 重写 `recall.md`。UserPromptSubmit hook 在每次用户发送消息时读取 `recall.md` 注入为 `additionalContext`。
 
-**批处理路径（会话后）**：空闲超时后 → 增量解析 JSONL（字节偏移）→ 情感分类 → 显著性门控 → 存入事件 → 刷新 recall → 等待下一次活动。
+**批处理路径（会话后）**：空闲超时后 → 增量解析 JSONL（字节偏移）→ 情感分类 → 显著性门控 → 话题分割 → 存入事件 → 刷新 recall → 等待下一次活动。
 
 ### 显著性门控
 
@@ -90,6 +90,16 @@ Fiam 记住的不只是对话，还包括 AI home 目录里发生了什么。当
 | elaboration | > 1.5 | 用户文本长度 / 会话中位数（log2） |
 
 Valence（情感极性）被存储但不参与门控。
+
+### 话题分割（TextTiling Depth Score）
+
+通过门控的 pair 不是各自生成事件，而是先做话题分割——同一话题段内的显著 pair 合并为一个事件。分割算法使用 TextTiling depth score：
+
+1. 对每个相邻间隙，计算前后 window 个 pair 的块嵌入余弦相似度
+2. 计算每个间隙的 **depth**（左峰 - 当前 + 右峰 - 当前）——衡量相对凹陷程度
+3. 在 depth 的局部极大值处切割（阈值 0.1）
+
+关键区别：不依赖绝对相似度阈值。0.9 降到 0.7 是切割（相对凹陷大），0.5 到 0.5 不切（平稳）。这让渐变漂移不会被误切，而真正的话题转折一定被捕捉。
 
 ### 记忆检索
 
@@ -322,9 +332,13 @@ fiam start             启动 daemon
 fiam stop              停止 daemon
 fiam status            daemon 状态 + 事件/嵌入数量
 fiam clean             重置 store（清空记忆）
-fiam scan              一次性历史导入
+fiam scan              一次性历史导入（Claude Code JSONL）
+fiam import <file>     导入 Claude Web 导出的 conversations.json
 fiam reindex           重建嵌入（更换模型后使用）
 fiam graph             生成 Obsidian 回忆图谱  ✦
+fiam feedback          交互式事件评价（←👎 →👍）
+fiam rem               LLM 辅助事件合并整理
+fiam settings          查看/修改 fiam.toml
 fiam pre / post        手动触发 pre/post_session（调试用）
 fiam find-sessions     列出 Claude Code 的 JSONL 文件
 ```

@@ -44,11 +44,9 @@ _AROUSAL_THRESHOLD = 0.6
 _NOVELTY_THRESHOLD = 0.7
 _ELABORATION_THRESHOLD = 1.5
 
-# --- Merge thresholds ---
-_MERGE_AROUSAL_DIFF = 0.4      # relaxed: arousal can vary within a topic
-_MERGE_KEYWORD_OVERLAP = 1     # at least this many shared keywords to merge
-_MERGE_GAP_TOLERANCE = 3       # merge significant pairs up to N pairs apart
-_MERGE_COSINE_THRESHOLD = 0.80 # post-merge groups with similar embeddings
+# --- Topic segmentation (TextTiling depth score) ---
+_DEPTH_WINDOW = 2              # block width for depth-score computation
+_DEPTH_CUTOFF = 0.1            # minimum depth to be a topic boundary
 
 # --- Paste detection ---
 # If user text has high code/markup ratio vs original prose, discount elaboration
@@ -140,18 +138,33 @@ def segment(
             print(f"[extractor] No pairs passed significance gate")
         return []
 
-    # Step 3: merge consecutive significant pairs that are similar
-    groups: list[list[_Pair]] = [[significant[0]]]
-    for prev, cur in zip(significant, significant[1:]):
-        if _should_merge(prev, cur):
-            groups[-1].append(cur)
-        else:
-            groups.append([cur])
+    # Step 3: topic segmentation via depth score
+    #
+    # Instead of merging adjacent pairs by heuristics, we segment ALL
+    # pairs using TextTiling depth scoring. This finds natural topic
+    # boundaries by looking for relative dips in coherence — not
+    # absolute thresholds. Then we assign each significant pair to
+    # its topic segment.
+    boundaries = _depth_score_boundaries(pairs, embedder, debug)
 
-    # Step 4: post-merge groups with similar embeddings (catches topic
-    #         continuity that arousal/keyword heuristics miss)
-    if embedder is not None and len(groups) > 1:
-        groups = _merge_groups_by_embedding(groups, embedder, debug)
+    # Build topic segments: each segment is a range [start, end) of pair indices
+    cut_indices = sorted(set(boundaries))
+    seg_ranges: list[tuple[int, int]] = []
+    prev_start = 0
+    for ci in cut_indices:
+        seg_ranges.append((prev_start, ci + 1))
+        prev_start = ci + 1
+    seg_ranges.append((prev_start, len(pairs)))
+
+    # Group significant pairs by which topic segment they fall in
+    groups: list[list[_Pair]] = []
+    for seg_start, seg_end in seg_ranges:
+        group = [p for p in significant if seg_start <= p.index < seg_end]
+        if group:
+            groups.append(group)
+
+    if not groups:
+        return []
 
     return [_build_event(g) for g in groups]
 
@@ -272,68 +285,92 @@ def _is_paste_dump(text: str) -> bool:
 # Merge check
 # ------------------------------------------------------------------
 
-def _should_merge(prev: _Pair, cur: _Pair) -> bool:
-    """Decide whether two consecutive significant pairs should merge."""
-    gap = cur.index - prev.index
-
-    # Within gap tolerance: merge if arousal is reasonably close
-    if gap <= _MERGE_GAP_TOLERANCE and abs(prev.arousal - cur.arousal) < _MERGE_AROUSAL_DIFF:
-        return True
-
-    # Keyword overlap (topic continuity) — always merge regardless of gap
-    overlap = len(prev.keywords & cur.keywords)
-    if overlap >= _MERGE_KEYWORD_OVERLAP and abs(prev.arousal - cur.arousal) < _MERGE_AROUSAL_DIFF:
-        return True
-
-    return False
-
-
-def _merge_groups_by_embedding(
-    groups: list[list[_Pair]],
-    embedder: Embedder,
+def _depth_score_boundaries(
+    pairs: list[_Pair],
+    embedder: Embedder | None,
     debug: bool = False,
-) -> list[list[_Pair]]:
-    """Post-merge groups whose user text embeddings are highly similar.
+) -> list[int]:
+    """Find topic boundaries using TextTiling depth scoring.
 
-    This catches topic continuity that arousal/keyword heuristics miss:
-    e.g. a 10-turn discussion about the same thing that got fragmented
-    because intermediate pairs had slightly different arousal.
+    For each gap between consecutive pairs, compute the block
+    similarity (average embedding of the `window` pairs before/after).
+    Then compute a depth score at each gap: how much the similarity
+    dips relative to the nearest peaks on either side. Cut at local
+    maxima of depth that exceed the cutoff.
+
+    This is fundamentally different from threshold-based segmentation:
+    - It's RELATIVE: a drop from 0.9 to 0.7 is a cut even though 0.7
+      is "high" in absolute terms.
+    - Gradual topic drift → no sharp dip → no cut (correct).
+    - Abrupt topic change → sharp dip → cut (correct).
     """
-    # Compute one embedding per group (user text concatenated)
-    group_vecs: list[np.ndarray | None] = []
-    for g in groups:
-        user_text = " ".join(
-            t.get("text", "") for p in g for t in p.turns if t.get("role") == "user"
+    n = len(pairs)
+    if n < 3 or embedder is None:
+        return []
+
+    # Embed all pairs (user + assistant text combined)
+    vecs: list[np.ndarray] = []
+    for p in pairs:
+        text = " ".join(
+            t.get("text", "") for t in p.turns
         ).strip()
-        if user_text:
-            group_vecs.append(embedder.embed(user_text))
+        if text:
+            vecs.append(embedder.embed(text))
         else:
-            group_vecs.append(None)
+            vecs.append(np.zeros(embedder.config.embedding_dim, dtype=np.float32))
 
-    # Greedy merge: walk forward, absorb next group if cosine > threshold
-    merged: list[list[_Pair]] = [list(groups[0])]
-    merged_vecs: list[np.ndarray | None] = [group_vecs[0]]
+    embeddings = np.array(vecs)
+    window = _DEPTH_WINDOW
 
-    for i in range(1, len(groups)):
-        cur_vec = group_vecs[i]
-        prev_vec = merged_vecs[-1]
+    # Step 1: block similarities at each gap
+    sims = np.zeros(n - 1)
+    for i in range(n - 1):
+        left_start = max(0, i - window + 1)
+        right_end = min(n, i + 1 + window)
+        left_block = embeddings[left_start:i + 1].mean(axis=0)
+        right_block = embeddings[i + 1:right_end].mean(axis=0)
+        denom = np.linalg.norm(left_block) * np.linalg.norm(right_block)
+        sims[i] = float(np.dot(left_block, right_block) / (denom + 1e-9)) if denom > 1e-9 else 0.0
 
-        if cur_vec is not None and prev_vec is not None:
-            sim = float(np.dot(cur_vec, prev_vec) / (
-                np.linalg.norm(cur_vec) * np.linalg.norm(prev_vec) + 1e-9
-            ))
-            if sim >= _MERGE_COSINE_THRESHOLD:
-                merged[-1].extend(groups[i])
-                # Update merged vec to average
-                merged_vecs[-1] = (prev_vec + cur_vec) / 2.0
-                if debug:
-                    print(f"  [merge] groups merged (cosine={sim:.2f})")
-                continue
+    # Step 2: depth score at each gap
+    depths = np.zeros(len(sims))
+    for i in range(len(sims)):
+        # Left peak: walk left until similarity stops increasing
+        left_peak = sims[i]
+        for j in range(i - 1, -1, -1):
+            if sims[j] >= left_peak:
+                left_peak = sims[j]
+            else:
+                break
+        # Right peak: walk right
+        right_peak = sims[i]
+        for j in range(i + 1, len(sims)):
+            if sims[j] >= right_peak:
+                right_peak = sims[j]
+            else:
+                break
+        depths[i] = (left_peak - sims[i]) + (right_peak - sims[i])
 
-        merged.append(list(groups[i]))
-        merged_vecs.append(cur_vec)
+    # Step 3: cut at local maxima of depth that exceed cutoff
+    boundaries: list[int] = []
+    for i in range(len(depths)):
+        if depths[i] < _DEPTH_CUTOFF:
+            continue
+        is_peak = True
+        if i > 0 and depths[i - 1] > depths[i]:
+            is_peak = False
+        if i < len(depths) - 1 and depths[i + 1] > depths[i]:
+            is_peak = False
+        if is_peak:
+            boundaries.append(i)
 
-    return merged
+    if debug:
+        print(f"  [depth] {len(boundaries)} topic boundaries found at gaps: {boundaries}")
+        for i, (s, d) in enumerate(zip(sims, depths)):
+            marker = " ← CUT" if i in boundaries else ""
+            print(f"    gap {i}: sim={s:.3f} depth={d:.3f}{marker}")
+
+    return boundaries
 
 
 # ------------------------------------------------------------------

@@ -41,4 +41,7 @@ def get_adapter(name: str = "claude_code") -> ConversationAdapter:
     if name == "claude_code":
         from fiam.adapter.claude_code import ClaudeCodeAdapter
         return ClaudeCodeAdapter()
-    raise ValueError(f"Unknown adapter: {name!r}. Available: claude_code")
+    if name == "claude_web":
+        from fiam.adapter.claude_web import ClaudeWebAdapter
+        return ClaudeWebAdapter()
+    raise ValueError(f"Unknown adapter: {name!r}. Available: claude_code, claude_web")
