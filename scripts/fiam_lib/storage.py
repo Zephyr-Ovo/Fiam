@@ -103,17 +103,34 @@ def cmd_scan(args: argparse.Namespace) -> None:
         print("No JSONL session files found.")
         return
 
-    print(f"\n  Scanning {len(jsonl_files)} session file(s)...\n")
-
+    # Check cursor to skip already-processed files (prevents duplicates)
     cursor = _load_cursor(config.code_path)
+    force = getattr(args, "force", False)
+
+    to_process = []
+    for jf in jsonl_files:
+        jkey = str(jf.resolve())
+        entry = cursor.get(jkey, {"byte_offset": 0, "mtime": 0.0})
+        if not force and entry["byte_offset"] > 0:
+            continue  # already scanned
+        to_process.append(jf)
+
+    if not to_process:
+        print(f"\n  All {len(jsonl_files)} session file(s) already scanned.")
+        print("  Use --force to re-scan from scratch.\n")
+        return
+
+    print(f"\n  Scanning {len(to_process)} session file(s)"
+          f" ({len(jsonl_files) - len(to_process)} already processed)...\n")
+
     total_events = 0
 
-    for i, jf in enumerate(jsonl_files, 1):
+    for i, jf in enumerate(to_process, 1):
         turns, new_offset = _parse_jsonl_from(jf, 0)
         if not turns:
-            print(f"  [{i}/{len(jsonl_files)}] {jf.name}: 0 turns, skipped")
+            print(f"  [{i}/{len(to_process)}] {jf.name}: 0 turns, skipped")
             continue
-        print(f"  [{i}/{len(jsonl_files)}] {jf.name}: {len(turns)} turns", end="", flush=True)
+        print(f"  [{i}/{len(to_process)}] {jf.name}: {len(turns)} turns", end="", flush=True)
         try:
             r = post_session(config, turns)
             n = r["events_written"]

@@ -273,6 +273,13 @@ class FiamConfig:
             f"arousal_threshold = {self.arousal_threshold}",
             f"half_life_base = {self.half_life_base}",
             "",
+            "[narrative]",
+            f"llm_enabled = {str(self.narrative_llm_enabled).lower()}",
+            f'llm_provider = "{self.narrative_llm_provider}"',
+            f'llm_model = "{self.narrative_llm_model}"',
+            f'llm_base_url = "{self.narrative_llm_base_url}"',
+            f'llm_api_key_env = "{self.narrative_llm_api_key_env}"',
+            "",
             "[daemon]",
             f"idle_timeout_minutes = {self.idle_timeout_minutes}",
             f"poll_interval_seconds = {self.poll_interval_seconds}",
@@ -292,6 +299,7 @@ class FiamConfig:
         models = raw.get("models", {})
         retrieval = raw.get("retrieval", {})
         extraction = raw.get("extraction", {})
+        narrative = raw.get("narrative", {})
         daemon = raw.get("daemon", {})
         features = raw.get("features", {})
 
@@ -320,6 +328,12 @@ class FiamConfig:
             # Extraction
             arousal_threshold=extraction.get("arousal_threshold", cls.arousal_threshold),
             half_life_base=extraction.get("half_life_base", cls.half_life_base),
+            # Narrative
+            narrative_llm_enabled=narrative.get("llm_enabled", cls.narrative_llm_enabled),
+            narrative_llm_provider=narrative.get("llm_provider", cls.narrative_llm_provider),
+            narrative_llm_model=narrative.get("llm_model", cls.narrative_llm_model),
+            narrative_llm_base_url=narrative.get("llm_base_url", cls.narrative_llm_base_url),
+            narrative_llm_api_key_env=narrative.get("llm_api_key_env", cls.narrative_llm_api_key_env),
             # Daemon
             idle_timeout_minutes=daemon.get("idle_timeout_minutes", cls.idle_timeout_minutes),
             poll_interval_seconds=daemon.get("poll_interval_seconds", cls.poll_interval_seconds),

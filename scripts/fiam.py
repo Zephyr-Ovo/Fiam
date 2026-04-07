@@ -27,7 +27,7 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(
         prog="fiam",
-        description="fiam — bio-inspired AI memory system",
+        description="fiam — Fluid Injected Affective Memory",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -99,7 +99,22 @@ def main() -> None:
     # scan (one-time history import)
     sub_scan = subparsers.add_parser("scan", help="One-time scan of all JSONL history")
     add_common(sub_scan)
+    sub_scan.add_argument("--force", action="store_true", default=False,
+                          help="Re-scan all files from scratch (ignores cursor)")
     sub_scan.set_defaults(func=_cmd_scan)
+
+    # settings
+    sub_settings = subparsers.add_parser("settings", help="View/edit fiam.toml configuration")
+    sub_settings.add_argument("--set", nargs="*", metavar="KEY=VALUE",
+                              help="Set one or more values directly (e.g. --set top_k=8 llm_enabled=true)")
+    sub_settings.set_defaults(func=_cmd_settings)
+
+    # feedback (interactive event rating)
+    sub_feedback = subparsers.add_parser("feedback", help="Rate recent events (TUI: ←👎 →👍)")
+    add_common(sub_feedback)
+    sub_feedback.add_argument("-n", "--count", type=int, default=8,
+                              help="Number of recent events to show (default: 8)")
+    sub_feedback.set_defaults(func=_cmd_feedback)
 
     # graph (1.0 easter egg)
     sub_graph = subparsers.add_parser("graph", help="Generate Obsidian wikilink graph")
@@ -107,6 +122,13 @@ def main() -> None:
     sub_graph.add_argument("--threshold", type=float, default=0.75,
                            help="Cosine similarity threshold for wikilinks (default: 0.75)")
     sub_graph.set_defaults(func=_cmd_graph)
+
+    # rem (memory consolidation)
+    sub_rem = subparsers.add_parser("rem", help="Consolidate similar events via LLM (TUI)")
+    add_common(sub_rem)
+    sub_rem.add_argument("--threshold", type=float, default=0.82,
+                         help="Cosine similarity threshold for clustering (default: 0.82)")
+    sub_rem.set_defaults(func=_cmd_rem)
 
     args = parser.parse_args()
     args.func(args)
@@ -160,9 +182,21 @@ def _cmd_scan(args):
     from fiam_lib.storage import cmd_scan
     cmd_scan(args)
 
+def _cmd_settings(args):
+    from fiam_lib.settings import cmd_settings
+    cmd_settings(args)
+
+def _cmd_feedback(args):
+    from fiam_lib.feedback import cmd_feedback
+    cmd_feedback(args)
+
 def _cmd_graph(args):
     from fiam_lib.graph import cmd_graph
     cmd_graph(args)
+
+def _cmd_rem(args):
+    from fiam_lib.rem import cmd_rem
+    cmd_rem(args)
 
 
 if __name__ == "__main__":

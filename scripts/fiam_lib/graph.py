@@ -78,7 +78,6 @@ def cmd_graph(args: argparse.Namespace) -> None:
     adds [[wikilinks]] between events whose cosine similarity
     exceeds the threshold. Open the folder in Obsidian → graph view!
     """
-    import shutil
     import numpy as np
     from fiam.store.home import HomeStore
 
@@ -104,14 +103,18 @@ def cmd_graph(args: argparse.Namespace) -> None:
     # --- Phase 2: Copy files ---
     graph_dir = config.store_dir / "graph"
     if graph_dir.exists():
-        shutil.rmtree(graph_dir)
-    graph_dir.mkdir(parents=True)
+        # Remove old event .md files but preserve .obsidian/ and other dotfiles
+        for old_md in graph_dir.glob("*.md"):
+            old_md.unlink()
+    graph_dir.mkdir(parents=True, exist_ok=True)
 
     # Write clean Obsidian-friendly files
     for ev in events:
         name = name_map[ev.filename]
-        # Strip role markers for cleaner display
-        clean_body = re.sub(r'\[(?:user|assistant)\]\s*', '', ev.body).strip()
+        # Replace role markers with readable labels
+        clean_body = ev.body.strip()
+        clean_body = re.sub(r'\[user\]\s*', '**user:** ', clean_body)
+        clean_body = re.sub(r'\[assistant\]\s*', '**AI:** ', clean_body)
 
         lines = [
             f"*{ev.time.strftime('%Y-%m-%d %H:%M')}*",

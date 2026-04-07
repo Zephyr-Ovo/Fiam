@@ -50,7 +50,7 @@ def _write_recall(config: "FiamConfig", events: list, ai_name: str | None = None
 
 
 def _extract_memory_fragment(body: str) -> str:
-    """Distill an event body into a clean memory fragment.
+    """Distill an event body into a clean memory fragment with speaker labels.
 
     Event bodies are stored as:
         [user]
@@ -58,22 +58,39 @@ def _extract_memory_fragment(body: str) -> str:
         [assistant]
         别急...
 
-    We extract the user's words as the primary memory content.
-    If user text is very short, include assistant's response for context.
+    We extract key dialogue with speaker labels preserved.
     """
-    parts = re.split(r'\[(?:user|assistant)\]\s*', body)
-    parts = [p.strip() for p in parts if p.strip()]
+    # Split into (role, text) pairs
+    segments: list[tuple[str, str]] = []
+    current_role = ""
+    current_text: list[str] = []
 
-    if not parts:
+    for line in body.split("\n"):
+        stripped = line.strip()
+        if stripped in ("[user]", "[assistant]"):
+            if current_role and current_text:
+                segments.append((current_role, " ".join(current_text).strip()))
+            current_role = stripped[1:-1]  # "user" or "assistant"
+            current_text = []
+        elif stripped:
+            current_text.append(stripped)
+    if current_role and current_text:
+        segments.append((current_role, " ".join(current_text).strip()))
+
+    if not segments:
         return body.strip()[:200]
 
-    # parts[0] = user text, parts[1] = assistant text (if exists)
-    user_text = parts[0]
+    # Build fragment: keep user turn + short assistant response
+    parts: list[str] = []
+    budget = 200
 
-    # If user text is very short and we have assistant context, add it
-    if len(user_text) < 30 and len(parts) > 1:
-        asst_text = parts[1]
-        if len(asst_text) < 100:
-            return f"{user_text} → {asst_text}"
+    for role, text in segments:
+        prefix = "user " if role == "user" else "AI "
+        if len(text) > budget:
+            text = text[:budget - 3] + "..."
+        parts.append(f"{prefix}{text}")
+        budget -= len(text) + 4
+        if budget <= 0:
+            break
 
-    return user_text
+    return " → ".join(parts) if len(parts) <= 2 else parts[0]

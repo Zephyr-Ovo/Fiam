@@ -45,8 +45,10 @@ _NOVELTY_THRESHOLD = 0.7
 _ELABORATION_THRESHOLD = 1.5
 
 # --- Merge thresholds ---
-_MERGE_AROUSAL_DIFF = 0.2
+_MERGE_AROUSAL_DIFF = 0.4      # relaxed: arousal can vary within a topic
 _MERGE_KEYWORD_OVERLAP = 1     # at least this many shared keywords to merge
+_MERGE_GAP_TOLERANCE = 3       # merge significant pairs up to N pairs apart
+_MERGE_COSINE_THRESHOLD = 0.80 # post-merge groups with similar embeddings
 
 # --- Paste detection ---
 # If user text has high code/markup ratio vs original prose, discount elaboration
@@ -145,6 +147,11 @@ def segment(
             groups[-1].append(cur)
         else:
             groups.append([cur])
+
+    # Step 4: post-merge groups with similar embeddings (catches topic
+    #         continuity that arousal/keyword heuristics miss)
+    if embedder is not None and len(groups) > 1:
+        groups = _merge_groups_by_embedding(groups, embedder, debug)
 
     return [_build_event(g) for g in groups]
 
@@ -267,17 +274,66 @@ def _is_paste_dump(text: str) -> bool:
 
 def _should_merge(prev: _Pair, cur: _Pair) -> bool:
     """Decide whether two consecutive significant pairs should merge."""
-    # Arousal must be close
-    if abs(prev.arousal - cur.arousal) >= _MERGE_AROUSAL_DIFF:
-        return False
-    # Adjacent pairs (no gap) always merge if arousal is close
-    if cur.index == prev.index + 1:
+    gap = cur.index - prev.index
+
+    # Within gap tolerance: merge if arousal is reasonably close
+    if gap <= _MERGE_GAP_TOLERANCE and abs(prev.arousal - cur.arousal) < _MERGE_AROUSAL_DIFF:
         return True
-    # Non-adjacent: require keyword overlap (topic continuity)
+
+    # Keyword overlap (topic continuity) — always merge regardless of gap
     overlap = len(prev.keywords & cur.keywords)
-    if overlap < _MERGE_KEYWORD_OVERLAP:
-        return False
-    return True
+    if overlap >= _MERGE_KEYWORD_OVERLAP and abs(prev.arousal - cur.arousal) < _MERGE_AROUSAL_DIFF:
+        return True
+
+    return False
+
+
+def _merge_groups_by_embedding(
+    groups: list[list[_Pair]],
+    embedder: Embedder,
+    debug: bool = False,
+) -> list[list[_Pair]]:
+    """Post-merge groups whose user text embeddings are highly similar.
+
+    This catches topic continuity that arousal/keyword heuristics miss:
+    e.g. a 10-turn discussion about the same thing that got fragmented
+    because intermediate pairs had slightly different arousal.
+    """
+    # Compute one embedding per group (user text concatenated)
+    group_vecs: list[np.ndarray | None] = []
+    for g in groups:
+        user_text = " ".join(
+            t.get("text", "") for p in g for t in p.turns if t.get("role") == "user"
+        ).strip()
+        if user_text:
+            group_vecs.append(embedder.embed(user_text))
+        else:
+            group_vecs.append(None)
+
+    # Greedy merge: walk forward, absorb next group if cosine > threshold
+    merged: list[list[_Pair]] = [list(groups[0])]
+    merged_vecs: list[np.ndarray | None] = [group_vecs[0]]
+
+    for i in range(1, len(groups)):
+        cur_vec = group_vecs[i]
+        prev_vec = merged_vecs[-1]
+
+        if cur_vec is not None and prev_vec is not None:
+            sim = float(np.dot(cur_vec, prev_vec) / (
+                np.linalg.norm(cur_vec) * np.linalg.norm(prev_vec) + 1e-9
+            ))
+            if sim >= _MERGE_COSINE_THRESHOLD:
+                merged[-1].extend(groups[i])
+                # Update merged vec to average
+                merged_vecs[-1] = (prev_vec + cur_vec) / 2.0
+                if debug:
+                    print(f"  [merge] groups merged (cosine={sim:.2f})")
+                continue
+
+        merged.append(list(groups[i]))
+        merged_vecs.append(cur_vec)
+
+    return merged
 
 
 # ------------------------------------------------------------------

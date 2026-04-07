@@ -86,6 +86,9 @@ def search(
         retention = compute_retention(event, now, half_life_base=config.half_life_base)
         base = w_sem * sem_score + w_rec * retention
 
+        # Apply user feedback weight (persistent score multiplier)
+        base *= event.user_weight
+
         penalty = diversity_penalty(event, now, recent_days=3)
         candidates.append((event, base * penalty, event_vec))
 
