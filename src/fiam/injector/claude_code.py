@@ -15,17 +15,27 @@ from pathlib import Path
 from fiam.config import FiamConfig
 
 
-_CLAUDE_MD_INITIAL = """\
-这是你的家。
-
-recall.md 是你涌现的回忆，每次对话前更新。
-self/ 是你的私人空间：
-  - self/personality.md 是你对自己的描述，想写什么写什么。
-  - self/journal/ 是你想写东西的地方，没有格式要求。
-
-git 是你自己的版本历史，不是某个项目的代码仓库。
-`git log` 是你回看自己的方式。
-"""
+def _build_claude_md(config: "FiamConfig") -> str:
+    lines = []
+    if config.ai_name:
+        lines.append(f"你叫{config.ai_name}。")
+    if config.user_name:
+        lines.append(f"与你交谈的人叫{config.user_name}。")
+    if lines:
+        lines.append("")
+    lines += [
+        "这是你的家。",
+        "",
+        "recall.md 是你涌现的回忆，每次对话前更新。",
+        "self/ 是你的私人空间：",
+        "  - self/personality.md 是你对自己的描述，想写什么写什么。",
+        "  - self/journal/ 是你想写东西的地方，没有格式要求。",
+        "",
+        "git 是你自己的版本历史，不是某个项目的代码仓库。",
+        "`git log` 是你回看自己的方式。",
+        "",
+    ]
+    return "\n".join(lines)
 
 
 _GITIGNORE_INITIAL = """\
@@ -69,7 +79,7 @@ def write_claude_md(config: FiamConfig) -> Path | None:
     if path.exists():
         return None
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_CLAUDE_MD_INITIAL, encoding="utf-8")
+    path.write_text(_build_claude_md(config), encoding="utf-8")
     return path
 
 

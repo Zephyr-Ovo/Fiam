@@ -135,7 +135,7 @@ def format_fragments(materials: list[dict[str, Any]], config: FiamConfig) -> str
 # LLM rewrite (optional — only when config.narrative_llm_enabled)
 # ------------------------------------------------------------------
 
-_SYSTEM_PROMPT = """你在生成第一人称回忆片段。
+_SYSTEM_PROMPT_BASE = """你在生成第一人称回忆片段。
 
 不要：
 - "用户"、"根据"、"记录"、"数据"
@@ -149,6 +149,17 @@ _SYSTEM_PROMPT = """你在生成第一人称回忆片段。
 - 直接引用原话（如果材料里有引号）
 - 可以模糊、不确定（"好像"、"记得"）
 - 自然的时间感（"那次"、"后来"）"""
+
+
+def _build_system_prompt(config: FiamConfig) -> str:
+    identity_parts = []
+    if config.ai_name:
+        identity_parts.append(f"你是{config.ai_name}")
+    if config.user_name:
+        identity_parts.append(f"正在回忆与{config.user_name}的对话")
+    if identity_parts:
+        return "，".join(identity_parts) + "。\n\n" + _SYSTEM_PROMPT_BASE
+    return _SYSTEM_PROMPT_BASE
 
 
 def _cache_key(materials: list[dict[str, Any]]) -> str:
@@ -203,7 +214,7 @@ def synthesize_with_llm(
     )
 
     try:
-        text = _call_llm(config, _SYSTEM_PROMPT, user_prompt)
+        text = _call_llm(config, _build_system_prompt(config), user_prompt)
     except Exception as exc:
         if config.debug_mode:
             print(f"[narrative] LLM call failed ({exc}), using rule-based fallback")

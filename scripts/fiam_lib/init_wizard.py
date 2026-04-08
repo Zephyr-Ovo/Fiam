@@ -124,8 +124,8 @@ def cmd_init(args: argparse.Namespace) -> None:
     # ── Identity ──
     default_ai = existing.ai_name if existing else ""
     default_user = existing.user_name if existing else ""
-    ai_name = input(f"  AI name [{default_ai or 'e.g. Nova'}]: ").strip() or default_ai
-    user_name = input(f"  Your name [{default_user or 'e.g. Alex'}]: ").strip() or default_user
+    ai_name = input(f"  AI name [{'keep current' if default_ai else 'e.g. Nova'}]: ").strip() or default_ai
+    user_name = input(f"  Your name [{'keep current' if default_user else 'e.g. Alex'}]: ").strip() or default_user
 
     # ── Git ──
     default_git = existing.git_enabled if existing else True
