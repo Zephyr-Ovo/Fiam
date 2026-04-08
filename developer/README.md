@@ -4,6 +4,40 @@ Common commands for development, testing, and maintenance.
 
 ---
 
+## Setup
+
+After `uv sync`, the `fiam` binary is installed in `.venv`. Activate the venv once to use
+`fiam` directly without the `uv run` prefix:
+
+**Windows (PowerShell)**
+```powershell
+.venv\Scripts\Activate.ps1
+fiam --help
+```
+
+**Linux / macOS**
+```bash
+source .venv/bin/activate
+fiam --help
+```
+
+For permanent PATH setup and GPU/API mode configuration, see [developer/beta.md](beta.md).
+
+---
+
+## Emotion Modes
+
+Two modes, same commands — only `fiam.toml` differs:
+
+| Mode | `fiam.toml` | RAM | First-run download | Best for |
+|---|---|---|---|---|
+| **local** (default) | `emotion_provider = "local"` | 4–6 GB | ~2.2 GB models | GPU users, offline |
+| **api** | `emotion_provider = "api"` | ~1 GB | ~1.5 GB (embedder only) | Servers, no GPU |
+
+API mode uses the same Anthropic key as Claude Code. Cost: ~$0.01/session (haiku).
+
+---
+
 ## Commands
 
 | Command | Purpose |

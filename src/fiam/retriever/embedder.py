@@ -12,6 +12,7 @@ Models are lazy-loaded on first use — only the profile's model is downloaded.
 from __future__ import annotations
 
 import numpy as np
+import torch
 from sentence_transformers import SentenceTransformer
 
 from fiam.config import FiamConfig
@@ -24,7 +25,16 @@ class Embedder:
 
     def _get_model(self) -> SentenceTransformer:
         if self._model is None:
-            self._model = SentenceTransformer(self.config.embedding_model)
+            device = "cpu"
+            if torch.cuda.is_available():
+                # Check VRAM — bge-m3 needs ~1.5GB headroom
+                free = torch.cuda.mem_get_info()[0]
+                if free > 1.5e9:
+                    device = "cuda"
+            self._model = SentenceTransformer(
+                self.config.embedding_model,
+                device=device,
+            )
         return self._model
 
     def embed(self, text: str) -> np.ndarray:
@@ -35,6 +45,16 @@ class Embedder:
         model = self._get_model()
         vec = model.encode(text, convert_to_numpy=True)
         return vec.astype(np.float32)
+
+    def embed_batch(self, texts: list[str], batch_size: int = 32) -> np.ndarray:
+        """Batch-encode a list of texts. Returns (N, dim) float32 array.
+
+        Much faster than calling embed() N times because the model
+        processes multiple texts in a single forward pass on GPU/CPU.
+        """
+        model = self._get_model()
+        vecs = model.encode(texts, batch_size=batch_size, convert_to_numpy=True)
+        return vecs.astype(np.float32)
 
     def save(self, vec: np.ndarray, event_id: str) -> str:
         """Save *vec* to embeddings/{event_id}.npy.

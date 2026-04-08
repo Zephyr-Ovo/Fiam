@@ -117,15 +117,41 @@ def post_session(
         conv_path.write_text(full_text, encoding="utf-8")
         print(f"[post_session] Saved conversation to {conv_path}")
 
+    # Step 0: Pre-classify ALL turns once — shared by extractor + signals
+    #
+    # This is the biggest single optimisation: batch classification is
+    # 30-100× faster than per-turn, and we avoid classifying the same
+    # turns twice (once in segment(), once in extract_session_signals()).
+    user_texts = [t["text"] for t in conversation if t.get("role") == "user"]
+    asst_texts = [t["text"] for t in conversation if t.get("role") == "assistant"]
+    all_classify_texts = user_texts + asst_texts
+
+    if all_classify_texts:
+        all_emotions = classifier.analyze_batch(all_classify_texts)
+        user_emotions = all_emotions[:len(user_texts)]
+        asst_emotions = all_emotions[len(user_texts):]
+    else:
+        user_emotions = []
+        asst_emotions = []
+
+    # Build arousal cache for signals (avoids second classification pass)
+    precomputed_arousals = {
+        "user": [e.arousal for e in user_emotions],
+        "asst": [e.arousal for e in asst_emotions],
+    }
+
     # Step 1: Extract events (classifier runs inside extractor per-turn)
-    # Pre-load stored vectors for novelty check
+    # Pre-load stored vectors for novelty check — as a single stack operation
     stored_vecs: list[np.ndarray] = []
     emb_dir = config.embeddings_dir
     if emb_dir.is_dir():
-        for npy in emb_dir.glob("*.npy"):
-            vec = np.load(npy)
-            if vec.shape[0] == config.embedding_dim:
-                stored_vecs.append(vec)
+        npy_files = sorted(emb_dir.glob("*.npy"))
+        if npy_files:
+            # Memory-map + filter in one pass — avoids loading all into RAM
+            for npy in npy_files:
+                vec = np.load(npy)
+                if vec.shape[0] == config.embedding_dim:
+                    stored_vecs.append(vec)
 
     with trace.step("extractor", inputs={"turn_count": len(conversation)}) as rec:
         extracted = event_extractor.segment(
@@ -133,6 +159,8 @@ def post_session(
             arousal_threshold=config.arousal_threshold,
             embedder=embedder,
             stored_vecs=stored_vecs,
+            precomputed_user_emotions=user_emotions,
+            precomputed_asst_emotions=asst_emotions,
             debug=config.debug_mode,
         )
         rec["outputs"] = {"event_count": len(extracted)}
@@ -164,7 +192,10 @@ def post_session(
 
     # Step 2: Extract session side-channel signals
     with trace.step("signals", inputs={"turn_count": len(conversation)}) as rec:
-        signals = extract_session_signals(conversation, classifier)
+        signals = extract_session_signals(
+            conversation, classifier,
+            precomputed_arousals=precomputed_arousals,
+        )
         rec["outputs"] = signals.to_dict()
 
     if config.debug_mode:

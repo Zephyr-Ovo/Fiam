@@ -60,11 +60,16 @@ def extract_session_signals(
     classifier: EmotionClassifier | ApiEmotionClassifier,
     session_start: datetime | None = None,
     session_end: datetime | None = None,
+    *,
+    precomputed_arousals: dict[str, list[float]] | None = None,
 ) -> SessionSignals:
     """Compute side-channel signals from a full conversation.
 
     *conversation* is the same list[dict] used by the pipeline:
     each dict has 'role' and 'text' keys.
+
+    If *precomputed_arousals* is given (keys 'user' and 'asst'),
+    skip re-classification entirely.
     """
     if not conversation:
         return SessionSignals(
@@ -75,9 +80,19 @@ def extract_session_signals(
     user_texts = [t["text"] for t in conversation if t.get("role") == "user"]
     asst_texts = [t["text"] for t in conversation if t.get("role") == "assistant"]
 
-    # --- Arousal per turn ---
-    user_arousals = [classifier.analyze(t).arousal for t in user_texts] if user_texts else []
-    asst_arousals = [classifier.analyze(t).arousal for t in asst_texts] if asst_texts else []
+    if precomputed_arousals is not None:
+        user_arousals = precomputed_arousals["user"]
+        asst_arousals = precomputed_arousals["asst"]
+    else:
+        # --- Arousal per turn (batch for speed) ---
+        all_texts = user_texts + asst_texts
+        if all_texts:
+            all_results = classifier.analyze_batch(all_texts)
+            user_arousals = [r.arousal for r in all_results[:len(user_texts)]]
+            asst_arousals = [r.arousal for r in all_results[len(user_texts):]]
+        else:
+            user_arousals = []
+            asst_arousals = []
     all_arousals = user_arousals + asst_arousals
 
     # Volatility: range of arousal across all turns

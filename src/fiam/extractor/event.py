@@ -77,6 +77,8 @@ def segment(
     elaboration_threshold: float = _ELABORATION_THRESHOLD,
     embedder: Embedder | None = None,
     stored_vecs: list[np.ndarray] | None = None,
+    precomputed_user_emotions: list | None = None,
+    precomputed_asst_emotions: list | None = None,
     debug: bool = False,
 ) -> list[ExtractedEvent]:
     """Extract significant events via multi-signal gate.
@@ -86,15 +88,67 @@ def segment(
       - novelty:   semantic distance from stored events > novelty_threshold
       - elaboration: user message length vs session median > elaboration_threshold
 
+    If *precomputed_user/asst_emotions* are given (from pipeline-level
+    batch classification), they are reused instead of re-classifying.
+
     Returns an empty list if no segment is significant.
     """
     if not conversation:
         return []
 
-    # Step 1: group into pairs and classify
-    pairs = _make_pairs(conversation, classifier)
+    # Step 1: group into pairs and classify (batch)
+    pairs = _make_pairs(
+        conversation, classifier,
+        precomputed_user_emotions=precomputed_user_emotions,
+        precomputed_asst_emotions=precomputed_asst_emotions,
+    )
     if not pairs:
         return []
+
+    # Step 1b: batch-embed ALL pair texts once — reused for both depth
+    # scoring and novelty checking (eliminates duplicate embed calls)
+    pair_vecs: list[np.ndarray | None] = [None] * len(pairs)
+    user_vecs: list[np.ndarray | None] = [None] * len(pairs)
+    if embedder is not None:
+        # Full pair texts (for depth scoring)
+        full_texts: list[str] = []
+        full_indices: list[int] = []
+        # User-only texts (for novelty scoring)
+        user_texts_emb: list[str] = []
+        user_indices: list[int] = []
+
+        for i, p in enumerate(pairs):
+            ft = " ".join(t.get("text", "") for t in p.turns).strip()
+            if ft:
+                full_texts.append(ft)
+                full_indices.append(i)
+
+            ut = "\n".join(
+                t.get("text", "") for t in p.turns if t.get("role") == "user"
+            )
+            if ut.strip():
+                user_texts_emb.append(ut)
+                user_indices.append(i)
+
+        # Batch encode both sets in one call for efficiency
+        all_embed_texts = full_texts + user_texts_emb
+        if all_embed_texts:
+            all_vecs = embedder.embed_batch(all_embed_texts)
+            # Split back
+            for j, idx in enumerate(full_indices):
+                pair_vecs[idx] = all_vecs[j]
+            offset = len(full_texts)
+            for j, idx in enumerate(user_indices):
+                user_vecs[idx] = all_vecs[offset + j]
+
+    # Build stored vectors matrix for fast novelty computation
+    stored_mat: np.ndarray | None = None
+    if stored_vecs:
+        stored_mat = np.vstack(stored_vecs)  # (M, dim)
+        # Pre-normalise for fast cosine
+        norms = np.linalg.norm(stored_mat, axis=1, keepdims=True)
+        norms = np.where(norms < 1e-9, 1.0, norms)
+        stored_mat = stored_mat / norms
 
     # Compute session median user chars for elaboration
     user_char_counts = []
@@ -107,7 +161,7 @@ def segment(
     significant: list[_Pair] = []
     for p in pairs:
         sig = _compute_significance(
-            p, embedder, stored_vecs, session_median_chars,
+            p, user_vecs[p.index], stored_mat, session_median_chars,
         )
         p.significance = sig
 
@@ -145,7 +199,7 @@ def segment(
     # boundaries by looking for relative dips in coherence — not
     # absolute thresholds. Then we assign each significant pair to
     # its topic segment.
-    boundaries = _depth_score_boundaries(pairs, embedder, debug)
+    boundaries = _depth_score_boundaries(pairs, pair_vecs, embedder, debug)
 
     # Build topic segments: each segment is a range [start, end) of pair indices
     cut_indices = sorted(set(boundaries))
@@ -175,25 +229,22 @@ def segment(
 
 def _compute_significance(
     pair: _Pair,
-    embedder: Embedder | None,
-    stored_vecs: list[np.ndarray] | None,
+    user_vec: np.ndarray | None,
+    stored_mat: np.ndarray | None,
     session_median_chars: float,
 ) -> Significance:
     """Compute significance across three independent channels."""
     emotional = pair.arousal
 
-    # Novelty: semantic distance from all stored events
+    # Novelty: semantic distance from all stored events (vectorised)
     novelty = 1.0  # cold start = everything is novel
-    if embedder is not None and stored_vecs:
-        user_text = "\n".join(
-            t.get("text", "") for t in pair.turns if t.get("role") == "user"
-        )
-        if user_text.strip():
-            vec = embedder.embed(user_text)
-            max_sim = max(
-                float(np.dot(vec, sv) / (np.linalg.norm(vec) * np.linalg.norm(sv) + 1e-9))
-                for sv in stored_vecs
-            )
+    if user_vec is not None and stored_mat is not None:
+        vec_norm = np.linalg.norm(user_vec)
+        if vec_norm > 1e-9:
+            normed = user_vec / vec_norm
+            # stored_mat is already pre-normalised → dot = cosine
+            cosines = stored_mat @ normed
+            max_sim = float(np.max(cosines))
             novelty = 1.0 - max(0.0, max_sim)
 
     # Elaboration: relative user message length (log scale)
@@ -287,6 +338,7 @@ def _is_paste_dump(text: str) -> bool:
 
 def _depth_score_boundaries(
     pairs: list[_Pair],
+    pair_vecs: list[np.ndarray | None],
     embedder: Embedder | None,
     debug: bool = False,
 ) -> list[int]:
@@ -308,16 +360,14 @@ def _depth_score_boundaries(
     if n < 3 or embedder is None:
         return []
 
-    # Embed all pairs (user + assistant text combined)
+    # Use pre-computed pair_vecs (already batch-embedded)
+    dim = embedder.config.embedding_dim
     vecs: list[np.ndarray] = []
-    for p in pairs:
-        text = " ".join(
-            t.get("text", "") for t in p.turns
-        ).strip()
-        if text:
-            vecs.append(embedder.embed(text))
+    for v in pair_vecs:
+        if v is not None:
+            vecs.append(v)
         else:
-            vecs.append(np.zeros(embedder.config.embedding_dim, dtype=np.float32))
+            vecs.append(np.zeros(dim, dtype=np.float32))
 
     embeddings = np.array(vecs)
     window = _DEPTH_WINDOW
@@ -380,9 +430,18 @@ def _depth_score_boundaries(
 def _make_pairs(
     conversation: list[dict[str, str]],
     classifier: EmotionClassifier | ApiEmotionClassifier,
+    *,
+    precomputed_user_emotions: list | None = None,
+    precomputed_asst_emotions: list | None = None,
 ) -> list[_Pair]:
-    """Group turns into user-assistant pairs and classify each."""
-    pairs: list[_Pair] = []
+    """Group turns into user-assistant pairs and classify each (batch).
+
+    If *precomputed_user/asst_emotions* are given (per-turn EmotionResults
+    aligned with user/assistant turns in conversation order), we map them
+    to pairs without any new model calls.
+    """
+    # Step 1: Group turns into raw pair buffers
+    raw_buffers: list[list[dict[str, str]]] = []
     buf: list[dict[str, str]] = []
 
     for turn in conversation:
@@ -390,20 +449,116 @@ def _make_pairs(
         if role == "user" and buf and any(
             t.get("role") == "assistant" for t in buf
         ):
-            pairs.append(_classify_pair(buf, classifier))
+            raw_buffers.append(buf)
             buf = [turn]
         else:
             buf.append(turn)
 
     if buf:
-        if pairs and not any(t.get("role") == "assistant" for t in buf):
-            pairs[-1].turns.extend(buf)
+        if raw_buffers and not any(t.get("role") == "assistant" for t in buf):
+            raw_buffers[-1].extend(buf)
         else:
-            pairs.append(_classify_pair(buf, classifier))
+            raw_buffers.append(buf)
 
-    # Assign indices for adjacency checks
-    for i, p in enumerate(pairs):
-        p.index = i
+    if not raw_buffers:
+        return []
+
+    # --- Fast path: reuse pipeline-level per-turn emotions ---
+    if precomputed_user_emotions is not None and precomputed_asst_emotions is not None:
+        from fiam.classifier.emotion import EmotionResult
+
+        user_idx = 0
+        asst_idx = 0
+        pairs: list[_Pair] = []
+        for i, turns in enumerate(raw_buffers):
+            pair_user_emos: list = []
+            pair_asst_emos: list = []
+            for t in turns:
+                role = t.get("role", "")
+                if role == "user" and user_idx < len(precomputed_user_emotions):
+                    pair_user_emos.append(precomputed_user_emotions[user_idx])
+                    user_idx += 1
+                elif role == "assistant" and asst_idx < len(precomputed_asst_emotions):
+                    pair_asst_emos.append(precomputed_asst_emotions[asst_idx])
+                    asst_idx += 1
+
+            if pair_asst_emos and pair_user_emos:
+                u_arousal = max(e.arousal for e in pair_user_emos)
+                a_emo = pair_asst_emos[-1]
+                emotion = EmotionResult(
+                    valence=a_emo.valence,
+                    arousal=max(u_arousal, a_emo.arousal),
+                    confidence=(pair_user_emos[0].confidence + a_emo.confidence) / 2,
+                    dominant_label=a_emo.dominant_label,
+                    label_scores=a_emo.label_scores,
+                )
+            elif pair_asst_emos:
+                emotion = pair_asst_emos[-1]
+            elif pair_user_emos:
+                emotion = pair_user_emos[-1]
+            else:
+                emotion = EmotionResult(valence=0.0, arousal=0.1, confidence=0.0)
+
+            ut = "\n".join(t.get("text", "") for t in turns if t.get("role") == "user")
+            at = "\n".join(t.get("text", "") for t in turns if t.get("role") == "assistant")
+            keywords = _extract_keywords(ut + " " + at)
+            pairs.append(_Pair(
+                turns=turns,
+                emotion=emotion,
+                arousal=emotion.arousal,
+                valence=emotion.valence,
+                keywords=keywords,
+                index=i,
+            ))
+        return pairs
+
+    # --- Slow path: batch classify from scratch ---
+    # Step 2: Extract user/assistant texts for each pair
+    user_texts: list[str] = []
+    asst_texts: list[str] = []
+    for turns in raw_buffers:
+        ut = "\n".join(t.get("text", "") for t in turns if t.get("role") == "user")
+        at = "\n".join(t.get("text", "") for t in turns if t.get("role") == "assistant")
+        user_texts.append(ut)
+        asst_texts.append(at)
+
+    # Step 3: Batch classify all user + assistant texts
+    all_texts = user_texts + asst_texts
+    all_results = classifier.analyze_batch(all_texts)
+    user_results = all_results[:len(user_texts)]
+    asst_results = all_results[len(user_texts):]
+
+    # Step 4: Build pairs with merged emotion
+    pairs = []
+    for i, turns in enumerate(raw_buffers):
+        u_emo = user_results[i]
+        a_emo = asst_results[i]
+
+        if user_texts[i] and asst_texts[i]:
+            from fiam.classifier.emotion import EmotionResult
+            emotion = EmotionResult(
+                valence=a_emo.valence,
+                arousal=max(u_emo.arousal, a_emo.arousal),
+                confidence=(u_emo.confidence + a_emo.confidence) / 2,
+                dominant_label=a_emo.dominant_label,
+                label_scores=a_emo.label_scores,
+            )
+        elif asst_texts[i]:
+            emotion = a_emo
+        elif user_texts[i]:
+            emotion = u_emo
+        else:
+            emotion = u_emo  # fallback (empty)
+
+        keywords = _extract_keywords(user_texts[i] + " " + asst_texts[i])
+        pairs.append(_Pair(
+            turns=turns,
+            emotion=emotion,
+            arousal=emotion.arousal,
+            valence=emotion.valence,
+            keywords=keywords,
+            index=i,
+        ))
 
     return pairs
 

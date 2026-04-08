@@ -227,7 +227,12 @@ class EmotionClassifier:
         if not model_name:
             return None
 
-        device = 0 if torch.cuda.is_available() else -1
+        device: int | str = -1
+        if torch.cuda.is_available():
+            free = torch.cuda.mem_get_info()[0]
+            # Need ~2.5GB for large emotion model, ~0.5GB for small
+            if free > 0.8e9:
+                device = 0
         pipe = hf_pipeline(
             "text-classification",
             model=model_name,
@@ -295,6 +300,70 @@ class EmotionClassifier:
             dominant_label=dominant,
             label_scores=normalised_scores,
         )
+
+    def analyze_batch(self, texts: list[str], batch_size: int = 32) -> list[EmotionResult]:
+        """Batch WDI classification — much faster than per-text analyze().
+
+        Groups texts by language route (zh/en), runs the HF pipeline in
+        batch mode, then reassembles results in original order.
+        """
+        n = len(texts)
+        results: list[EmotionResult | None] = [None] * n
+
+        # Pre-process: separate empty texts, group by model route
+        # route_key → list of (original_index, snippet, full_text)
+        route_groups: dict[str, list[tuple[int, str, str]]] = {}
+
+        for i, text in enumerate(texts):
+            if not text or not text.strip():
+                results[i] = EmotionResult(valence=0.0, arousal=0.1, confidence=0.0)
+                continue
+            snippet = text[:512]
+            pipe, va_norms = self._route(snippet)
+            if pipe is None:
+                heuristic = _text_arousal_signal(text)
+                results[i] = EmotionResult(valence=0.0, arousal=heuristic, confidence=0.0)
+                continue
+            # Determine route key for grouping
+            profile = self.config.language_profile
+            if profile == "zh":
+                key = "zh"
+            elif profile == "en":
+                key = "en"
+            else:
+                key = "zh" if _is_chinese(snippet) else "en"
+            route_groups.setdefault(key, []).append((i, snippet, text))
+
+        # Batch-classify each language group
+        for key, group in route_groups.items():
+            pipe = self._get_pipe(key)
+            va_norms = _CHINESE_EMOTION_VA if key == "zh" else _GO_EMOTIONS_VA
+            if pipe is None:
+                for idx, _, full_text in group:
+                    heuristic = _text_arousal_signal(full_text)
+                    results[idx] = EmotionResult(valence=0.0, arousal=heuristic, confidence=0.0)
+                continue
+
+            snippets = [s for _, s, _ in group]
+            # HF pipeline accepts list → returns list[list[dict]]
+            batch_out = pipe(snippets, batch_size=batch_size)
+
+            for (idx, _, full_text), scores_list in zip(group, batch_out):
+                scores: list[dict[str, Any]] = scores_list if scores_list else []
+                valence, model_arousal, top_label, label_dict = _wdi(scores, va_norms)
+                heuristic_arousal = _text_arousal_signal(full_text)
+                arousal = max(model_arousal, heuristic_arousal)
+                confidence = max((float(s["score"]) for s in scores), default=0.0)
+                dominant = _CHINESE_LABEL_NAMES.get(top_label, top_label)
+                normalised_scores = {
+                    _CHINESE_LABEL_NAMES.get(k, k): v for k, v in label_dict.items()
+                }
+                results[idx] = EmotionResult(
+                    valence=valence, arousal=arousal, confidence=confidence,
+                    dominant_label=dominant, label_scores=normalised_scores,
+                )
+
+        return results  # type: ignore[return-value]
 
     def analyze_event(self, user_text: str, ai_text: str) -> EmotionResult:
         """Analyze both sides of a conversation pair.
@@ -388,6 +457,10 @@ class ApiEmotionClassifier:
 
     def classify(self, text: str) -> EmotionResult:
         return self.analyze(text)
+
+    def analyze_batch(self, texts: list[str], batch_size: int = 8) -> list[EmotionResult]:
+        """Batch classify via serial API calls (no local model batching)."""
+        return [self.analyze(t) for t in texts]
 
 
 # ── Factory ─────────────────────────────────────────────────────────
