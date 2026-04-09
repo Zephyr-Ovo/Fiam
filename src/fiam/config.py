@@ -71,6 +71,11 @@ class FiamConfig:
     code_path: Path           # fiam-code root — auto-detected
 
     # ------------------------------------------------------------------
+    # All registered home directories
+    # ------------------------------------------------------------------
+    home_paths: list[Path] = field(default_factory=list)
+
+    # ------------------------------------------------------------------
     # Identity (user-configurable for open-source)
     # ------------------------------------------------------------------
     ai_name: str = ""
@@ -151,6 +156,12 @@ class FiamConfig:
 
     def __post_init__(self) -> None:
         """Apply language profile defaults for unset model fields."""
+        # Ensure home_paths list is in sync with home_path
+        if not self.home_paths:
+            self.home_paths = [self.home_path]
+        elif self.home_path not in self.home_paths:
+            self.home_paths.insert(0, self.home_path)
+
         profile = LANGUAGE_PROFILES.get(self.language_profile, LANGUAGE_PROFILES["multi"])
         if not self.embedding_model:
             self.embedding_model = str(profile["embedding"])
@@ -247,8 +258,11 @@ class FiamConfig:
 
     def to_toml(self, path: Path | None = None) -> None:
         """Serialize user-configurable fields to a TOML file."""
+        # Build home_paths TOML array
+        paths_list = ", ".join(f'"{p.as_posix()}"' for p in self.home_paths)
         lines = [
             f'home_path = "{self.home_path.as_posix()}"',
+            f'home_paths = [{paths_list}]',
             f'ai_name = "{self.ai_name}"',
             f'user_name = "{self.user_name}"',
             f'language_profile = "{self.language_profile}"',
@@ -296,6 +310,8 @@ class FiamConfig:
         raw = tomllib.loads(toml_path.read_text(encoding="utf-8"))
 
         home_path = Path(raw["home_path"])
+        home_paths_raw = raw.get("home_paths", [])
+        home_paths = [Path(p) for p in home_paths_raw] if home_paths_raw else [home_path]
         models = raw.get("models", {})
         retrieval = raw.get("retrieval", {})
         extraction = raw.get("extraction", {})
@@ -305,6 +321,7 @@ class FiamConfig:
 
         return cls(
             home_path=home_path,
+            home_paths=home_paths,
             code_path=code_path,
             ai_name=raw.get("ai_name", ""),
             user_name=raw.get("user_name", ""),

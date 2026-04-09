@@ -38,8 +38,11 @@ def cmd_init(args: argparse.Namespace) -> None:
 
     # ── Home directory (safe: never overwrites existing files) ──
     default_home = str(existing.home_path) if existing else ""
+    existing_paths: list[Path] = list(existing.home_paths) if existing else []
     if default_home:
         print(f"  Current home: {default_home}")
+        if len(existing_paths) > 1:
+            print(f"  All homes: {', '.join(str(p) for p in existing_paths)}")
         home_choice = input("  Keep this home? [Y/n/new path]: ").strip()
         if not home_choice or home_choice.lower() == "y":
             home_input = default_home
@@ -52,6 +55,11 @@ def cmd_init(args: argparse.Namespace) -> None:
         print("Error: home directory is required.", file=sys.stderr)
         sys.exit(1)
     home_path = Path(home_input).resolve()
+
+    # Maintain home_paths list — add new path without losing existing ones
+    if home_path not in existing_paths:
+        existing_paths.append(home_path)
+    home_paths = existing_paths if existing_paths else [home_path]
 
     if home_path.exists() and any(home_path.iterdir()):
         print(f"  (existing directory — files will be preserved)")
@@ -124,8 +132,18 @@ def cmd_init(args: argparse.Namespace) -> None:
     # ── Identity ──
     default_ai = existing.ai_name if existing else ""
     default_user = existing.user_name if existing else ""
-    ai_name = input(f"  AI name [{'keep current' if default_ai else 'e.g. Nova'}]: ").strip() or default_ai
-    user_name = input(f"  Your name [{'keep current' if default_user else 'e.g. Alex'}]: ").strip() or default_user
+    if default_ai and default_user:
+        print(f"  AI: {default_ai}, User: {default_user}")
+        change_names = input("  Change names? [y/N]: ").strip().lower()
+        if change_names == "y":
+            ai_name = input(f"  AI name [{default_ai}]: ").strip() or default_ai
+            user_name = input(f"  Your name [{default_user}]: ").strip() or default_user
+        else:
+            ai_name = default_ai
+            user_name = default_user
+    else:
+        ai_name = input(f"  AI name [{'keep current' if default_ai else 'e.g. Nova'}]: ").strip() or default_ai
+        user_name = input(f"  Your name [{'keep current' if default_user else 'e.g. Alex'}]: ").strip() or default_user
 
     # ── Git ──
     default_git = existing.git_enabled if existing else True
@@ -142,6 +160,7 @@ def cmd_init(args: argparse.Namespace) -> None:
     # Build config
     config = FiamConfig(
         home_path=home_path,
+        home_paths=home_paths,
         code_path=code_path,
         ai_name=ai_name,
         user_name=user_name,
@@ -165,8 +184,11 @@ def cmd_init(args: argparse.Namespace) -> None:
     print(f"  home         {home_path}")
 
     # CLAUDE.md + .gitignore (only written if not exists)
-    write_claude_md(config)
-    print(f"  CLAUDE.md    {config.claude_md_path}")
+    claude_result = write_claude_md(config)
+    if claude_result:
+        print(f"  CLAUDE.md    {config.claude_md_path}")
+    else:
+        print(f"  CLAUDE.md    {config.claude_md_path}  (exists, not overwritten)")
     write_gitignore(config)
 
     # Auto-install hook files into home/.claude/

@@ -1,0 +1,191 @@
+"""
+YAML frontmatter schema and validation for event files.
+
+An event file looks like:
+
+    ---
+    time: 2026-04-03T14:32:00Z
+    valence: -0.3
+    arousal: 0.8
+    confidence: 0.85
+    access_count: 0
+    embedding: embeddings/ev_20260403_001.npy
+    tags: [Zephyr, prank]
+    links: []
+    ---
+
+    Free-form text body.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Optional
+
+
+# ------------------------------------------------------------------
+# Dataclass representing a parsed event
+# ------------------------------------------------------------------
+
+@dataclass
+class EventRecord:
+    # Identity — filename IS the ID; no separate id field
+    filename: str                      # e.g. "ev_20260403_001"
+
+    # Temporal
+    time: datetime
+
+    # Emotion coordinates
+    valence: float                     # [-1.0, 1.0]
+    arousal: float                     # [0.0,  1.0]
+    confidence: float                  # [0.0,  1.0]
+
+    # State
+    access_count: int = 0
+
+    # Memory dynamics
+    strength: float = 1.0              # memory strength [0.0, 3.0], decays/reinforces
+    last_accessed: Optional[datetime] = None  # last time this event was recalled
+    user_weight: float = 1.0            # user feedback weight [0.2, 2.0], scales retrieval score
+
+    # Storage
+    embedding: str = ""                # relative path to .npy, e.g. "embeddings/ev_....npy"
+
+    # Graph-readiness (Phase 2)
+    tags: list[str] = field(default_factory=list)
+    links: list[str] = field(default_factory=list)
+
+    # Embedding metadata
+    embedding_dim: int = 0             # 0 = unknown/legacy (will be set on embed)
+
+    # Emotion metadata (extensibility)
+    dominant_label: str = ""           # e.g. "joy", "anger", "positive"
+
+    # Body text (the non-frontmatter portion of the file)
+    body: str = ""
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @property
+    def event_id(self) -> str:
+        return self.filename
+
+    def to_frontmatter_dict(self) -> dict[str, Any]:
+        """Return a dict suitable for writing as YAML frontmatter."""
+        d: dict[str, Any] = {
+            "time": self.time.isoformat(),
+            "valence": round(float(self.valence), 6),
+            "arousal": round(float(self.arousal), 6),
+            "confidence": round(float(self.confidence), 6),
+            "access_count": int(self.access_count),
+            "strength": round(float(self.strength), 4),
+            "embedding": self.embedding,
+            "embedding_dim": self.embedding_dim,
+            "tags": list(self.tags),
+            "links": list(self.links),
+        }
+        if self.dominant_label:
+            d["dominant_label"] = self.dominant_label
+        if self.last_accessed is not None:
+            d["last_accessed"] = self.last_accessed.isoformat()
+        if self.user_weight != 1.0:
+            d["user_weight"] = round(float(self.user_weight), 4)
+        return d
+
+
+# ------------------------------------------------------------------
+# Validation
+# ------------------------------------------------------------------
+
+class ValidationError(ValueError):
+    pass
+
+
+_REQUIRED_KEYS = {"time", "valence", "arousal", "confidence"}
+
+
+def validate_frontmatter(data: dict[str, Any], filename: str = "<unknown>") -> None:
+    """Raise ValidationError if the frontmatter dict is malformed."""
+    missing = _REQUIRED_KEYS - data.keys()
+    if missing:
+        raise ValidationError(
+            f"{filename}: missing required frontmatter keys: {sorted(missing)}"
+        )
+
+    for float_key in ("valence", "arousal", "confidence"):
+        val = data[float_key]
+        if not isinstance(val, (int, float)):
+            raise ValidationError(
+                f"{filename}: '{float_key}' must be a number, got {type(val).__name__}"
+            )
+
+    v = float(data["valence"])
+    if not (-1.0 <= v <= 1.0):
+        raise ValidationError(f"{filename}: valence {v} out of range [-1.0, 1.0]")
+
+    a = float(data["arousal"])
+    if not (0.0 <= a <= 1.0):
+        raise ValidationError(f"{filename}: arousal {a} out of range [0.0, 1.0]")
+
+    c = float(data["confidence"])
+    if not (0.0 <= c <= 1.0):
+        raise ValidationError(f"{filename}: confidence {c} out of range [0.0, 1.0]")
+
+    if "access_count" in data and not isinstance(data["access_count"], int):
+        raise ValidationError(
+            f"{filename}: 'access_count' must be an integer"
+        )
+
+
+# ------------------------------------------------------------------
+# Parse from raw frontmatter dict
+# ------------------------------------------------------------------
+
+def parse_event(
+    frontmatter: dict[str, Any],
+    body: str,
+    filename: str,
+) -> EventRecord:
+    """Parse and validate a frontmatter dict + body into an EventRecord."""
+    validate_frontmatter(frontmatter, filename)
+
+    raw_time = frontmatter["time"]
+    if isinstance(raw_time, datetime):
+        time = raw_time if raw_time.tzinfo else raw_time.replace(tzinfo=timezone.utc)
+    else:
+        time = datetime.fromisoformat(str(raw_time).replace("Z", "+00:00"))
+
+    embedding_path = frontmatter.get("embedding", "")
+    if isinstance(embedding_path, Path):
+        embedding_path = str(embedding_path)
+
+    # Parse last_accessed (optional)
+    raw_last = frontmatter.get("last_accessed")
+    last_accessed: Optional[datetime] = None
+    if raw_last is not None:
+        if isinstance(raw_last, datetime):
+            last_accessed = raw_last if raw_last.tzinfo else raw_last.replace(tzinfo=timezone.utc)
+        else:
+            last_accessed = datetime.fromisoformat(str(raw_last).replace("Z", "+00:00"))
+
+    return EventRecord(
+        filename=filename,
+        time=time,
+        valence=float(frontmatter["valence"]),
+        arousal=float(frontmatter["arousal"]),
+        confidence=float(frontmatter["confidence"]),
+        access_count=int(frontmatter.get("access_count", 0)),
+        strength=float(frontmatter.get("strength", 1.0)),
+        last_accessed=last_accessed,
+        user_weight=float(frontmatter.get("user_weight", 1.0)),
+        embedding=embedding_path,
+        tags=list(frontmatter.get("tags") or []),
+        links=list(frontmatter.get("links") or []),
+        embedding_dim=int(frontmatter.get("embedding_dim", 0)),
+        dominant_label=str(frontmatter.get("dominant_label", "")),
+        body=body.strip(),
+    )

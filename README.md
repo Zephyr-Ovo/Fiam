@@ -273,7 +273,7 @@ uv run python scripts/fiam.py scan
 ```
 fiam init              配置向导（第一次运行）
 fiam start             启动 daemon
-fiam stop              停止 daemon
+fiam stop              优雅停止 daemon（处理完待处理内容后退出）
 fiam status            daemon 状态 + 事件/嵌入数量
 fiam clean             重置 store（清空记忆）
 fiam scan              一次性历史导入（Claude Code JSONL）
@@ -283,6 +283,8 @@ fiam graph             生成 Obsidian 回忆图谱  ✦
 fiam feedback          交互式事件评价（←👎 →👍）
 fiam rem               LLM 辅助事件合并整理
 fiam settings          查看/修改 fiam.toml
+fiam add-home <path>   添加一个 home 目录
+fiam remove-home <path>移除一个 home 目录（数据不删除）
 fiam pre / post        手动触发 pre/post_session（调试用）
 fiam find-sessions     列出 Claude Code 的 JSONL 文件
 ```
@@ -354,6 +356,25 @@ JSONL 解析已抽象为 `ConversationAdapter` protocol（`src/fiam/adapter/`）
 | `min_event_age_hours` | `6` | 测试期间设 0 |
 | `top_k` | `5` | recall 最多显示几条 |
 | `idle_timeout_minutes` | `30` | 多久没活动触发 post-session |
+
+---
+
+## 多 Home 目录
+
+fiam 支持同时注册多个 home 目录。daemon 一次只监控一个 home（即 `home_path`），切换需要重启。
+
+```bash
+# 添加一个新的 home 目录（自动初始化 CLAUDE.md、hook、目录结构）
+fiam add-home /path/to/new-home
+
+# 用指定 home 启动 daemon
+fiam start --home /path/to/new-home
+
+# 移除 home 目录（仅从配置中移除，数据不会被删除）
+fiam remove-home /path/to/old-home
+```
+
+`fiam.toml` 中的 `home_paths` 数组保存所有已注册的 home。`fiam init` 再次运行时，新路径会追加而非替换已有路径。
 
 ---
 

@@ -99,8 +99,13 @@ def post_session(
     config: FiamConfig,
     conversation: list[dict[str, str]],
     session_id: str | None = None,
+    session_time: datetime | None = None,
 ) -> dict[str, Any]:
-    """Run the post-session pipeline: classify → extract → embed → store → report."""
+    """Run the post-session pipeline: classify → extract → embed → store → report.
+
+    If *session_time* is given, events are timestamped to that moment
+    (e.g. JSONL file mtime during scan) instead of ``now()``.
+    """
     trace = Trace(logs_root=config.logs_dir, session_id=session_id)
     store = HomeStore(config)
     classifier = get_classifier(config)
@@ -210,7 +215,7 @@ def post_session(
 
     for ext_event in extracted:
         event_id = store.new_event_id()
-        now = datetime.now(timezone.utc)
+        now = session_time if session_time is not None else datetime.now(timezone.utc)
 
         # Embed (text only — thinking is excluded from retrieval)
         vec = embedder.embed(ext_event.text)

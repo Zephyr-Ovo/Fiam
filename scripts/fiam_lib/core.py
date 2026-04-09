@@ -56,7 +56,11 @@ def _build_config(args: argparse.Namespace | None = None) -> "FiamConfig":
     # CLI overrides
     if args is not None:
         if getattr(args, "home", None):
-            config.home_path = Path(args.home).resolve()
+            override = Path(args.home).resolve()
+            config.home_path = override
+            # Keep home_paths in sync
+            if override not in config.home_paths:
+                config.home_paths.append(override)
         if getattr(args, "debug", False):
             config.debug_mode = True
         if getattr(args, "ai_name", None):

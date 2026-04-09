@@ -137,6 +137,16 @@ def main() -> None:
                             help="Path to conversations.json from Claude Web export")
     sub_import.set_defaults(func=_cmd_import)
 
+    # add-home
+    sub_add_home = subparsers.add_parser("add-home", help="Add a home directory")
+    sub_add_home.add_argument("path", type=str, help="Path to the new home directory")
+    sub_add_home.set_defaults(func=_cmd_add_home)
+
+    # remove-home
+    sub_rm_home = subparsers.add_parser("remove-home", help="Remove a home directory (data NOT deleted)")
+    sub_rm_home.add_argument("path", type=str, help="Path of the home directory to remove")
+    sub_rm_home.set_defaults(func=_cmd_remove_home)
+
     args = parser.parse_args()
     args.func(args)
 
@@ -208,6 +218,14 @@ def _cmd_rem(args):
 def _cmd_import(args):
     from fiam_lib.web_import import cmd_import
     cmd_import(args)
+
+def _cmd_add_home(args):
+    from fiam_lib.home_mgmt import cmd_add_home
+    cmd_add_home(args)
+
+def _cmd_remove_home(args):
+    from fiam_lib.home_mgmt import cmd_remove_home
+    cmd_remove_home(args)
 
 
 if __name__ == "__main__":

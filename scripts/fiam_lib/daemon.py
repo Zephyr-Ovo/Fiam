@@ -42,13 +42,20 @@ def cmd_start(args: argparse.Namespace) -> None:
 
     # Graceful shutdown
     running = True
+    shutdown_requested = False
 
     def _shutdown(sig, frame):
-        nonlocal running
+        nonlocal running, shutdown_requested
+        if shutdown_requested:
+            # Second Ctrl+C = force exit
+            sys.exit(1)
+        shutdown_requested = True
         running = False
 
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
+    if sys.platform == "win32":
+        signal.signal(signal.SIGBREAK, _shutdown)
 
     # Initial pre_session
     from fiam.pipeline import pre_session, post_session
@@ -153,6 +160,57 @@ def cmd_start(args: argparse.Namespace) -> None:
         ts = time.strftime("%H:%M")
         _console.print(f"  [dim]└[{ts}][/dim] [bold #7eb8f7]↻[/]  recall  [bold #f7e08a]{len(events)}[/]")
 
+    def _process_pending() -> None:
+        """Process all unread JSONL content and refresh recall."""
+        nonlocal active, recall_query_vec
+
+        if not jsonl_dir.is_dir():
+            return
+        jf_list = list(jsonl_dir.glob("*.jsonl"))
+        if not jf_list:
+            return
+
+        cursor = _load_cursor(code_path)
+        total_turns: list[dict[str, str]] = []
+
+        for jf in sorted(jf_list, key=lambda p: p.stat().st_mtime):
+            jkey = str(jf.resolve())
+            entry = cursor.get(jkey, {"byte_offset": 0, "mtime": 0.0})
+
+            try:
+                jf_mtime = jf.stat().st_mtime
+            except FileNotFoundError:
+                continue
+            if jf_mtime < entry["mtime"]:
+                entry["byte_offset"] = 0
+
+            turns, new_offset = _parse_jsonl_from(jf, entry["byte_offset"])
+            if turns:
+                total_turns.extend(turns)
+            cursor[jkey] = {"byte_offset": new_offset, "mtime": jf_mtime}
+
+        if total_turns:
+            try:
+                r = post_session(config, total_turns)
+                _console.print(f"  [bold #a8f0e8]+{r['events_written']}[/] memories")
+            except Exception as e:
+                _console.print(f"  [red]error:[/] {e}")
+
+            try:
+                store = HomeStore(config)
+                from fiam.retriever import joint as joint_retriever
+                events = joint_retriever.search("", store, config)
+                _write_recall(config, events)
+                recall_query_vec = None
+                _console.print(f"  recall [#f7a8d0]←[/] [bold #f7e08a]{len(events)}[/] fragments")
+            except Exception as e:
+                _console.print(f"  [red]recall error:[/] {e}")
+        else:
+            _console.print(f"  [dim]·  up to date[/dim]")
+
+        _save_cursor(code_path, cursor)
+        active = False
+
     while running:
         _animated_sleep(
             poll_interval,
@@ -194,46 +252,13 @@ def cmd_start(args: argparse.Namespace) -> None:
         if active and (time.time() - last_activity) > idle_timeout:
             ts = time.strftime("%H:%M")
             _console.print(f"  [dim]└[{ts}][/dim] [bold #f7a8d0]⟳[/]  processing...")
+            _process_pending()
 
-            # Process ALL jsonl files with new content
-            cursor = _load_cursor(code_path)
-            total_turns: list[dict[str, str]] = []
-
-            for jf in sorted(jsonl_files, key=lambda p: p.stat().st_mtime):
-                jkey = str(jf.resolve())
-                entry = cursor.get(jkey, {"byte_offset": 0, "mtime": 0.0})
-
-                jf_mtime = jf.stat().st_mtime
-                if jf_mtime < entry["mtime"]:
-                    entry["byte_offset"] = 0
-
-                turns, new_offset = _parse_jsonl_from(jf, entry["byte_offset"])
-                if turns:
-                    total_turns.extend(turns)
-                cursor[jkey] = {"byte_offset": new_offset, "mtime": jf_mtime}
-
-            if total_turns:
-                try:
-                    r = post_session(config, total_turns)
-                    _console.print(f"  [bold #a8f0e8]+{r['events_written']}[/] memories")
-                except Exception as e:
-                    _console.print(f"  [red]error:[/] {e}")
-
-                # Refresh recall with latest retrieval
-                try:
-                    store = HomeStore(config)
-                    from fiam.retriever import joint as joint_retriever
-                    events = joint_retriever.search("", store, config)
-                    _write_recall(config, events)
-                    recall_query_vec = None  # reset drift baseline
-                    _console.print(f"  recall [#f7a8d0]←[/] [bold #f7e08a]{len(events)}[/] fragments")
-                except Exception as e:
-                    _console.print(f"  [red]recall error:[/] {e}")
-            else:
-                _console.print(f"  [dim]·  up to date[/dim]")
-
-            _save_cursor(code_path, cursor)
-            active = False
+    # ── Graceful shutdown: process any pending content before exit ──
+    if shutdown_requested and active:
+        _console.print()
+        _console.print(f"  [bold #f7a8d0]⟳[/]  wrapping up...")
+        _process_pending()
 
     # Cleanup
     pid_file.unlink(missing_ok=True)
@@ -243,21 +268,46 @@ def cmd_start(args: argparse.Namespace) -> None:
 
 
 def cmd_stop(args: argparse.Namespace) -> None:
-    """Stop a running daemon."""
+    """Stop a running daemon gracefully (processes pending content first)."""
     code_path = _project_root()
     pid = _is_daemon_running(code_path)
     if pid is None:
         print("fiam is not running.")
         return
 
+    print(f"Stopping fiam (PID {pid})...")
+    print("  (processing pending content before exit)")
+
+    if sys.platform == "win32":
+        # Send Ctrl+C event to trigger graceful shutdown handler
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        # Attach to the daemon's console and send CTRL_BREAK_EVENT
+        # Fall back to SIGTERM-style if that fails
+        try:
+            os.kill(pid, signal.CTRL_BREAK_EVENT)
+        except (OSError, AttributeError):
+            subprocess.run(["taskkill", "/F", "/PID", str(pid)],
+                           capture_output=True, check=False)
+    else:
+        os.kill(pid, signal.SIGTERM)
+
+    # Wait for graceful exit (up to 120s for model inference)
+    for _ in range(120):
+        if not _is_daemon_running(code_path):
+            print("  fiam stopped.")
+            return
+        time.sleep(1)
+
+    # Force kill if still running
+    print("  Timed out — force killing...")
     if sys.platform == "win32":
         subprocess.run(["taskkill", "/F", "/PID", str(pid)],
                        capture_output=True, check=False)
     else:
-        os.kill(pid, signal.SIGTERM)
-
+        os.kill(pid, signal.SIGKILL)
     _pid_path(code_path).unlink(missing_ok=True)
-    print(f"fiam stopped (PID {pid}).")
+    print(f"  fiam stopped (forced).")
 
 
 def cmd_status(args: argparse.Namespace) -> None:

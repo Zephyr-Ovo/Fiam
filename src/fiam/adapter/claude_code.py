@@ -18,7 +18,22 @@ Handles:
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
+
+# XML tags injected by Claude Code infrastructure (Agent Teams, hooks, etc.)
+# These look like user messages but are system-generated — must be filtered.
+_SYSTEM_TAG_RE = re.compile(
+    r"^<(?:teammate-message|local-command-caveat|local-command-stdout|"
+    r"command-name|command-message|command-args|task-notification|"
+    r"system-reminder|user-prompt-submit-hook)[>\s/]",
+    re.IGNORECASE,
+)
+
+
+def _is_system_message(text: str) -> bool:
+    """Return True if *text* is a system-injected user turn, not a real human message."""
+    return bool(_SYSTEM_TAG_RE.match(text))
 
 
 class ClaudeCodeAdapter:
@@ -87,7 +102,7 @@ class ClaudeCodeAdapter:
                 if not isinstance(content, str):
                     continue
                 text = content.strip()
-                if text:
+                if text and not _is_system_message(text):
                     user_turns.append((order, {"role": "user", "text": text}))
                     order += 1
             elif line_type == "assistant":

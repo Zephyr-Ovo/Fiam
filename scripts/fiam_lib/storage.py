@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fiam_lib.core import _project_root, _toml_path, _build_config, _is_daemon_running
@@ -104,12 +104,18 @@ def cmd_scan(args: argparse.Namespace) -> None:
         return
 
     # Check cursor to skip already-processed files (prevents duplicates)
+    # Cache mtimes upfront — files may disappear during a long scan (Bug #3)
     cursor = _load_cursor(config.code_path)
     force = getattr(args, "force", False)
 
+    file_mtimes: dict[str, float] = {}
     to_process = []
     for jf in jsonl_files:
         jkey = str(jf.resolve())
+        try:
+            file_mtimes[jkey] = jf.stat().st_mtime
+        except FileNotFoundError:
+            continue  # already gone, skip
         entry = cursor.get(jkey, {"byte_offset": 0, "mtime": 0.0})
         if not force and entry["byte_offset"] > 0:
             continue  # already scanned
@@ -126,20 +132,29 @@ def cmd_scan(args: argparse.Namespace) -> None:
     total_events = 0
 
     for i, jf in enumerate(to_process, 1):
-        turns, new_offset = _parse_jsonl_from(jf, 0)
+        jkey = str(jf.resolve())
+        try:
+            turns, new_offset = _parse_jsonl_from(jf, 0)
+        except FileNotFoundError:
+            print(f"  [{i}/{len(to_process)}] {jf.name}: file disappeared, skipped")
+            continue
         if not turns:
             print(f"  [{i}/{len(to_process)}] {jf.name}: 0 turns, skipped")
             continue
         print(f"  [{i}/{len(to_process)}] {jf.name}: {len(turns)} turns", end="", flush=True)
+
+        # Use JSONL file mtime as session timestamp (not extraction time)
+        mtime = file_mtimes.get(jkey, 0.0)
+        session_time = datetime.fromtimestamp(mtime, tz=timezone.utc) if mtime else None
+
         try:
-            r = post_session(config, turns)
+            r = post_session(config, turns, session_time=session_time)
             n = r["events_written"]
             total_events += n
             print(f" → {n} events")
         except Exception as e:
             print(f" → error: {e}")
-        jkey = str(jf.resolve())
-        cursor[jkey] = {"byte_offset": new_offset, "mtime": jf.stat().st_mtime}
+        cursor[jkey] = {"byte_offset": new_offset, "mtime": mtime}
 
     _save_cursor(config.code_path, cursor)
     print(f"\n  Done. {total_events} events stored.")

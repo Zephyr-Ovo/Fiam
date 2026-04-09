@@ -52,20 +52,22 @@ def cmd_post(args: argparse.Namespace) -> None:
             # Check if there's new content
             current_size = jsonl_path.stat().st_size
             if entry["byte_offset"] >= current_size:
-                print(f"Already fully processed: {jsonl_path}")
-                print("  Use --force to reprocess from start.")
+                print(f"Already fully processed: {jsonl_path.name}")
+                print(f"  (cursor at byte {entry['byte_offset']}, file is {current_size} bytes)")
+                print()
+                print("  This may happen if:")
+                print("  - The daemon already processed this session")
+                print("  - The new conversation is in a different JSONL file")
+                print()
+                print("  Try: fiam post --force   (reprocess from start)")
+                print("       fiam post --debug   (see which file is selected)")
                 return
 
         if force:
             entry["byte_offset"] = 0
 
-        print(f"Processing: {jsonl_path} (offset {entry['byte_offset']})")
+        print(f"Processing: {jsonl_path.name} (offset {entry['byte_offset']})")
         conversation, new_offset = _parse_jsonl_from(jsonl_path, entry["byte_offset"])
-
-        if conversation:
-            # Update cursor after successful processing
-            cursor[jkey] = {"byte_offset": new_offset, "mtime": jsonl_path.stat().st_mtime}
-            _save_cursor(config.code_path, cursor)
 
     if not conversation:
         print("Warning: no conversation turns found.", file=sys.stderr)
@@ -73,6 +75,12 @@ def cmd_post(args: argparse.Namespace) -> None:
 
     print(f"  {len(conversation)} turns parsed")
     result = post_session(config, conversation)
+
+    # Update cursor AFTER successful processing (not before)
+    if not test_file:
+        cursor[jkey] = {"byte_offset": new_offset, "mtime": jsonl_path.stat().st_mtime}
+        _save_cursor(config.code_path, cursor)
+
     print(f"post_session complete (session: {result['session_id']})")
     print(f"  events written: {result['events_written']}")
     print(f"  report: {result['report_path']}")

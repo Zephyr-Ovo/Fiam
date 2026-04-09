@@ -44,12 +44,14 @@ API mode uses the same Anthropic key as Claude Code. Cost: ~$0.01/session (haiku
 |---|---|
 | `fiam init` | Interactive setup wizard (writes fiam.toml, hook files) |
 | `fiam start` | Start daemon — polls JSONL, processes on idle timeout |
-| `fiam stop` | Stop running daemon |
+| `fiam stop` | Graceful stop — processes pending content, then exits |
 | `fiam status` | Daemon status + event/embedding counts |
 | `fiam scan` | One-time full history import (run after `fiam init` on existing installs) |
 | `fiam clean` | Reset store to factory-fresh state (events, embeddings, logs, cursor) |
 | `fiam reindex` | Rebuild all embeddings with current model (after model change) |
 | `fiam graph` | Generate Obsidian wikilink graph from event store |
+| `fiam add-home <path>` | Add a home directory (sets up CLAUDE.md, hooks, structure) |
+| `fiam remove-home <path>` | Remove a home from config (data NOT deleted) |
 | `fiam pre` | Run pre_session once manually |
 | `fiam post` | Run post_session once manually |
 | `fiam find-sessions` | List all JSONL files Claude Code has written for a home path |
