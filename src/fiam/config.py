@@ -104,6 +104,12 @@ class FiamConfig:
     embedding_dim: int = 1024
 
     # ------------------------------------------------------------------
+    # Embedding backend  ("local" = in-process | "remote" = API server)
+    # ------------------------------------------------------------------
+    embedding_backend: str = "local"
+    embedding_remote_url: str = ""  # e.g. "http://127.0.0.1:8819" (via SSH tunnel)
+
+    # ------------------------------------------------------------------
     # Retrieval weights (must sum to 1.0)
     # ------------------------------------------------------------------
     semantic_weight: float = 0.5
@@ -273,6 +279,8 @@ class FiamConfig:
             f'emotion_zh = "{self.emotion_model_zh}"',
             f'emotion_en = "{self.emotion_model_en}"',
             f"embedding_dim = {self.embedding_dim}",
+            f'embedding_backend = "{self.embedding_backend}"',
+            f'embedding_remote_url = "{self.embedding_remote_url}"',
             "",
             "[retrieval]",
             f"top_k = {self.top_k}",
@@ -334,6 +342,8 @@ class FiamConfig:
                                        # backward compat: old toml had embedding_zh/embedding_en
                                        models.get("embedding_zh", "")),
             embedding_dim=models.get("embedding_dim", 0),  # 0 = derive from profile
+            embedding_backend=models.get("embedding_backend", "local"),
+            embedding_remote_url=models.get("embedding_remote_url", ""),
             # Retrieval
             top_k=retrieval.get("top_k", cls.top_k),
             semantic_weight=retrieval.get("semantic_weight", cls.semantic_weight),

@@ -13,6 +13,8 @@ embedding = "BAAI/bge-m3"
 emotion_zh = "Johnson8187/Chinese-Emotion-Small"  # zh/multi: 8-class Chinese emotion (WDI) — or "Johnson8187/Chinese-Emotion" for large
 emotion_en = "SamLowe/roberta-base-go_emotions"  # en/multi: 28-class GoEmotions (WDI)
 embedding_dim = 1024
+embedding_backend = "local"       # "local" = in-process SentenceTransformer | "remote" = API server on DO
+embedding_remote_url = ""         # e.g. "http://127.0.0.1:8819" (tunnelled via SSH: ssh -L 8819:127.0.0.1:8819 root@DO)
 
 [retrieval]
 top_k = 5
