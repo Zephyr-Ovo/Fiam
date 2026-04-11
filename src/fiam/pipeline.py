@@ -79,6 +79,19 @@ def pre_session(config: FiamConfig) -> dict[str, Any]:
         if config.debug_mode:
             print(f"[pre_session] Home diff: {diff_text}")
 
+    # Step 3b: Build awareness context (time, inbox, schedule, env map)
+    try:
+        import sys
+        sys.path.insert(0, str(config.code_path / "scripts"))
+        from fiam_lib.awareness import build_awareness
+        awareness_text = build_awareness(config)
+        synthesis_text = awareness_text + "\n\n---\n\n" + synthesis_text
+        if config.debug_mode:
+            print(f"[pre_session] Awareness injected")
+    except Exception as e:
+        if config.debug_mode:
+            print(f"[pre_session] Awareness build failed: {e}")
+
     # Step 4: Inject into home
     with trace.step("injector", inputs={"synthesis_length": len(synthesis_text)}) as rec:
         inject_result = injector.write(config, synthesis_text)
@@ -309,4 +322,28 @@ def post_session(
         "events_written": len(written_events),
         "report_path": str(report_path),
         "signals": signals.to_dict(),
+        "wake_tags": _extract_and_schedule_wakes(config, conversation),
     }
+
+
+def _extract_and_schedule_wakes(
+    config: FiamConfig, conversation: list[dict[str, str]],
+) -> int:
+    """Extract WAKE tags from assistant turns, append to schedule."""
+    try:
+        import sys
+        sys.path.insert(0, str(config.code_path / "scripts"))
+        from fiam_lib.scheduler import extract_wake_tags, append_to_schedule
+        asst_text = "\n".join(
+            t["text"] for t in conversation if t.get("role") == "assistant"
+        )
+        tags = extract_wake_tags(asst_text)
+        if tags:
+            count = append_to_schedule(tags, config)
+            if config.debug_mode:
+                print(f"[post_session] Scheduled {count} WAKE tags")
+            return count
+    except Exception as e:
+        if config.debug_mode:
+            print(f"[post_session] WAKE extraction failed: {e}")
+    return 0

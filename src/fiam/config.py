@@ -156,6 +156,16 @@ class FiamConfig:
     poll_interval_seconds: int = 30     # how often to check JSONL mtime
 
     # ------------------------------------------------------------------
+    # Communication (outbox dispatch)
+    # ------------------------------------------------------------------
+    tg_bot_token_env: str = "FIAM_TG_BOT_TOKEN"  # env var holding Telegram Bot token
+    tg_chat_id: str = ""                          # Telegram chat ID for user
+    email_from: str = ""                           # AI's address (e.g. Fiet.C@proton.me)
+    email_to: str = ""                             # User's address
+    email_smtp_host: str = ""                      # SMTP host (e.g. 127.0.0.1 for ProtonMail Bridge)
+    email_smtp_port: int = 1025
+
+    # ------------------------------------------------------------------
     # Features
     # ------------------------------------------------------------------
     git_enabled: bool = True
@@ -236,6 +246,26 @@ class FiamConfig:
     def user_space_dir(self) -> Path:
         return self.home_path / self.user_name.lower()
 
+    @property
+    def outbox_dir(self) -> Path:
+        return self.home_path / "outbox"
+
+    @property
+    def outbox_sent_dir(self) -> Path:
+        return self.home_path / "outbox" / "sent"
+
+    @property
+    def inbox_dir(self) -> Path:
+        return self.home_path / "inbox"
+
+    @property
+    def world_dir(self) -> Path:
+        return self.home_path / "world"
+
+    @property
+    def schedule_path(self) -> Path:
+        return self.self_dir / "schedule.jsonl"
+
     # ------------------------------------------------------------------
     # Directory creation
     # ------------------------------------------------------------------
@@ -251,6 +281,10 @@ class FiamConfig:
             self.self_dir,
             self.journal_dir,
             self.user_space_dir,
+            self.outbox_dir,
+            self.outbox_sent_dir,
+            self.inbox_dir,
+            self.world_dir,
         ):
             d.mkdir(parents=True, exist_ok=True)
 
@@ -308,6 +342,14 @@ class FiamConfig:
             "",
             "[features]",
             f"git_enabled = {str(self.git_enabled).lower()}",
+            "",
+            "[communication]",
+            f'tg_bot_token_env = "{self.tg_bot_token_env}"',
+            f'tg_chat_id = "{self.tg_chat_id}"',
+            f'email_from = "{self.email_from}"',
+            f'email_to = "{self.email_to}"',
+            f'email_smtp_host = "{self.email_smtp_host}"',
+            f"email_smtp_port = {self.email_smtp_port}",
         ]
         dest = path or self.toml_path
         dest.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -326,6 +368,7 @@ class FiamConfig:
         narrative = raw.get("narrative", {})
         daemon = raw.get("daemon", {})
         features = raw.get("features", {})
+        comm = raw.get("communication", {})
 
         return cls(
             home_path=home_path,
@@ -366,4 +409,11 @@ class FiamConfig:
             poll_interval_seconds=daemon.get("poll_interval_seconds", cls.poll_interval_seconds),
             # Features
             git_enabled=features.get("git_enabled", cls.git_enabled),
+            # Communication
+            tg_bot_token_env=comm.get("tg_bot_token_env", cls.tg_bot_token_env),
+            tg_chat_id=str(comm.get("tg_chat_id", "")),
+            email_from=comm.get("email_from", ""),
+            email_to=comm.get("email_to", ""),
+            email_smtp_host=comm.get("email_smtp_host", ""),
+            email_smtp_port=comm.get("email_smtp_port", cls.email_smtp_port),
         )
