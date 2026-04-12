@@ -18,8 +18,8 @@
 #
 # From ISP, AI runs: ssh -p 2222 Aurora@127.0.0.1
 
-$RELAY = "root@38.47.118.220:2222"
-$ISP = "root@99.173.22.93"
+$RELAY = "relay"          # ~/.ssh/config: root@38.47.118.220:2222
+$ISP = "isp"              # ~/.ssh/config: root@99.173.22.93 (via relay jump)
 $DO_EMBED = "209.38.69.231"
 $RETRY_SECONDS = 30
 
