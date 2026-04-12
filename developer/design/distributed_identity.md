@@ -50,11 +50,19 @@ Status: active design — 技术和哲学的鸿沟在这里连接。
 | 节点 | 角色 | IP | AI 权限 | 备注 |
 |------|------|----|---------|------|
 | **ISP** | 主站：CC + fiam 进程 | 99.173.22.93 | 完整 | home/, fiam-code/, SSH keys |
-| **DO** | 算力节点：embedding API | 209.38.69.231 | SSH from ISP | 无状态运算，不存身份数据 |
-| **Relay** | LA 中转跳板 | 38.47.118.220 | ⚠ 仅 SSH 中转 | **禁止一切操作**——只路过 |
-| **Local** | Zephyr Windows 机器 | via reverse tunnel | SSH from ISP:2222 | Desktop, AW, 用户在场 |
+| **DO** | 算力节点：embedding API | 209.38.69.231 | SSH from ISP (密钥对已配) | 无状态运算，不存身份数据 |
+| **Relay (vmiss)** | LA 中转跳板 | 38.47.118.220 | ⚠ 仅 SSH 中转 | **禁止一切操作**——ISP 回本地的唯一路径 |
+| **Local** | Zephyr Windows 机器 | via reverse tunnel | SSH from ISP→vmiss→Local | AW, 用户在场 |
 | **TG** | 异步消息通道 | Bot API | outbox/inbox | 手机/桌面，非实时 |
-| **Email** | 正式通信通道 | SMTP | outbox/ | Fiet.C@proton.me |
+| **Email** | 正式通信通道 | SMTP | outbox/ | fiet@fiet.cc (待配置) |
+
+### SSH 密钥拓扑
+
+```
+ISP ←→ DO        直连密钥对（已配好）
+ISP  → vmiss → Local   ISP 不与 Local 直接配对，必须经 vmiss 跳转
+Local → vmiss → ISP    反向隧道（fiam-tunnel.ps1 维持）
+```
 
 ### 中转安全规则
 
@@ -355,12 +363,9 @@ Phase 3（中期）: CC + API + TG 双向
   └─ TG 入站 → inbox/ → awareness 感知
   └─ TG 出站 → outbox/ → postman 投递
   └─ AI 选择回复方式和时机
-
-Phase 4（远期）: CC + API + TG + Desktop
-  └─ Desktop 的 MCP 或 extension inject recall.md
-  └─ Desktop 会话也写入统一 event store
-  └─ 真正的"从 ISP SSH 到 Local，打开 Desktop"
 ```
+
+> Desktop 渠道评估后放弃: ROI 过低，注入方式受限，不比 CC + TG + API 覆盖多场景。
 
 ---
 
@@ -410,27 +415,19 @@ CC session 和 API call 可以交替发生。fiam 不关心来源，只关心内
 
 ### 反向 SSH 的稳定性
 当前 tunnel 设计依赖 Local 端持续运行。如果 Zephyr 关机或网络断开，AI 去不了 Local。
-- 探测机制：AI 尝试 SSH 前 check port 是否通
+- 探测机制：AI 尝试 SSH 前 check port 是否通（awareness.py 已实现）
 - 备选：AI 知道 Local 不可达，降级为发 TG 消息
+- ISP 不与 Local 直接配对，只通过 vmiss 跳转
 
 ### CC 风控
 不让 AI 自动操控 CC 发消息——TG Bot API 是安全的，CC 终端自动化有风控风险。
 postman 用 Bot API 直接发送，不经过 CC。
 
-### Desktop 怎么搞
-最酷也最难。桌面端 Claude 如何接入 fiam？
-- 如果是 Claude Desktop App：可能 MCP server 注入 recall.md
-- 如果是浏览器 claude.ai：userscript 注入？风险较高
-- 最可靠：AI 通过 SSH 操作 Local，在 Local 的终端环境中使用 Desktop 能力
-
 ### AI 的本地家目录
-AI 在 Local 也需要一个目录（`C:\Users\Fiet\` 或 `F:\home\`）：
-- 可以通过 SSH 操作
+AI 在 Local 也需要一个目录（`F:\home\`）：
+- 可以通过 SSH（经 vmiss）操作
 - 存放 Local 特有的工具和数据
 - 完全权限
-
-### Zephyr 本地节点 IP
-需要确认本地电脑在 tunnel 中的可达方式。当前通过反向隧道 `127.0.0.1:2222`。
 
 ---
 

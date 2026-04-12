@@ -39,7 +39,7 @@ git_enabled = true
 [communication]
 tg_bot_token_env = "FIAM_TG_BOT_TOKEN"   # env var name (never put token directly in config)
 tg_chat_id = ""                            # your Telegram user/chat ID
-email_from = "Fiet.C@proton.me"            # AI's email address
-email_to = "z.calloway43@gmail.com"        # User's email address
-email_smtp_host = ""                       # SMTP server (e.g. 127.0.0.1 for ProtonMail Bridge)
-email_smtp_port = 1025
+email_from = ""                             # AI's email address (e.g. fiet@fiet.cc)
+email_to = ""                               # User's email address
+email_smtp_host = ""                        # SMTP server
+email_smtp_port = 587
