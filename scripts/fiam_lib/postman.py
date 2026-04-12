@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import json
 import os
+import imaplib
+import email as email_mod
 import shutil
 import smtplib
 import time
@@ -156,3 +158,103 @@ def run_postman_loop(config: FiamConfig, poll_seconds: int = 15) -> None:
         except Exception as e:
             print(f"[postman] Error: {e}")
         time.sleep(poll_seconds)
+
+
+# ------------------------------------------------------------------
+# IMAP inbox fetch — pull new emails into home/inbox/
+# ------------------------------------------------------------------
+
+def fetch_inbox(
+    config: FiamConfig,
+    *,
+    imap_host: str = "imappro.zoho.com",
+    imap_port: int = 993,
+    max_fetch: int = 10,
+) -> int:
+    """Fetch unread emails via IMAP and save as Markdown in inbox/.
+
+    Each email becomes one .md file with YAML frontmatter:
+        ---
+        from: sender@example.com
+        subject: ...
+        date: ISO timestamp
+        via: email
+        ---
+        Body text
+
+    Returns count of new messages saved.
+    """
+    user = config.email_from
+    password = os.environ.get("FIAM_EMAIL_PASSWORD", "")
+    if not user or not password:
+        print("[postman] IMAP not configured (email_from or FIAM_EMAIL_PASSWORD missing)")
+        return 0
+
+    inbox_dir = config.inbox_dir
+    inbox_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        conn = imaplib.IMAP4_SSL(imap_host, imap_port)
+        conn.login(user, password)
+        conn.select("INBOX")
+
+        # Search for UNSEEN messages
+        status, data = conn.search(None, "UNSEEN")
+        if status != "OK" or not data[0]:
+            conn.logout()
+            return 0
+
+        msg_ids = data[0].split()[-max_fetch:]  # latest N
+        count = 0
+
+        for mid in msg_ids:
+            status, msg_data = conn.fetch(mid, "(RFC822)")
+            if status != "OK":
+                continue
+
+            raw = msg_data[0][1]
+            msg = email_mod.message_from_bytes(raw)
+
+            sender = msg.get("From", "unknown")
+            subject = msg.get("Subject", "(no subject)")
+            date_str = msg.get("Date", "")
+
+            # Extract plain text body
+            body = ""
+            if msg.is_multipart():
+                for part in msg.walk():
+                    if part.get_content_type() == "text/plain":
+                        payload = part.get_payload(decode=True)
+                        if payload:
+                            charset = part.get_content_charset() or "utf-8"
+                            body = payload.decode(charset, errors="replace")
+                        break
+            else:
+                payload = msg.get_payload(decode=True)
+                if payload:
+                    charset = msg.get_content_charset() or "utf-8"
+                    body = payload.decode(charset, errors="replace")
+
+            # Write as Markdown
+            ts = datetime.now().strftime("%m%d_%H%M%S")
+            fname = f"email_{ts}_{count:02d}.md"
+            md = (
+                f"---\n"
+                f"from: {sender}\n"
+                f"subject: {subject}\n"
+                f"date: {date_str}\n"
+                f"via: email\n"
+                f"---\n\n"
+                f"{body.strip()}\n"
+            )
+            (inbox_dir / fname).write_text(md, encoding="utf-8")
+            count += 1
+
+        conn.logout()
+        if count:
+            print(f"[postman] Fetched {count} new email(s) → {inbox_dir}")
+        return count
+
+    except Exception as e:
+        print(f"[postman] IMAP fetch failed: {e}")
+        return 0

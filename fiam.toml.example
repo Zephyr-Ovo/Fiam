@@ -41,5 +41,5 @@ tg_bot_token_env = "FIAM_TG_BOT_TOKEN"   # env var name (never put token directl
 tg_chat_id = ""                            # your Telegram user/chat ID
 email_from = ""                             # AI's email address (e.g. fiet@fiet.cc)
 email_to = ""                               # User's email address
-email_smtp_host = ""                        # SMTP server
-email_smtp_port = 587
+email_smtp_host = "smtppro.zoho.com"        # SMTP server (Zoho custom domain)
+email_smtp_port = 587                       # 587+TLS or 465+SSL
