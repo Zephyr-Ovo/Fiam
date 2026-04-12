@@ -37,8 +37,11 @@ ENV/
 .cache/
 *.npy
 
-# fiam runtime (anchored to repo root — does NOT affect src/fiam/store/)
-/store/
+# fiam runtime
+/store/embeddings/
+/store/cursor.json
+/store/graph/
+/store/.fiam.pid
 /logs/
 self/
 *.toml.bak

@@ -1,6 +1,7 @@
 #!/usr/bin/env pwsh
-# fiam-tunnel.ps1 — Persistent reverse SSH tunnel: Local → Relay → ISP
-# Allows AI on ISP to reach Local via ISP:2222
+# fiam-tunnel.ps1 — Persistent SSH tunnel: Local → Relay → ISP
+# Forward-only: Local reaches ISP services, ISP reaches DO embedding API.
+# NO reverse tunnel — ISP cannot SSH into Local (security decision).
 #
 # Topology:
 #   Local (Zephyr) → 38.47.118.220 (Relay, LA) → 99.173.22.93 (ISP)
@@ -10,13 +11,10 @@
 #   $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"F:\fiam-code\scripts\fiam-tunnel.ps1`""
 #   $trigger = New-ScheduledTaskTrigger -AtLogon -User $env:USERNAME
 #   $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
-#   Register-ScheduledTask -TaskName "FiamTunnel" -Action $action -Trigger $trigger -Settings $settings -Description "Reverse SSH tunnel to ISP for fiam AI access"
+#   Register-ScheduledTask -TaskName "FiamTunnel" -Action $action -Trigger $trigger -Settings $settings -Description "SSH tunnel to ISP for fiam"
 #
 # The tunnel maps:
-#   Local :22 → ISP :2222 (reverse, via Relay jump)
 #   ISP :8819 → DO :8819 (forward, embedding API — AI on ISP reaches DO)
-#
-# From ISP, AI runs: ssh -p 2222 Aurora@127.0.0.1
 
 $RELAY = "relay"          # ~/.ssh/config: root@38.47.118.220:2222
 $ISP = "isp"              # ~/.ssh/config: root@99.173.22.93 (via relay jump)
@@ -27,7 +25,6 @@ while ($true) {
     Write-Host "[fiam-tunnel] $(Get-Date -Format 'HH:mm:ss') Establishing tunnel (Local → Relay → ISP)..."
     
     # -J $RELAY              → Jump through Relay (LA), no operations there
-    # -R 2222:127.0.0.1:22   → AI on ISP can SSH into Local via ISP:2222
     # -L 8819:${DO_EMBED}:8819 → Local can reach DO's embedding API via localhost:8819
     # -N                     → No remote command
     # -o ServerAliveInterval → Keep alive every 30s
@@ -35,7 +32,6 @@ while ($true) {
     # -o ExitOnForwardFailure → Don't silently fail if port already bound
     ssh -N `
         -J $RELAY `
-        -R 2222:127.0.0.1:22 `
         -L 8819:${DO_EMBED}:8819 `
         -o ServerAliveInterval=30 `
         -o ServerAliveCountMax=3 `
