@@ -119,7 +119,7 @@ def _env_map() -> list[str]:
         lines.append(f"  - [当前] 未知节点 ({node})")
 
     lines.append("  - Telegram — outbox/ via:telegram 发送 | inbox/ 接收")
-    lines.append("  - Email — outbox/ via:email 发送 (Fiet.C@proton.me)")
+    lines.append("  - Email — outbox/ via:email 发送 (fiet@fiet.cc via Zoho)")
 
     return lines
 

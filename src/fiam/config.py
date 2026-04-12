@@ -343,7 +343,7 @@ class FiamConfig:
             "[features]",
             f"git_enabled = {str(self.git_enabled).lower()}",
             "",
-            "[communication]",
+            "[comms]",
             f'tg_bot_token_env = "{self.tg_bot_token_env}"',
             f'tg_chat_id = "{self.tg_chat_id}"',
             f'email_from = "{self.email_from}"',
@@ -368,7 +368,7 @@ class FiamConfig:
         narrative = raw.get("narrative", {})
         daemon = raw.get("daemon", {})
         features = raw.get("features", {})
-        comm = raw.get("communication", {})
+        comm = raw.get("communication", raw.get("comms", {}))
 
         return cls(
             home_path=home_path,

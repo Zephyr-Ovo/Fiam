@@ -64,17 +64,22 @@ def _email_send(
     smtp_host: str, smtp_port: int,
     from_addr: str, to_addr: str,
     subject: str, body: str,
+    password: str = "",
 ) -> bool:
-    """Send a plain-text email via SMTP. Returns True on success."""
+    """Send a plain-text email via SMTP with STARTTLS. Returns True on success."""
     msg = MIMEText(body, "plain", "utf-8")
     msg["From"] = from_addr
     msg["To"] = to_addr
     msg["Subject"] = subject
     try:
         with smtplib.SMTP(smtp_host, smtp_port) as s:
+            s.starttls()
+            if password:
+                s.login(from_addr, password)
             s.send_message(msg)
         return True
-    except Exception:
+    except Exception as e:
+        print(f"[postman] Email send failed: {e}")
         return False
 
 
@@ -102,12 +107,14 @@ def dispatch_file(path: Path, config: FiamConfig) -> bool:
         subject = str(post.metadata.get("subject", f"From {config.ai_name}"))
         from_addr = config.email_from
         to_addr = config.email_to
+        password = os.environ.get("FIAM_EMAIL_PASSWORD", "")
         if not from_addr or not to_addr or not config.email_smtp_host:
             print(f"[postman] Email not configured, skipping {path.name}")
             return False
         return _email_send(
             config.email_smtp_host, config.email_smtp_port,
             from_addr, to_addr, subject, body,
+            password=password,
         )
 
     print(f"[postman] Unknown channel: {via}")
