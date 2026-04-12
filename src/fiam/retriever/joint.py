@@ -1,10 +1,10 @@
 """
-Joint retriever — semantic + retention + temporal linking + integrated MMR.
+Joint retriever — semantic + retention + graph activation + integrated MMR.
 
-Scoring formula per event:
-  base  = w_sem  * cosine(query_vec, event_vec)
-        + w_rec  * retention(event)              # Ebbinghaus curve
-        + w_link * temporal_bonus(event)          # co-occurrence boost
+Scoring formula per event (4-factor):
+  base  = w_sem   * cosine(query_vec, event_vec)
+        + w_rec   * retention(event)              # Ebbinghaus curve
+        + w_graph * graph_activation(event)       # spreading activation
 
 Selection uses greedy MMR (Maximal Marginal Relevance):
   mmr(e) = λ * base(e)  −  (1−λ) * max_sim(e, selected)
@@ -21,7 +21,7 @@ import numpy as np
 from fiam.config import FiamConfig
 from fiam.retriever.decay import compute_retention, diversity_penalty, record_access
 from fiam.retriever.embedder import Embedder
-from fiam.retriever.temporal import temporal_boost
+from fiam.retriever.graph import MemoryGraph
 from fiam.store.formats import EventRecord
 from fiam.store.home import HomeStore
 
@@ -66,13 +66,13 @@ def search(
     # --- Score each event ---
     w_sem = config.semantic_weight
     w_rec = config.recency_weight
-    w_link = config.temporal_link_weight
+    w_graph = config.temporal_link_weight  # reused weight slot for graph activation
 
     if query_vec is None:
         w_rec = w_rec + w_sem
         w_sem = 0.0
 
-    # --- First pass: base scores + cache vectors ---
+    # --- First pass: base scores (semantic + retention) + cache vectors ---
     candidates: list[tuple[EventRecord, float, np.ndarray | None]] = []
 
     for event in eligible:
@@ -92,14 +92,25 @@ def search(
         penalty = diversity_penalty(event, now, recent_days=3)
         candidates.append((event, base * penalty, event_vec))
 
-    # --- Second pass: temporal link boost ---
-    candidates.sort(key=lambda t: t[1], reverse=True)
-    seed_ids = {e.event_id for e, _, _ in candidates[:effective_top_k * 2]}
+    # --- Second pass: graph-based spreading activation ---
+    # Build graph from all events (cheap at <10k nodes)
+    graph = MemoryGraph()
+    graph.build(all_events, now=now)
 
+    # Seed = top candidates by base score
+    candidates.sort(key=lambda t: t[1], reverse=True)
+    seed_n = min(effective_top_k * 2, len(candidates))
+    seed_ids = [e.event_id for e, _, _ in candidates[:seed_n]]
+    seed_scores = [s for _, s, _ in candidates[:seed_n]]
+
+    # Spread activation through the graph
+    activation = graph.spread(seed_ids, seed_scores) if graph.node_count > 0 else {}
+
+    # Merge: base + graph activation
     scored: list[tuple[EventRecord, float, np.ndarray | None]] = []
     for event, base_score, vec in candidates:
-        link_bonus = temporal_boost(event, seed_ids)
-        final = base_score + w_link * link_bonus
+        graph_score = activation.get(event.event_id, 0.0)
+        final = base_score + w_graph * graph_score
         scored.append((event, final, vec))
 
     scored.sort(key=lambda t: t[1], reverse=True)
@@ -118,9 +129,19 @@ def search(
     if config.debug_mode:
         print(f"[joint] {len(all_events)} total → {len(eligible)} eligible "
               f"→ {len(selected)} selected (top_k={effective_top_k}, λ={_MMR_LAMBDA})")
+        print(f"[joint] graph: {graph.node_count} nodes, {graph.edge_count} edges")
         for ev in selected:
+            g_score = activation.get(ev.event_id, 0.0)
             print(f"  {ev.filename}  str={ev.strength:.2f}  "
-                  f"acc={ev.access_count}  a={ev.arousal:.2f}")
+                  f"acc={ev.access_count}  a={ev.arousal:.2f}  g={g_score:.3f}")
+        # Dump interactive HTML graph for inspection
+        try:
+            from fiam.retriever.graph_viz import render_html
+            viz_path = config.logs_dir / "graph_debug.html"
+            render_html(graph, viz_path)
+            print(f"[joint] graph viz → {viz_path}")
+        except Exception as e:
+            print(f"[joint] graph viz failed: {e}")
 
     return selected
 
