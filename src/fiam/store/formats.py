@@ -53,9 +53,11 @@ class EventRecord:
     # Storage
     embedding: str = ""                # relative path to .npy, e.g. "embeddings/ev_....npy"
 
-    # Graph-readiness (Phase 2)
+    # Graph links — each link is {"id": str, "type": str, "weight": float}
+    #   type: "temporal" | "semantic" | "causal"
+    #   weight: probability [0.0, 1.0]
     tags: list[str] = field(default_factory=list)
-    links: list[str] = field(default_factory=list)
+    links: list[dict] = field(default_factory=list)
 
     # Embedding metadata
     embedding_dim: int = 0             # 0 = unknown/legacy (will be set on embed)
@@ -95,6 +97,17 @@ class EventRecord:
         if self.user_weight != 1.0:
             d["user_weight"] = round(float(self.user_weight), 4)
         return d
+
+    @staticmethod
+    def normalise_links(raw: list) -> list[dict]:
+        """Migrate legacy bare-string links to {id, type, weight} dicts."""
+        out: list[dict] = []
+        for item in raw:
+            if isinstance(item, dict):
+                out.append(item)
+            elif isinstance(item, str):
+                out.append({"id": item, "type": "temporal", "weight": 0.5})
+        return out
 
 
 # ------------------------------------------------------------------
@@ -184,7 +197,7 @@ def parse_event(
         user_weight=float(frontmatter.get("user_weight", 1.0)),
         embedding=embedding_path,
         tags=list(frontmatter.get("tags") or []),
-        links=list(frontmatter.get("links") or []),
+        links=EventRecord.normalise_links(list(frontmatter.get("links") or [])),
         embedding_dim=int(frontmatter.get("embedding_dim", 0)),
         dominant_label=str(frontmatter.get("dominant_label", "")),
         body=body.strip(),
