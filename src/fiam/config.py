@@ -122,7 +122,7 @@ class FiamConfig:
     top_k: int = 5                      # max events retrieved per pre-session
     diversity_threshold: float = 0.88   # cosine similarity ceiling for dedup
     min_event_age_hours: int = 6        # skip events newer than this
-    temporal_window_hours: float = 4.0  # linking window for causal co-occurrence
+    temporal_window_hours: float = 4.0  # legacy; kept for toml compat (unused)
 
     # ------------------------------------------------------------------
     # Event extraction parameters

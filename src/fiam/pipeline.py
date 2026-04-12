@@ -7,12 +7,13 @@ pre_session:
 post_session:
   classifier.analyze_event() → extractor.event.segment() →
   [for each event: embedder.embed_and_save(), store.write()] →
-  report.generate()
+  report.generate() → HOLD detection → WAKE extraction
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,7 @@ from fiam.logging import report
 from fiam.retriever import joint as joint_retriever
 from fiam.retriever.embedder import Embedder
 from fiam.retriever.temporal import link_new_events
+from fiam.retriever.semantic_link import link_semantic
 from fiam.store.formats import EventRecord
 from fiam.personality.reader import read_personality
 from fiam.store.home import HomeStore
@@ -297,6 +299,20 @@ def post_session(
             print(f"[post_session] Temporal links: {link_count} links across "
                   f"{len(written_events)} new + {len(modified)} existing events")
 
+    # Step 4b: Semantic similarity linking
+    if written_events:
+        sem_modified = link_semantic(written_events, all_events, config)
+        for ev in written_events:
+            store.update_metadata(ev)
+        for ev in sem_modified:
+            store.update_metadata(ev)
+        if config.debug_mode:
+            sem_count = sum(
+                1 for e in written_events
+                for l in e.links if l.get("type") == "semantic"
+            )
+            print(f"[post_session] Semantic links: {sem_count} new semantic links")
+
     # Step 5: Generate report
 
     with trace.step("report") as rec:
@@ -317,13 +333,77 @@ def post_session(
         report_text = report_path.read_text(encoding="utf-8")
         print(report_text)
 
+    # Step 6: HOLD detection — AI self-censorship for continued thinking
+    hold_count = _detect_and_schedule_holds(config, conversation)
+
     return {
         "session_id": trace.session_id,
         "events_written": len(written_events),
         "report_path": str(report_path),
         "signals": signals.to_dict(),
         "wake_tags": _extract_and_schedule_wakes(config, conversation),
+        "hold_count": hold_count,
     }
+
+
+# ------------------------------------------------------------------
+# HOLD detection
+# ------------------------------------------------------------------
+
+_HOLD_RE = re.compile(r"<<HOLD:(?P<reason>[^>]+)>>", re.IGNORECASE)
+
+
+def _detect_and_schedule_holds(
+    config: FiamConfig, conversation: list[dict[str, str]],
+) -> int:
+    """Detect <<HOLD:reason>> tags in assistant output.
+
+    For each HOLD:
+      1. Save the draft to home/self/drafts/
+      2. Schedule a private WAKE 2 minutes later for re-entry
+    """
+    asst_text = "\n".join(
+        t["text"] for t in conversation if t.get("role") == "assistant"
+    )
+    holds = list(_HOLD_RE.finditer(asst_text))
+    if not holds:
+        return 0
+
+    drafts_dir = config.self_dir / "drafts"
+    drafts_dir.mkdir(parents=True, exist_ok=True)
+
+    now = datetime.now(timezone.utc)
+    count = 0
+
+    for m in holds:
+        reason = m.group("reason").strip()
+        draft_id = now.strftime("%m%d_%H%M%S")
+        draft_path = drafts_dir / f"hold_{draft_id}.md"
+        draft_path.write_text(
+            f"---\nreason: {reason}\ntime: {now.isoformat()}\n---\n\n{asst_text}",
+            encoding="utf-8",
+        )
+
+        # Schedule a private WAKE to re-enter after a short pause
+        wake_time = now + timedelta(minutes=2)
+        try:
+            import sys
+            sys.path.insert(0, str(config.code_path / "scripts"))
+            from fiam_lib.scheduler import append_to_schedule
+            append_to_schedule([{
+                "wake_at": wake_time.isoformat(),
+                "type": "private",
+                "reason": f"HOLD continuation: {reason}",
+                "created": now.isoformat(),
+            }], config)
+        except Exception:
+            pass
+        count += 1
+
+    if config.debug_mode:
+        print(f"[post_session] HOLD: {count} hold(s) detected, drafts saved")
+
+    return count
 
 
 def _extract_and_schedule_wakes(
