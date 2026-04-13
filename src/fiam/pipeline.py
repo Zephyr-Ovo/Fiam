@@ -146,8 +146,12 @@ def post_session(
     asst_texts = [t["text"] for t in conversation if t.get("role") == "assistant"]
     all_classify_texts = user_texts + asst_texts
 
+    import time as _time
+    _t0 = _time.time()
     if all_classify_texts:
+        print(f"[pipeline] emotion batch: {len(all_classify_texts)} texts", flush=True)
         all_emotions = classifier.analyze_batch(all_classify_texts)
+        print(f"[pipeline] emotion done in {_time.time()-_t0:.1f}s", flush=True)
         user_emotions = all_emotions[:len(user_texts)]
         asst_emotions = all_emotions[len(user_texts):]
     else:
@@ -173,6 +177,8 @@ def post_session(
                 if vec.shape[0] == config.embedding_dim:
                     stored_vecs.append(vec)
 
+    _t1 = _time.time()
+    print(f"[pipeline] extracting from {len(conversation)} turns, {len(stored_vecs)} stored vecs", flush=True)
     with trace.step("extractor", inputs={"turn_count": len(conversation)}) as rec:
         extracted = event_extractor.segment(
             conversation, classifier,
@@ -184,6 +190,7 @@ def post_session(
             debug=config.debug_mode,
         )
         rec["outputs"] = {"event_count": len(extracted)}
+    print(f"[pipeline] extraction done in {_time.time()-_t1:.1f}s → {len(extracted)} events", flush=True)
 
     if config.debug_mode:
         if extracted:
@@ -227,6 +234,8 @@ def post_session(
     # Step 3: For each event — embed, save, write to store
     written_events: list[EventRecord] = []
     all_embedding_stats: list[dict[str, Any]] = []
+    _t2 = _time.time()
+    print(f"[pipeline] embedding+storing {len(extracted)} events", flush=True)
 
     for ext_event in extracted:
         event_id = store.new_event_id()
@@ -294,6 +303,7 @@ def post_session(
             print(f"  embedding: shape={stats['shape']} L2={stats['l2_norm']:.6f}")
 
     # Step 4: Temporal co-occurrence linking → graph.jsonl
+    print(f"[pipeline] embed+store done in {_time.time()-_t2:.1f}s", flush=True)
     all_events = store.all_events()
     if written_events:
         from fiam.store.graph_store import GraphStore
@@ -313,6 +323,8 @@ def post_session(
 
     # Step 4c: LLM edge typing + event naming (mandatory)
     if written_events:
+        _t3 = _time.time()
+        print(f"[pipeline] DS naming {len(written_events)} events", flush=True)
         if not config.graph_edge_provider:
             raise RuntimeError(
                 "graph_edge_provider is not configured. "
@@ -340,6 +352,7 @@ def post_session(
             if config.debug_mode:
                 print(f"[post_session] LLM edges: {len(llm_edges)}, "
                       f"renames: {name_map}")
+        print(f"[pipeline] DS naming done in {_time.time()-_t3:.1f}s", flush=True)
 
     # Step 5: Generate report
 
