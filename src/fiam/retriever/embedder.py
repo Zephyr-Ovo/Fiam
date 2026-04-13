@@ -54,14 +54,19 @@ class Embedder:
         import json
 
         url = self.config.embedding_remote_url.rstrip("/") + "/embed"
-        payload = json.dumps({"texts": texts}).encode()
-        req = urllib.request.Request(
-            url, data=payload,
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            body = json.loads(resp.read())
-        return np.array(body["vectors"], dtype=np.float32)
+        # Batch in chunks of 8 to avoid timeouts on large payloads
+        all_vecs = []
+        for i in range(0, len(texts), 8):
+            chunk = texts[i : i + 8]
+            payload = json.dumps({"texts": chunk}).encode()
+            req = urllib.request.Request(
+                url, data=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                body = json.loads(resp.read())
+            all_vecs.extend(body["vectors"])
+        return np.array(all_vecs, dtype=np.float32)
 
     # ------------------------------------------------------------------
     # Public API (auto-dispatch by config.embedding_backend)
