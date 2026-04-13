@@ -22,46 +22,18 @@ from fiam.store.graph_store import Edge
 
 
 # ------------------------------------------------------------------
-# Prompts
+# Prompts — loaded from src/fiam/prompts/edge_typing.txt
 # ------------------------------------------------------------------
 
-EDGE_AND_NAME_PROMPT = """\
-You are a memory graph analyst. Given a set of events from a person's life:
-1. Decide which pairs have meaningful relationships and classify the edge type.
-2. Suggest a short, memorable name for each event (replacing the numeric ID).
+_PROMPT_CACHE: str | None = None
 
-## Edge types
-- **cause**: A caused or led to B (directional: A → B)
-- **remind**: A reminds of B or they share a pattern (bidirectional)
-- **contrast**: A and B represent opposing experiences or changes
-- **elaboration**: B adds detail or continues A's topic
 
-## Naming rules
-- 2-5 words, English preferred, Chinese OK if it captures nuance better
-- Descriptive and distinctive (not generic like "chat" or "discussion")
-- No spaces — use snake_case (e.g. "rain_then_fever", "ssh_yak_shaving")
-- Must be filesystem-safe (no special chars except underscore)
-
-## Rules for edges
-- Only create edges for pairs with GENUINE relationships. Most pairs should have NONE.
-- Each edge needs a one-sentence reason (in the same language as the events).
-
-## Events
-{events_block}
-
-## Output format (JSON only, no other text)
-```json
-{{
-  "names": {{
-    "ev_id_1": "suggested_name",
-    "ev_id_2": "suggested_name"
-  }},
-  "edges": [
-    {{"from": "ev_id_1", "to": "ev_id_2", "type": "cause", "reason": "..."}}
-  ]
-}}
-```
-"""
+def _get_prompt_template() -> str:
+    global _PROMPT_CACHE
+    if _PROMPT_CACHE is None:
+        from fiam.prompts import load
+        _PROMPT_CACHE = load("edge_typing")
+    return _PROMPT_CACHE
 
 
 # ------------------------------------------------------------------
@@ -162,7 +134,7 @@ def type_edges_and_name(
         return [], {}
 
     events_block = _format_events_block(all_ev)
-    prompt = EDGE_AND_NAME_PROMPT.format(events_block=events_block)
+    prompt = _get_prompt_template().format(events_block=events_block)
 
     try:
         result = _call_llm(prompt, config)

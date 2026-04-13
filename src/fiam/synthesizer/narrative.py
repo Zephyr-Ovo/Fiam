@@ -135,31 +135,27 @@ def format_fragments(materials: list[dict[str, Any]], config: FiamConfig) -> str
 # LLM rewrite (optional — only when config.narrative_llm_enabled)
 # ------------------------------------------------------------------
 
-_SYSTEM_PROMPT_BASE = """你在生成第一人称回忆片段。
+_SYSTEM_PROMPT_BASE: str | None = None
 
-不要：
-- "用户"、"根据"、"记录"、"数据"
-- "我应该"、"我需要"、"我会"
-- meta视角（"作为AI"、"我的记忆系统"）
-- 形容词堆叠（"深深的"、"强烈的"、"充满XX的"）
 
-要：
-- 第一人称："我"、"他"
-- 像在回忆，不是在汇报
-- 直接引用原话（如果材料里有引号）
-- 可以模糊、不确定（"好像"、"记得"）
-- 自然的时间感（"那次"、"后来"）"""
+def _get_system_prompt_base() -> str:
+    global _SYSTEM_PROMPT_BASE
+    if _SYSTEM_PROMPT_BASE is None:
+        from fiam.prompts import load
+        _SYSTEM_PROMPT_BASE = load("narrative_recall")
+    return _SYSTEM_PROMPT_BASE
 
 
 def _build_system_prompt(config: FiamConfig) -> str:
+    base = _get_system_prompt_base()
     identity_parts = []
     if config.ai_name:
         identity_parts.append(f"你是{config.ai_name}")
     if config.user_name:
         identity_parts.append(f"正在回忆与{config.user_name}的对话")
     if identity_parts:
-        return "，".join(identity_parts) + "。\n\n" + _SYSTEM_PROMPT_BASE
-    return _SYSTEM_PROMPT_BASE
+        return "，".join(identity_parts) + "。\n\n" + base
+    return base
 
 
 def _cache_key(materials: list[dict[str, Any]]) -> str:

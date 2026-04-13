@@ -388,11 +388,15 @@ class EmotionClassifier:
 
 # ── API-based emotion classifier ────────────────────────────────────
 
-_API_SYSTEM_PROMPT = """\
-You are an emotion annotator. Given a text snippet, output exactly one JSON object:
-{"valence": float, "arousal": float, "dominant_label": string}
-valence in [-1.0, 1.0], arousal in [0.0, 1.0], dominant_label is a single English emotion word.
-No explanation, no markdown, just JSON."""
+_EMOTION_PROMPT_CACHE: str | None = None
+
+
+def _load_emotion_prompt() -> str:
+    global _EMOTION_PROMPT_CACHE
+    if _EMOTION_PROMPT_CACHE is None:
+        from fiam.prompts import load
+        _EMOTION_PROMPT_CACHE = load("emotion_api")
+    return _EMOTION_PROMPT_CACHE
 
 
 class ApiEmotionClassifier:
@@ -414,7 +418,7 @@ class ApiEmotionClassifier:
 
         try:
             from fiam.synthesizer.narrative import _call_llm
-            raw = _call_llm(self.config, _API_SYSTEM_PROMPT, user_prompt)
+            raw = _call_llm(self.config, _load_emotion_prompt(), user_prompt)
         except Exception:
             heuristic = _text_arousal_signal(text)
             return EmotionResult(valence=0.0, arousal=heuristic, confidence=0.0)
