@@ -512,7 +512,26 @@ class RemoteEmotionClassifier:
         return self._call_batch([text])[0]
 
     def analyze_batch(self, texts: list[str], batch_size: int = 32) -> list[EmotionResult]:
-        return self._call_batch(texts)
+        results = self._call_batch(texts)
+        # Tell server to unload emotion models — free RAM for embed phase
+        self._unload_remote()
+        return results
+
+    def _unload_remote(self) -> None:
+        """Ask the remote server to unload emotion models (best-effort)."""
+        import json as _json
+        import urllib.request
+
+        url = self.config.emotion_remote_url.rstrip("/") + "/unload_emotion"
+        try:
+            req = urllib.request.Request(
+                url, data=b"", method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                _json.loads(resp.read())
+        except Exception:
+            pass  # best-effort, don't fail the pipeline
 
     def analyze_event(self, user_text: str, ai_text: str) -> EmotionResult:
         user_emotion = self.analyze(user_text)

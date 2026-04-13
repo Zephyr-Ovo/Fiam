@@ -63,7 +63,7 @@ class Embedder:
                 url, data=payload,
                 headers={"Content-Type": "application/json"},
             )
-            with urllib.request.urlopen(req, timeout=120) as resp:
+            with urllib.request.urlopen(req, timeout=300) as resp:
                 body = json.loads(resp.read())
             all_vecs.extend(body["vectors"])
         return np.array(all_vecs, dtype=np.float32)

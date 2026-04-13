@@ -331,6 +331,25 @@ def health():
     }
 
 
+@app.post("/unload_emotion")
+def unload_emotion():
+    """Unload emotion models to free RAM for embedding.
+
+    Call this after emotion_batch processing is done for a session.
+    Models will be lazy-loaded again on next emotion request.
+    """
+    import gc
+    import torch
+
+    unloaded = list(_emotion_pipes.keys())
+    _emotion_pipes.clear()
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    print(f"  Emotion models unloaded: {unloaded}")
+    return {"unloaded": unloaded}
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
