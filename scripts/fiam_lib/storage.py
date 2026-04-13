@@ -152,9 +152,9 @@ def cmd_scan(args: argparse.Namespace) -> None:
             n = r["events_written"]
             total_events += n
             print(f" → {n} events")
+            cursor[jkey] = {"byte_offset": new_offset, "mtime": mtime}
         except Exception as e:
             print(f" → error: {e}")
-        cursor[jkey] = {"byte_offset": new_offset, "mtime": mtime}
 
     _save_cursor(config.code_path, cursor)
     print(f"\n  Done. {total_events} events stored.")
