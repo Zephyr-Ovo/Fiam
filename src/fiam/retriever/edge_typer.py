@@ -56,7 +56,7 @@ def _call_llm(prompt: str, config: FiamConfig) -> dict[str, Any]:
         "model": config.graph_edge_model,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.3,
-        "max_tokens": 2048,
+        "max_tokens": 4096,
     }).encode()
 
     req = urllib.request.Request(
@@ -65,7 +65,7 @@ def _call_llm(prompt: str, config: FiamConfig) -> dict[str, Any]:
         headers=headers,
     )
 
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with urllib.request.urlopen(req, timeout=120) as resp:
         data = json.loads(resp.read().decode())
 
     text = data["choices"][0]["message"]["content"].strip()
