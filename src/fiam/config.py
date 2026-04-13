@@ -145,6 +145,14 @@ class FiamConfig:
     event_id_prefix: str = "ev"
 
     # ------------------------------------------------------------------
+    # Graph edge typing (LLM-based edge classification + event naming)
+    # ------------------------------------------------------------------
+    graph_edge_provider: str = ""      # "deepseek" | "openai" | "" (disabled)
+    graph_edge_model: str = "deepseek-chat"
+    graph_edge_base_url: str = "https://api.deepseek.com"
+    graph_edge_api_key_env: str = "FIAM_GRAPH_API_KEY"
+
+    # ------------------------------------------------------------------
     # Debug
     # ------------------------------------------------------------------
     debug_mode: bool = False
@@ -373,6 +381,7 @@ class FiamConfig:
         daemon = raw.get("daemon", {})
         features = raw.get("features", {})
         comm = raw.get("communication", raw.get("comms", {}))
+        graph = raw.get("graph", {})
 
         return cls(
             home_path=home_path,
@@ -413,6 +422,11 @@ class FiamConfig:
             poll_interval_seconds=daemon.get("poll_interval_seconds", cls.poll_interval_seconds),
             # Features
             git_enabled=features.get("git_enabled", cls.git_enabled),
+            # Graph edge typing
+            graph_edge_provider=graph.get("edge_provider", cls.graph_edge_provider),
+            graph_edge_model=graph.get("edge_model", cls.graph_edge_model),
+            graph_edge_base_url=graph.get("edge_base_url", cls.graph_edge_base_url),
+            graph_edge_api_key_env=graph.get("edge_api_key_env", cls.graph_edge_api_key_env),
             # Communication
             tg_bot_token_env=comm.get("tg_bot_token_env", cls.tg_bot_token_env),
             tg_chat_id=str(comm.get("tg_chat_id", "")),

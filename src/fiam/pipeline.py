@@ -303,6 +303,31 @@ def post_session(
         if config.debug_mode:
             print(f"[post_session] Semantic edges: {len(semantic_edges)} written to graph.jsonl")
 
+    # Step 4c: LLM edge typing + event naming (optional, requires [graph] config)
+    if written_events and config.graph_edge_provider:
+        from fiam.retriever.edge_typer import type_edges_and_name
+        # Include recent events as context for richer edge discovery
+        context = [e for e in all_events if e.event_id not in
+                   {w.event_id for w in written_events}][-6:]
+        with trace.step("edge_typer", inputs={"new": len(written_events),
+                                               "context": len(context)}) as rec:
+            try:
+                llm_edges, name_map = type_edges_and_name(
+                    written_events, config, context_events=context)
+                if llm_edges:
+                    graph_store.append(llm_edges)
+                if name_map:
+                    _rename_events(store, written_events, name_map, config)
+                rec["outputs"] = {"llm_edges": len(llm_edges),
+                                  "renames": len(name_map)}
+                if config.debug_mode:
+                    print(f"[post_session] LLM edges: {len(llm_edges)}, "
+                          f"renames: {name_map}")
+            except Exception as e:
+                rec["outputs"] = {"error": str(e)}
+                if config.debug_mode:
+                    print(f"[post_session] Edge typer failed: {e}")
+
     # Step 5: Generate report
 
     with trace.step("report") as rec:
@@ -334,6 +359,72 @@ def post_session(
         "wake_tags": _extract_and_schedule_wakes(config, conversation),
         "hold_count": hold_count,
     }
+
+
+# ------------------------------------------------------------------
+# Event renaming (LLM-suggested names)
+# ------------------------------------------------------------------
+
+def _rename_events(
+    store: HomeStore,
+    events: list[EventRecord],
+    name_map: dict[str, str],
+    config: FiamConfig,
+) -> None:
+    """Rename event files + embeddings based on LLM-suggested names.
+
+    Also updates graph.jsonl references from old IDs to new names.
+    """
+    from fiam.store.graph_store import GraphStore
+
+    renames: dict[str, str] = {}  # old_id → new_id
+
+    for ev in events:
+        new_name = name_map.get(ev.event_id)
+        if not new_name or new_name == ev.event_id:
+            continue
+
+        old_event_path = config.events_dir / f"{ev.event_id}.md"
+        new_event_path = config.events_dir / f"{new_name}.md"
+
+        # Skip if target already exists (collision)
+        if new_event_path.exists():
+            if config.debug_mode:
+                print(f"[rename] Skip {ev.event_id} → {new_name}: target exists")
+            continue
+
+        # Rename event file
+        if old_event_path.exists():
+            old_event_path.rename(new_event_path)
+
+        # Rename embedding file
+        old_emb = config.embeddings_dir / f"{ev.event_id}.npy"
+        new_emb = config.embeddings_dir / f"{new_name}.npy"
+        if old_emb.exists():
+            old_emb.rename(new_emb)
+            ev.embedding = f"embeddings/{new_name}.npy"
+
+        # Update in-memory record
+        renames[ev.event_id] = new_name
+        ev.filename = new_name
+
+        # Re-write with new filename
+        store.write_event(ev)
+
+    # Update graph.jsonl references
+    if renames:
+        gs = GraphStore(config.graph_jsonl_path)
+        all_edges = gs.load_all()
+        changed = False
+        for edge in all_edges:
+            if edge.src in renames:
+                edge.src = renames[edge.src]
+                changed = True
+            if edge.dst in renames:
+                edge.dst = renames[edge.dst]
+                changed = True
+        if changed:
+            gs.rewrite(all_edges)
 
 
 # ------------------------------------------------------------------
