@@ -111,7 +111,7 @@ def cmd_scan(args: argparse.Namespace) -> None:
     file_mtimes: dict[str, float] = {}
     to_process = []
     for jf in jsonl_files:
-        jkey = str(jf.resolve())
+        jkey = jf.name  # platform-independent: just filename
         try:
             file_mtimes[jkey] = jf.stat().st_mtime
         except FileNotFoundError:
@@ -132,7 +132,7 @@ def cmd_scan(args: argparse.Namespace) -> None:
     total_events = 0
 
     for i, jf in enumerate(to_process, 1):
-        jkey = str(jf.resolve())
+        jkey = jf.name  # platform-independent: just filename
         try:
             turns, new_offset = _parse_jsonl_from(jf, 0)
         except FileNotFoundError:

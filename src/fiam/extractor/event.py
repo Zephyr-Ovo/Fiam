@@ -37,6 +37,7 @@ class ExtractedEvent:
     topic_hint: str = ""    # keywords for topic overlap check
     pair_count: int = 1     # how many pairs were merged into this event
     significance: Significance | None = None
+    timestamp: str = ""     # ISO 8601 from source JSONL (earliest turn in event)
 
 
 # --- Significance thresholds ---
@@ -666,6 +667,13 @@ def _build_event(pairs: list[_Pair]) -> ExtractedEvent:
             if best_sig is None or p.significance.emotional > best_sig.emotional:
                 best_sig = p.significance
 
+    # Extract earliest timestamp from turns (if present from JSONL adapter)
+    earliest_ts = ""
+    for t in all_turns:
+        ts = t.get("timestamp", "")
+        if ts and (not earliest_ts or ts < earliest_ts):
+            earliest_ts = ts
+
     return ExtractedEvent(
         text=text,
         thinking=thinking,
@@ -673,4 +681,5 @@ def _build_event(pairs: list[_Pair]) -> ExtractedEvent:
         topic_hint=hint,
         pair_count=len(pairs),
         significance=best_sig,
+        timestamp=earliest_ts,
     )

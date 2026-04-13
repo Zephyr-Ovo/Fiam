@@ -147,7 +147,7 @@ class FiamConfig:
     # ------------------------------------------------------------------
     # Graph edge typing (LLM-based edge classification + event naming)
     # ------------------------------------------------------------------
-    graph_edge_provider: str = ""      # "deepseek" | "openai" | "" (disabled)
+    graph_edge_provider: str = ""      # "deepseek" | "openai" — REQUIRED for event naming
     graph_edge_model: str = "deepseek-chat"
     graph_edge_base_url: str = "https://api.deepseek.com"
     graph_edge_api_key_env: str = "FIAM_GRAPH_API_KEY"

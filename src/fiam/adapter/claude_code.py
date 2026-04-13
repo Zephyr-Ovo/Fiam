@@ -103,7 +103,11 @@ class ClaudeCodeAdapter:
                     continue
                 text = content.strip()
                 if text and not _is_system_message(text):
-                    user_turns.append((order, {"role": "user", "text": text}))
+                    turn: dict[str, str] = {"role": "user", "text": text}
+                    ts = obj.get("timestamp", "")
+                    if ts:
+                        turn["timestamp"] = ts
+                    user_turns.append((order, turn))
                     order += 1
             elif line_type == "assistant":
                 if not isinstance(content, list):
@@ -128,6 +132,9 @@ class ClaudeCodeAdapter:
                     entry: dict[str, str] = {"role": "assistant", "text": text}
                     if thinking:
                         entry["thinking"] = thinking
+                    ts = obj.get("timestamp", "")
+                    if ts:
+                        entry["timestamp"] = ts
                     key = msg_id or f"_anon_{order}"
                     assistant_by_msg_id[key] = entry
                     assistant_order[key] = order

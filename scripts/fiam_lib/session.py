@@ -44,7 +44,7 @@ def cmd_post(args: argparse.Namespace) -> None:
             sys.exit(1)
 
         force = getattr(args, "force", False)
-        jkey = str(jsonl_path.resolve())
+        jkey = jsonl_path.name  # platform-independent: just filename
         cursor = _load_cursor(config.code_path)
         entry = cursor.get(jkey, {"byte_offset": 0, "mtime": 0.0})
 

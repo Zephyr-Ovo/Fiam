@@ -230,7 +230,15 @@ def post_session(
 
     for ext_event in extracted:
         event_id = store.new_event_id()
-        now = session_time if session_time is not None else datetime.now(timezone.utc)
+
+        # Per-event timestamp from JSONL, fallback to session_time, then now()
+        now: datetime
+        if ext_event.timestamp:
+            now = datetime.fromisoformat(ext_event.timestamp.replace("Z", "+00:00"))
+        elif session_time is not None:
+            now = session_time
+        else:
+            now = datetime.now(timezone.utc)
 
         # Embed (text only — thinking is excluded from retrieval)
         vec = embedder.embed(ext_event.text)
@@ -303,30 +311,35 @@ def post_session(
         if config.debug_mode:
             print(f"[post_session] Semantic edges: {len(semantic_edges)} written to graph.jsonl")
 
-    # Step 4c: LLM edge typing + event naming (optional, requires [graph] config)
-    if written_events and config.graph_edge_provider:
+    # Step 4c: LLM edge typing + event naming (mandatory)
+    if written_events:
+        if not config.graph_edge_provider:
+            raise RuntimeError(
+                "graph_edge_provider is not configured. "
+                "DS naming is mandatory — set [graph] edge_provider in fiam.toml"
+            )
         from fiam.retriever.edge_typer import type_edges_and_name
         # Include recent events as context for richer edge discovery
         context = [e for e in all_events if e.event_id not in
                    {w.event_id for w in written_events}][-6:]
         with trace.step("edge_typer", inputs={"new": len(written_events),
                                                "context": len(context)}) as rec:
-            try:
-                llm_edges, name_map = type_edges_and_name(
-                    written_events, config, context_events=context)
-                if llm_edges:
-                    graph_store.append(llm_edges)
-                if name_map:
-                    _rename_events(store, written_events, name_map, config)
-                rec["outputs"] = {"llm_edges": len(llm_edges),
-                                  "renames": len(name_map)}
-                if config.debug_mode:
-                    print(f"[post_session] LLM edges: {len(llm_edges)}, "
-                          f"renames: {name_map}")
-            except Exception as e:
-                rec["outputs"] = {"error": str(e)}
-                if config.debug_mode:
-                    print(f"[post_session] Edge typer failed: {e}")
+            llm_edges, name_map = type_edges_and_name(
+                written_events, config, context_events=context)
+            if llm_edges:
+                graph_store.append(llm_edges)
+            if name_map:
+                _rename_events(store, written_events, name_map, config)
+            unnamed = [w.event_id for w in written_events
+                       if w.event_id not in name_map]
+            if unnamed:
+                print(f"[post_session] WARNING: DS did not name: {unnamed}")
+            rec["outputs"] = {"llm_edges": len(llm_edges),
+                              "renames": len(name_map),
+                              "unnamed": unnamed}
+            if config.debug_mode:
+                print(f"[post_session] LLM edges: {len(llm_edges)}, "
+                      f"renames: {name_map}")
 
     # Step 5: Generate report
 

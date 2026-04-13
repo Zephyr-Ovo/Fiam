@@ -88,14 +88,32 @@ def _cursor_path(code_path: Path) -> Path:
 
 
 def _load_cursor(code_path: Path) -> dict[str, dict]:
-    """Load {jsonl_abs_path: {"byte_offset": int, "mtime": float}}."""
+    """Load {jsonl_filename: {"byte_offset": int, "mtime": float}}.
+
+    Migrates old-format keys (absolute paths) to filename-only keys
+    for cross-platform compatibility.
+    """
     cp = _cursor_path(code_path)
     if not cp.exists():
         return {}
     try:
-        return json.loads(cp.read_text(encoding="utf-8"))
+        raw = json.loads(cp.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return {}
+    # Migrate: if any key contains / or \, extract just the filename
+    migrated: dict[str, dict] = {}
+    for key, val in raw.items():
+        if "/" in key or "\\" in key:
+            fname = key.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        else:
+            fname = key
+        # Keep the entry with the highest byte_offset if duplicates
+        if fname in migrated:
+            if val.get("byte_offset", 0) > migrated[fname].get("byte_offset", 0):
+                migrated[fname] = val
+        else:
+            migrated[fname] = val
+    return migrated
 
 
 def _save_cursor(code_path: Path, cursor: dict[str, dict]) -> None:

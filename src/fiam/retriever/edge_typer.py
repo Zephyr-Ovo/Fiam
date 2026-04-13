@@ -115,9 +115,10 @@ def type_edges_and_name(
     Returns:
         (edges, names) where edges is a list of Edge objects and
         names is a dict mapping old event_id → suggested name.
+
+    Raises:
+        RuntimeError: If the LLM call fails (DS naming is mandatory).
     """
-    if not config.graph_edge_provider:
-        return [], {}
 
     # Combine new + context events (cap total to avoid token bloat)
     all_ev = list(new_events)
@@ -127,21 +128,13 @@ def type_edges_and_name(
             if ev.event_id not in existing_ids and len(all_ev) < 12:
                 all_ev.append(ev)
 
-    if len(all_ev) < 2:
-        # Need at least 2 events to find relationships
-        if len(all_ev) == 1:
-            return [], {}
+    if not all_ev:
         return [], {}
 
     events_block = _format_events_block(all_ev)
     prompt = _get_prompt_template().format(events_block=events_block)
 
-    try:
-        result = _call_llm(prompt, config)
-    except Exception as e:
-        if config.debug_mode:
-            print(f"[edge_typer] LLM call failed: {e}")
-        return [], {}
+    result = _call_llm(prompt, config)
 
     # Parse edges
     edges: list[Edge] = []
