@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 # --- Config ---
-DS_API_KEY = os.environ.get("FIAM_DS_API_KEY", "")
+DS_API_KEY = os.environ.get("FIAM_GRAPH_API_KEY", "")
 DS_BASE_URL = "https://api.deepseek.com"
 DS_MODEL = "deepseek-chat"
 

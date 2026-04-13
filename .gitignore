@@ -38,10 +38,7 @@ ENV/
 *.npy
 
 # fiam runtime
-/store/embeddings/
-/store/cursor.json
-/store/graph/
-/store/.fiam.pid
+/store/
 /logs/
 self/
 *.toml.bak
