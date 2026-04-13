@@ -19,6 +19,7 @@ from fiam_lib.jsonl import (
     _save_cursor,
     _parse_jsonl_from,
 )
+from fiam_lib.postman import sweep_outbox, fetch_inbox, fetch_tg_inbox
 from fiam_lib.recall import _write_recall
 from fiam_lib.ui import _console, _flow, _ANIM_IDLE, _ANIM_ACTIVE, _animated_sleep
 
@@ -174,7 +175,7 @@ def cmd_start(args: argparse.Namespace) -> None:
         total_turns: list[dict[str, str]] = []
 
         for jf in sorted(jf_list, key=lambda p: p.stat().st_mtime):
-            jkey = str(jf.resolve())
+            jkey = jf.name  # platform-independent: just filename
             entry = cursor.get(jkey, {"byte_offset": 0, "mtime": 0.0})
 
             try:
@@ -211,6 +212,9 @@ def cmd_start(args: argparse.Namespace) -> None:
         _save_cursor(code_path, cursor)
         active = False
 
+    last_inbox_check: float = 0.0
+    inbox_interval = 60  # check TG + email every 60s
+
     while running:
         _animated_sleep(
             poll_interval,
@@ -220,6 +224,26 @@ def cmd_start(args: argparse.Namespace) -> None:
 
         if not running:
             break
+
+        # ── Inbound channels: TG + email polling ──
+        now_ts = time.time()
+        if now_ts - last_inbox_check > inbox_interval:
+            last_inbox_check = now_ts
+            try:
+                n_tg = fetch_tg_inbox(config)
+                n_email = fetch_inbox(config)
+                if n_tg or n_email:
+                    ts = time.strftime("%H:%M")
+                    _console.print(f"  [dim]└[{ts}][/dim] [bold #7eb8f7]✉[/]  inbox +{n_tg + n_email}")
+            except Exception as e:
+                if config.debug_mode:
+                    print(f"  [inbox] Error: {e}", file=sys.stderr)
+
+        # ── Outbox dispatch ──
+        try:
+            sweep_outbox(config)
+        except Exception:
+            pass
 
         # Check JSONL directory for activity
         if not jsonl_dir.is_dir():

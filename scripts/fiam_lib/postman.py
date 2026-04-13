@@ -258,3 +258,92 @@ def fetch_inbox(
     except Exception as e:
         print(f"[postman] IMAP fetch failed: {e}")
         return 0
+
+
+# ------------------------------------------------------------------
+# Telegram inbound — poll for new messages via getUpdates
+# ------------------------------------------------------------------
+
+_tg_update_offset: int = 0  # module-level state for long-polling offset
+
+
+def fetch_tg_inbox(config: FiamConfig, timeout: int = 0) -> int:
+    """Poll Telegram Bot API for new messages and save to inbox/.
+
+    Each message becomes one .md file with YAML frontmatter:
+        ---
+        from: username or first_name
+        via: telegram
+        date: ISO timestamp
+        message_id: 12345
+        ---
+        Message text
+
+    Returns count of new messages saved.
+    """
+    global _tg_update_offset
+
+    token = os.environ.get(config.tg_bot_token_env, "")
+    chat_id = config.tg_chat_id
+    if not token or not chat_id:
+        return 0
+
+    url = f"https://api.telegram.org/bot{token}/getUpdates"
+    params = {"timeout": timeout, "allowed_updates": '["message"]'}
+    if _tg_update_offset:
+        params["offset"] = _tg_update_offset
+
+    query = "&".join(f"{k}={v}" for k, v in params.items())
+    req = urllib.request.Request(f"{url}?{query}", method="GET")
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout + 10) as resp:
+            data = json.loads(resp.read())
+    except (urllib.error.URLError, json.JSONDecodeError):
+        return 0
+
+    if not data.get("ok") or not data.get("result"):
+        return 0
+
+    inbox_dir = config.inbox_dir
+    inbox_dir.mkdir(parents=True, exist_ok=True)
+    count = 0
+
+    for update in data["result"]:
+        _tg_update_offset = update["update_id"] + 1
+
+        msg = update.get("message")
+        if not msg:
+            continue
+
+        # Only accept messages from our chat
+        msg_chat_id = str(msg.get("chat", {}).get("id", ""))
+        if msg_chat_id != str(chat_id):
+            continue
+
+        text = msg.get("text", "")
+        if not text:
+            continue
+
+        sender = msg.get("from", {})
+        from_name = sender.get("username") or sender.get("first_name", "unknown")
+        msg_id = msg.get("message_id", 0)
+        msg_date = datetime.fromtimestamp(msg.get("date", 0)).strftime("%m-%d %H:%M")
+
+        ts = datetime.now().strftime("%m%d_%H%M%S")
+        fname = f"tg_{ts}_{count:02d}.md"
+        md = (
+            f"---\n"
+            f"from: {from_name}\n"
+            f"via: telegram\n"
+            f"date: {msg_date}\n"
+            f"message_id: {msg_id}\n"
+            f"---\n\n"
+            f"{text.strip()}\n"
+        )
+        (inbox_dir / fname).write_text(md, encoding="utf-8")
+        count += 1
+
+    if count:
+        print(f"[postman] Fetched {count} TG message(s) → {inbox_dir}")
+    return count
