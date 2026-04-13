@@ -36,6 +36,21 @@ poll_interval_seconds = 30
 [features]
 git_enabled = true
 
+[narrative]
+# LLM-based recall rewriting (optional — default is rule-based, no API call)
+llm_enabled = false
+llm_provider = "deepseek"           # "anthropic" | "openai" | "deepseek" (openai-compatible)
+llm_model = "deepseek-chat"
+llm_base_url = "https://api.deepseek.com"
+llm_api_key_env = "FIAM_GRAPH_API_KEY"  # reuse the same key
+
+[graph]
+# LLM-based edge typing + event naming (optional — leave edge_provider empty to disable)
+edge_provider = "deepseek"           # "deepseek" | "openai" | "" (disabled)
+edge_model = "deepseek-chat"
+edge_base_url = "https://api.deepseek.com"
+edge_api_key_env = "FIAM_GRAPH_API_KEY"
+
 [communication]
 tg_bot_token_env = "FIAM_TG_BOT_TOKEN"   # env var name (never put token directly in config)
 tg_chat_id = ""                            # your Telegram user/chat ID

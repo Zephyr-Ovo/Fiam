@@ -233,7 +233,7 @@ def _call_llm(config: FiamConfig, system: str, user: str) -> str:
 
     if provider == "anthropic":
         return _call_anthropic(config, system, user)
-    elif provider == "openai":
+    elif provider in ("openai", "deepseek"):
         return _call_openai_compatible(config, system, user)
     else:
         raise ValueError(f"Unknown LLM provider: {provider}")
