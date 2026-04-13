@@ -1,548 +1,67 @@
----
-fiam — Fluid Injected Affective Memory for Claude Code
----
+# fiam — Fluid Injected Affective Memory
 
-## 架构
+Long-term emotional memory for AI agents. Watches Claude Code sessions, extracts significant events, builds a memory graph, and injects relevant memories into future conversations.
 
-```
-                    Claude Code 会话
-                          │
-           ┌──────────────┼──────────────┐
-           │              │              │
-           ▼              │              ▼
-      JSONL 日志           │    UserPromptSubmit hook
-      (对话记录)           │    (recall.md → additionalContext)
-           │              │              ▲
-           ▼              │              │
-      fiam daemon         │         recall.md
-       ┌────────┐         │         (记忆碎片)
-       │ 监控   │─────────┘              ▲
-       │ JSONL  │                   语义检索
-       └────────┘                        │
-           │                       joint_retriever
-           │  话题漂移检测                 ▲
-           │  (余弦相似度 < 0.65)          │
-           ▼                       store/events/
-      实时更新 recall              (YAML + 正文)
-           │                             ▲
-           │  空闲超时                    │
-           ▼                       post_session
-      post_session               (分类 → 过滤 → 存储)
-```
-
-**实时路径（会话中）**：daemon 检测到 JSONL 有新内容 → 提取最近用户文本 → 嵌入 → 与上次 recall 查询比较余弦相似度 → 低于 0.65 = 话题漂移 → 重新检索 → 重写 `recall.md`。UserPromptSubmit hook 在每次用户发送消息时读取 `recall.md` 注入为 `additionalContext`。
-
-**批处理路径（会话后）**：空闲超时后 → 增量解析 JSONL（字节偏移）→ 情感分类 → 显著性门控 → 话题分割 → 存入事件 → 刷新 recall → 等待下一次活动。
-
-### 环境感知与自主调度
-
-每次会话启动时，fiam 自动生成 **awareness context**（环境感知），与 recall.md 一起注入：
-
-- **时间锚点**：当前 PT / UTC 时间
-- **唤醒方式**：用户消息 or 自主调度（附原因）
-- **未读消息**：inbox/ 中待处理的消息
-- **调度队列**：AI 自己安排的未来任务
-- **环境地图**：当前所在节点、可到达的节点、隧道状态
-
-**自主调度**：AI 在对话中写 `<<WAKE:ISO时间:类型:原因>>` 标记。fiam 提取后写入 `schedule.jsonl`，到时间自动唤醒 CC session。类型包括 `private`（静默）、`notify`（完成后推送）、`seek`（寻找用户）、`check`（环境检查）。
-
-**通信**：AI 在 `home/outbox/` 写带 frontmatter 的 `.md` 文件（`via: telegram` 或 `via: email`），postman 自动投递。
-
-### 显著性门控
-
-事件通过任意一个信号即可存储（any-of）：
-
-| 信号 | 阈值 | 含义 |
-|---|---|---|
-| emotional | arousal > 0.6 | 情绪显著 |
-| novelty | > 0.7 | 与已有记忆语义距离大 |
-| elaboration | > 1.5 | 用户文本长度 / 会话中位数（log2） |
-
-Valence（情感极性）被存储但不参与门控。
-
-### 话题分割（TextTiling Depth Score）
-
-通过门控的 pair 不是各自生成事件，而是先做话题分割——同一话题段内的显著 pair 合并为一个事件。分割算法使用 TextTiling depth score：
-
-1. 对每个相邻间隙，计算前后 window 个 pair 的块嵌入余弦相似度
-2. 计算每个间隙的 **depth**（左峰 - 当前 + 右峰 - 当前）——衡量相对凹陷程度
-3. 在 depth 的局部极大值处切割（阈值 0.1）
-
-关键区别：不依赖绝对相似度阈值。0.9 降到 0.7 是切割（相对凹陷大），0.5 到 0.5 不切（平稳）。这让渐变漂移不会被误切，而真正的话题转折一定被捕捉。
-
-### 记忆检索（图扩散）
+## How It Works
 
 ```
-base  = 0.5 × cosine(query, event) + 0.3 × retention(event)
-graph = spreading_activation(seed=top_candidates, steps=2, decay=0.5)
-final = 0.7 × base + 0.3 × graph_activation
+Claude Code session
+       │
+       ├── JSONL log ──► fiam daemon ── topic drift? ──► refresh recall.md
+       │                                                        │
+       └── Hook (UserPromptSubmit) ◄──── inject (context) ◄────┘
 ```
 
-**MemoryGraph**（NetworkX DiGraph）以事件为节点，链接为带权有向边。三种链接类型：
+**Real-time**: daemon monitors JSONL → embeds user text → cosine drift detection → retrieves memories → writes `recall.md`. Hook injects it every turn.
 
-| 类型 | 生成时机 | 权重规则 |
-|---|---|---|
-| temporal | post_session | `1 - gap/30min`（同 session gap < 30min） |
-| semantic | post_session | cosine > 0.75 → 双向，weight = cosine |
-| causal | 未来 | 手动或 LLM 推断 |
+**Post-session**: idle timeout → emotion classification (WDI) → salience gating → topic segmentation (TextTiling) → store events → build graph edges → refresh recall.
 
-**扩散激活**（SYNAPSE 论文）：从 seed 节点注入能量，沿边传播 2 hop，每步衰减 0.5×边权×时间衰减。侧抑制（inhibition_factor=0.3）抑制多来源过度激活。
-
-遗忘曲线：$R(t) = e^{-t\,/\,(S \cdot 14)}$，$S$ = 强度 ∈ [1.0, 3.0]，被召回时强化。多样性过滤：贪心去重，跳过与已选事件余弦相似度 > 0.88 的候选，输出 top-5。
-
-### HOLD 自审机制
-
-AI 在输出中写 `<<HOLD:原因>>` 标记表示「这段不该直接说出来」。pipeline 检测到后：
-1. 原文保存到 `home/self/drafts/` 作为私人草稿
-2. 注册一个 2 分钟后的 private WAKE，让 AI 在独处时重新审视
-3. 对话中该段被静默移除
-
-
----
-
-## 双目录架构
-
-| 目录 | 作用 | 内容 |
-|---|---|---|
-| `fiam-code/` | 代码 + 机器数据 | Python 源码、事件存储、向量、日志 |
-| `home/` | AI 的家 | `.md` 文件、personality、journal |
-
-```
-fiam-code/
-├── src/fiam/          # 管道代码
-├── scripts/fiam.py    # 入口
-├── store/             # 运行时自动创建
-│   ├── events/        # 事件 .md（YAML frontmatter + 正文）
-│   ├── embeddings/    # 向量 .npy（维度由 language_profile 决定）
-│   └── cursor.json    # JSONL 字节偏移状态
-├── .cache/            # 模型权重（HF_HOME，gitignored）
-└── logs/sessions/     # 报告 + 追踪
-
-home/
-├── CLAUDE.md          # 首次运行自动生成
-├── recall.md          # daemon 实时更新的记忆碎片
-├── self/
-│   ├── personality.md # AI 自写
-│   ├── journal/       # AI 的内心生活
-│   └── schedule.jsonl # 自主调度队列
-├── outbox/            # AI 写文件即发送（TG / Email）
-│   └── sent/          # 已投递归档
-├── inbox/             # 收到的消息
-├── world/             # 外部知识 / sticker 列表等
-├── {user_name}/       # 用户空间
-└── .gitignore
-```
-
----
-
-## 模型
-
-fiam 使用两类本地模型：嵌入（embedding）和情感分类（emotion）。`fiam init` 时选择语言 profile。
-
-### 嵌入模型
-
-| Profile | 模型 | 维度 | 大小 |
-|---|---|---|---|
-| `multi` ★ | `BAAI/bge-m3` | 1024 | ~2.3 GB |
-| `zh` | `BAAI/bge-base-zh-v1.5` | 768 | ~400 MB |
-| `en` | `BAAI/bge-base-en-v1.5` | 768 | ~400 MB |
-
-### 情感模型（WDI）
-
-情感分类使用 **Weighted Dimensional Interpolation（WDI）**：将模型输出的完整概率分布加权插值到 Russell circumplex 的 valence-arousal 连续空间，不做 top-1 标签映射。
-
-| 语言 | 模型 | 标签 | 大小 |
-|---|---|---|---|
-| 英文 | `SamLowe/roberta-base-go_emotions` | 28 | ~500 MB |
-| 中文 ★ | `Johnson8187/Chinese-Emotion-Small` | 8 | ~300 MB |
-| 中文 large | `Johnson8187/Chinese-Emotion` | 8 | ~2.2 GB |
-
-> 中文 Small 和 Large 使用相同标签，精度差异很小。`fiam init` 默认推荐 Small。
-
-### 磁盘占用汇总
-
-| Profile | 模型组合 | 磁盘 |
-|---|---|---|
-| `multi` ★（small） | bge-m3 + GoEmotions + Chinese-Emotion-Small | ≈ 3.1 GB |
-| `multi`（large） | bge-m3 + GoEmotions + Chinese-Emotion | ≈ 5.0 GB |
-| `zh`（small） | bge-base-zh + Chinese-Emotion-Small | ≈ 0.7 GB |
-| `en` | bge-base-en + GoEmotions | ≈ 0.9 GB |
-
-所有模型本地推理，缓存在 `fiam-code/.cache/huggingface/`，不污染全局缓存。
-
----
-
-## 安装
-
-fiam 支持 Windows / macOS / Linux。`fiam init` 自动检测平台，生成对应 hook 脚本。
-
-### 准备工作
-
-**① 安装 uv**
-
-```powershell
-# Windows
-powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
-```
+## Install
 
 ```bash
-# macOS / Linux
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
-重启终端，确认 `uv --version` 能打印版本号。
-
-**② 安装 Claude Code**
-
-前往 [claude.ai/code](https://claude.ai/code) 按官方说明安装。确认 `claude --version` 能正常运行。
-
-**③ 准备 AI 的 home 目录**
-
-```bash
-mkdir D:\fiet-home   # Windows
-mkdir ~/fiet-home    # macOS / Linux
-```
-
-### 安装步骤
-
-**第 1 步：克隆 fiam**
-
-```bash
-git clone https://github.com/your-name/fiam-code.git
-cd fiam-code
-```
-
-**第 2 步：安装 Python 依赖**
-
-```bash
+git clone https://github.com/Zephyr-Ovo/Fiam.git && cd Fiam
 uv sync
+uv run python scripts/fiam.py init    # setup wizard
+uv run python scripts/fiam.py start   # start daemon (separate terminal)
+cd ~/your-home && claude               # start CC from home dir
 ```
 
-> 不要用 conda 的 Python / torch（尤其 Windows），会有版本冲突。`uv sync` 会帮你搞定一切。
+Requires [uv](https://astral.sh/uv) and [Claude Code](https://claude.ai/code). Models download automatically on first run (~3 GB for multi-language profile).
 
-**第 3 步：下载模型**
-
-国内网络建议先设置镜像：
-
-```powershell
-# Windows
-$env:HF_ENDPOINT = "https://hf-mirror.com"
-$env:HF_HOME = "$PWD\.cache\huggingface"
-```
-
-```bash
-# macOS / Linux
-export HF_ENDPOINT="https://hf-mirror.com"
-export HF_HOME="$PWD/.cache/huggingface"
-```
-
-以推荐的 `multi` profile 为例下载（约 3 GB）：
-
-```bash
-uv run python -c "
-from sentence_transformers import SentenceTransformer
-from transformers import pipeline
-SentenceTransformer('BAAI/bge-m3')
-pipeline('text-classification', model='SamLowe/roberta-base-go_emotions', top_k=None)
-pipeline('text-classification', model='Johnson8187/Chinese-Emotion-Small', top_k=None)
-print('完成！')
-"
-```
-
-> 也可以跳过，第一次运行 `fiam start` 时会自动下载。
-
-**第 4 步：运行配置向导**
-
-```bash
-uv run python scripts/fiam.py init
-```
+## Structure
 
 ```
-Home directory:           ← 输入第③步创建的目录，如 D:\fiet-home
-Language profile [multi]: ← 直接 Enter（推荐 multi）
-AI name [Fiet]:           ← AI 的名字
-Your name [Zephyr]:       ← 你的名字
-Enable git? [Y/n]:        ← 推荐 Y
+src/fiam/                  # Core pipeline
+  pipeline.py              # Pre/post session orchestration
+  config.py                # FiamConfig + fiam.toml
+  classifier/              # WDI emotion (valence-arousal)
+  extractor/               # Salience gating + topic segmentation
+  retriever/               # Joint retrieval + graph diffusion (SYNAPSE)
+  store/                   # EventRecord + graph.jsonl (edge store)
+  synthesizer/             # Recall narrative + LLM synthesis
+  prompts/                 # Editable .txt prompt templates
+  adapter/                 # JSONL parsing (CC adapter protocol)
+scripts/
+  fiam.py                  # CLI entry point
+  fiam_lib/                # Daemon, scheduler, awareness, comms
+store/                     # Runtime (gitignored): events/, embeddings/, graph.jsonl
 ```
 
-向导完成后自动生成：
+## Commands
 
 ```
-fiam.toml                            ← 配置文件（不要提交 git）
-{home}/CLAUDE.md                     ← Claude Code 每次启动时读取
-{home}/.claude/hooks/inject.ps1      ← 记忆注入 hook（Windows ps1，其他 sh）
-{home}/.claude/settings.local.json   ← 启用 hook
-{home}/.gitignore, self/, {name}/    ← home 目录结构
+fiam init / start / stop   Setup, daemon lifecycle
+fiam scan                  Import CC history (one-time)
+fiam status                Store counts + daemon state
+fiam graph                 Obsidian graph visualization
+fiam clean                 Reset store
+fiam feedback              Interactive event rating
 ```
 
-**第 5 步：从 home 目录启动 Claude Code**
+## Config
 
-```bash
-cd D:\fiet-home
-claude
-```
+See `fiam.toml.example`. Key settings: `language_profile` (multi/zh/en), `emotion_provider` (local/api), `arousal_threshold`, `top_k`, `idle_timeout_minutes`. `[graph]` and `[narrative]` sections for LLM integration (DeepSeek).
 
-> 必须从 home 目录启动，Claude Code 的 `CLAUDE_PROJECT_DIR` 才会指向 home，hook 才能找到 `recall.md`。
+## License
 
-**第 6 步：启动 daemon（另开终端）**
-
-```bash
-cd fiam-code
-uv run python scripts/fiam.py start
-```
-
-看到彩色 `fiam ✦` 启动画面即可。以后每次使用时先启动 daemon，再从 home 目录开 `claude`。
-
-### 导入历史会话
-
-如果已用了一段时间 Claude Code，想把历史对话导入记忆：
-
-```bash
-uv run python scripts/fiam.py scan
-```
-
-只需运行一次，历史越多耗时越长（几百个会话约几分钟）。fiam 只读 JSONL，从不修改原始记录。
-
----
-
-## 命令速查
-
-```
-fiam init              配置向导（第一次运行）
-fiam start             启动 daemon
-fiam stop              优雅停止 daemon（处理完待处理内容后退出）
-fiam status            daemon 状态 + 事件/嵌入数量
-fiam clean             重置 store（清空记忆）
-fiam scan              一次性历史导入（Claude Code JSONL）
-fiam import <file>     导入 Claude Web 导出的 conversations.json
-fiam reindex           重建嵌入（更换模型后使用）
-fiam graph             生成 Obsidian 回忆图谱  ✦
-fiam feedback          交互式事件评价（←👎 →👍）
-fiam rem               LLM 辅助事件合并整理
-fiam settings          查看/修改 fiam.toml
-fiam add-home <path>   添加一个 home 目录
-fiam remove-home <path>移除一个 home 目录（数据不删除）
-fiam pre / post        手动触发 pre/post_session（调试用）
-fiam find-sessions     列出 Claude Code 的 JSONL 文件
-```
-
----
-
-## 快速验证
-
-```bash
-# 处理测试对话，查看是否能提取事件
-uv run python scripts/fiam.py post --test-file test_vault/fixtures/emotional_gradient.json
-
-# 运行检索，查看 recall.md 是否生成
-uv run python scripts/fiam.py pre
-
-# 查看报告：logs/sessions/{最新目录}/report.md
-```
-
-有事件输出 + recall.md 生成 = 安装成功。
-
-| 现象 | 原因 | 解决 |
-|---|---|---|
-| `post` 输出 0 events | arousal 阈值过滤 | 换 `emotional_gradient.json` |
-| `pre` 检索 0 events | 新事件被 `min_event_age_hours=6` 屏蔽 | `fiam.toml` 加 `min_event_age_hours = 0` |
-| `fiam start` 说 already running | 上次没正常退出 | 先 `fiam stop`，再 `fiam start` |
-| hook 没有触发 | settings.local.json 不在 home/.claude/ | 重新运行 `fiam init` |
-| 下载模型太慢 | 没设置镜像 | `HF_ENDPOINT=https://hf-mirror.com` |
-
----
-
-## 开发路线
-
-fiam 当前以 Claude Code 为核心渠道。以下能力已实现基础设施但尚未完全激活：
-
-| 能力 | 状态 | 说明 |
-|---|---|---|
-| 环境感知（awareness） | ✅ 已实现 | 时间锚点、inbox 状态、调度队列、节点拓扑 |
-| 自主调度（scheduler） | ✅ 已实现 | WAKE tag → schedule.jsonl → 定时唤醒 |
-| Telegram 通信 | ⚙️ 基础设施就绪 | outbox 投递已实现，入站接收待完成 |
-| Email 通信 | ⚙️ 基础设施就绪 | SMTP 投递已实现 |
-| SSH 节点跳转 | ✅ 已部署 | Local → Relay → ISP，ISP → DO 直连 |
-| 图记忆（MemoryGraph） | ✅ 已实现 | NetworkX DiGraph + 扩散激活（SYNAPSE） |
-| HOLD 自审 | ✅ 已实现 | `<<HOLD:reason>>` → 草稿 + 延迟 WAKE |
-| 数据同步 | ✅ 已实现 | rsync 脚本（Local ↔ ISP via DO relay） |
-| API 渠道 | 📐 设计中 | recall.md 作为 system prompt 注入 |
-
-设计文档：`developer/design/distributed_identity.md`
-
-### 分布式拓扑
-
-```
- Local (Windows)          DO (SF)              ISP (Home)
- ┌─────────────┐     ┌─────────────┐     ┌──────────────┐
- │ Claude Code  │     │ Embedding   │     │ fiam daemon  │
- │ fiam daemon  │     │ API server  │◄────│ MemoryGraph  │
- │ ActivityWatch│     │ (bge-m3)    │     │ TG / Email   │
- └──────┬───────┘     └─────────────┘     └──────┬───────┘
-        │                                        │
-        │  SSH ProxyJump                         │  SSH direct
-        └────────► Relay (LA) ──────────────────►┘
-                   38.47.118.220:2222
-```
-
-- **Local → Relay → ISP**：SSH ProxyJump 走移动优化线路
-- **ISP → DO**：直连，远程 embedding 推理
-- **同步**：`sync-store.ps1` / `sync-store.sh` rsync 双向，排除 `cursor.json`
-
----
-
-## 常见问题
-
-**适合什么人用？**
-Claude Code 订阅制用户，需要长期情感/记忆管理，话题跨度大，不想牺牲现有 MCP/skills。纯粹用 AI 查资料、写代码的场景 fiam 是冗余的。
-
-**支持哪些系统？**
-Windows、macOS、Linux。不支持网页版和手机 APP。`fiam init` 自动检测平台：Windows 生成 `inject.ps1`，Linux/macOS 生成 `inject.sh`。
-
-**硬件要求？**
-Fiam 必须在本地运行情感分类模型。英文专用约 500 MB；中文建议 Small（300 MB），推荐至少 2 GB 空闲内存。
-
-**支持 API / 其他平台吗？**
-当前以 Claude Code 为主要渠道。架构上已为多渠道做了准备（Telegram 通信、Email 投递、自主调度），API 和 Desktop 渠道正在设计中。详见 `developer/design/distributed_identity.md`。
-
-**双语用户（中英混写）怎么处理？**
-推荐 `multi` profile（bge-m3），统一多语言向量空间，中英混写检索无缝。bge-zh 和 bge-en 是独立向量空间，跨语言 cosine 相似度没有意义。
-
-**recall.md 会被 prompt injection 污染吗？**
-理论上存在，实际缓解：门控要求 arousal > 0.6 或高 novelty，随意短文不会存入；recall 格式固定，AI 明确知道来源是 hook context。作为个人工具这个风险可接受。
-
-**会和 Claude Code 自带的 memory 功能冲突吗？**
-不冲突。CC memory 是会话级上下文压缩，fiam 是跨会话情感事件，唯一交叉点是 `additionalContext`，recall 格式固定不会混淆。
-
-**和已有的 MCP / skills / agent 冲突吗？**
-不冲突，除非 skill 同样涉及 hook 注入——cc 支持多注入（追加到末尾），但存在两个记忆召回机制会冗余。
-
-**CC JSONL 格式未来变化怎么办？**
-JSONL 解析已抽象为 `ConversationAdapter` protocol（`src/fiam/adapter/`），格式变化只需改 `claude_code.py`，核心管道不受影响。
-
----
-
-## 配置参数（fiam.toml）
-
-| 参数 | 默认 | 说明 |
-|---|---|---|
-| `language_profile` | `multi` | zh / en / multi |
-| `emotion_provider` | `local` | local = WDI 本地模型；api = LLM API（跳过模型下载） |
-| `arousal_threshold` | `0.6` | 降低 = 存更多事件 |
-| `min_event_age_hours` | `6` | 测试期间设 0 |
-| `top_k` | `5` | recall 最多显示几条 |
-| `idle_timeout_minutes` | `30` | 多久没活动触发 post-session |
-| `tg_bot_token_env` | `FIAM_TG_BOT_TOKEN` | Telegram Bot token 的环境变量名 |
-| `tg_chat_id` | `""` | Telegram 聊天 ID |
-| `email_from` | `""` | AI 的邮箱地址 |
-| `email_smtp_host` | `""` | SMTP 服务器地址 |
-
----
-
-## 多 Home 目录
-
-fiam 支持同时注册多个 home 目录。daemon 一次只监控一个 home（即 `home_path`），切换需要重启。
-
-```bash
-# 添加一个新的 home 目录（自动初始化 CLAUDE.md、hook、目录结构）
-fiam add-home /path/to/new-home
-
-# 用指定 home 启动 daemon
-fiam start --home /path/to/new-home
-
-# 移除 home 目录（仅从配置中移除，数据不会被删除）
-fiam remove-home /path/to/old-home
-```
-
-`fiam.toml` 中的 `home_paths` 数组保存所有已注册的 home。`fiam init` 再次运行时，新路径会追加而非替换已有路径。
-
----
-
-## 项目结构
-
-```
-scripts/fiam.py              # 入口 + daemon + recall 实时更新
-scripts/fiam_lib/
-  awareness.py               # 环境感知（时间、位置、inbox、调度队列）
-  scheduler.py               # 自主调度（WAKE tag 提取 + 定时唤醒）
-  postman.py                 # 通信投递（Telegram + Email）
-  hooks.py                   # hook 模板（inject.ps1 / inject.sh）
-  recall.py                  # recall.md 碎片合成
-  feedback.py                # 事件评价 TUI
-  rem.py                     # LLM 辅助事件合并
-  graph.py                   # Obsidian 图谱生成
-  daemon.py                  # daemon 主循环
-  session.py                 # pre/post session 手动触发
-  storage.py                 # reindex / scan / clean
-  settings.py                # 配置编辑器
-scripts/fiam-tunnel.ps1      # SSH 反向隧道（Local → Relay → ISP）
-scripts/sync-store.ps1       # 数据同步（Local ↔ ISP via DO）
-scripts/sync-store.sh        # 数据同步（ISP 端 bash 版）
-scripts/aw_bridge.py         # ActivityWatch → activity.jsonl 桥接
-src/fiam/
-  config.py                  # FiamConfig + fiam.toml 读写
-  pipeline.py                # pre_session / post_session 编排
-  classifier/
-    emotion.py               # WDI 情感分类（valence + arousal）
-  extractor/
-    event.py                 # 显著性门控（emotional / novelty / elaboration）+ 合并
-    signals.py               # 副信道信号
-  injector/
-    claude_code.py           # 写入 recall.md / CLAUDE.md / .gitignore
-    home_diff.py             # git diff 检测对 home 的物理编辑
-  logging/
-    report.py                # Markdown 报告
-    trace.py                 # JSON 步骤追踪
-  personality/
-    reader.py                # 读取 self/personality.md
-  retriever/
-    embedder.py              # profile-aware bge 嵌入
-    joint.py                 # 联合检索：语义 + Ebbinghaus + 时序链接
-    decay.py                 # 遗忘曲线 + 强度强化
-    diversity.py             # 贪心嵌入去重
-    temporal.py              # 时序共现链接（30min session gap）
-    semantic_link.py         # 语义链接（cosine > 0.75 → 双向）
-    graph.py                 # MemoryGraph（NetworkX DiGraph + 扩散激活）
-    graph_viz.py             # 力导向图 HTML 可视化（调试用）
-    relevance.py             # 相关性评分
-  store/
-    formats.py               # EventRecord dataclass + YAML frontmatter
-    home.py                  # 事件文件读写
-  adapter/
-    __init__.py              # ConversationAdapter Protocol + get_adapter()
-    claude_code.py           # ClaudeCodeAdapter：JSONL 解析 + 字节偏移增量读取
-  synthesizer/
-    stance.py                # StanceSynthesizer（冷启动叙事合成）
-    narrative.py             # 规则碎片 + 可选 LLM 叙事
-    dynamics.py              # 对话动态提取
-developer/
-  README.md                  # 开发者工具文档
-  beta.md                    # 内测命令清单
-  debug.md                   # 调试指南 + hook 测试
-  hooks/                     # hook 参考脚本
-  design/                    # 设计文档（实验性）
-    retrieval_next.md        # 检索架构演进
-    distributed_identity.md  # 分布式身份与连续性
-```
-
----
-
-## fiam graph ✦（仅本地）
-
-```bash
-uv run python scripts/fiam.py graph                    # 默认阈值 0.75
-uv run python scripts/fiam.py graph --threshold 0.6    # 更宽松的连接
-```
-
-仅在本地运行，用 Obsidian 打开可视化图谱。远程节点不需要 Obsidian — 图检索由 MemoryGraph 在内存中完成。
-
-用 Obsidian 打开 `store/graph/` 目录，切换到图谱视图。✦
-
-```
-store/graph/
-  数据全丢.md   ←[[]]→   备份找到.md
-  小橘趴在.md   ←[[]]→   猫又把杯.md
-  debugging.md
-```
-
-每次运行会清空并重新生成，图谱是只读视图，事件存储不会被修改。
+MIT
