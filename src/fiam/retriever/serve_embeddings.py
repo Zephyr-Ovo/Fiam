@@ -257,7 +257,11 @@ def embed(req: EmbedRequest):
     if len(req.texts) > 128:
         raise HTTPException(400, "max 128 texts per request")
     model = _load_model(_model_name)
-    vecs: np.ndarray = model.encode(req.texts, convert_to_numpy=True)
+    # Truncate texts to ~512 chars to keep encoding fast on CPU.
+    # bge-m3 max_seq_length is 8192 but long sequences are very slow;
+    # 512 chars ≈ 128-256 tokens, sufficient for similarity scoring.
+    truncated = [t[:512] for t in req.texts]
+    vecs: np.ndarray = model.encode(truncated, convert_to_numpy=True)
     return EmbedResponse(vectors=vecs.astype(np.float32).tolist())
 
 

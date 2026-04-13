@@ -54,10 +54,11 @@ class Embedder:
         import json
 
         url = self.config.embedding_remote_url.rstrip("/") + "/embed"
-        # Batch in chunks of 8 to avoid timeouts on large payloads
+        # Chunk size 2: bge-m3 on CPU is very slow (~30-60s per text),
+        # so keep chunks small to stay well within per-request timeout.
         all_vecs = []
-        for i in range(0, len(texts), 8):
-            chunk = texts[i : i + 8]
+        for i in range(0, len(texts), 2):
+            chunk = texts[i : i + 2]
             payload = json.dumps({"texts": chunk}).encode()
             req = urllib.request.Request(
                 url, data=payload,
