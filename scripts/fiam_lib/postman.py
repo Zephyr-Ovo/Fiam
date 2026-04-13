@@ -10,6 +10,7 @@ The AI writes Markdown files to home/outbox/ with YAML frontmatter:
     ---
 
     Message body here...
+    [sticker:猫咪哭]        ← optional sticker tag, sent as TG sticker
 
 This module watches outbox/ and dispatches each file, then moves it
 to outbox/sent/. It never touches the AI's conversation or CC session.
@@ -21,6 +22,7 @@ import json
 import os
 import imaplib
 import email as email_mod
+import re
 import shutil
 import smtplib
 import time
@@ -56,6 +58,97 @@ def _tg_send(token: str, chat_id: str, text: str) -> bool:
             return resp.status == 200
     except urllib.error.URLError:
         return False
+
+
+def _tg_send_sticker(token: str, chat_id: str, file_id: str) -> bool:
+    """Send a sticker by file_id via Telegram Bot API."""
+    url = f"https://api.telegram.org/bot{token}/sendSticker"
+    payload = json.dumps({"chat_id": chat_id, "sticker": file_id}).encode()
+    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return resp.status == 200
+    except urllib.error.URLError:
+        return False
+
+
+def _tg_send_photo(token: str, chat_id: str, photo_path: Path) -> bool:
+    """Send a local image file as photo via Telegram Bot API (multipart)."""
+    import mimetypes
+    boundary = "----FiamBoundary"
+    mime = mimetypes.guess_type(str(photo_path))[0] or "image/webp"
+    photo_data = photo_path.read_bytes()
+    body = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="chat_id"\r\n\r\n{chat_id}\r\n'
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="photo"; filename="{photo_path.name}"\r\n'
+        f"Content-Type: {mime}\r\n\r\n"
+    ).encode() + photo_data + f"\r\n--{boundary}--\r\n".encode()
+    url = f"https://api.telegram.org/bot{token}/sendPhoto"
+    req = urllib.request.Request(
+        url, data=body,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return resp.status == 200
+    except urllib.error.URLError:
+        return False
+
+
+# ------------------------------------------------------------------
+# Sticker index (store/stickers/index.json)
+# ------------------------------------------------------------------
+
+def _sticker_dir(config: FiamConfig) -> Path:
+    return config.code_path / "assets" / "stickers"
+
+
+def _load_sticker_index(config: FiamConfig) -> dict:
+    idx_path = _sticker_dir(config) / "index.json"
+    if idx_path.exists():
+        try:
+            data = json.loads(idx_path.read_text(encoding="utf-8"))
+            return {k: v for k, v in data.items() if not k.startswith("_")}
+        except Exception:
+            pass
+    return {}
+
+
+def _save_sticker_index(config: FiamConfig, index: dict) -> None:
+    d = _sticker_dir(config)
+    d.mkdir(parents=True, exist_ok=True)
+    full = {"_说明": "表情包索引。file=本地文件, file_id=TG原生sticker"}
+    full.update(index)
+    (d / "index.json").write_text(json.dumps(full, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _extract_stickers(text: str, config: FiamConfig) -> tuple[str, list[dict]]:
+    """Extract [sticker:名称] tags from text. Returns (cleaned_text, sticker_list)."""
+    sticker_map = _load_sticker_index(config)
+    stickers: list[dict] = []
+
+    def replacer(match):
+        name = match.group(1).strip()
+        entry = sticker_map.get(name)
+        if not entry:
+            return ""
+        if isinstance(entry, str):
+            fp = _sticker_dir(config) / entry
+            if fp.exists():
+                stickers.append({"type": "file", "value": str(fp)})
+        elif isinstance(entry, dict):
+            if "file_id" in entry:
+                stickers.append({"type": "file_id", "value": entry["file_id"]})
+            elif "file" in entry:
+                fp = _sticker_dir(config) / entry["file"]
+                if fp.exists():
+                    stickers.append({"type": "file", "value": str(fp)})
+        return ""
+
+    cleaned = re.sub(r"\[sticker:([^\]]+)\]", replacer, text).strip()
+    return cleaned, stickers
 
 
 # ------------------------------------------------------------------
@@ -103,7 +196,17 @@ def dispatch_file(path: Path, config: FiamConfig) -> bool:
         if not token or not chat_id:
             print(f"[postman] TG not configured, skipping {path.name}")
             return False
-        return _tg_send(token, chat_id, body)
+        # Extract [sticker:xxx] tags before sending
+        text, stickers = _extract_stickers(body, config)
+        ok = True
+        if text:
+            ok = _tg_send(token, chat_id, text)
+        for stk in stickers:
+            if stk["type"] == "file_id":
+                _tg_send_sticker(token, chat_id, stk["value"])
+            elif stk["type"] == "file":
+                _tg_send_photo(token, chat_id, Path(stk["value"]))
+        return ok
 
     elif via == "email":
         subject = str(post.metadata.get("subject", f"From {config.ai_name}"))
@@ -321,7 +424,24 @@ def fetch_tg_inbox(config: FiamConfig, timeout: int = 0) -> int:
         if msg_chat_id != str(chat_id):
             continue
 
+        # Extract content: text, sticker, or photo caption
         text = msg.get("text", "")
+        sticker = msg.get("sticker")
+        if sticker and not text:
+            # Incoming sticker — record as [sticker:emoji] with file_id
+            emoji = sticker.get("emoji", "")
+            file_id = sticker.get("file_id", "")
+            # Look up or describe the sticker
+            idx = _load_sticker_index(config)
+            match_name = None
+            for name, entry in idx.items():
+                if isinstance(entry, dict) and entry.get("file_id") == file_id:
+                    match_name = name
+                    break
+            if match_name:
+                text = f"[sticker:{match_name}]"
+            else:
+                text = f"[sticker:{emoji or 'unknown'}] (file_id: {file_id})"
         if not text:
             continue
 
