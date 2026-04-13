@@ -1,116 +1,153 @@
 """
-Migrate old event links to the new graph format.
+Migrate event links → graph.jsonl + strip links from frontmatter.
 
 What this does:
-  1. Strip ALL old bare-string temporal links (the 4h-window era)
-  2. Recompute temporal links with the new 30min session gap
-  3. Add semantic links (cosine > 0.75)
-  4. Write updated events back to disk
+  1. Read all events, extract links from YAML frontmatter
+  2. Write deduplicated edges to store/graph.jsonl (via GraphStore)
+  3. Strip the `links:` block from each event file
 
-This is a one-time migration. Safe to run multiple times (idempotent).
+Safe to run multiple times — skips if graph.jsonl already has edges
+and events have no links left.
+
+Usage:
+    python scripts/migrate_links.py                  # auto-detect from fiam.toml
+    python scripts/migrate_links.py --store store/   # explicit store dir
+    python scripts/migrate_links.py --dry-run        # preview only
 """
 
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-import numpy as np
-from fiam.config import FiamConfig
-from fiam.store.home import HomeStore
-
-_SESSION_GAP = timedelta(minutes=30)
-_SEM_THRESHOLD = 0.75
+import frontmatter as fm
+from fiam.store.formats import parse_event
+from fiam.store.graph_store import GraphStore
 
 
-def _load_vec(event, config):
-    if not event.embedding:
-        return None
-    npy_path = config.embeddings_dir.parent / event.embedding
-    if not npy_path.exists():
-        return None
-    vec = np.load(npy_path).astype(np.float32).flatten()
-    if vec.shape[0] != config.embedding_dim:
-        return None
-    return vec
+def _load_event(path: Path):
+    """Load an event file using python-frontmatter."""
+    post = fm.load(str(path))
+    return parse_event(
+        frontmatter=dict(post.metadata),
+        body=post.content,
+        filename=path.stem,
+    )
 
 
-def _cosine(a, b):
-    na, nb = np.linalg.norm(a), np.linalg.norm(b)
-    if na == 0 or nb == 0:
-        return 0.0
-    return float(np.dot(a, b) / (na * nb))
+def _strip_links_from_file(path: Path) -> bool:
+    """Remove the links: block from YAML frontmatter. Returns True if modified."""
+    text = path.read_text(encoding="utf-8")
+
+    # Match frontmatter block
+    import re
+    m = re.match(r"^---\n(.*?)\n---$(.*)", text, re.DOTALL | re.MULTILINE)
+    if not m:
+        return False
+
+    yaml_block = m.group(1)
+    rest = m.group(2)
+
+    # Remove "links:" line + all following lines that are list items or indented continuations
+    # Also handles orphaned list items (if links: was already removed by a broken prior run)
+    # Pattern: optional "links:..." line, then "- id: ..." blocks with indented children
+    new_yaml = re.sub(
+        r"(?:^links:.*\n)?(?:^- id:.*\n(?:^ .*\n)*)*",
+        "",
+        yaml_block + "\n",
+        flags=re.MULTILINE,
+    ).rstrip("\n")
+
+    # Also handle "links: []" on a single line
+    new_yaml = re.sub(r"^links: \[\]\n?", "", new_yaml, flags=re.MULTILINE).rstrip("\n")
+
+    if new_yaml == yaml_block:
+        return False
+
+    path.write_text(f"---\n{new_yaml}\n---{rest}", encoding="utf-8")
+    return True
 
 
 def main():
-    code_path = Path(__file__).resolve().parent.parent
-    toml_path = code_path / "fiam.toml"
-    config = FiamConfig.from_toml(toml_path, code_path)
-    store = HomeStore(config)
-    events = store.all_events()
-    now = datetime.now(timezone.utc)
+    import argparse
+    parser = argparse.ArgumentParser(description="Migrate event links → graph.jsonl")
+    parser.add_argument("--store", help="Path to store/ directory (default: from fiam.toml)")
+    parser.add_argument("--dry-run", action="store_true", help="Preview without writing")
+    args = parser.parse_args()
 
-    print(f"Loaded {len(events)} events")
-    old_total = sum(len(e.links) for e in events)
-    print(f"Old links total: {old_total}")
+    if args.store:
+        store_dir = Path(args.store)
+    else:
+        code_path = Path(__file__).resolve().parent.parent
+        store_dir = code_path / "store"
 
-    # Step 1: Clear all links
-    for e in events:
-        e.links = []
+    events_dir = store_dir / "events"
+    graph_path = store_dir / "graph.jsonl"
 
-    # Step 2: Temporal links (30min session gap)
-    temporal_count = 0
-    for i, a in enumerate(events):
-        for b in events[i + 1:]:
-            delta = abs(a.time - b.time)
-            if delta <= _SESSION_GAP:
-                weight = round(1.0 - delta.total_seconds() / _SESSION_GAP.total_seconds(), 4)
-                weight = max(weight, 0.1)
-                a.links.append({"id": b.event_id, "type": "temporal", "weight": weight})
-                b.links.append({"id": a.event_id, "type": "temporal", "weight": weight})
-                temporal_count += 1
+    if not events_dir.exists():
+        print(f"[migrate] No events dir at {events_dir}")
+        return
 
-    print(f"Temporal links (30min gap): {temporal_count} pairs")
+    event_files = sorted(events_dir.glob("*.md"))
+    print(f"[migrate] Found {len(event_files)} event files in {events_dir}")
 
-    # Step 3: Semantic links (cosine > 0.75)
-    vecs = {}
-    for e in events:
-        v = _load_vec(e, config)
-        if v is not None:
-            vecs[e.event_id] = v
+    # Step 1: First pass — fix any files broken by partial prior strip
+    # (orphaned list items without a links: key)
+    import re
+    fixed = 0
+    for f in event_files:
+        text = f.read_text(encoding="utf-8")
+        m = re.match(r"^---\n(.*?)\n---$(.*)", text, re.DOTALL | re.MULTILINE)
+        if not m:
+            continue
+        yaml_block = m.group(1)
+        # Check for orphaned "- id:" lines outside any key
+        if "\n- id:" in yaml_block and "links:" not in yaml_block:
+            cleaned = re.sub(r"^- id:.*\n(?:^ .*\n)*", "", yaml_block + "\n", flags=re.MULTILINE).rstrip("\n")
+            if cleaned != yaml_block:
+                rest = m.group(2)
+                f.write_text(f"---\n{cleaned}\n---{rest}", encoding="utf-8")
+                fixed += 1
+    if fixed:
+        print(f"[migrate] Fixed {fixed} files with orphaned list items from prior run")
 
-    sem_count = 0
-    eids = sorted(vecs.keys())
-    for i, a_id in enumerate(eids):
-        for b_id in eids[i + 1:]:
-            sim = _cosine(vecs[a_id], vecs[b_id])
-            if sim >= _SEM_THRESHOLD:
-                w = round(sim, 4)
-                ev_a = next(e for e in events if e.event_id == a_id)
-                ev_b = next(e for e in events if e.event_id == b_id)
-                ev_a.links.append({"id": b_id, "type": "semantic", "weight": w})
-                ev_b.links.append({"id": a_id, "type": "semantic", "weight": w})
-                sem_count += 1
+    # Step 2: Load events and count links
+    events = []
+    for f in event_files:
+        try:
+            events.append(_load_event(f))
+        except Exception as e:
+            print(f"  [skip] {f.name}: {e}")
 
-    print(f"Semantic links (cos >= {_SEM_THRESHOLD}): {sem_count} pairs")
+    total_links = sum(len(ev.links) for ev in events)
+    print(f"[migrate] Total links in frontmatter: {total_links}")
 
-    new_total = sum(len(e.links) for e in events)
-    print(f"\nNew links total: {new_total} (was {old_total})")
+    # Step 2: Migrate links → graph.jsonl
+    if total_links > 0:
+        if not args.dry_run:
+            gs = GraphStore.migrate_from_events(events, graph_path)
+            print(f"[migrate] Wrote {gs.edge_count()} edges to {graph_path}")
+        else:
+            print(f"[migrate] DRY RUN: would write edges to {graph_path}")
+    else:
+        existing = GraphStore(graph_path).edge_count() if graph_path.exists() else 0
+        print(f"[migrate] No links in frontmatter. graph.jsonl has {existing} edges.")
 
-    # Step 4: Write back
-    for e in events:
-        store.update_metadata(e)
+    # Step 3: Strip links from frontmatter
+    stripped = 0
+    for f in event_files:
+        if args.dry_run:
+            text = f.read_text(encoding="utf-8")
+            if "links:" in text or "\n- id:" in text.split("---")[1] if text.count("---") >= 2 else False:
+                stripped += 1
+        else:
+            if _strip_links_from_file(f):
+                stripped += 1
 
-    print(f"Written {len(events)} events to disk.")
-
-    # Verify
-    sample = store.read_event(events[0].event_id)
-    print(f"\nVerify {sample.event_id}: {len(sample.links)} links")
-    for l in sample.links[:5]:
-        print(f"  {l}")
+    label = "DRY RUN: would strip" if args.dry_run else "Stripped"
+    print(f"[migrate] {label} links from {stripped}/{len(event_files)} files")
 
 
 if __name__ == "__main__":
