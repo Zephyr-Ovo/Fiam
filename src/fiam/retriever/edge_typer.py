@@ -42,7 +42,6 @@ def _get_prompt_template() -> str:
 
 def _call_llm(prompt: str, config: FiamConfig) -> dict[str, Any]:
     """Call the configured LLM API and return parsed JSON response."""
-    import time
     import urllib.request
 
     api_key = os.environ.get(config.graph_edge_api_key_env, "")
@@ -66,11 +65,8 @@ def _call_llm(prompt: str, config: FiamConfig) -> dict[str, Any]:
         headers=headers,
     )
 
-    print(f"[edge_typer] DS call: prompt={len(prompt)} chars, model={config.graph_edge_model}", flush=True)
-    t0 = time.time()
     with urllib.request.urlopen(req, timeout=120) as resp:
         data = json.loads(resp.read().decode())
-    print(f"[edge_typer] DS responded in {time.time()-t0:.1f}s", flush=True)
 
     text = data["choices"][0]["message"]["content"].strip()
 
