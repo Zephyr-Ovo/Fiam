@@ -467,10 +467,74 @@ class ApiEmotionClassifier:
         return [self.analyze(t) for t in texts]
 
 
+# ── Remote WDI classifier (calls serve_embeddings.py on DO) ─────────
+
+class RemoteEmotionClassifier:
+    """Emotion classifier that delegates WDI to the remote compute server.
+
+    The remote server runs the same HF WDI pipeline as EmotionClassifier.
+    This client avoids loading torch/transformers on the ISP host.
+    """
+
+    def __init__(self, config: FiamConfig) -> None:
+        self.config = config
+
+    def _call_batch(self, texts: list[str]) -> list[EmotionResult]:
+        import json as _json
+        import urllib.request
+
+        url = self.config.emotion_remote_url.rstrip("/") + "/emotion_batch"
+        all_results: list[EmotionResult] = []
+
+        # Chunk to avoid timeouts (same pattern as embedder)
+        for i in range(0, len(texts), 32):
+            chunk = texts[i : i + 32]
+            payload = _json.dumps({"texts": chunk}).encode()
+            req = urllib.request.Request(
+                url, data=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                body = _json.loads(resp.read())
+            for r in body["results"]:
+                all_results.append(EmotionResult(
+                    valence=float(r["valence"]),
+                    arousal=float(r["arousal"]),
+                    confidence=float(r["confidence"]),
+                    dominant_label=str(r.get("dominant_label", "")),
+                    label_scores=r.get("label_scores", {}),
+                ))
+        return all_results
+
+    def analyze(self, text: str) -> EmotionResult:
+        if not text or not text.strip():
+            return EmotionResult(valence=0.0, arousal=0.1, confidence=0.0)
+        return self._call_batch([text])[0]
+
+    def analyze_batch(self, texts: list[str], batch_size: int = 32) -> list[EmotionResult]:
+        return self._call_batch(texts)
+
+    def analyze_event(self, user_text: str, ai_text: str) -> EmotionResult:
+        user_emotion = self.analyze(user_text)
+        ai_emotion = self.analyze(ai_text)
+        return EmotionResult(
+            valence=ai_emotion.valence,
+            arousal=max(user_emotion.arousal, ai_emotion.arousal),
+            confidence=(user_emotion.confidence + ai_emotion.confidence) / 2,
+            dominant_label=ai_emotion.dominant_label,
+            label_scores=ai_emotion.label_scores,
+        )
+
+    def classify(self, text: str) -> EmotionResult:
+        return self.analyze(text)
+
+
 # ── Factory ─────────────────────────────────────────────────────────
 
-def get_classifier(config: FiamConfig) -> EmotionClassifier | ApiEmotionClassifier:
-    """Return the appropriate emotion classifier based on config.emotion_provider."""
+def get_classifier(config: FiamConfig) -> EmotionClassifier | ApiEmotionClassifier | RemoteEmotionClassifier:
+    """Return the appropriate emotion classifier based on config."""
+    if config.emotion_backend == "remote" and config.emotion_remote_url:
+        return RemoteEmotionClassifier(config)
     if config.emotion_provider == "api":
         return ApiEmotionClassifier(config)
     return EmotionClassifier(config)

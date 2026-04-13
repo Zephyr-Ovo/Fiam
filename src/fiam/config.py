@@ -92,6 +92,12 @@ class FiamConfig:
     emotion_provider: str = "local"
 
     # ------------------------------------------------------------------
+    # Emotion backend  ("local" = in-process | "remote" = API server on DO)
+    # ------------------------------------------------------------------
+    emotion_backend: str = "local"
+    emotion_remote_url: str = ""  # e.g. "http://127.0.0.1:8819" (via SSH tunnel)
+
+    # ------------------------------------------------------------------
     # Emotion models (only used when emotion_provider == "local")
     # ------------------------------------------------------------------
     emotion_model_zh: str = ""   # Chinese emotion: Johnson8187/Chinese-Emotion-Small
@@ -406,6 +412,8 @@ class FiamConfig:
             embedding_dim=models.get("embedding_dim", 0),  # 0 = derive from profile
             embedding_backend=models.get("embedding_backend", "local"),
             embedding_remote_url=models.get("embedding_remote_url", ""),
+            emotion_backend=models.get("emotion_backend", "local"),
+            emotion_remote_url=models.get("emotion_remote_url", ""),
             # Retrieval
             top_k=retrieval.get("top_k", cls.top_k),
             semantic_weight=retrieval.get("semantic_weight", cls.semantic_weight),
