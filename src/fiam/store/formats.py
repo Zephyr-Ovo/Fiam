@@ -79,7 +79,7 @@ class EventRecord:
     def to_frontmatter_dict(self) -> dict[str, Any]:
         """Return a dict suitable for writing as YAML frontmatter."""
         d: dict[str, Any] = {
-            "time": self.time.isoformat(),
+            "time": self.time.strftime("%m-%d %H:%M"),
             "valence": round(float(self.valence), 6),
             "arousal": round(float(self.arousal), 6),
             "confidence": round(float(self.confidence), 6),
@@ -92,7 +92,7 @@ class EventRecord:
         if self.dominant_label:
             d["dominant_label"] = self.dominant_label
         if self.last_accessed is not None:
-            d["last_accessed"] = self.last_accessed.isoformat()
+            d["last_accessed"] = self.last_accessed.strftime("%m-%d %H:%M")
         if self.user_weight != 1.0:
             d["user_weight"] = round(float(self.user_weight), 4)
         return d
@@ -157,6 +157,17 @@ def validate_frontmatter(data: dict[str, Any], filename: str = "<unknown>") -> N
 # Parse from raw frontmatter dict
 # ------------------------------------------------------------------
 
+def _parse_time(raw: Any) -> datetime:
+    """Parse time from frontmatter: datetime object, ISO string, or short 'MM-DD HH:MM' format."""
+    if isinstance(raw, datetime):
+        return raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
+    s = str(raw)
+    # Short format: "04-08 01:55" (no year, no seconds)
+    if len(s) <= 11 and " " in s and "T" not in s:
+        return datetime.strptime(s, "%m-%d %H:%M").replace(year=2026, tzinfo=timezone.utc)
+    return datetime.fromisoformat(s.replace("Z", "+00:00"))
+
+
 def parse_event(
     frontmatter: dict[str, Any],
     body: str,
@@ -165,11 +176,7 @@ def parse_event(
     """Parse and validate a frontmatter dict + body into an EventRecord."""
     validate_frontmatter(frontmatter, filename)
 
-    raw_time = frontmatter["time"]
-    if isinstance(raw_time, datetime):
-        time = raw_time if raw_time.tzinfo else raw_time.replace(tzinfo=timezone.utc)
-    else:
-        time = datetime.fromisoformat(str(raw_time).replace("Z", "+00:00"))
+    time = _parse_time(frontmatter["time"])
 
     embedding_path = frontmatter.get("embedding", "")
     if isinstance(embedding_path, Path):
@@ -179,10 +186,7 @@ def parse_event(
     raw_last = frontmatter.get("last_accessed")
     last_accessed: Optional[datetime] = None
     if raw_last is not None:
-        if isinstance(raw_last, datetime):
-            last_accessed = raw_last if raw_last.tzinfo else raw_last.replace(tzinfo=timezone.utc)
-        else:
-            last_accessed = datetime.fromisoformat(str(raw_last).replace("Z", "+00:00"))
+        last_accessed = _parse_time(raw_last)
 
     return EventRecord(
         filename=filename,
