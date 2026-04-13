@@ -285,33 +285,23 @@ def post_session(
             print(f"[post_session] Wrote event {event_id} → {written_path}")
             print(f"  embedding: shape={stats['shape']} L2={stats['l2_norm']:.6f}")
 
-    # Step 4: Temporal co-occurrence linking
+    # Step 4: Temporal co-occurrence linking → graph.jsonl
     all_events = store.all_events()
     if written_events:
-        modified = link_new_events(written_events, all_events, config)
-        # Persist link updates on both new and modified existing events
-        for ev in written_events:
-            store.update_metadata(ev)
-        for ev in modified:
-            store.update_metadata(ev)
-        if config.debug_mode:
-            link_count = sum(len(e.links) for e in written_events)
-            print(f"[post_session] Temporal links: {link_count} links across "
-                  f"{len(written_events)} new + {len(modified)} existing events")
+        from fiam.store.graph_store import GraphStore
+        graph_store = GraphStore(config.graph_jsonl_path)
 
-    # Step 4b: Semantic similarity linking
-    if written_events:
-        sem_modified = link_semantic(written_events, all_events, config)
-        for ev in written_events:
-            store.update_metadata(ev)
-        for ev in sem_modified:
-            store.update_metadata(ev)
+        temporal_edges = link_new_events(written_events, all_events, config)
+        graph_store.append(temporal_edges)
         if config.debug_mode:
-            sem_count = sum(
-                1 for e in written_events
-                for l in e.links if l.get("type") == "semantic"
-            )
-            print(f"[post_session] Semantic links: {sem_count} new semantic links")
+            print(f"[post_session] Temporal edges: {len(temporal_edges)} written to graph.jsonl")
+
+    # Step 4b: Semantic similarity linking → graph.jsonl
+    if written_events:
+        semantic_edges = link_semantic(written_events, all_events, config)
+        graph_store.append(semantic_edges)
+        if config.debug_mode:
+            print(f"[post_session] Semantic edges: {len(semantic_edges)} written to graph.jsonl")
 
     # Step 5: Generate report
 

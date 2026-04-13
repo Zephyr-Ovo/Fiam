@@ -202,6 +202,7 @@ def cmd_clean(args: argparse.Namespace) -> None:
     for label, path in [
         ("cursor",    store_dir / "cursor.json"),
         ("cache",     store_dir / "narrative_cache.json"),
+        ("graph",     store_dir / "graph.jsonl"),
     ]:
         if path.exists():
             targets.append((path, label))

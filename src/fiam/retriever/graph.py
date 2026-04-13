@@ -7,7 +7,7 @@ Implements three SYNAPSE mechanisms:
      each other (keeps results diverse)
   3. Temporal edge decay: edge weights decay toward 0 over time
 
-The graph is rebuilt from event links on each pre_session (cheap at <10k events).
+The graph is rebuilt from store/graph.jsonl on each pre_session (cheap at <10k events).
 """
 
 from __future__ import annotations
@@ -32,14 +32,55 @@ class MemoryGraph:
     # Construction
     # ------------------------------------------------------------------
 
-    def build(self, events: list[EventRecord], now: datetime | None = None) -> None:
-        """Populate graph from event records. Edges come from event.links."""
+    def build(self, events: list[EventRecord], now: datetime | None = None,
+              edges: list[dict] | None = None) -> None:
+        """Populate graph from event records and an external edge list.
+
+        Args:
+            events: All events (used to register nodes).
+            now: Reference time for edge decay.
+            edges: List of edge dicts from GraphStore.load_as_dicts().
+                   Each: {"src", "dst", "type", "weight"}.
+                   If None, falls back to event.links (legacy compat).
+        """
         now = now or datetime.now(timezone.utc)
         self.G.clear()
 
+        event_times: dict[str, datetime] = {}
         for ev in events:
             self.G.add_node(ev.event_id, time=ev.time, arousal=ev.arousal)
+            event_times[ev.event_id] = ev.time
 
+        # Determine edge source: graph.jsonl edges OR legacy event.links
+        if edges is not None:
+            self._add_edges_from_list(edges, event_times, now)
+        else:
+            self._add_edges_from_events(events, now)
+
+    def _add_edges_from_list(self, edges: list[dict], event_times: dict[str, datetime],
+                             now: datetime) -> None:
+        """Add edges from graph.jsonl format."""
+        for edge in edges:
+            src = edge.get("src", "")
+            dst = edge.get("dst", "")
+            if not src or not dst or src not in self.G or dst not in self.G:
+                continue
+            raw_weight = edge.get("weight", 0.5)
+            link_type = edge.get("type", "temporal")
+
+            edge_time = event_times.get(src, now)
+            age_days = (now - edge_time).total_seconds() / 86400.0
+            decay = exp(-0.693 * age_days / self._decay_half_life)
+            effective = raw_weight * decay
+
+            if self.G.has_edge(src, dst):
+                if effective <= self.G[src][dst].get("weight", 0.0):
+                    continue
+
+            self.G.add_edge(src, dst, weight=effective, type=link_type)
+
+    def _add_edges_from_events(self, events: list[EventRecord], now: datetime) -> None:
+        """Legacy: add edges from event.links fields."""
         for ev in events:
             for link in ev.links:
                 if not isinstance(link, dict):
@@ -50,13 +91,11 @@ class MemoryGraph:
                 raw_weight = link.get("weight", 0.5)
                 link_type = link.get("type", "temporal")
 
-                # Temporal decay: older edges weaken
-                edge_time = ev.time  # approximate edge creation ≈ event time
+                edge_time = ev.time
                 age_days = (now - edge_time).total_seconds() / 86400.0
                 decay = exp(-0.693 * age_days / self._decay_half_life)
                 effective = raw_weight * decay
 
-                # If edge already exists (bidirectional links), keep the stronger one
                 if self.G.has_edge(ev.event_id, target):
                     existing_w = self.G[ev.event_id][target].get("weight", 0.0)
                     if effective <= existing_w:

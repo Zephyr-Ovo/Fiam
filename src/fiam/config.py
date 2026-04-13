@@ -210,6 +210,10 @@ class FiamConfig:
         return self.store_dir / "embeddings"
 
     @property
+    def graph_jsonl_path(self) -> Path:
+        return self.store_dir / "graph.jsonl"
+
+    @property
     def narrative_cache_path(self) -> Path:
         return self.store_dir / "narrative_cache.json"
 

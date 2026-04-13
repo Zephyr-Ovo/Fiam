@@ -125,28 +125,33 @@ def cmd_graph(args: argparse.Namespace) -> None:
         ]
         (graph_dir / f"{name}.md").write_text("\n".join(lines), encoding="utf-8")
 
-    # --- Phase 3: Compute similarity & add wikilinks ---
-    # Load embeddings
-    vecs: dict[str, np.ndarray] = {}
-    for ev in events:
-        if ev.embedding:
-            npy_path = config.store_dir / ev.embedding
-            if npy_path.exists():
-                vecs[ev.filename] = np.load(npy_path).astype(np.float32).flatten()
+    # --- Phase 3: Load edges from graph.jsonl + add wikilinks ---
+    from fiam.store.graph_store import GraphStore
+    graph_store = GraphStore(config.graph_jsonl_path)
+    all_edges = graph_store.load_all()
 
-    # Pairwise cosine similarity → wikilinks
     links: dict[str, list[str]] = {ev.filename: [] for ev in events}
-    ev_ids = [ev.filename for ev in events if ev.filename in vecs]
     link_count = 0
 
-    for i, a in enumerate(ev_ids):
-        for b in ev_ids[i + 1:]:
-            va, vb = vecs[a], vecs[b]
-            sim = float(np.dot(va, vb) / (np.linalg.norm(va) * np.linalg.norm(vb) + 1e-9))
-            if sim >= threshold:
-                links[a].append(b)
-                links[b].append(a)
-                link_count += 1
+    for edge in all_edges:
+        if edge.src in links and edge.dst in links:
+            if edge.dst not in links[edge.src]:
+                links[edge.src].append(edge.dst)
+            if edge.src not in links[edge.dst]:
+                links[edge.dst].append(edge.src)
+            link_count += 1
+
+    # Fallback: if graph.jsonl is empty, use cosine similarity (legacy)
+    if link_count == 0 and vecs:
+        ev_ids = [ev.filename for ev in events if ev.filename in vecs]
+        for i, a in enumerate(ev_ids):
+            for b in ev_ids[i + 1:]:
+                va, vb = vecs[a], vecs[b]
+                sim = float(np.dot(va, vb) / (np.linalg.norm(va) * np.linalg.norm(vb) + 1e-9))
+                if sim >= threshold:
+                    links[a].append(b)
+                    links[b].append(a)
+                    link_count += 1
 
     # Append wikilinks to files
     for ev in events:

@@ -2,7 +2,7 @@
 Semantic co-occurrence linker.
 
 After a new event is embedded, compare its vector to all existing events.
-Add bidirectional "semantic" links for pairs with cosine similarity > threshold.
+Add "semantic" edges to graph.jsonl for pairs with cosine similarity > threshold.
 Weight = cosine similarity itself (already in [0, 1]).
 """
 
@@ -12,6 +12,7 @@ import numpy as np
 
 from fiam.config import FiamConfig
 from fiam.store.formats import EventRecord
+from fiam.store.graph_store import Edge, GraphStore
 
 _DEFAULT_THRESHOLD = 0.75
 
@@ -22,10 +23,6 @@ def _cosine(a: np.ndarray, b: np.ndarray) -> float:
     if na == 0 or nb == 0:
         return 0.0
     return float(np.dot(a, b) / (na * nb))
-
-
-def _linked_ids(event: EventRecord) -> set[str]:
-    return {link["id"] for link in event.links if isinstance(link, dict)}
 
 
 def _load_vec(event: EventRecord, config: FiamConfig) -> np.ndarray | None:
@@ -45,12 +42,13 @@ def link_semantic(
     all_events: list[EventRecord],
     config: FiamConfig,
     threshold: float = _DEFAULT_THRESHOLD,
-) -> list[EventRecord]:
-    """Add semantic links between new events and all events above threshold.
+) -> list[Edge]:
+    """Create semantic edges between new events and all events above threshold.
 
-    Returns existing events whose links were modified (caller persists them).
+    Returns list of new Edge objects (caller writes them to GraphStore).
     """
-    modified_existing: list[EventRecord] = []
+    graph_store = GraphStore(config.graph_jsonl_path)
+    new_edges: list[Edge] = []
 
     # Pre-load new event vectors
     new_vecs: dict[str, np.ndarray] = {}
@@ -60,7 +58,7 @@ def link_semantic(
             new_vecs[ev.event_id] = vec
 
     if not new_vecs:
-        return modified_existing
+        return new_edges
 
     for existing in all_events:
         existing_vec = _load_vec(existing, config)
@@ -80,19 +78,12 @@ def link_semantic(
 
             weight = round(sim, 4)
 
-            if existing.event_id not in _linked_ids(new_ev):
-                new_ev.links.append({
-                    "id": existing.event_id,
-                    "type": "semantic",
-                    "weight": weight,
-                })
-            if new_ev.event_id not in _linked_ids(existing):
-                existing.links.append({
-                    "id": new_ev.event_id,
-                    "type": "semantic",
-                    "weight": weight,
-                })
-                if existing not in modified_existing:
-                    modified_existing.append(existing)
+            if not graph_store.has_edge(new_ev.event_id, existing.event_id):
+                new_edges.append(Edge(
+                    src=new_ev.event_id,
+                    dst=existing.event_id,
+                    type="semantic",
+                    weight=weight,
+                ))
 
-    return modified_existing
+    return new_edges

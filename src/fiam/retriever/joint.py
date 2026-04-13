@@ -93,9 +93,11 @@ def search(
         candidates.append((event, base * penalty, event_vec))
 
     # --- Second pass: graph-based spreading activation ---
-    # Build graph from all events (cheap at <10k nodes)
+    # Build graph from all events + graph.jsonl edges
+    from fiam.store.graph_store import GraphStore
     graph = MemoryGraph()
-    graph.build(all_events, now=now)
+    graph_store = GraphStore(config.graph_jsonl_path)
+    graph.build(all_events, now=now, edges=graph_store.load_as_dicts())
 
     # Seed = top candidates by base score
     candidates.sort(key=lambda t: t[1], reverse=True)

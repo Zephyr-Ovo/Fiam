@@ -88,7 +88,6 @@ class EventRecord:
             "embedding": self.embedding,
             "embedding_dim": self.embedding_dim,
             "tags": list(self.tags),
-            "links": list(self.links),
         }
         if self.dominant_label:
             d["dominant_label"] = self.dominant_label
