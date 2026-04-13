@@ -328,10 +328,10 @@ def post_session(
                 written_events, config, context_events=context)
             if llm_edges:
                 graph_store.append(llm_edges)
-            if name_map:
-                _rename_events(store, written_events, name_map, config)
             unnamed = [w.event_id for w in written_events
                        if w.event_id not in name_map]
+            if name_map:
+                _rename_events(store, written_events, name_map, config)
             if unnamed:
                 print(f"[post_session] WARNING: DS did not name: {unnamed}")
             rec["outputs"] = {"llm_edges": len(llm_edges),
