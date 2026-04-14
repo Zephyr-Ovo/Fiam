@@ -35,6 +35,7 @@ from pathlib import Path
 import frontmatter
 
 from fiam.config import FiamConfig
+from fiam_lib.scheduler import WAKE_RE, extract_wake_tags, append_to_schedule
 
 
 # ------------------------------------------------------------------
@@ -256,6 +257,15 @@ def dispatch_file(path: Path, config: FiamConfig) -> bool:
     body = post.content.strip()
     if not body:
         return False
+
+    # Extract <<WAKE:...>> tags before sending — save to schedule, strip from body
+    wake_tags = extract_wake_tags(body)
+    if wake_tags:
+        n = append_to_schedule(wake_tags, config)
+        print(f"[postman] scheduler +{n} wake(s) from {path.name}")
+    body = WAKE_RE.sub("", body).strip()
+    if not body:
+        return True  # Only had WAKE tags, nothing to send
 
     if via == "telegram":
         token = os.environ.get(config.tg_bot_token_env, "")
