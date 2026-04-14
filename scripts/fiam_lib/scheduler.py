@@ -103,6 +103,31 @@ def load_pending(config: FiamConfig) -> list[dict]:
     return pending
 
 
+def load_due(config: FiamConfig) -> list[dict]:
+    """Load schedule entries whose wake_at has passed (due to fire)."""
+    path = config.schedule_path
+    if not path.exists():
+        return []
+
+    now = datetime.now(timezone.utc)
+    due = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+            wake_at = datetime.fromisoformat(entry["wake_at"])
+            if wake_at.tzinfo is None:
+                wake_at = wake_at.replace(tzinfo=timezone.utc)
+            if wake_at <= now:
+                entry["_wake_utc"] = wake_at
+                due.append(entry)
+        except (json.JSONDecodeError, KeyError, ValueError):
+            continue
+    return due
+
+
 def queue_summary(config: FiamConfig) -> str:
     """Return a short summary for awareness injection."""
     pending = load_pending(config)
