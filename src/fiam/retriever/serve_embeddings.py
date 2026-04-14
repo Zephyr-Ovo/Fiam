@@ -250,6 +250,31 @@ class EmotionBatchResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+_CHUNK_CHARS = 512  # chunk size for mean-pool encoding
+
+
+def _mean_pool_encode(model, text: str) -> np.ndarray:
+    """Encode a text of any length via chunk-level mean pooling.
+
+    Splits *text* into ~512-char chunks, encodes each independently,
+    then returns the L2-normalised mean of all chunk vectors.
+    This preserves information from long texts without the O(n^2) cost
+    of encoding a single very-long sequence.
+    """
+    if len(text) <= _CHUNK_CHARS:
+        vec = model.encode([text], convert_to_numpy=True)[0]
+    else:
+        chunks = [text[i:i + _CHUNK_CHARS]
+                  for i in range(0, len(text), _CHUNK_CHARS)]
+        chunk_vecs = model.encode(chunks, convert_to_numpy=True)  # (N, dim)
+        vec = chunk_vecs.mean(axis=0)
+    # L2 normalise
+    norm = np.linalg.norm(vec)
+    if norm > 1e-9:
+        vec = vec / norm
+    return vec
+
+
 @app.post("/embed", response_model=EmbedResponse)
 def embed(req: EmbedRequest):
     if not req.texts:
@@ -257,11 +282,7 @@ def embed(req: EmbedRequest):
     if len(req.texts) > 128:
         raise HTTPException(400, "max 128 texts per request")
     model = _load_model(_model_name)
-    # Truncate texts to ~512 chars to keep encoding fast on CPU.
-    # bge-m3 max_seq_length is 8192 but long sequences are very slow;
-    # 512 chars ≈ 128-256 tokens, sufficient for similarity scoring.
-    truncated = [t[:512] for t in req.texts]
-    vecs: np.ndarray = model.encode(truncated, convert_to_numpy=True)
+    vecs = np.stack([_mean_pool_encode(model, t) for t in req.texts])
     return EmbedResponse(vectors=vecs.astype(np.float32).tolist())
 
 
