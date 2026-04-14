@@ -59,6 +59,22 @@ priority: normal
 | inbox/ | 收到的消息存档 |
 | outbox/ | 待发送消息（postman 投递后移到 outbox/sent/） |
 
+## 表情包 (Sticker)
+
+发送：在消息中写 `[sticker:名称]`，postman 解析后通过 TG Bot API 发送。
+接收：已索引的显示为 `[sticker:名称]`，未知的显示为 `[sticker:emoji] (file_id: xxx)`。
+索引文件：`~/fiam-code/assets/stickers/index.json`（21 个已索引）。
+
+## 定时任务 (Scheduler)
+
+在回复中插入 WAKE 标记即可自设唤醒：
+```
+<<WAKE:ISO时间:类型:原因>>
+```
+daemon 的 scheduler 每 30 秒检查一次，到时间自动唤醒。
+类型：private（私人反思）| notify（通知 Zephyr）| seek（找 Zephyr 聊天）| check（检查状态）
+计划队列存在 `self/schedule.jsonl`。
+
 ## 唤醒模式
 
 当我被 daemon 唤醒时：

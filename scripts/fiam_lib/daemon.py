@@ -34,6 +34,22 @@ from fiam_lib.ui import _console, _flow, _ANIM_IDLE, _ANIM_ACTIVE, _animated_sle
 
 
 # ------------------------------------------------------------------
+# Comm state: notify / mute / block
+# ------------------------------------------------------------------
+
+def _load_comm_state(config) -> str:
+    """Load communication state from self/comm_state.json. Default: 'notify'."""
+    state_file = Path(config.home_path) / "self" / "comm_state.json"
+    if state_file.exists():
+        try:
+            data = json.loads(state_file.read_text())
+            return data.get("state", "notify")
+        except (json.JSONDecodeError, OSError):
+            pass
+    return "notify"
+
+
+# ------------------------------------------------------------------
 # Session management helpers
 # ------------------------------------------------------------------
 
@@ -452,34 +468,46 @@ def cmd_start(args: argparse.Namespace) -> None:
                     _console.print(f"  [dim]└[{ts}][/dim] [bold #7eb8f7]✉[/]  inbox +{n_tg + n_email}")
                     _plog.info("inbox  tg=+%d email=+%d", n_tg, n_email)
 
-                    # Wake Fiet if inbox has messages and not interactive
-                    interactive = _is_interactive(config)
-                    _plog.debug("interactive=%s", interactive)
-                    if not interactive:
-                        inbox_jsonl = config.inbox_jsonl_path
-                        jsonl_exists = inbox_jsonl.exists() and inbox_jsonl.stat().st_size > 0
-                        _plog.debug("inbox_jsonl exists=%s path=%s", jsonl_exists, inbox_jsonl)
-                        if jsonl_exists:
-                            tag = "tg" if n_tg else "email"
-                            summary = f"{n_tg + n_email} new message(s)"
-                            _plog.info("wake attempt  tag=%s summary=%s", tag, summary)
-                            ok = _wake_session(config, summary, tag=tag)
-                            if ok:
-                                ts2 = time.strftime("%H:%M")
-                                _console.print(f"  [dim]└[{ts2}][/dim] [bold #a8f0e8]↗[/]  wake sent")
-                                _plog.info("wake OK")
-                            else:
-                                _plog.warning("wake FAILED, retrying...")
-                                ok2 = _wake_session(config, summary, tag=tag)
-                                if not ok2:
-                                    _console.print(f"  [yellow]wake failed twice — messages remain queued[/]")
-                                    _plog.error("wake FAILED x2 — messages queued")
-                                    session = _load_active_session(config)
-                                    if session:
-                                        _retire_session(config, reason="wake_failed")
+                    # Check comm state
+                    comm_state = _load_comm_state(config)
+                    _plog.debug("comm_state=%s", comm_state)
+
+                    if comm_state == "block":
+                        _plog.info("comm_state=block — messages archived, no wake")
+                        _console.print(f"  [dim]comm: block — messages archived[/dim]")
+                    elif comm_state == "mute":
+                        _plog.info("comm_state=mute — messages queued, wake deferred")
+                        _console.print(f"  [dim]comm: mute — queued for later[/dim]")
                     else:
-                        _console.print(f"  [dim]interactive session — messages queued for hook[/dim]")
-                        _plog.info("interactive — skipping wake")
+                        # notify (default) — wake Fiet
+                        # Wake Fiet if inbox has messages and not interactive
+                        interactive = _is_interactive(config)
+                        _plog.debug("interactive=%s", interactive)
+                        if not interactive:
+                            inbox_jsonl = config.inbox_jsonl_path
+                            jsonl_exists = inbox_jsonl.exists() and inbox_jsonl.stat().st_size > 0
+                            _plog.debug("inbox_jsonl exists=%s path=%s", jsonl_exists, inbox_jsonl)
+                            if jsonl_exists:
+                                tag = "tg" if n_tg else "email"
+                                summary = f"{n_tg + n_email} new message(s)"
+                                _plog.info("wake attempt  tag=%s summary=%s", tag, summary)
+                                ok = _wake_session(config, summary, tag=tag)
+                                if ok:
+                                    ts2 = time.strftime("%H:%M")
+                                    _console.print(f"  [dim]└[{ts2}][/dim] [bold #a8f0e8]↗[/]  wake sent")
+                                    _plog.info("wake OK")
+                                else:
+                                    _plog.warning("wake FAILED, retrying...")
+                                    ok2 = _wake_session(config, summary, tag=tag)
+                                    if not ok2:
+                                        _console.print(f"  [yellow]wake failed twice — messages remain queued[/]")
+                                        _plog.error("wake FAILED x2 — messages queued")
+                                        session = _load_active_session(config)
+                                        if session:
+                                            _retire_session(config, reason="wake_failed")
+                        else:
+                            _console.print(f"  [dim]interactive session — messages queued for hook[/dim]")
+                            _plog.info("interactive — skipping wake")
             except Exception as e:
                 _plog.error("inbox error: %s", e, exc_info=True)
                 if config.debug_mode:

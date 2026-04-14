@@ -60,6 +60,67 @@ def _tg_send(token: str, chat_id: str, text: str) -> bool:
         return False
 
 
+def _tg_typing(token: str, chat_id: str) -> None:
+    """Send typing indicator."""
+    url = f"https://api.telegram.org/bot{token}/sendChatAction"
+    payload = json.dumps({"chat_id": chat_id, "action": "typing"}).encode()
+    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+    try:
+        urllib.request.urlopen(req, timeout=5)
+    except Exception:
+        pass
+
+
+def _segment_message(text: str) -> list[str]:
+    """Split a long message into natural TG-sized segments (ported from Aeliana)."""
+    import random
+    # 1st pass: split on paragraph breaks
+    raw = text.split("\n\n")
+    # 2nd pass: long chunks split on single newlines
+    chunks = []
+    for seg in raw:
+        if len(seg) > 200:
+            chunks.extend(seg.split("\n"))
+        else:
+            chunks.append(seg)
+    # 3rd pass: merge tiny adjacent pieces
+    merged = []
+    for c in chunks:
+        c = c.strip()
+        if not c:
+            continue
+        if merged and len(c) < 30 and len(merged[-1]) < 80:
+            merged[-1] += "\n" + c
+        else:
+            merged.append(c)
+    # Random sentence-level splitting (~40% chance on Chinese/English punctuation)
+    final = []
+    for seg in merged:
+        if len(seg) > 60 and random.random() < 0.4:
+            parts = re.split(r'(?<=[。！？!?])\s*', seg)
+            parts = [p for p in parts if p.strip()]
+            if len(parts) > 1:
+                final.extend(parts)
+                continue
+        final.append(seg)
+    return final if final else [text]
+
+
+def _tg_send_segmented(token: str, chat_id: str, text: str) -> bool:
+    """Send a message as natural segments with typing indicators."""
+    segments = _segment_message(text)
+    if len(segments) <= 1:
+        return _tg_send(token, chat_id, text)
+    ok = True
+    for i, seg in enumerate(segments):
+        if i > 0:
+            _tg_typing(token, chat_id)
+            time.sleep(min(1.0 + len(seg) * 0.02, 3.0))
+        if not _tg_send(token, chat_id, seg):
+            ok = False
+    return ok
+
+
 def _tg_send_sticker(token: str, chat_id: str, file_id: str) -> bool:
     """Send a sticker by file_id via Telegram Bot API."""
     url = f"https://api.telegram.org/bot{token}/sendSticker"
@@ -206,7 +267,7 @@ def dispatch_file(path: Path, config: FiamConfig) -> bool:
         text, stickers = _extract_stickers(body, config)
         ok = True
         if text:
-            ok = _tg_send(token, chat_id, text)
+            ok = _tg_send_segmented(token, chat_id, text)
         for stk in stickers:
             if stk["type"] == "file_id":
                 _tg_send_sticker(token, chat_id, stk["value"])

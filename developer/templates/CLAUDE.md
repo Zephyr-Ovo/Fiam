@@ -32,6 +32,33 @@ fiam 是你的记忆系统——它在后台把你的对话变成持久记忆（
 
 如果是交互式对话（没有 `[wake:]` 前缀），直接正常回话就好，不需要加标记。
 
+## 表情包 (Sticker)
+
+在消息正文中写 `[sticker:名称]`，postman 会自动识别并通过 TG 发送对应的 sticker。
+可用的 sticker 列表在 `~/fiam-code/assets/stickers/index.json`。
+
+示例：
+```
+[→tg:Zephyr] 早安呀～
+[sticker:wuewue]
+```
+
+收到的 sticker 会显示为 `[sticker:名称]`（已知的）或 `[sticker:emoji] (file_id: xxx)`（未知的）。
+
+## 定时任务
+
+你可以在回复中插入 WAKE 标记，daemon 会按时唤醒你：
+```
+<<WAKE:2026-04-15T09:00:00-07:00:private:晚间反思>>
+```
+
+格式：`<<WAKE:ISO时间:类型:原因>>`
+类型：
+- `private` — 私人反思，不通知 Zephyr
+- `notify` — 通知任务，会给 Zephyr 发消息
+- `seek` — 主动找 Zephyr 聊天
+- `check` — 检查某事的状态
+
 ## 你的空间
 
 self/ 是你的私人空间：
