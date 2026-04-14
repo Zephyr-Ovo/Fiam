@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import re
 import signal
@@ -13,6 +14,13 @@ import time
 from pathlib import Path
 
 from fiam_lib.core import _project_root, _toml_path, _build_config, _pid_path, _is_daemon_running
+
+# ------------------------------------------------------------------
+# Pipeline diagnostic log  (logs/pipeline.log)
+# ------------------------------------------------------------------
+_plog = logging.getLogger("fiam.pipeline")
+_plog.setLevel(logging.DEBUG)
+_plog.propagate = False  # don't bubble to root logger
 from fiam_lib.jsonl import (
     _claude_projects_dir,
     _sanitize_home_path,
@@ -123,19 +131,26 @@ def _wake_session(config, message: str, tag: str = "tg") -> bool:
             timeout=120,
             cwd=str(config.home_path),
         )
+        _plog.info("wake cmd=%s  exit=%d", " ".join(cmd[:4]), result.returncode)
+        if result.stderr:
+            _plog.info("wake stderr: %s", result.stderr.strip()[:500])
         if result.returncode != 0:
+            _plog.warning("wake FAILED stdout: %s", result.stdout.strip()[:500])
             _console.print(f"  [red]wake failed[/] (exit {result.returncode})")
             return False
 
         # Parse result JSON and extract outbound markers + session_id
         try:
             data = json.loads(result.stdout)
+            _plog.info("wake response: cost=$%.4f  session=%s",
+                       data.get("total_cost_usd", 0), data.get("session_id", "?")[:8])
             # If we created a new session, save the session_id
             if not resuming:
                 new_sid = data.get("session_id", "")
                 if new_sid:
                     _save_active_session(config, new_sid)
                     _console.print(f"  [dim]└ new session {new_sid[:8]}[/dim]")
+                    _plog.info("new session created: %s", new_sid)
             response_text = data.get("result", "")
             if response_text:
                 _extract_outbound_markers(config, response_text)
@@ -190,6 +205,14 @@ def cmd_start(args: argparse.Namespace) -> None:
     """Daemon: poll JSONL for activity, process on idle timeout."""
     config = _build_config(args)
     code_path = _project_root()
+
+    # ── Setup pipeline log ──
+    log_dir = code_path / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    _fh = logging.FileHandler(log_dir / "pipeline.log", encoding="utf-8")
+    _fh.setFormatter(logging.Formatter("%(asctime)s  %(message)s", datefmt="%m-%d %H:%M:%S"))
+    _plog.addHandler(_fh)
+    _plog.info("─── daemon start (PID %d) ───", os.getpid())
 
     # PID check
     existing_pid = _is_daemon_running(code_path)
@@ -357,12 +380,15 @@ def cmd_start(args: argparse.Namespace) -> None:
                 total_turns.extend(turns)
             cursor[jkey] = {"byte_offset": new_offset, "mtime": jf_mtime}
 
+        _plog.info("process  turns=%d files=%d", len(total_turns), len(jf_list))
         if total_turns:
             try:
                 r = post_session(config, total_turns)
                 _console.print(f"  [bold #a8f0e8]+{r['events_written']}[/] memories")
+                _plog.info("post_session  events_written=%d", r['events_written'])
             except Exception as e:
                 _console.print(f"  [red]error:[/] {e}")
+                _plog.error("post_session error: %s", e, exc_info=True)
 
             try:
                 store = HomeStore(config)
@@ -371,8 +397,10 @@ def cmd_start(args: argparse.Namespace) -> None:
                 _write_recall(config, events)
                 recall_query_vec = None
                 _console.print(f"  recall [#f7a8d0]←[/] [bold #f7e08a]{len(events)}[/] fragments")
+                _plog.info("recall updated  fragments=%d", len(events))
             except Exception as e:
                 _console.print(f"  [red]recall error:[/] {e}")
+                _plog.error("recall error: %s", e, exc_info=True)
         else:
             _console.print(f"  [dim]·  up to date[/dim]")
 
@@ -399,39 +427,50 @@ def cmd_start(args: argparse.Namespace) -> None:
             try:
                 n_tg = fetch_tg_inbox(config)
                 n_email = fetch_inbox(config)
+                _plog.debug("poll  tg=%d email=%d", n_tg, n_email)
                 if n_tg or n_email:
                     ts = time.strftime("%H:%M")
                     _console.print(f"  [dim]└[{ts}][/dim] [bold #7eb8f7]✉[/]  inbox +{n_tg + n_email}")
+                    _plog.info("inbox  tg=+%d email=+%d", n_tg, n_email)
 
                     # Wake Fiet if inbox has messages and not interactive
-                    if not _is_interactive(config):
+                    interactive = _is_interactive(config)
+                    _plog.debug("interactive=%s", interactive)
+                    if not interactive:
                         inbox_jsonl = config.inbox_jsonl_path
-                        if inbox_jsonl.exists() and inbox_jsonl.stat().st_size > 0:
+                        jsonl_exists = inbox_jsonl.exists() and inbox_jsonl.stat().st_size > 0
+                        _plog.debug("inbox_jsonl exists=%s path=%s", jsonl_exists, inbox_jsonl)
+                        if jsonl_exists:
                             tag = "tg" if n_tg else "email"
                             summary = f"{n_tg + n_email} new message(s)"
+                            _plog.info("wake attempt  tag=%s summary=%s", tag, summary)
                             ok = _wake_session(config, summary, tag=tag)
                             if ok:
                                 ts2 = time.strftime("%H:%M")
                                 _console.print(f"  [dim]└[{ts2}][/dim] [bold #a8f0e8]↗[/]  wake sent")
+                                _plog.info("wake OK")
                             else:
-                                # Wake failed — retry once, then retire session
+                                _plog.warning("wake FAILED, retrying...")
                                 ok2 = _wake_session(config, summary, tag=tag)
                                 if not ok2:
                                     _console.print(f"  [yellow]wake failed twice — messages remain queued[/]")
+                                    _plog.error("wake FAILED x2 — messages queued")
                                     session = _load_active_session(config)
                                     if session:
                                         _retire_session(config, reason="wake_failed")
                     else:
                         _console.print(f"  [dim]interactive session — messages queued for hook[/dim]")
+                        _plog.info("interactive — skipping wake")
             except Exception as e:
+                _plog.error("inbox error: %s", e, exc_info=True)
                 if config.debug_mode:
                     print(f"  [inbox] Error: {e}", file=sys.stderr)
 
         # ── Outbox dispatch ──
         try:
             sweep_outbox(config)
-        except Exception:
-            pass
+        except Exception as e:
+            _plog.error("outbox error: %s", e)
 
         # Check JSONL directory for activity
         if not jsonl_dir.is_dir():
@@ -448,6 +487,7 @@ def cmd_start(args: argparse.Namespace) -> None:
             if not active:
                 ts = time.strftime("%H:%M")
                 _console.print(f"  [dim]└[{ts}][/dim] [bold #f7e08a]✦[/]  active")
+                _plog.info("jsonl ACTIVE")
                 active = True
             last_activity = max_mtime
 
@@ -464,6 +504,7 @@ def cmd_start(args: argparse.Namespace) -> None:
         if active and (time.time() - last_activity) > idle_timeout:
             ts = time.strftime("%H:%M")
             _console.print(f"  [dim]└[{ts}][/dim] [bold #f7a8d0]⟳[/]  processing...")
+            _plog.info("idle timeout → processing")
             _process_pending()
 
     # ── Graceful shutdown: process any pending content before exit ──
@@ -474,6 +515,7 @@ def cmd_start(args: argparse.Namespace) -> None:
 
     # Cleanup
     pid_file.unlink(missing_ok=True)
+    _plog.info("─── daemon stop ───")
     _console.print()
     _console.print(_flow("  ( ˘ω˘ )  see you"))
     _console.print()
