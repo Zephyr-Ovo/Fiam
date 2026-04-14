@@ -347,6 +347,8 @@ def fetch_inbox(
             status, msg_data = conn.fetch(mid, "(RFC822)")
             if status != "OK":
                 continue
+            # Mark as seen so we don't fetch it again
+            conn.store(mid, "+FLAGS", "\\Seen")
 
             raw = msg_data[0][1]
             msg = email_mod.message_from_bytes(raw)
