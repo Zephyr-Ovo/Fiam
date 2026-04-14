@@ -105,16 +105,16 @@ def _env_map() -> list[str]:
     lines = ["环境地图:"]
 
     if node == "isp":
-        lines.append("  - [当前] ISP (99.173.22.93) — CC 全功能，SSH 可用，主站")
-        lines.append("  - DO (209.38.69.231) — ~/tools/go_do.sh — 算力节点 (embedding API)")
+        lines.append("  - [当前] ISP — CC 全功能，SSH 可用，主站")
+        lines.append("  - DO — ~/tools/go_do.sh — 算力节点 (embedding API)")
         local_status = "隧道通畅" if tunnel_up else "隧道断开 — Local 不可达，降级为 TG"
         lines.append(f"  - 本地 (Zephyr 电脑) — ~/tools/go_local.sh — {local_status}")
     elif node == "do":
-        lines.append("  - [当前] DO (209.38.69.231) — 算力节点，无状态")
-        lines.append("  - ISP (99.173.22.93) — ~/tools/return_isp.sh — 回主站")
+        lines.append("  - [当前] DO — 算力节点，无状态")
+        lines.append("  - ISP — ~/tools/return_isp.sh — 回主站")
     elif node == "local":
         lines.append("  - [当前] Local (Zephyr 电脑) — Desktop/AW 数据可用")
-        lines.append("  - ISP (99.173.22.93) — 主站 (通过 relay 中转)")
+        lines.append("  - ISP — 主站 (通过 relay 中转)")
     else:
         lines.append(f"  - [当前] 未知节点 ({node})")
 
