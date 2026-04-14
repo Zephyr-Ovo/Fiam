@@ -118,7 +118,7 @@ def _wake_session(config, message: str, tag: str = "tg") -> bool:
     cmd = [
         "claude", "-p", f"[wake:{tag}] {message}",
         "--output-format", "json",
-        "--max-turns", "3",
+        "--max-turns", "10",
     ]
     if resuming:
         cmd.extend(["--resume", session["session_id"]])
@@ -128,34 +128,53 @@ def _wake_session(config, message: str, tag: str = "tg") -> bool:
             cmd,
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=180,
             cwd=str(config.home_path),
         )
         _plog.info("wake cmd=%s  exit=%d", " ".join(cmd[:4]), result.returncode)
         if result.stderr:
             _plog.info("wake stderr: %s", result.stderr.strip()[:500])
-        if result.returncode != 0:
-            _plog.warning("wake FAILED stdout: %s", result.stdout.strip()[:500])
-            _console.print(f"  [red]wake failed[/] (exit {result.returncode})")
-            return False
 
-        # Parse result JSON and extract outbound markers + session_id
+        # Parse result JSON — even on exit 1 (error_max_turns still has session_id)
+        data = None
         try:
             data = json.loads(result.stdout)
-            _plog.info("wake response: cost=$%.4f  session=%s",
-                       data.get("total_cost_usd", 0), data.get("session_id", "?")[:8])
-            # If we created a new session, save the session_id
-            if not resuming:
-                new_sid = data.get("session_id", "")
-                if new_sid:
-                    _save_active_session(config, new_sid)
-                    _console.print(f"  [dim]└ new session {new_sid[:8]}[/dim]")
-                    _plog.info("new session created: %s", new_sid)
+            _plog.info("wake response: cost=$%.4f  session=%s  subtype=%s",
+                       data.get("total_cost_usd", 0),
+                       data.get("session_id", "?")[:8],
+                       data.get("subtype", ""))
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        if result.returncode != 0:
+            # error_max_turns is a partial success — session exists, save it
+            if data and data.get("subtype") == "error_max_turns":
+                _plog.warning("wake hit max_turns — partial success")
+                _console.print(f"  [yellow]wake partial[/] (max_turns)")
+            else:
+                _plog.warning("wake FAILED stdout: %s", result.stdout.strip()[:500])
+                _console.print(f"  [red]wake failed[/] (exit {result.returncode})")
+                # Still save session_id if we got one on a new session
+                if data and not resuming:
+                    new_sid = data.get("session_id", "")
+                    if new_sid:
+                        _save_active_session(config, new_sid)
+                        _plog.info("saved session from failed wake: %s", new_sid)
+                return False
+
+        # Save new session_id
+        if data and not resuming:
+            new_sid = data.get("session_id", "")
+            if new_sid:
+                _save_active_session(config, new_sid)
+                _console.print(f"  [dim]└ new session {new_sid[:8]}[/dim]")
+                _plog.info("new session created: %s", new_sid)
+
+        # Extract outbound markers from response
+        if data:
             response_text = data.get("result", "")
             if response_text:
                 _extract_outbound_markers(config, response_text)
-        except (json.JSONDecodeError, KeyError):
-            pass
 
         return True
     except subprocess.TimeoutExpired:

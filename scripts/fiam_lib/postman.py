@@ -161,17 +161,23 @@ def _email_send(
     subject: str, body: str,
     password: str = "",
 ) -> bool:
-    """Send a plain-text email via SMTP with STARTTLS. Returns True on success."""
+    """Send a plain-text email via SMTP. Uses SSL for port 465, STARTTLS otherwise."""
     msg = MIMEText(body, "plain", "utf-8")
     msg["From"] = from_addr
     msg["To"] = to_addr
     msg["Subject"] = subject
     try:
-        with smtplib.SMTP(smtp_host, smtp_port) as s:
-            s.starttls()
-            if password:
-                s.login(from_addr, password)
-            s.send_message(msg)
+        if smtp_port == 465:
+            with smtplib.SMTP_SSL(smtp_host, smtp_port) as s:
+                if password:
+                    s.login(from_addr, password)
+                s.send_message(msg)
+        else:
+            with smtplib.SMTP(smtp_host, smtp_port) as s:
+                s.starttls()
+                if password:
+                    s.login(from_addr, password)
+                s.send_message(msg)
         return True
     except Exception as e:
         print(f"[postman] Email send failed: {e}")
