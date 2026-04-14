@@ -16,19 +16,22 @@ HOME_DIR="$CLAUDE_PROJECT_DIR"
 SELF_DIR="$HOME_DIR/self"
 SUMMARY_FILE="$SELF_DIR/daily_summary.md"
 LOCK_FILE="$HOME_DIR/interactive.lock"
+ACTIVE_SESSION="$HOME_DIR/active_session.json"
 
 # Read stdin
 INPUT=$(cat)
 
-# Detect source
-SOURCE=$(echo "$INPUT" | python3 -c "
+# Parse source and session_id from hook input
+eval "$(echo "$INPUT" | python3 -c "
 import sys, json
 try:
     data = json.loads(sys.stdin.read())
-    print(data.get('source', 'unknown'))
+    print(f'SOURCE={json.dumps(data.get(\"source\", \"unknown\"))}')
+    print(f'SESSION_ID={json.dumps(data.get(\"session_id\", \"\"))}')
 except Exception:
-    print('unknown')
-" 2>/dev/null)
+    print('SOURCE=\"unknown\"')
+    print('SESSION_ID=\"\"')
+" 2>/dev/null)"
 
 # Write interactive.lock for interactive sessions
 # Daemon-sent messages use `claude -p` which does NOT trigger SessionStart,
@@ -36,6 +39,11 @@ except Exception:
 # Lock includes PID so we can check if the session is still alive.
 if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; then
     echo "{\"pid\":$$,\"source\":\"$SOURCE\",\"ts\":\"$(date -Iseconds)\"}" > "$LOCK_FILE"
+fi
+
+# Write active_session.json so the daemon knows which session to --resume
+if [ -n "$SESSION_ID" ]; then
+    echo "{\"session_id\":\"$SESSION_ID\",\"started_at\":\"$(date -Iseconds)\"}" > "$ACTIVE_SESSION"
 fi
 
 # Inject daily summary if present

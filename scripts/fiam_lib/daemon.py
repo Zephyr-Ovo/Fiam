@@ -100,24 +100,24 @@ def _is_interactive(config) -> bool:
 def _wake_session(config, message: str, tag: str = "tg") -> bool:
     """Send a message to Fiet via `claude -p --resume <id>`.
 
+    If no active session exists, creates a new session and saves its ID.
     Returns True if the message was sent successfully.
     Also extracts outbound markers from the response and writes to outbox.
     """
     session = _load_active_session(config)
-    if not session:
-        return False
+    resuming = session is not None
 
-    session_id = session["session_id"]
-    prompt = f"[wake:{tag}] {message}"
+    cmd = [
+        "claude", "-p", f"[wake:{tag}] {message}",
+        "--output-format", "json",
+        "--max-turns", "3",
+    ]
+    if resuming:
+        cmd.extend(["--resume", session["session_id"]])
 
     try:
         result = subprocess.run(
-            [
-                "claude", "-p", prompt,
-                "--resume", session_id,
-                "--output-format", "json",
-                "--max-turns", "3",
-            ],
+            cmd,
             capture_output=True,
             text=True,
             timeout=120,
@@ -127,9 +127,15 @@ def _wake_session(config, message: str, tag: str = "tg") -> bool:
             _console.print(f"  [red]wake failed[/] (exit {result.returncode})")
             return False
 
-        # Parse result JSON and extract outbound markers
+        # Parse result JSON and extract outbound markers + session_id
         try:
             data = json.loads(result.stdout)
+            # If we created a new session, save the session_id
+            if not resuming:
+                new_sid = data.get("session_id", "")
+                if new_sid:
+                    _save_active_session(config, new_sid)
+                    _console.print(f"  [dim]└ new session {new_sid[:8]}[/dim]")
             response_text = data.get("result", "")
             if response_text:
                 _extract_outbound_markers(config, response_text)
@@ -401,22 +407,20 @@ def cmd_start(args: argparse.Namespace) -> None:
                     if not _is_interactive(config):
                         inbox_jsonl = config.inbox_jsonl_path
                         if inbox_jsonl.exists() and inbox_jsonl.stat().st_size > 0:
-                            session = _load_active_session(config)
-                            if session:
-                                tag = "tg" if n_tg else "email"
-                                summary = f"{n_tg + n_email} new message(s)"
-                                ok = _wake_session(config, summary, tag=tag)
-                                if ok:
-                                    ts2 = time.strftime("%H:%M")
-                                    _console.print(f"  [dim]└[{ts2}][/dim] [bold #a8f0e8]↗[/]  wake sent")
-                                else:
-                                    # Wake failed — retry once, then retire session
-                                    ok2 = _wake_session(config, summary, tag=tag)
-                                    if not ok2:
-                                        _console.print(f"  [yellow]session unresponsive, retiring[/]")
-                                        _retire_session(config, reason="wake_failed")
+                            tag = "tg" if n_tg else "email"
+                            summary = f"{n_tg + n_email} new message(s)"
+                            ok = _wake_session(config, summary, tag=tag)
+                            if ok:
+                                ts2 = time.strftime("%H:%M")
+                                _console.print(f"  [dim]└[{ts2}][/dim] [bold #a8f0e8]↗[/]  wake sent")
                             else:
-                                _console.print(f"  [dim]no active session — messages queued[/dim]")
+                                # Wake failed — retry once, then retire session
+                                ok2 = _wake_session(config, summary, tag=tag)
+                                if not ok2:
+                                    _console.print(f"  [yellow]wake failed twice — messages remain queued[/]")
+                                    session = _load_active_session(config)
+                                    if session:
+                                        _retire_session(config, reason="wake_failed")
                     else:
                         _console.print(f"  [dim]interactive session — messages queued for hook[/dim]")
             except Exception as e:
