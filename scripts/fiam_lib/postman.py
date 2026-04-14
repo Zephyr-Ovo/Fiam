@@ -48,7 +48,6 @@ def _tg_send(token: str, chat_id: str, text: str) -> bool:
     payload = json.dumps({
         "chat_id": chat_id,
         "text": text,
-        "parse_mode": "Markdown",
     }).encode()
     req = urllib.request.Request(
         url, data=payload,
