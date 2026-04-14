@@ -264,6 +264,33 @@ def run_postman_loop(config: FiamConfig, poll_seconds: int = 15) -> None:
 
 
 # ------------------------------------------------------------------
+# Inbox JSONL helper — write messages for hook consumption
+# ------------------------------------------------------------------
+
+def _append_inbox_jsonl(config: FiamConfig, from_name: str, via: str, body: str) -> None:
+    """Append a message to inbox.jsonl for the UserPromptSubmit hook.
+
+    Format: one JSON object per line:
+        {"from":"Zephyr","via":"telegram","body":"message text","ts":"..."}
+
+    The hook (inject.sh) claims this file via atomic `mv` before reading.
+    """
+    import fcntl
+    path = config.inbox_jsonl_path
+    entry = json.dumps({
+        "from": from_name,
+        "via": via,
+        "body": body.strip(),
+        "ts": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+    }, ensure_ascii=False)
+    # Append with file locking to avoid partial writes
+    with open(path, "a", encoding="utf-8") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        f.write(entry + "\n")
+        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+
+# ------------------------------------------------------------------
 # IMAP inbox fetch — pull new emails into home/inbox/
 # ------------------------------------------------------------------
 
@@ -351,6 +378,8 @@ def fetch_inbox(
                 f"{body.strip()}\n"
             )
             (inbox_dir / fname).write_text(md, encoding="utf-8")
+            # Also write to inbox.jsonl for hook consumption
+            _append_inbox_jsonl(config, sender, "email", body.strip())
             count += 1
 
         conn.logout()
@@ -462,6 +491,8 @@ def fetch_tg_inbox(config: FiamConfig, timeout: int = 0) -> int:
             f"{text.strip()}\n"
         )
         (inbox_dir / fname).write_text(md, encoding="utf-8")
+        # Also write to inbox.jsonl for hook consumption
+        _append_inbox_jsonl(config, from_name, "telegram", text.strip())
         count += 1
 
     if count:

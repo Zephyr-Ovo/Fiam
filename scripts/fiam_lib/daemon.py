@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -22,6 +23,115 @@ from fiam_lib.jsonl import (
 from fiam_lib.postman import sweep_outbox, fetch_inbox, fetch_tg_inbox
 from fiam_lib.recall import _write_recall
 from fiam_lib.ui import _console, _flow, _ANIM_IDLE, _ANIM_ACTIVE, _animated_sleep
+
+
+# ------------------------------------------------------------------
+# Session management helpers
+# ------------------------------------------------------------------
+
+def _load_active_session(config) -> dict | None:
+    """Load active_session.json → {session_id, started_at} or None."""
+    path = config.active_session_path
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if data.get("session_id"):
+            return data
+    except (json.JSONDecodeError, OSError):
+        pass
+    return None
+
+
+def _save_active_session(config, session_id: str) -> None:
+    """Write active_session.json with current session_id and timestamp."""
+    path = config.active_session_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "session_id": session_id,
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def _retire_session(config, reason: str = "error") -> None:
+    """Archive current session → self/retired/ and clear active_session.json."""
+    session = _load_active_session(config)
+    if not session:
+        return
+    retired_dir = config.self_dir / "retired"
+    retired_dir.mkdir(parents=True, exist_ok=True)
+    ts = time.strftime("%Y-%m-%d_%H%M%S")
+    archive = retired_dir / f"{ts}_{reason}.json"
+    archive.write_text(json.dumps(session, indent=2), encoding="utf-8")
+    config.active_session_path.unlink(missing_ok=True)
+
+
+def _is_interactive(config) -> bool:
+    """Check if a human is interactively using the CC session."""
+    lock = config.interactive_lock_path
+    if not lock.exists():
+        return False
+    try:
+        data = json.loads(lock.read_text(encoding="utf-8"))
+        pid = data.get("pid")
+        if pid:
+            # Check if the process is still alive
+            try:
+                os.kill(pid, 0)
+                return True
+            except (OSError, ProcessLookupError):
+                # Process gone — stale lock
+                lock.unlink(missing_ok=True)
+                return False
+    except (json.JSONDecodeError, OSError):
+        pass
+    # Lock file exists but no valid PID — treat as stale after 2 hours
+    try:
+        age = time.time() - lock.stat().st_mtime
+        if age > 7200:
+            lock.unlink(missing_ok=True)
+            return False
+        return True
+    except OSError:
+        return False
+
+
+def _wake_session(config, message: str, tag: str = "tg") -> bool:
+    """Send a message to Fiet via `claude -p --resume <id>`.
+
+    Returns True if the message was sent successfully.
+    """
+    session = _load_active_session(config)
+    if not session:
+        return False
+
+    session_id = session["session_id"]
+    prompt = f"[wake:{tag}] {message}"
+
+    try:
+        result = subprocess.run(
+            [
+                "claude", "-p", prompt,
+                "--resume", session_id,
+                "--output-format", "json",
+                "--max-turns", "3",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=str(config.home_path),
+        )
+        if result.returncode != 0:
+            _console.print(f"  [red]wake failed[/] (exit {result.returncode})")
+            return False
+        return True
+    except subprocess.TimeoutExpired:
+        _console.print(f"  [red]wake timeout[/]")
+        return False
+    except FileNotFoundError:
+        _console.print(f"  [red]claude not found[/]")
+        return False
 
 
 def cmd_start(args: argparse.Namespace) -> None:
@@ -89,6 +199,8 @@ def cmd_start(args: argparse.Namespace) -> None:
     recall_drift_threshold = 0.65               # cosine sim below this = topic shift
     recall_min_chars = 40                       # skip trivial messages
     embedder_lazy: Embedder | None = None
+    # Regex to strip daemon wake signal tags from user text
+    _wake_tag_re = re.compile(r"\[wake:[^\]]*\]\s*")
 
     def _get_embedder() -> Embedder:
         nonlocal embedder_lazy
@@ -118,7 +230,10 @@ def cmd_start(args: argparse.Namespace) -> None:
                     msg = obj.get("message", {})
                     content = msg.get("content", "")
                     if isinstance(content, str) and content.strip():
-                        parts.append(content.strip())
+                        # Strip [wake:xxx] tags — daemon signals, not real content
+                        cleaned = _wake_tag_re.sub("", content).strip()
+                        if cleaned:
+                            parts.append(cleaned)
                         total += len(content)
                         if total >= max_chars:
                             break
@@ -235,6 +350,29 @@ def cmd_start(args: argparse.Namespace) -> None:
                 if n_tg or n_email:
                     ts = time.strftime("%H:%M")
                     _console.print(f"  [dim]└[{ts}][/dim] [bold #7eb8f7]✉[/]  inbox +{n_tg + n_email}")
+
+                    # Wake Fiet if inbox has messages and not interactive
+                    if not _is_interactive(config):
+                        inbox_jsonl = config.inbox_jsonl_path
+                        if inbox_jsonl.exists() and inbox_jsonl.stat().st_size > 0:
+                            session = _load_active_session(config)
+                            if session:
+                                tag = "tg" if n_tg else "email"
+                                summary = f"{n_tg + n_email} new message(s)"
+                                ok = _wake_session(config, summary, tag=tag)
+                                if ok:
+                                    ts2 = time.strftime("%H:%M")
+                                    _console.print(f"  [dim]└[{ts2}][/dim] [bold #a8f0e8]↗[/]  wake sent")
+                                else:
+                                    # Wake failed — retry once, then retire session
+                                    ok2 = _wake_session(config, summary, tag=tag)
+                                    if not ok2:
+                                        _console.print(f"  [yellow]session unresponsive, retiring[/]")
+                                        _retire_session(config, reason="wake_failed")
+                            else:
+                                _console.print(f"  [dim]no active session — messages queued[/dim]")
+                    else:
+                        _console.print(f"  [dim]interactive session — messages queued for hook[/dim]")
             except Exception as e:
                 if config.debug_mode:
                     print(f"  [inbox] Error: {e}", file=sys.stderr)

@@ -6,6 +6,8 @@ Parses Claude Code's JSONL session files into fiam's generic turn format.
 JSONL format:
   {"type":"user",      "message":{"role":"user","content":"..."}, ...}
   {"type":"assistant", "message":{"role":"assistant","content":[...]}, ...}
+  {"type":"attachment", "parentUuid":"<user_uuid>",
+   "attachment":{"type":"hook_additional_context","content":["..."],...}}
 
 Handles:
   - Deduplication of assistant messages by ID (CC emits partials + final)
@@ -13,6 +15,9 @@ Handles:
   - Skipping tool-result messages (content is a list, not string)
   - Byte-offset incremental parsing for daemon polling
   - Graceful handling of mid-write incomplete lines
+  - Hook-injected additionalContext (type: "attachment"):
+      [recall] sections are EXCLUDED from events (anti-recursion)
+      [inbox] sections are preserved as inbox_context on the parent turn
 """
 
 from __future__ import annotations
@@ -30,6 +35,18 @@ _SYSTEM_TAG_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Regex to extract [inbox] section from hook additionalContext
+_INBOX_SECTION_RE = re.compile(
+    r"\[inbox\]\s*\n(.*?)(?=\[recall\]|\Z)",
+    re.DOTALL,
+)
+
+# Regex to detect [recall] section (we strip this entirely)
+_RECALL_SECTION_RE = re.compile(
+    r"\[recall\]\s*\n(.*?)(?=\[inbox\]|\Z)",
+    re.DOTALL,
+)
+
 
 def _is_system_message(text: str) -> bool:
     """Return True if *text* is a system-injected user turn, not a real human message."""
@@ -43,6 +60,18 @@ class ClaudeCodeAdapter:
         """Parse all turns from a JSONL file."""
         turns, _ = self.parse_incremental(source, 0)
         return turns
+
+    def _extract_inbox_from_attachment(self, content_text: str) -> str:
+        """Extract [inbox] section from hook additionalContext, ignoring [recall].
+
+        Returns only inbox content. Recall is deliberately excluded to prevent
+        memory fragments from re-entering the event graph (anti-recursion / 套娃).
+        """
+        # If no section markers, the entire content is recall-only (legacy format)
+        if "[inbox]" not in content_text:
+            return ""
+        match = _INBOX_SECTION_RE.search(content_text)
+        return match.group(1).strip() if match else ""
 
     def parse_incremental(
         self, source: Path, byte_offset: int = 0,
@@ -67,6 +96,8 @@ class ClaudeCodeAdapter:
         safe_offset = byte_offset
 
         user_turns: list[tuple[int, dict[str, str]]] = []
+        # Map user entry uuid → index in user_turns for attachment linking
+        user_uuid_to_idx: dict[str, int] = {}
         assistant_by_msg_id: dict[str, dict] = {}
         assistant_order: dict[str, int] = {}
         order = 0
@@ -90,6 +121,29 @@ class ClaudeCodeAdapter:
             safe_offset = byte_offset + pos
 
             line_type = obj.get("type", "")
+
+            # ── Attachment (hook-injected additionalContext) ──
+            if line_type == "attachment":
+                attachment = obj.get("attachment", {})
+                if attachment.get("type") != "hook_additional_context":
+                    continue
+                parent_uuid = obj.get("parentUuid", "")
+                content_list = attachment.get("content", [])
+                content_text = "\n".join(
+                    c if isinstance(c, str) else str(c)
+                    for c in content_list
+                )
+                inbox_text = self._extract_inbox_from_attachment(content_text)
+                if inbox_text and parent_uuid and parent_uuid in user_uuid_to_idx:
+                    idx = user_uuid_to_idx[parent_uuid]
+                    _, turn = user_turns[idx]
+                    existing = turn.get("inbox_context", "")
+                    turn["inbox_context"] = (
+                        (existing + "\n" + inbox_text).strip()
+                        if existing else inbox_text
+                    )
+                continue
+
             if line_type not in ("user", "assistant"):
                 continue
 
@@ -108,6 +162,10 @@ class ClaudeCodeAdapter:
                     if ts:
                         turn["timestamp"] = ts
                     user_turns.append((order, turn))
+                    # Track uuid for attachment linking
+                    uuid = obj.get("uuid") or message.get("id", "")
+                    if uuid:
+                        user_uuid_to_idx[uuid] = len(user_turns) - 1
                     order += 1
             elif line_type == "assistant":
                 if not isinstance(content, list):

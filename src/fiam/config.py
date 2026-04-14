@@ -277,6 +277,26 @@ class FiamConfig:
         return self.home_path / "inbox"
 
     @property
+    def inbox_jsonl_path(self) -> Path:
+        """JSONL file consumed by inject.sh hook — daemon writes inbox messages here."""
+        return self.home_path / "inbox.jsonl"
+
+    @property
+    def active_session_path(self) -> Path:
+        """Tracks the current CC session ID for resume-based messaging."""
+        return self.self_dir / "active_session.json"
+
+    @property
+    def daily_summary_path(self) -> Path:
+        """Daily operational summary injected by SessionStart hook."""
+        return self.self_dir / "daily_summary.md"
+
+    @property
+    def interactive_lock_path(self) -> Path:
+        """Lock file written by SessionStart hook when human is at terminal."""
+        return self.home_path / "interactive.lock"
+
+    @property
     def world_dir(self) -> Path:
         return self.home_path / "world"
 
