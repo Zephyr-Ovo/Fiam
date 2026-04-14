@@ -30,7 +30,7 @@ from fiam.config import FiamConfig
 # Regex for <<WAKE:ISO:TYPE:REASON>>
 WAKE_RE = re.compile(
     r"<<WAKE:"
-    r"(?P<time>[^:]+)"                        # ISO timestamp
+    r"(?P<time>.+?)"                           # ISO timestamp (non-greedy)
     r":(?P<type>private|notify|seek|check)"    # type
     r":(?P<reason>[^>]+)"                      # reason text
     r">>",
