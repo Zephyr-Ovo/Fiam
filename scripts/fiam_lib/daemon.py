@@ -30,6 +30,7 @@ from fiam_lib.jsonl import (
 )
 from fiam_lib.postman import sweep_outbox, fetch_inbox, fetch_tg_inbox
 from fiam_lib.recall import _write_recall
+from fiam_lib.scheduler import extract_wake_tags, append_to_schedule, load_pending
 from fiam_lib.ui import _console, _flow, _ANIM_IDLE, _ANIM_ACTIVE, _animated_sleep
 
 
@@ -191,6 +192,12 @@ def _wake_session(config, message: str, tag: str = "tg") -> bool:
             response_text = data.get("result", "")
             if response_text:
                 _extract_outbound_markers(config, response_text)
+                # Extract WAKE tags for scheduler
+                wake_tags = extract_wake_tags(response_text)
+                if wake_tags:
+                    n = append_to_schedule(wake_tags, config)
+                    _plog.info("scheduler  +%d wake(s) queued", n)
+                    _console.print(f"  [dim]└ scheduler +{n} wake(s)[/dim]")
 
         return True
     except subprocess.TimeoutExpired:
@@ -518,6 +525,31 @@ def cmd_start(args: argparse.Namespace) -> None:
             sweep_outbox(config)
         except Exception as e:
             _plog.error("outbox error: %s", e)
+
+        # ── Scheduler: check for due wakes ──
+        try:
+            from datetime import datetime, timezone
+            now_utc = datetime.now(timezone.utc)
+            pending = load_pending(config)
+            for entry in pending:
+                wake_at = entry.get("_wake_utc")
+                if wake_at and wake_at <= now_utc:
+                    reason = entry.get("reason", "scheduled wake")
+                    wake_type = entry.get("type", "check")
+                    _plog.info("scheduler fire  type=%s reason=%s", wake_type, reason)
+                    _console.print(f"  [bold #e8c8ff]⏰[/] scheduled: {reason}")
+                    # Trigger via normal wake mechanism
+                    ok = _wake_session(config, f"[scheduled:{wake_type}] {reason}", tag="sched")
+                    if ok:
+                        _plog.info("scheduler wake OK")
+                    else:
+                        _plog.warning("scheduler wake FAILED")
+            # Compact: remove spent entries
+            if pending:
+                from fiam_lib.scheduler import _rewrite_schedule
+                _rewrite_schedule(config)
+        except Exception as e:
+            _plog.error("scheduler error: %s", e, exc_info=True)
 
         # Check JSONL directory for activity
         if not jsonl_dir.is_dir():
