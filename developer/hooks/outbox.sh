@@ -68,4 +68,7 @@ for i, (channel, recipient, body) in enumerate(matches):
         f.write(content)
 " 2>/dev/null
 
+# Clean up interactive lock — Stop means session is ending
+rm -f "$HOME_DIR/interactive.lock" 2>/dev/null
+
 exit 0

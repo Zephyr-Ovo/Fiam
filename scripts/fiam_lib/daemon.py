@@ -101,6 +101,7 @@ def _wake_session(config, message: str, tag: str = "tg") -> bool:
     """Send a message to Fiet via `claude -p --resume <id>`.
 
     Returns True if the message was sent successfully.
+    Also extracts outbound markers from the response and writes to outbox.
     """
     session = _load_active_session(config)
     if not session:
@@ -125,6 +126,16 @@ def _wake_session(config, message: str, tag: str = "tg") -> bool:
         if result.returncode != 0:
             _console.print(f"  [red]wake failed[/] (exit {result.returncode})")
             return False
+
+        # Parse result JSON and extract outbound markers
+        try:
+            data = json.loads(result.stdout)
+            response_text = data.get("result", "")
+            if response_text:
+                _extract_outbound_markers(config, response_text)
+        except (json.JSONDecodeError, KeyError):
+            pass
+
         return True
     except subprocess.TimeoutExpired:
         _console.print(f"  [red]wake timeout[/]")
@@ -132,6 +143,41 @@ def _wake_session(config, message: str, tag: str = "tg") -> bool:
     except FileNotFoundError:
         _console.print(f"  [red]claude not found[/]")
         return False
+
+
+# Regex for outbound message markers: [→tg:Name] or [→email:Name]
+_OUTBOUND_RE = re.compile(
+    r"\[→(tg|telegram|email):([^\]]+)\]\s*(.+?)(?=\[→(?:tg|telegram|email):|$)",
+    re.DOTALL,
+)
+
+
+def _extract_outbound_markers(config, text: str) -> int:
+    """Extract [→channel:recipient] markers from text and write to outbox/.
+
+    Returns count of outbox files written.
+    """
+    outbox = config.outbox_dir
+    outbox.mkdir(parents=True, exist_ok=True)
+    count = 0
+
+    for match in _OUTBOUND_RE.finditer(text):
+        channel, recipient, body = match.group(1), match.group(2), match.group(3).strip()
+        if not body:
+            continue
+        via = "telegram" if channel in ("tg", "telegram") else "email"
+        ts = time.strftime("%m%d_%H%M%S")
+        fname = f"auto_{ts}_{count:02d}.md"
+        content = (
+            f"---\nto: {recipient.strip()}\nvia: {via}\n"
+            f"priority: normal\n---\n\n{body}\n"
+        )
+        (outbox / fname).write_text(content, encoding="utf-8")
+        count += 1
+
+    if count:
+        _console.print(f"  [dim]└ outbox +{count}[/dim]")
+    return count
 
 
 def cmd_start(args: argparse.Namespace) -> None:
