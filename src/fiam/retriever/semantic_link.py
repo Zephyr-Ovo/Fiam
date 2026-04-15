@@ -14,7 +14,7 @@ from fiam.config import FiamConfig
 from fiam.store.formats import EventRecord
 from fiam.store.graph_store import Edge, GraphStore
 
-_DEFAULT_THRESHOLD = 0.75
+_DEFAULT_THRESHOLD = 0.82
 
 
 def _cosine(a: np.ndarray, b: np.ndarray) -> float:

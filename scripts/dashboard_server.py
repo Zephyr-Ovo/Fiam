@@ -59,15 +59,13 @@ def _recent_events(n: int = 10) -> list[dict]:
     events_dir = _CONFIG.events_dir
     if not events_dir.is_dir():
         return []
-    mds = sorted(events_dir.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)[:n]
-    result = []
-    for md in mds:
+    all_events: list[dict] = []
+    for md in events_dir.glob("*.md"):
         text = md.read_text(encoding="utf-8", errors="replace")
-        # Extract time from frontmatter
         etime = ""
         preview = ""
         in_frontmatter = False
-        body_lines = []
+        body_lines: list[str] = []
         for line in text.split("\n"):
             if line.strip() == "---":
                 in_frontmatter = not in_frontmatter
@@ -77,12 +75,14 @@ def _recent_events(n: int = 10) -> list[dict]:
             elif not in_frontmatter:
                 body_lines.append(line)
         preview = " ".join(body_lines[:3]).strip()[:120]
-        result.append({
+        all_events.append({
             "id": md.stem,
             "time": etime,
             "preview": preview,
         })
-    return result
+    # Sort by time descending (ISO-ish format sorts lexically)
+    all_events.sort(key=lambda e: e["time"], reverse=True)
+    return all_events[:n]
 
 
 def _recall_content() -> str:

@@ -390,6 +390,19 @@ def store_segment(
     if not turns:
         return {"events_written": 0}
 
+    # Content-hash dedup: skip if we already stored this exact user text
+    import hashlib
+    _user_text = "\n".join(t.get("text", "") for t in turns if t.get("role") == "user")
+    _body_hash = hashlib.md5(_user_text.encode()).hexdigest()[:16]
+    _dedup_path = config.store_dir / "dedup_hashes.txt"
+    _known: set[str] = set()
+    if _dedup_path.exists():
+        _known = set(_dedup_path.read_text().splitlines())
+    if _body_hash in _known:
+        if config.debug_mode:
+            print(f"[store_segment] Skipped duplicate (hash={_body_hash})")
+        return {"events_written": 0, "skipped": "duplicate"}
+
     trace = Trace(logs_root=config.logs_dir, session_id=session_id)
     store = HomeStore(config)
     classifier = get_classifier(config)
@@ -474,6 +487,10 @@ def store_segment(
         body=body,
     )
     written_path = store.write_event(record)
+
+    # Record dedup hash
+    with open(_dedup_path, "a") as _df:
+        _df.write(_body_hash + "\n")
 
     if config.debug_mode:
         print(f"[store_segment] Wrote {event_id} → {written_path}")
