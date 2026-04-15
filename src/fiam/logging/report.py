@@ -120,7 +120,7 @@ def generate(
         for ev in all_events:
             sections.append(
                 f"| {ev.filename} | {ev.intensity:.4f} "
-                f"| {ev.time.strftime('%Y-%m-%d %H:%M')} |")
+                f"| {ev.time.strftime('%Y-%m-%d %H:%M')} |"
             )
         sections.append("")
 
