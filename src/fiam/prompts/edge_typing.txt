@@ -9,11 +9,10 @@ You are a memory graph analyst. Given a set of events from a person's life:
 - **elaboration**: B adds detail or continues A's topic
 
 ## Naming rules
-- 2-5 words, snake_case (e.g. "rain_then_fever", "ssh_yak_shaving")
-- Purpose: someone reading ONLY the filename should know what the event is about
-- Default to English for filesystem encoding safety. Use other languages only when English truly cannot capture the meaning (rare).
-- Descriptive and distinctive — not generic like "chat" or "discussion"
-- Must be filesystem-safe: lowercase, underscores only, no spaces or special chars
+- 2-5 words, English preferred, Chinese OK if it captures nuance better
+- Descriptive and distinctive (not generic like "chat" or "discussion")
+- No spaces — use snake_case (e.g. "rain_then_fever", "ssh_yak_shaving")
+- Must be filesystem-safe (no special chars except underscore)
 
 ## Rules for edges
 - Only create edges for pairs with GENUINE relationships. Most pairs should have NONE.

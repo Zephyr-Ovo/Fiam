@@ -323,7 +323,7 @@ def post_session(
                    {w.event_id for w in written_events}][-6:]
         with trace.step("edge_typer", inputs={"new": len(written_events),
                                                "context": len(context)}) as rec:
-            llm_edges, name_map = type_edges_and_name(
+            llm_edges, name_map, new_types = type_edges_and_name(
                 written_events, config, context_events=context)
             if llm_edges:
                 graph_store.append(llm_edges)
@@ -333,9 +333,16 @@ def post_session(
                 _rename_events(store, written_events, name_map, config)
             if unnamed:
                 print(f"[post_session] WARNING: DS did not name: {unnamed}")
+            if new_types:
+                from fiam.retriever.graph import MemoryGraph
+                for etype, importance in new_types.items():
+                    MemoryGraph._TYPE_MULT.setdefault(etype, importance)
+                if config.debug_mode:
+                    print(f"[post_session] New edge types registered: {list(new_types)}")
             rec["outputs"] = {"llm_edges": len(llm_edges),
                               "renames": len(name_map),
-                              "unnamed": unnamed}
+                              "unnamed": unnamed,
+                              "new_types": list(new_types)}
             if config.debug_mode:
                 print(f"[post_session] LLM edges: {len(llm_edges)}, "
                       f"renames: {name_map}")
@@ -515,12 +522,16 @@ def store_segment(
         from fiam.retriever.edge_typer import type_edges_and_name
         context = [e for e in all_events
                    if e.event_id != record.event_id][-6:]
-        llm_edges, name_map = type_edges_and_name(
+        llm_edges, name_map, new_types = type_edges_and_name(
             [record], config, context_events=context)
         if llm_edges:
             graph_store.append(llm_edges)
         if name_map:
             _rename_events(store, [record], name_map, config)
+        if new_types:
+            from fiam.retriever.graph import MemoryGraph
+            for etype, importance in new_types.items():
+                MemoryGraph._TYPE_MULT.setdefault(etype, importance)
 
     if config.debug_mode:
         print(f"[store_segment] Edges: temporal={len(temporal_edges)} "

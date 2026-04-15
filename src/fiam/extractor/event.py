@@ -82,17 +82,18 @@ def segment(
     precomputed_asst_emotions: list | None = None,
     debug: bool = False,
 ) -> list[ExtractedEvent]:
-    """Extract significant events via multi-signal gate.
+    """Extract events using TextTiling depth segmentation.
 
-    A pair is stored if ANY of these channels exceeds its threshold:
-      - emotional: max(user, asst) arousal > arousal_threshold
-      - novelty:   semantic distance from stored events > novelty_threshold
-      - elaboration: user message length vs session median > elaboration_threshold
+    All pairs enter TextTiling—depth is the sole structural cutter.
+    Significance (emotional / novelty / elaboration) is computed as
+    metadata on each pair for downstream retrieval weighting, but
+    no hard gate filters pairs before segmentation.
+
+    Threshold params are retained for backward compatibility but
+    are no longer used for gating.
 
     If *precomputed_user/asst_emotions* are given (from pipeline-level
     batch classification), they are reused instead of re-classifying.
-
-    Returns an empty list if no segment is significant.
     """
     if not conversation:
         return []
@@ -158,39 +159,23 @@ def segment(
         user_char_counts.append(chars)
     session_median_chars = float(sorted(user_char_counts)[len(user_char_counts) // 2])
 
-    # Step 2: compute significance for each pair and filter
-    significant: list[_Pair] = []
+    # Step 2: compute significance as metadata (no gate — depth is sole cutter)
     for p in pairs:
         sig = _compute_significance(
             p, user_vecs[p.index], stored_mat, session_median_chars,
         )
         p.significance = sig
 
-        passes = (
-            sig.emotional > arousal_threshold
-            or sig.novelty > novelty_threshold
-            or sig.elaboration > elaboration_threshold
-        )
-
         if debug:
-            channels = []
-            if sig.emotional > arousal_threshold:
-                channels.append("emo")
-            if sig.novelty > novelty_threshold:
-                channels.append("nov")
-            if sig.elaboration > elaboration_threshold:
-                channels.append("elab")
-            tag = f"*** {'+'.join(channels)}" if channels else "skip"
             preview = p.turns[0].get("text", "")[:40].replace("\n", " ")
             print(f"  pair {p.index}: a={sig.emotional:.2f} n={sig.novelty:.2f} "
-                  f"e={sig.elaboration:.2f} {tag} | {preview}")
+                  f"e={sig.elaboration:.2f} | {preview}")
 
-        if passes and not _is_meta_reference(p):
-            significant.append(p)
-
-    if not significant:
+    # Filter only meta-reference noise (e.g. "based on previous events")
+    usable = [p for p in pairs if not _is_meta_reference(p)]
+    if not usable:
         if debug:
-            print(f"[extractor] No pairs passed significance gate")
+            print(f"[extractor] All pairs are meta-references, skipping")
         return []
 
     # Step 3: topic segmentation via depth score
@@ -211,10 +196,10 @@ def segment(
         prev_start = ci + 1
     seg_ranges.append((prev_start, len(pairs)))
 
-    # Group significant pairs by which topic segment they fall in
+    # Group usable pairs by which topic segment they fall in
     groups: list[list[_Pair]] = []
     for seg_start, seg_end in seg_ranges:
-        group = [p for p in significant if seg_start <= p.index < seg_end]
+        group = [p for p in usable if seg_start <= p.index < seg_end]
         if group:
             groups.append(group)
 
@@ -235,6 +220,7 @@ def _compute_significance(
     session_median_chars: float,
 ) -> Significance:
     """Compute significance across three independent channels."""
+    # Emotional channel: raw arousal.
     emotional = pair.arousal
 
     # Novelty: semantic distance from all stored events (vectorised)

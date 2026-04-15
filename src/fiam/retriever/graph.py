@@ -13,7 +13,7 @@ The graph is rebuilt from store/graph.jsonl on each pre_session (cheap at <10k e
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from math import exp
+from math import exp, log
 
 import networkx as nx
 
@@ -152,17 +152,24 @@ class MemoryGraph:
             if eid in self.G:
                 activation[eid] = score
 
-        # Propagate
+        # Propagate (fire-once: each node propagates only on the step it's first activated)
+        fired: set[str] = set(activation.keys())  # seeds count as fired
         for step in range(steps):
             delta: dict[str, float] = {}
             for node, energy in activation.items():
                 if energy <= 0.01:
                     continue
+                # Fire-once: seeds fire on step 0, other nodes fire only once
+                if step > 0 and node in fired:
+                    continue
                 for _, neighbor, data in self.G.out_edges(node, data=True):
                     w = data.get("weight", 0.5)
                     edge_type = data.get("type", "temporal")
                     type_mult = self._TYPE_MULT.get(edge_type, 0.5)
-                    propagated = energy * w * type_mult * decay_per_step
+                    # Fan penalty: high-degree nodes dilute their energy
+                    fan_out = max(1, self.G.out_degree(node))
+                    fan_penalty = 1.0 / (1.0 + log(fan_out))
+                    propagated = energy * w * type_mult * fan_penalty * decay_per_step
                     if propagated > 0.001:
                         delta[neighbor] = delta.get(neighbor, 0.0) + propagated
 
@@ -176,6 +183,11 @@ class MemoryGraph:
                 if source_count > 1:
                     total *= (1.0 - inhibition_factor)
                 activation[node] = activation.get(node, 0.0) + total
+
+            # Mark all nodes that had energy this step as fired
+            for node in list(activation.keys()):
+                if activation[node] > 0.01:
+                    fired.add(node)
 
         # Normalise to [0, 1]
         if activation:

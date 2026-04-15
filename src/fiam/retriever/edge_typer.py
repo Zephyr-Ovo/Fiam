@@ -56,7 +56,7 @@ def _call_llm(prompt: str, config: FiamConfig) -> dict[str, Any]:
         "model": config.graph_edge_model,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.3,
-        "max_tokens": 4096,
+        "max_tokens": 2048,
     }).encode()
 
     req = urllib.request.Request(
@@ -65,7 +65,7 @@ def _call_llm(prompt: str, config: FiamConfig) -> dict[str, Any]:
         headers=headers,
     )
 
-    with urllib.request.urlopen(req, timeout=120) as resp:
+    with urllib.request.urlopen(req, timeout=30) as resp:
         data = json.loads(resp.read().decode())
 
     text = data["choices"][0]["message"]["content"].strip()
@@ -128,8 +128,11 @@ def type_edges_and_name(
             if ev.event_id not in existing_ids and len(all_ev) < 12:
                 all_ev.append(ev)
 
-    if not all_ev:
-        return [], {}
+    if len(all_ev) < 2:
+        # Need at least 2 events to find relationships
+        if len(all_ev) == 1:
+            return [], {}, {}
+        return [], {}, {}
 
     events_block = _format_events_block(all_ev)
     prompt = _get_prompt_template().format(events_block=events_block)
@@ -138,6 +141,8 @@ def type_edges_and_name(
 
     # Parse edges
     edges: list[Edge] = []
+    known_types = {"cause", "remind", "contrast", "elaboration", "causal", "semantic", "temporal"}
+    new_types: dict[str, float] = {}  # type → importance for newly discovered types
     valid_ids = {ev.event_id for ev in all_ev}
     for raw_edge in result.get("edges", []):
         src = raw_edge.get("from", "")
@@ -145,13 +150,20 @@ def type_edges_and_name(
         if src not in valid_ids or dst not in valid_ids:
             continue
         edge_type = raw_edge.get("type", "remind")
-        if edge_type not in ("cause", "remind", "contrast", "elaboration"):
-            edge_type = "remind"
+        # Accept new types from DS but track them
+        if edge_type not in known_types:
+            new_types[edge_type] = min(1.0, max(0.1, float(raw_edge.get("importance", 0.5))))
+        # Parse weight from DS (default 0.7, clamp to [0.1, 1.0])
+        raw_w = raw_edge.get("weight", 0.7)
+        try:
+            w = min(1.0, max(0.1, float(raw_w)))
+        except (TypeError, ValueError):
+            w = 0.7
         edges.append(Edge(
             src=src,
             dst=dst,
             type=edge_type,
-            weight=0.7,  # LLM-typed edges get moderate default weight
+            weight=w,
             reason=raw_edge.get("reason", ""),
         ))
 
@@ -168,4 +180,4 @@ def type_edges_and_name(
             new_name = new_name[:60]
         names[old_id] = new_name
 
-    return edges, names
+    return edges, names, new_types

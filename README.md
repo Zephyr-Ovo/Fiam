@@ -5,8 +5,8 @@ Long-term emotional memory for AI coding agents. Runs alongside Claude Code, wat
 ## Features
 
 - **Real-time recall** — daemon monitors CC sessions, detects topic drift via cosine similarity, and refreshes contextual memories on the fly
-- **Emotion-aware storage** — WDI (Weighted Dimensional Intensity) classifier gates what gets stored; only emotionally resonant content becomes long-term memory
-- **Memory graph** — events linked by semantic, temporal, causal, and associative edges; SYNAPSE-inspired graph diffusion for retrieval
+- **Emotion-aware storage** — WDI (Weighted Dimensional Intensity) classifier tags emotional metadata; TextTiling depth segmentation decides structure, not arousal gates
+- **Memory graph** — events linked by semantic, temporal, causal, and associative edges; SYNAPSE-inspired spreading activation with fire-once propagation and fan penalty
 - **Multi-channel communication** — Telegram and email inbound/outbound, with identity continuity across channels
 - **Hook-mediated injection** — 4 CC hooks (UserPromptSubmit, Stop, SessionStart, PostCompact) for seamless context flow
 - **Session management** — resume-based messaging, interactive lock, daily lifecycle with compact archival
@@ -29,7 +29,7 @@ Claude Code session
 
 **Real-time loop**: daemon polls JSONL → embeds user text → cosine drift detection → retrieves memories → writes `recall.md` → hook injects every turn.
 
-**Post-session**: idle timeout → emotion classification → salience gating → topic segmentation (TextTiling) → store events → build graph edges → refresh recall.
+**Post-session**: idle timeout → emotion classification → TextTiling depth segmentation → store events → build graph edges (DS open type system) → refresh recall.
 
 **Inbound**: daemon polls Telegram Bot API + IMAP → writes `inbox.jsonl` → hook injects on next turn (or wakes AI via `claude -p --resume`).
 
@@ -57,8 +57,8 @@ src/fiam/
   config.py                # FiamConfig dataclass + fiam.toml parsing
   adapter/                 # JSONL parsing (CC adapter, attachment handling)
   classifier/              # WDI emotion classification (local or remote)
-  extractor/               # Salience gating + TextTiling segmentation
-  retriever/               # Joint retrieval + SYNAPSE graph diffusion
+  extractor/               # TextTiling depth segmentation
+  retriever/               # Joint retrieval + SYNAPSE spreading activation (fire-once, fan penalty)
   store/                   # EventRecord persistence + graph.jsonl edges
   synthesizer/             # Recall narrative generation
   prompts/                 # Editable prompt templates
@@ -99,7 +99,7 @@ Key settings:
 - `language_profile`: `multi` (default) / `zh` / `en` — determines embedding + emotion models
 - `emotion_provider`: `local` / `api` / `remote` — where emotion classification runs
 - `embedding_backend`: `local` / `remote` — local HuggingFace or remote API server
-- `arousal_threshold`: salience gate (default 0.6) — lower = more events stored
+- `arousal_threshold`: emotional metadata threshold (legacy — no longer gates storage)
 - `idle_timeout_minutes`: how long after last activity before processing (default 30)
 - `tg_chat_id` / `email_*`: multi-channel communication settings
 
