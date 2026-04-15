@@ -105,7 +105,7 @@ def type_edges_and_name(
     config: FiamConfig,
     *,
     context_events: list[EventRecord] | None = None,
-) -> tuple[list[Edge], dict[str, str]]:
+) -> tuple[list[Edge], dict[str, str], dict[str, float]]:
     """Call LLM to type edges and name events.
 
     Args:
@@ -113,8 +113,9 @@ def type_edges_and_name(
         context_events: Optional additional events for richer context.
 
     Returns:
-        (edges, names) where edges is a list of Edge objects and
-        names is a dict mapping old event_id → suggested name.
+        (edges, names, new_types) where edges is a list of Edge objects,
+        names maps old event_id → suggested name, and new_types maps
+        any newly discovered edge type → importance weight.
 
     Raises:
         RuntimeError: If the LLM call fails (DS naming is mandatory).
