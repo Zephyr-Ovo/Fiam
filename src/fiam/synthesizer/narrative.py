@@ -78,14 +78,21 @@ def _extract_skeleton(event: EventRecord) -> str:
     return f"那次关于「{topic}」的对话"
 
 
-def prepare_materials(events: list[EventRecord]) -> list[dict[str, Any]]:
+def prepare_materials(
+    events: list[EventRecord],
+    edges: list[Any] | None = None,
+) -> list[dict[str, Any]]:
     """Prepare synthesis materials from a list of events.
 
-    Caps at 5 highest-arousal events.
+    If *edges* are given (from GraphStore), relationships between events
+    are included in the materials for edge-aware narrative synthesis.
     """
     if len(events) > 5:
         events = sorted(events, key=lambda e: e.arousal, reverse=True)[:5]
         events.sort(key=lambda e: e.time)
+
+    # Build event ID set for edge filtering
+    event_ids = {e.event_id for e in events}
 
     materials: list[dict[str, Any]] = []
     for event in events:
@@ -105,7 +112,60 @@ def prepare_materials(events: list[EventRecord]) -> list[dict[str, Any]]:
             "arousal": event.arousal,
         })
 
+    # Attach relationship edges between recalled events
+    if edges:
+        relevant = [
+            e for e in edges
+            if e.src in event_ids and e.dst in event_ids
+            and e.type not in ("temporal",)  # skip temporal — just adjacency
+        ]
+        for m in materials:
+            rels: list[str] = []
+            for e in relevant:
+                if e.src == m["event_id"]:
+                    label = _edge_label(e.type, e.dst, e.reason)
+                    if label:
+                        rels.append(label)
+                elif e.dst == m["event_id"]:
+                    label = _edge_label_reverse(e.type, e.src, e.reason)
+                    if label:
+                        rels.append(label)
+            if rels:
+                m["relationships"] = rels
+
     return materials
+
+
+def _edge_label(edge_type: str, target_id: str, reason: str = "") -> str:
+    """Human-readable edge label from this event TO target."""
+    name = target_id.replace("_", " ")
+    labels = {
+        "cause": f"导致了「{name}」",
+        "remind": f"和「{name}」有关联",
+        "elaboration": f"是「{name}」的展开",
+        "contrast": f"和「{name}」形成对比",
+        "semantic": f"和「{name}」话题相近",
+    }
+    base = labels.get(edge_type, f"→ {name}")
+    if reason:
+        base += f"（{reason}）"
+    return base
+
+
+def _edge_label_reverse(edge_type: str, source_id: str, reason: str = "") -> str:
+    """Human-readable edge label from source TO this event."""
+    name = source_id.replace("_", " ")
+    labels = {
+        "cause": f"由「{name}」引起",
+        "remind": f"和「{name}」有关联",
+        "elaboration": f"是对「{name}」的展开",
+        "contrast": f"和「{name}」形成对比",
+        "semantic": f"和「{name}」话题相近",
+    }
+    base = labels.get(edge_type, f"← {name}")
+    if reason:
+        base += f"（{reason}）"
+    return base
 
 
 # ------------------------------------------------------------------
@@ -126,6 +186,9 @@ def format_fragments(materials: list[dict[str, Any]], config: FiamConfig) -> str
         block = f"{m['when']}：\n{m['content']}"
         if m["dynamics"]:
             block += f"\n（{m['dynamics']}）"
+        rels = m.get("relationships")
+        if rels:
+            block += "\n关联：" + "；".join(rels)
         blocks.append(block)
 
     return "\n\n".join(blocks)
@@ -203,10 +266,11 @@ def synthesize_with_llm(
     # Build prompt
     fragments = format_fragments(materials, config)
     user_prompt = (
-        f"这些事忽然想起来了：\n\n{fragments}\n\n"
-        "以第一人称写一段回忆。150-250字。英文或中文（根据材料语言自然选择）。\n"
-        "像'想起那次...'的感觉，不要列表，不要分段。\n\n"
-        "直接写回忆内容，不要任何前缀或解释。"
+        f"这些记忆浮上来了：\n\n{fragments}\n\n"
+        "用第一人称把这些记忆梳理出来。注意事件之间的关联（如果有标注）。\n"
+        "不要概括或总结，保留原始细节和引用。\n"
+        "像自然地回忆，事件之间用关联串起来。150-300字。\n\n"
+        "直接写内容，不要前缀。"
     )
 
     try:

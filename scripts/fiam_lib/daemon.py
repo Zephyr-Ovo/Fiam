@@ -452,9 +452,11 @@ def cmd_start(args: argparse.Namespace) -> None:
             eid = r.get("event_id", "?")
             _console.print(f"  [bold #a8f0e8]+1[/] memory ({reason}) [{eid}]")
             _plog.info("store_segment  reason=%s event=%s turns=%d", reason, eid, len(buf))
+            _log_action("store", f"{eid} ({reason})", turns=len(buf))
         except Exception as e:
             _console.print(f"  [red]segment error:[/] {e}")
             _plog.error("store_segment error: %s", e, exc_info=True)
+            _log_action("error", f"store_segment: {e}")
 
     def _ingest_and_check_drift(new_turns: list[dict[str, str]]) -> None:
         """Add new turns to segment buffer; on topic drift, flush the previous segment."""
@@ -485,6 +487,7 @@ def cmd_start(args: argparse.Namespace) -> None:
             if sim < recall_drift_threshold:
                 # Topic shifted — finalize previous segment
                 _plog.info("drift detected  sim=%.3f (threshold=%.2f)", sim, recall_drift_threshold)
+                _log_action("drift", f"sim={sim:.3f}", buffer_turns=len(segment_buffer))
                 _flush_segment(reason="drift")
 
         # Accumulate into (possibly fresh) buffer
@@ -523,6 +526,46 @@ def cmd_start(args: argparse.Namespace) -> None:
 
         active = False
 
+    # ------------------------------------------------------------------
+    # Daemon state export for debug dashboard
+    # ------------------------------------------------------------------
+    state_log: list[dict] = []  # ring buffer of recent actions (max 50)
+
+    def _log_action(action: str, detail: str = "", **extra) -> None:
+        """Append an action entry to the state log ring buffer."""
+        entry = {
+            "time": time.strftime("%H:%M:%S"),
+            "action": action,
+            "detail": detail,
+            **extra,
+        }
+        state_log.append(entry)
+        if len(state_log) > 50:
+            state_log.pop(0)
+
+    def _write_daemon_state() -> None:
+        """Write current daemon state to logs/daemon_state.json for the debug dashboard."""
+        try:
+            state_path = code_path / "logs" / "daemon_state.json"
+            comm = _load_comm_state(config)
+            session = _load_active_session(config)
+
+            state = {
+                "pid": os.getpid(),
+                "uptime": time.strftime("%H:%M:%S"),
+                "active": active,
+                "comm_state": comm,
+                "session": session.get("session_id", "")[:8] if session else None,
+                "segment_buffer_turns": len(segment_buffer),
+                "segment_has_vec": segment_vec is not None,
+                "recall_has_vec": recall_query_vec is not None,
+                "last_activity": time.strftime("%H:%M:%S", time.localtime(last_activity)) if last_activity else None,
+                "recent_actions": state_log[-20:],
+            }
+            state_path.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass  # non-critical
+
     last_inbox_check: float = 0.0
     inbox_interval = 60  # check TG + email every 60s
 
@@ -536,6 +579,9 @@ def cmd_start(args: argparse.Namespace) -> None:
         if not running:
             break
 
+        # Write daemon state for debug dashboard (every poll cycle)
+        _write_daemon_state()
+
         # ── Inbound channels: TG + email polling ──
         now_ts = time.time()
         if now_ts - last_inbox_check > inbox_interval:
@@ -548,6 +594,7 @@ def cmd_start(args: argparse.Namespace) -> None:
                     ts = time.strftime("%H:%M")
                     _console.print(f"  [dim]└[{ts}][/dim] [bold #7eb8f7]✉[/]  inbox +{n_tg + n_email}")
                     _plog.info("inbox  tg=+%d email=+%d", n_tg, n_email)
+                    _log_action("inbox", f"tg={n_tg} email={n_email}")
 
                     # Check comm state
                     comm_state = _load_comm_state(config)
@@ -658,8 +705,10 @@ def cmd_start(args: argparse.Namespace) -> None:
             try:
                 new_turns = _parse_new_turns()
                 if new_turns:
+                    _log_action("ingest", f"{len(new_turns)} turns parsed")
                     _ingest_and_check_drift(new_turns)
             except Exception as e:
+                _log_action("error", f"ingest: {e}")
                 _plog.error("ingest error: %s", e, exc_info=True)
                 if config.debug_mode:
                     print(f"  [ingest] Error: {e}", file=sys.stderr)
@@ -671,6 +720,7 @@ def cmd_start(args: argparse.Namespace) -> None:
                 if config.debug_mode:
                     print(f"  [recall] Error: {e}", file=sys.stderr)
 
+            _write_daemon_state()
             continue
 
         # Check idle timeout
@@ -679,6 +729,8 @@ def cmd_start(args: argparse.Namespace) -> None:
             _console.print(f"  [dim]└[{ts}][/dim] [bold #f7a8d0]⟳[/]  processing...")
             _plog.info("idle timeout → processing")
             _process_pending()
+
+        _write_daemon_state()
 
     # ── Graceful shutdown: process any pending content before exit ──
     if shutdown_requested and active:

@@ -46,8 +46,17 @@ class StanceSynthesizer:
                 parts.append("\nNothing much to hold onto yet. Clean slate.")
             return "\n".join(parts)
 
+        # Load graph edges for relationship-aware synthesis
+        edges = None
+        try:
+            from fiam.store.graph_store import GraphStore
+            gs = GraphStore(self.config.graph_jsonl_path)
+            edges = gs.load_all()
+        except Exception:
+            pass
+
         # Prepare materials and synthesize
-        materials = prepare_materials(retrieved_events)
+        materials = prepare_materials(retrieved_events, edges=edges)
         narrative = synthesize_narrative(materials, self.config)
 
         if not narrative:
