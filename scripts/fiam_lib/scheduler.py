@@ -63,12 +63,23 @@ def append_to_schedule(tags: list[dict], config: FiamConfig) -> int:
     """Append extracted WAKE tags to schedule.jsonl. Returns count added."""
     if not tags:
         return 0
+    now = datetime.now(timezone.utc)
     schedule_path = config.schedule_path
     schedule_path.parent.mkdir(parents=True, exist_ok=True)
+    count = 0
     with open(schedule_path, "a", encoding="utf-8") as f:
         for tag in tags:
+            try:
+                wake_at = datetime.fromisoformat(tag["wake_at"])
+                if wake_at.tzinfo is None:
+                    wake_at = wake_at.replace(tzinfo=timezone.utc)
+                if wake_at <= now:
+                    continue  # skip already-expired entries
+            except (KeyError, ValueError):
+                pass
             f.write(json.dumps(tag, ensure_ascii=False) + "\n")
-    return len(tags)
+            count += 1
+    return count
 
 
 # ------------------------------------------------------------------

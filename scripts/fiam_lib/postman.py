@@ -185,6 +185,24 @@ def _save_sticker_index(config: FiamConfig, index: dict) -> None:
     (d / "index.json").write_text(json.dumps(full, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _resolve_contact(name: str, config: FiamConfig) -> str:
+    """Look up a named contact's email in self/contacts.json. Returns email or ''."""
+    if not name:
+        return ""
+    contacts_path = config.self_dir / "contacts.json"
+    if not contacts_path.exists():
+        return ""
+    try:
+        contacts = json.loads(contacts_path.read_text(encoding="utf-8"))
+        key = name.lower()
+        for entry in contacts:
+            if entry.get("name", "").lower() == key or entry.get("alias", "").lower() == key:
+                return entry.get("email", "")
+    except Exception:
+        pass
+    return ""
+
+
 def _extract_stickers(text: str, config: FiamConfig) -> tuple[str, list[dict]]:
     """Extract [sticker:名称] tags from text. Returns (cleaned_text, sticker_list)."""
     sticker_map = _load_sticker_index(config)
@@ -287,11 +305,17 @@ def dispatch_file(path: Path, config: FiamConfig) -> bool:
     elif via == "email":
         subject = str(post.metadata.get("subject", f"From {config.ai_name}"))
         from_addr = config.email_from
-        to_addr = config.email_to
+        to_field = str(post.metadata.get("to", "")).strip()
+        # Resolve recipient: bare email address, named contact, or config default
+        if "@" in to_field:
+            to_addr = to_field
+        else:
+            to_addr = _resolve_contact(to_field, config) or config.email_to
         password = os.environ.get("FIAM_EMAIL_PASSWORD", "")
         if not from_addr or not to_addr or not config.email_smtp_host:
             print(f"[postman] Email not configured, skipping {path.name}")
             return False
+        print(f"[postman] email → {to_addr}")
         return _email_send(
             config.email_smtp_host, config.email_smtp_port,
             from_addr, to_addr, subject, body,
