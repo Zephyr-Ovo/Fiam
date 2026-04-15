@@ -374,6 +374,143 @@ def post_session(
     }
 
 
+def store_segment(
+    config: FiamConfig,
+    turns: list[dict[str, str]],
+    session_id: str | None = None,
+    session_time: datetime | None = None,
+) -> dict[str, Any]:
+    """Store a pre-segmented conversation segment as a single event.
+
+    Called by the daemon when topic drift is detected.  The turns have
+    already been segmented by drift detection — no arousal gating or
+    TextTiling is applied.  We classify for metadata, embed, save,
+    create edges (temporal + semantic + LLM), and name the event.
+    """
+    if not turns:
+        return {"events_written": 0}
+
+    trace = Trace(logs_root=config.logs_dir, session_id=session_id)
+    store = HomeStore(config)
+    classifier = get_classifier(config)
+    embedder = Embedder(config)
+
+    # Classify all turns (metadata only — not used for gating)
+    user_texts = [t["text"] for t in turns if t.get("role") == "user"]
+    asst_texts = [t["text"] for t in turns if t.get("role") == "assistant"]
+    all_texts = user_texts + asst_texts
+    if all_texts:
+        all_emos = classifier.analyze_batch(all_texts)
+        user_emos = all_emos[:len(user_texts)]
+        asst_emos = all_emos[len(user_texts):]
+    else:
+        user_emos, asst_emos = [], []
+
+    # Build event from all turns using _build_event's Pair structure
+    from fiam.extractor.event import _build_event, _Pair, _extract_keywords
+    from fiam.classifier.emotion import EmotionResult
+
+    # Construct a single pair encompassing all turns
+    if user_emos and asst_emos:
+        u_arousal = max(e.arousal for e in user_emos)
+        a_emo = asst_emos[-1]
+        emotion = EmotionResult(
+            valence=a_emo.valence,
+            arousal=max(u_arousal, a_emo.arousal),
+            confidence=(user_emos[0].confidence + a_emo.confidence) / 2,
+            dominant_label=a_emo.dominant_label,
+            label_scores=a_emo.label_scores,
+        )
+    elif asst_emos:
+        emotion = asst_emos[-1]
+    elif user_emos:
+        emotion = user_emos[-1]
+    else:
+        emotion = EmotionResult(valence=0.0, arousal=0.1, confidence=0.0)
+
+    ut = "\n".join(t.get("text", "") for t in turns if t.get("role") == "user")
+    at = "\n".join(t.get("text", "") for t in turns if t.get("role") == "assistant")
+    keywords = _extract_keywords(ut + " " + at)
+
+    pair = _Pair(
+        turns=turns,
+        emotion=emotion,
+        arousal=emotion.arousal,
+        valence=emotion.valence,
+        keywords=keywords,
+        index=0,
+    )
+    ext_event = _build_event([pair])
+
+    # Embed
+    vec = embedder.embed(ext_event.text)
+    event_id = store.new_event_id()
+    emb_path = embedder.save(vec, event_id)
+
+    # Timestamp
+    now: datetime
+    if ext_event.timestamp:
+        now = datetime.fromisoformat(ext_event.timestamp.replace("Z", "+00:00"))
+    elif session_time is not None:
+        now = session_time
+    else:
+        now = datetime.now(timezone.utc)
+
+    # Body
+    body = ext_event.text
+    if ext_event.thinking:
+        body += "\n\n--- thinking ---\n\n" + ext_event.thinking
+
+    # Write event
+    record = EventRecord(
+        filename=event_id,
+        time=now,
+        valence=emotion.valence,
+        arousal=emotion.arousal,
+        confidence=emotion.confidence,
+        dominant_label=emotion.dominant_label,
+        embedding=emb_path,
+        embedding_dim=vec.shape[-1],
+        body=body,
+    )
+    written_path = store.write_event(record)
+
+    if config.debug_mode:
+        print(f"[store_segment] Wrote {event_id} → {written_path}")
+
+    # Edges: temporal + semantic + LLM
+    all_events = store.all_events()
+    from fiam.store.graph_store import GraphStore
+    graph_store = GraphStore(config.graph_jsonl_path)
+
+    temporal_edges = link_new_events([record], all_events, config)
+    graph_store.append(temporal_edges)
+
+    semantic_edges = link_semantic([record], all_events, config)
+    graph_store.append(semantic_edges)
+
+    if config.graph_edge_provider:
+        from fiam.retriever.edge_typer import type_edges_and_name
+        context = [e for e in all_events
+                   if e.event_id != record.event_id][-6:]
+        llm_edges, name_map = type_edges_and_name(
+            [record], config, context_events=context)
+        if llm_edges:
+            graph_store.append(llm_edges)
+        if name_map:
+            _rename_events(store, [record], name_map, config)
+
+    if config.debug_mode:
+        print(f"[store_segment] Edges: temporal={len(temporal_edges)} "
+              f"semantic={len(semantic_edges)}")
+
+    return {
+        "session_id": trace.session_id,
+        "events_written": 1,
+        "event_id": event_id,
+    }
+
+
 # ------------------------------------------------------------------
 # Event renaming (LLM-suggested names)
 # ------------------------------------------------------------------

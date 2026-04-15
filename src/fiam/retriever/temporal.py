@@ -1,25 +1,21 @@
 """
-Temporal co-occurrence linker.
+Temporal adjacency linker.
 
-Events that share a session (consecutive gap < 30 min) are linked
-via store/graph.jsonl with type "temporal".  This captures causal
-chains like 淋雨→发烧 that semantic similarity alone would miss.
+Adjacent events within 10 minutes get a temporal edge.
+Weight = 1.0 - gap_seconds / 600, clamped to [0.1, 1.0].
+Gap > 10 min → no edge.
 
-Used in two places:
-  - post_session: link_new_events() creates edges when new events are stored
-  - joint retriever: temporal_boost() gives linked events a retrieval bonus
+Independent of semantic / LLM edges.
 """
 
 from __future__ import annotations
-
-from datetime import timedelta
 
 from fiam.config import FiamConfig
 from fiam.store.formats import EventRecord
 from fiam.store.graph_store import Edge, GraphStore
 
-# Gap between two events that counts as "same session"
-_SESSION_GAP = timedelta(minutes=30)
+# Maximum gap (seconds) for a temporal edge between adjacent events
+_MAX_GAP_SECONDS = 600  # 10 minutes
 
 
 def link_new_events(
@@ -27,34 +23,51 @@ def link_new_events(
     all_events: list[EventRecord],
     config: FiamConfig,
 ) -> list[Edge]:
-    """Create temporal edges between new events and existing events in the same session.
+    """Create temporal edges between each new event and its chronological neighbours.
 
-    Two events are considered same-session if their timestamps differ by
-    less than 30 minutes.  Edges are bidirectional with type "temporal"
-    and weight based on gap closeness: w = 1 - gap/30min.
+    Only the immediately adjacent events (previous / next in time) are
+    considered.  If the gap exceeds 10 minutes, no edge is created.
+    Weight decays linearly: w = 1.0 − gap/600 s, floor 0.1.
 
     Returns list of new Edge objects (caller writes them to GraphStore).
     """
+    if not new_events or not all_events:
+        return []
+
     graph_store = GraphStore(config.graph_jsonl_path)
+
+    # Sort all events chronologically once
+    sorted_all = sorted(all_events, key=lambda e: e.time)
+    id_to_pos = {e.event_id: i for i, e in enumerate(sorted_all)}
+
     new_edges: list[Edge] = []
 
     for new_ev in new_events:
-        for existing in all_events:
-            if existing.event_id == new_ev.event_id:
-                continue
-            delta = abs(new_ev.time - existing.time)
-            if delta <= _SESSION_GAP:
-                weight = round(1.0 - delta.total_seconds() / _SESSION_GAP.total_seconds(), 4)
-                weight = max(weight, 0.1)  # floor
+        pos = id_to_pos.get(new_ev.event_id)
+        if pos is None:
+            continue
 
-                # Bidirectional: only add if not already present
-                if not graph_store.has_edge(new_ev.event_id, existing.event_id):
-                    new_edges.append(Edge(
-                        src=new_ev.event_id,
-                        dst=existing.event_id,
-                        type="temporal",
-                        weight=weight,
-                    ))
+        # Check left and right neighbours only
+        for neighbour_pos in (pos - 1, pos + 1):
+            if neighbour_pos < 0 or neighbour_pos >= len(sorted_all):
+                continue
+
+            neighbour = sorted_all[neighbour_pos]
+            gap = abs((new_ev.time - neighbour.time).total_seconds())
+
+            if gap > _MAX_GAP_SECONDS:
+                continue
+
+            weight = round(1.0 - gap / _MAX_GAP_SECONDS, 4)
+            weight = max(weight, 0.1)
+
+            if not graph_store.has_edge(new_ev.event_id, neighbour.event_id):
+                new_edges.append(Edge(
+                    src=new_ev.event_id,
+                    dst=neighbour.event_id,
+                    type="temporal",
+                    weight=weight,
+                ))
 
     return new_edges
 

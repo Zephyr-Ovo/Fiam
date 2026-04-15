@@ -298,7 +298,7 @@ def cmd_start(args: argparse.Namespace) -> None:
         signal.signal(signal.SIGBREAK, _shutdown)
 
     # Initial pre_session
-    from fiam.pipeline import pre_session, post_session
+    from fiam.pipeline import pre_session, post_session, store_segment
     from fiam.retriever.embedder import Embedder
     from fiam.store.home import HomeStore
     import numpy as np
@@ -405,45 +405,108 @@ def cmd_start(args: argparse.Namespace) -> None:
         ts = time.strftime("%H:%M")
         _console.print(f"  [dim]└[{ts}][/dim] [bold #7eb8f7]↻[/]  recall  [bold #f7e08a]{len(events)}[/]")
 
-    def _process_pending() -> None:
-        """Process all unread JSONL content and refresh recall."""
-        nonlocal active, recall_query_vec
+    # ------------------------------------------------------------------
+    # Segment buffer for drift-based event segmentation
+    # ------------------------------------------------------------------
+    segment_buffer: list[dict[str, str]] = []  # accumulated turns for current topic
+    segment_vec: np.ndarray | None = None      # embedding of current segment's user text
 
+    def _parse_new_turns() -> list[dict[str, str]]:
+        """Parse unread JSONL content and advance cursor. Returns new turns."""
         if not jsonl_dir.is_dir():
-            return
+            return []
         jf_list = list(jsonl_dir.glob("*.jsonl"))
         if not jf_list:
-            return
+            return []
 
         cursor = _load_cursor(code_path)
-        total_turns: list[dict[str, str]] = []
+        new_turns: list[dict[str, str]] = []
 
         for jf in sorted(jf_list, key=lambda p: p.stat().st_mtime):
-            jkey = jf.name  # platform-independent: just filename
+            jkey = jf.name
             entry = cursor.get(jkey, {"byte_offset": 0, "mtime": 0.0})
-
             try:
                 jf_mtime = jf.stat().st_mtime
             except FileNotFoundError:
                 continue
             if jf_mtime < entry["mtime"]:
                 entry["byte_offset"] = 0
-
             turns, new_offset = _parse_jsonl_from(jf, entry["byte_offset"])
             if turns:
-                total_turns.extend(turns)
+                new_turns.extend(turns)
             cursor[jkey] = {"byte_offset": new_offset, "mtime": jf_mtime}
 
-        _plog.info("process  turns=%d files=%d", len(total_turns), len(jf_list))
-        if total_turns:
-            try:
-                r = post_session(config, total_turns)
-                _console.print(f"  [bold #a8f0e8]+{r['events_written']}[/] memories")
-                _plog.info("post_session  events_written=%d", r['events_written'])
-            except Exception as e:
-                _console.print(f"  [red]error:[/] {e}")
-                _plog.error("post_session error: %s", e, exc_info=True)
+        _save_cursor(code_path, cursor)
+        return new_turns
 
+    def _flush_segment(reason: str = "drift") -> None:
+        """Finalize the segment buffer as a single event via store_segment()."""
+        nonlocal segment_buffer, segment_vec
+        if not segment_buffer:
+            return
+        buf = segment_buffer
+        segment_buffer = []
+        segment_vec = None
+        try:
+            r = store_segment(config, buf)
+            eid = r.get("event_id", "?")
+            _console.print(f"  [bold #a8f0e8]+1[/] memory ({reason}) [{eid}]")
+            _plog.info("store_segment  reason=%s event=%s turns=%d", reason, eid, len(buf))
+        except Exception as e:
+            _console.print(f"  [red]segment error:[/] {e}")
+            _plog.error("store_segment error: %s", e, exc_info=True)
+
+    def _ingest_and_check_drift(new_turns: list[dict[str, str]]) -> None:
+        """Add new turns to segment buffer; on topic drift, flush the previous segment."""
+        nonlocal segment_buffer, segment_vec
+
+        if not new_turns:
+            return
+
+        # Extract user text from new turns for drift check
+        new_user_text = "\n".join(
+            t.get("text", "") for t in new_turns if t.get("role") == "user"
+        )
+        new_user_text = _wake_tag_re.sub("", new_user_text).strip()
+
+        if len(new_user_text) < recall_min_chars:
+            # Too short to embed — just accumulate
+            segment_buffer.extend(new_turns)
+            return
+
+        emb = _get_embedder()
+        new_vec = emb.embed(new_user_text)
+
+        # Check drift against current segment
+        if segment_vec is not None and segment_buffer:
+            sim = float(np.dot(new_vec, segment_vec) / (
+                np.linalg.norm(new_vec) * np.linalg.norm(segment_vec) + 1e-9
+            ))
+            if sim < recall_drift_threshold:
+                # Topic shifted — finalize previous segment
+                _plog.info("drift detected  sim=%.3f (threshold=%.2f)", sim, recall_drift_threshold)
+                _flush_segment(reason="drift")
+
+        # Accumulate into (possibly fresh) buffer
+        segment_buffer.extend(new_turns)
+        segment_vec = new_vec
+
+    def _process_pending() -> None:
+        """Parse remaining JSONL, flush segment buffer, and refresh recall."""
+        nonlocal active, recall_query_vec
+
+        # Parse any remaining unread turns into segment buffer
+        new_turns = _parse_new_turns()
+        if new_turns:
+            segment_buffer.extend(new_turns)
+
+        _plog.info("process  buffer=%d turns", len(segment_buffer))
+
+        # Flush whatever is in the segment buffer as the final event
+        if segment_buffer:
+            _flush_segment(reason="idle")
+
+            # Rebuild recall after storing
             try:
                 store = HomeStore(config)
                 from fiam.retriever import joint as joint_retriever
@@ -458,7 +521,6 @@ def cmd_start(args: argparse.Namespace) -> None:
         else:
             _console.print(f"  [dim]·  up to date[/dim]")
 
-        _save_cursor(code_path, cursor)
         active = False
 
     last_inbox_check: float = 0.0
@@ -591,6 +653,16 @@ def cmd_start(args: argparse.Namespace) -> None:
                 _plog.info("jsonl ACTIVE")
                 active = True
             last_activity = max_mtime
+
+            # Parse new turns and check for topic drift
+            try:
+                new_turns = _parse_new_turns()
+                if new_turns:
+                    _ingest_and_check_drift(new_turns)
+            except Exception as e:
+                _plog.error("ingest error: %s", e, exc_info=True)
+                if config.debug_mode:
+                    print(f"  [ingest] Error: {e}", file=sys.stderr)
 
             # Live recall: check topic drift on each new activity burst
             try:
