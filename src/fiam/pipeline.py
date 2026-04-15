@@ -314,6 +314,17 @@ def post_session(
                 print(f"[post_session] LLM edges: {len(llm_edges)}, "
                       f"renames: {name_map}")
 
+    # Step 4d: Appraisal — update psychological state from goals + events
+    if written_events:
+        from fiam.personality.appraisal import run_appraisal
+        with trace.step("appraisal", inputs={"event_count": len(written_events)}) as rec:
+            try:
+                run_appraisal(config, written_events, signals)
+                rec["outputs"] = {"status": "ok"}
+            except Exception as e:
+                rec["outputs"] = {"status": "error", "error": str(e)}
+                if config.debug_mode:
+                    print(f"[post_session] Appraisal failed: {e}")
 
     # Step 5: Generate report
 
@@ -468,6 +479,16 @@ def store_segment(
     if config.debug_mode:
         print(f"[store_segment] Edges: temporal={len(temporal_edges)} "
               f"semantic={len(semantic_edges)}")
+
+    # Appraisal — use real signals from the conversation turns
+    try:
+        from fiam.personality.appraisal import run_appraisal
+        from fiam.extractor.signals import extract_session_signals
+        seg_signals = extract_session_signals(turns)
+        run_appraisal(config, [record], seg_signals)
+    except Exception as e:
+        if config.debug_mode:
+            print(f"[store_segment] Appraisal failed: {e}")
 
     return {
         "session_id": trace.session_id,
