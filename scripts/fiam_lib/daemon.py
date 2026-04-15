@@ -261,6 +261,19 @@ def cmd_start(args: argparse.Namespace) -> None:
     config = _build_config(args)
     code_path = _project_root()
 
+    # ── Load .env (secrets like API keys, bot tokens) ──
+    env_file = code_path / ".env"
+    if env_file.is_file():
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, _, val = line.partition("=")
+                key, val = key.strip(), val.strip().strip("\"'")
+                if key and key not in os.environ:
+                    os.environ[key] = val
+
     # ── Setup pipeline log ──
     log_dir = code_path / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)

@@ -117,6 +117,10 @@ def search(
 
     scored.sort(key=lambda t: t[1], reverse=True)
 
+    # --- Floor gate: drop events below min_score ---
+    min_score = config.min_score
+    scored = [(e, s, v) for e, s, v in scored if s >= min_score]
+
     # --- Greedy MMR selection ---
     # Coarse cut to limit the MMR loop
     pool = scored[:effective_top_k * 4]
