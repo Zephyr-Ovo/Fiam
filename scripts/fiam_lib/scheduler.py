@@ -60,12 +60,29 @@ def extract_wake_tags(text: str) -> list[dict]:
 
 
 def append_to_schedule(tags: list[dict], config: FiamConfig) -> int:
-    """Append extracted WAKE tags to schedule.jsonl. Returns count added."""
+    """Append extracted WAKE tags to schedule.jsonl. Returns count added.
+
+    Skips expired entries and deduplicates against existing schedule.
+    """
     if not tags:
         return 0
     now = datetime.now(timezone.utc)
     schedule_path = config.schedule_path
     schedule_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Load existing entries for dedup (wake_at + reason)
+    existing: set[tuple[str, str]] = set()
+    if schedule_path.exists():
+        for line in schedule_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+                existing.add((entry.get("wake_at", ""), entry.get("reason", "")))
+            except (json.JSONDecodeError, KeyError):
+                continue
+
     count = 0
     with open(schedule_path, "a", encoding="utf-8") as f:
         for tag in tags:
@@ -77,7 +94,12 @@ def append_to_schedule(tags: list[dict], config: FiamConfig) -> int:
                     continue  # skip already-expired entries
             except (KeyError, ValueError):
                 pass
+            # Dedup: skip if same wake_at + reason already scheduled
+            key = (tag.get("wake_at", ""), tag.get("reason", ""))
+            if key in existing:
+                continue
             f.write(json.dumps(tag, ensure_ascii=False) + "\n")
+            existing.add(key)
             count += 1
     return count
 

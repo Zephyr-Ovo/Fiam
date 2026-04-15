@@ -1,9 +1,9 @@
 #!/bin/bash
-# fiam hook: Stop → extract outbound message markers from assistant response
+# fiam hook: Stop -> extract outbound message markers from assistant response
 #
 # The AI can include markers like:
-#   [→tg:Zephyr] message text here
-#   [→email:Zephyr] message text here
+#   [->tg:Zephyr] message text here
+#   [->email:Zephyr] message text here
 #
 # This hook reads the stop_hook_data from stdin, extracts the last
 # assistant message, finds markers, and writes outbox/.md files
@@ -43,7 +43,7 @@ if [ -z "$MSG" ]; then
     exit 0
 fi
 
-# Extract [→channel:recipient] blocks
+# Extract [->channel:recipient] blocks
 echo "$MSG" | python3 -c "
 import sys, re, os
 from datetime import datetime
@@ -52,7 +52,7 @@ text = sys.stdin.read()
 home = os.environ.get('CLAUDE_PROJECT_DIR', '.')
 outbox = os.path.join(home, 'outbox')
 
-# Pattern: [→channel:recipient] followed by text until next marker or end
+# Pattern: [->channel:recipient] followed by text until next marker or end
 pattern = r'\[→(tg|telegram|email):([^\]]+)\]\s*(.+?)(?=\[→(?:tg|telegram|email):|$)'
 matches = re.findall(pattern, text, re.DOTALL)
 
@@ -68,7 +68,7 @@ for i, (channel, recipient, body) in enumerate(matches):
         f.write(content)
 " 2>/dev/null
 
-# Clean up interactive lock — Stop means session is ending
+# Clean up interactive lock -- Stop means session is ending
 rm -f "$HOME_DIR/interactive.lock" 2>/dev/null
 
 exit 0

@@ -1,15 +1,15 @@
 #!/bin/bash
-# fiam hook: UserPromptSubmit → inject recall + inbox as additionalContext
+# fiam hook: UserPromptSubmit -> inject recall + inbox as additionalContext
 #
 # Two sources:
-#   1. recall.md       — memory fragments (surfaced by retrieval)
-#   2. inbox.jsonl     — pending messages from TG/email (daemon writes these)
+#   1. recall.md       -- memory fragments (surfaced by retrieval)
+#   2. inbox.jsonl     -- pending messages from TG/email (daemon writes these)
 #
 # Atomicity: inbox.jsonl is claimed via atomic `mv` to inbox.processing,
 # so concurrent daemon writes never collide with hook reads.
 #
 # The output uses [recall] / [inbox] section markers so the JSONL adapter
-# can distinguish them (recall MUST NOT enter fiam events — anti-recursion).
+# can distinguish them (recall MUST NOT enter fiam events -- anti-recursion).
 
 HOME_DIR="$CLAUDE_PROJECT_DIR"
 RECALL_FILE="$HOME_DIR/recall.md"

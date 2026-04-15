@@ -1,11 +1,11 @@
 #!/bin/bash
-# fiam hook: SessionStart → inject daily summary + manage interactive lock
+# fiam hook: SessionStart -> inject daily summary + manage interactive lock
 #
 # SessionStart receives JSON on stdin with a "source" field:
-#   "startup"  — fresh `claude` launch
-#   "resume"   — `claude --resume <id>`
-#   "clear"    — after /clear
-#   "compact"  — after auto-compact (but PostCompact is more specific)
+#   "startup"  -- fresh `claude` launch
+#   "resume"   -- `claude --resume <id>`
+#   "clear"    -- after /clear
+#   "compact"  -- after auto-compact (but PostCompact is more specific)
 #
 # This hook:
 #   1. Injects daily_summary.md as additionalContext (if it exists)

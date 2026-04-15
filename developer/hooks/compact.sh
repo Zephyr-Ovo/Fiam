@@ -1,5 +1,5 @@
 #!/bin/bash
-# fiam hook: PostCompact → capture compact summary for continuity
+# fiam hook: PostCompact -> capture compact summary for continuity
 #
 # When CC auto-compacts a conversation, this hook receives the compact
 # summary on stdin. We archive it so daily summaries and session context
@@ -39,7 +39,7 @@ TS=$(date +%Y%m%d_%H%M%S)
 DEST="$COMPACT_DIR/compact_${TS}.md"
 
 cat > "$DEST" << EOF
-# Compact Summary — $(date '+%Y-%m-%d %H:%M')
+# Compact Summary -- $(date '+%Y-%m-%d %H:%M')
 
 $SUMMARY
 EOF
