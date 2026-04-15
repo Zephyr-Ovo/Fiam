@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from fiam_lib.core import _project_root, _toml_path, _build_config, _pid_path, _is_daemon_running
@@ -406,10 +407,101 @@ def cmd_start(args: argparse.Namespace) -> None:
         _console.print(f"  [dim]└[{ts}][/dim] [bold #7eb8f7]↻[/]  recall  [bold #f7e08a]{len(events)}[/]")
 
     # ------------------------------------------------------------------
-    # Segment buffer for drift-based event segmentation
+    # Streaming depth-based event segmentation
+    #
+    # Instead of cutting on absolute cosine threshold (fragile),
+    # we use TextTiling depth scores — the same algorithm as post_session.
+    # Turns are grouped into "blocks" (user-assistant exchanges).
+    # Depth scores detect relative dips in inter-block similarity.
+    # A candidate cut is confirmed after CONFIRM_WINDOW more blocks
+    # still agree it's the deepest point, preventing premature cuts.
     # ------------------------------------------------------------------
-    segment_buffer: list[dict[str, str]] = []  # accumulated turns for current topic
-    segment_vec: np.ndarray | None = None      # embedding of current segment's user text
+    _DEPTH_WINDOW = 2          # blocks on each side for similarity
+    _DEPTH_CUTOFF = 0.10       # minimum depth to consider a cut
+    _CONFIRM_WINDOW = 2        # blocks after candidate before confirming
+    _MAX_BLOCKS = 20           # safety valve: force cut if buffer grows too large
+    _MIN_BLOCK_CHARS = 40      # skip embedding for trivial blocks
+
+    # A lightweight block: just turns + embedding vector
+    @dataclass
+    class _Block:
+        turns: list[dict[str, str]]
+        vec: np.ndarray | None = None
+
+    segment_blocks: list[_Block] = []    # accumulated blocks
+    _cut_candidate: int | None = None    # gap index of best cut candidate
+    _cut_depth: float = 0.0              # depth at candidate
+    _cut_confirm: int = 0                # blocks seen since candidate was set
+
+    def _group_turns_into_block(turns: list[dict[str, str]]) -> _Block:
+        """Group new turns into a single block and embed the user text."""
+        user_text = "\n".join(
+            t.get("text", "") for t in turns if t.get("role") == "user"
+        )
+        user_text = _wake_tag_re.sub("", user_text).strip()
+
+        vec = None
+        if len(user_text) >= _MIN_BLOCK_CHARS:
+            emb = _get_embedder()
+            vec = emb.embed(user_text)
+
+        return _Block(turns=turns, vec=vec)
+
+    def _compute_depths() -> np.ndarray:
+        """Compute TextTiling depth scores across current segment_blocks."""
+        n = len(segment_blocks)
+        if n < 3:
+            return np.zeros(max(n - 1, 0))
+
+        dim = config.embedding_dim
+        vecs = []
+        for b in segment_blocks:
+            vecs.append(b.vec if b.vec is not None else np.zeros(dim, dtype=np.float32))
+        embeddings = np.array(vecs)
+
+        # Step 1: block similarities at each gap
+        sims = np.zeros(n - 1)
+        for i in range(n - 1):
+            left_start = max(0, i - _DEPTH_WINDOW + 1)
+            right_end = min(n, i + 1 + _DEPTH_WINDOW)
+            left_block = embeddings[left_start:i + 1].mean(axis=0)
+            right_block = embeddings[i + 1:right_end].mean(axis=0)
+            denom = np.linalg.norm(left_block) * np.linalg.norm(right_block)
+            sims[i] = float(np.dot(left_block, right_block) / (denom + 1e-9)) if denom > 1e-9 else 0.0
+
+        # Step 2: depth = sum of drops from nearest left peak and right peak
+        depths = np.zeros(len(sims))
+        for i in range(len(sims)):
+            left_peak = sims[i]
+            for j in range(i - 1, -1, -1):
+                if sims[j] >= left_peak:
+                    left_peak = sims[j]
+                else:
+                    break
+            right_peak = sims[i]
+            for j in range(i + 1, len(sims)):
+                if sims[j] >= right_peak:
+                    right_peak = sims[j]
+                else:
+                    break
+            depths[i] = (left_peak - sims[i]) + (right_peak - sims[i])
+
+        return depths
+
+    def _find_best_cut(depths: np.ndarray) -> tuple[int, float] | None:
+        """Find the deepest local-maximum gap that exceeds the cutoff."""
+        best_idx, best_val = -1, 0.0
+        for i in range(len(depths)):
+            if depths[i] < _DEPTH_CUTOFF:
+                continue
+            # Must be local maximum
+            if i > 0 and depths[i - 1] > depths[i]:
+                continue
+            if i < len(depths) - 1 and depths[i + 1] > depths[i]:
+                continue
+            if depths[i] > best_val:
+                best_idx, best_val = i, depths[i]
+        return (best_idx, best_val) if best_idx >= 0 else None
 
     def _parse_new_turns() -> list[dict[str, str]]:
         """Parse unread JSONL content and advance cursor. Returns new turns."""
@@ -439,75 +531,109 @@ def cmd_start(args: argparse.Namespace) -> None:
         _save_cursor(code_path, cursor)
         return new_turns
 
-    def _flush_segment(reason: str = "drift") -> None:
-        """Finalize the segment buffer as a single event via store_segment()."""
-        nonlocal segment_buffer, segment_vec
-        if not segment_buffer:
+    def _flush_blocks(blocks: list[_Block], reason: str = "depth") -> None:
+        """Finalize a list of blocks as a single event via store_segment()."""
+        if not blocks:
             return
-        buf = segment_buffer
-        segment_buffer = []
-        segment_vec = None
+        all_turns = [t for b in blocks for t in b.turns]
+        if not all_turns:
+            return
         try:
-            r = store_segment(config, buf)
+            r = store_segment(config, all_turns)
             eid = r.get("event_id", "?")
             _console.print(f"  [bold #a8f0e8]+1[/] memory ({reason}) [{eid}]")
-            _plog.info("store_segment  reason=%s event=%s turns=%d", reason, eid, len(buf))
-            _log_action("store", f"{eid} ({reason})", turns=len(buf))
+            _plog.info("store_segment  reason=%s event=%s turns=%d blocks=%d",
+                        reason, eid, len(all_turns), len(blocks))
+            _log_action("store", f"{eid} ({reason})", turns=len(all_turns))
         except Exception as e:
             _console.print(f"  [red]segment error:[/] {e}")
             _plog.error("store_segment error: %s", e, exc_info=True)
             _log_action("error", f"store_segment: {e}")
 
-    def _ingest_and_check_drift(new_turns: list[dict[str, str]]) -> None:
-        """Add new turns to segment buffer; on topic drift, flush the previous segment."""
-        nonlocal segment_buffer, segment_vec
+    def _cut_at(gap_index: int, reason: str = "depth") -> None:
+        """Cut segment_blocks at gap_index: flush blocks 0..gap_index, keep the rest."""
+        nonlocal segment_blocks, _cut_candidate, _cut_depth, _cut_confirm
+
+        to_flush = segment_blocks[:gap_index + 1]
+        segment_blocks = segment_blocks[gap_index + 1:]
+        _cut_candidate = None
+        _cut_depth = 0.0
+        _cut_confirm = 0
+
+        _flush_blocks(to_flush, reason=reason)
+
+    def _ingest_and_check_depth(new_turns: list[dict[str, str]]) -> None:
+        """Add new turns as a block; check streaming depth for confirmed cuts."""
+        nonlocal segment_blocks, _cut_candidate, _cut_depth, _cut_confirm
 
         if not new_turns:
             return
 
-        # Extract user text from new turns for drift check
-        new_user_text = "\n".join(
-            t.get("text", "") for t in new_turns if t.get("role") == "user"
-        )
-        new_user_text = _wake_tag_re.sub("", new_user_text).strip()
+        block = _group_turns_into_block(new_turns)
+        segment_blocks.append(block)
 
-        if len(new_user_text) < recall_min_chars:
-            # Too short to embed — just accumulate
-            segment_buffer.extend(new_turns)
+        n = len(segment_blocks)
+
+        # Need at least 3 blocks before depth scoring is meaningful
+        if n < 3:
             return
 
-        emb = _get_embedder()
-        new_vec = emb.embed(new_user_text)
+        depths = _compute_depths()
+        best = _find_best_cut(depths)
 
-        # Check drift against current segment
-        if segment_vec is not None and segment_buffer:
-            sim = float(np.dot(new_vec, segment_vec) / (
-                np.linalg.norm(new_vec) * np.linalg.norm(segment_vec) + 1e-9
-            ))
-            if sim < recall_drift_threshold:
-                # Topic shifted — finalize previous segment
-                _plog.info("drift detected  sim=%.3f (threshold=%.2f)", sim, recall_drift_threshold)
-                _log_action("drift", f"sim={sim:.3f}", buffer_turns=len(segment_buffer))
-                _flush_segment(reason="drift")
+        if best is None:
+            # No significant cut point — reset candidate
+            _cut_candidate = None
+            _cut_depth = 0.0
+            _cut_confirm = 0
+            return
 
-        # Accumulate into (possibly fresh) buffer
-        segment_buffer.extend(new_turns)
-        segment_vec = new_vec
+        gap_idx, gap_depth = best
+
+        # Safety valve: force cut if buffer is too large
+        if n > _MAX_BLOCKS:
+            _plog.info("depth force-cut  blocks=%d gap=%d depth=%.3f", n, gap_idx, gap_depth)
+            _log_action("depth", f"force gap={gap_idx} d={gap_depth:.3f}", blocks=n)
+            _cut_at(gap_idx, reason="depth-force")
+            return
+
+        # Track candidate confirmation
+        if _cut_candidate == gap_idx:
+            _cut_confirm += 1
+        else:
+            # New (or shifted) candidate
+            _cut_candidate = gap_idx
+            _cut_depth = gap_depth
+            _cut_confirm = 0
+
+        # Confirmed: same gap survived CONFIRM_WINDOW more blocks
+        if _cut_confirm >= _CONFIRM_WINDOW:
+            _plog.info("depth confirmed  gap=%d depth=%.3f after %d blocks",
+                        gap_idx, gap_depth, _cut_confirm)
+            _log_action("depth", f"confirmed gap={gap_idx} d={gap_depth:.3f}",
+                        blocks=n, confirm=_cut_confirm)
+            _cut_at(gap_idx, reason="depth")
 
     def _process_pending() -> None:
         """Parse remaining JSONL, flush segment buffer, and refresh recall."""
-        nonlocal active, recall_query_vec
+        nonlocal active, recall_query_vec, segment_blocks, _cut_candidate, _cut_depth, _cut_confirm
 
-        # Parse any remaining unread turns into segment buffer
+        # Parse any remaining unread turns into a new block
         new_turns = _parse_new_turns()
         if new_turns:
-            segment_buffer.extend(new_turns)
+            block = _group_turns_into_block(new_turns)
+            segment_blocks.append(block)
 
-        _plog.info("process  buffer=%d turns", len(segment_buffer))
+        total_turns = sum(len(b.turns) for b in segment_blocks)
+        _plog.info("process  blocks=%d turns=%d", len(segment_blocks), total_turns)
 
-        # Flush whatever is in the segment buffer as the final event
-        if segment_buffer:
-            _flush_segment(reason="idle")
+        # Flush all remaining blocks as the final event
+        if segment_blocks:
+            _flush_blocks(segment_blocks, reason="idle")
+            segment_blocks = []
+            _cut_candidate = None
+            _cut_depth = 0.0
+            _cut_confirm = 0
 
             # Rebuild recall after storing
             try:
@@ -556,8 +682,9 @@ def cmd_start(args: argparse.Namespace) -> None:
                 "active": active,
                 "comm_state": comm,
                 "session": session.get("session_id", "")[:8] if session else None,
-                "segment_buffer_turns": len(segment_buffer),
-                "segment_has_vec": segment_vec is not None,
+                "segment_buffer_turns": sum(len(b.turns) for b in segment_blocks),
+                "segment_blocks": len(segment_blocks),
+                "segment_cut_candidate": _cut_candidate,
                 "recall_has_vec": recall_query_vec is not None,
                 "last_activity": time.strftime("%H:%M:%S", time.localtime(last_activity)) if last_activity else None,
                 "recent_actions": state_log[-20:],
@@ -706,7 +833,7 @@ def cmd_start(args: argparse.Namespace) -> None:
                 new_turns = _parse_new_turns()
                 if new_turns:
                     _log_action("ingest", f"{len(new_turns)} turns parsed")
-                    _ingest_and_check_drift(new_turns)
+                    _ingest_and_check_depth(new_turns)
             except Exception as e:
                 _log_action("error", f"ingest: {e}")
                 _plog.error("ingest error: %s", e, exc_info=True)
