@@ -33,6 +33,8 @@ half_life_base = 14.0
 idle_timeout_minutes = 30    # post-session triggers after this many idle minutes
 poll_interval_seconds = 30
 daily_budget_usd = 5.0       # 0 = unlimited; daily CC spend cap for auto-wakes
+cc_model = ""                # CC model alias: "opus", "sonnet", or full name; empty = CC default
+cc_disallowed_tools = ""     # comma-separated CC tools to disable (e.g. "WebFetch,NotebookEdit")
 
 [features]
 git_enabled = true

@@ -185,6 +185,12 @@ class FiamConfig:
     daily_budget_usd: float = 0.0     # 0 = unlimited; positive = daily spend cap
 
     # ------------------------------------------------------------------
+    # Claude Code parameters (daemon wake invocation)
+    # ------------------------------------------------------------------
+    cc_model: str = ""                # e.g. "opus", "sonnet", "claude-opus-4-6"; empty = CC default
+    cc_disallowed_tools: str = ""     # comma-separated tool names to disable (e.g. "WebFetch,NotebookEdit")
+
+    # ------------------------------------------------------------------
     # Features
     # ------------------------------------------------------------------
     git_enabled: bool = True
@@ -460,6 +466,8 @@ class FiamConfig:
             idle_timeout_minutes=daemon.get("idle_timeout_minutes", cls.idle_timeout_minutes),
             poll_interval_seconds=daemon.get("poll_interval_seconds", cls.poll_interval_seconds),
             daily_budget_usd=daemon.get("daily_budget_usd", cls.daily_budget_usd),
+            cc_model=daemon.get("cc_model", cls.cc_model),
+            cc_disallowed_tools=daemon.get("cc_disallowed_tools", cls.cc_disallowed_tools),
             # Features
             git_enabled=features.get("git_enabled", cls.git_enabled),
             # Graph edge typing

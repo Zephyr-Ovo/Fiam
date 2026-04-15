@@ -138,6 +138,10 @@ def _wake_session(config, message: str, tag: str = "tg") -> bool:
         "--output-format", "json",
         "--max-turns", "10",
     ]
+    if config.cc_model:
+        cmd.extend(["--model", config.cc_model])
+    if config.cc_disallowed_tools:
+        cmd.extend(["--disallowedTools"] + [t.strip() for t in config.cc_disallowed_tools.split(",") if t.strip()])
     if resuming:
         cmd.extend(["--resume", session["session_id"]])
 
