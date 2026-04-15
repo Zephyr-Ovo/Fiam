@@ -37,13 +37,13 @@ def compute_retention(event: EventRecord, now: datetime, *, half_life_base: floa
 def boost_strength(event: EventRecord, now: datetime) -> float:
     """Compute new strength after a recall.
 
-    - Base boost scales with arousal (high-emotion events reinforce more).
+    - Base boost scales with intensity (high-intensity events reinforce more).
     - Diminishing returns from repeated access.
     - Freshness bonus for events < 7 days old.
     - Capped at _STRENGTH_CAP.
     """
     # Base boost: 0.1 .. 0.3
-    base = 0.1 + event.arousal * 0.2
+    base = 0.1 + event.intensity * 0.2
 
     # Diminishing factor
     diminishing = 1.0 / (1.0 + event.access_count * 0.1)

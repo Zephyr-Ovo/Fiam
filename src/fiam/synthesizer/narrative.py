@@ -26,7 +26,7 @@ from .dynamics import extract_dynamics, parse_body_blocks, relative_time
 # ------------------------------------------------------------------
 
 def _extract_raw_fragments(event: EventRecord) -> str:
-    """High-arousal event: preserve verbatim fragments from body."""
+    """High-intensity event: preserve verbatim fragments from body."""
     blocks = parse_body_blocks(event.body)
     if not blocks:
         return event.body[:120] if event.body else ""
@@ -62,7 +62,7 @@ def _extract_raw_fragments(event: EventRecord) -> str:
 
 
 def _extract_skeleton(event: EventRecord) -> str:
-    """Low-arousal event: rule-based skeleton description."""
+    """Low-intensity event: rule-based skeleton description."""
     blocks = parse_body_blocks(event.body)
     if not blocks:
         return "那次对话"
@@ -88,7 +88,7 @@ def prepare_materials(
     are included in the materials for edge-aware narrative synthesis.
     """
     if len(events) > 5:
-        events = sorted(events, key=lambda e: e.arousal, reverse=True)[:5]
+        events = sorted(events, key=lambda e: e.intensity, reverse=True)[:5]
         events.sort(key=lambda e: e.time)
 
     # Build event ID set for edge filtering
@@ -96,7 +96,7 @@ def prepare_materials(
 
     materials: list[dict[str, Any]] = []
     for event in events:
-        if event.arousal > 0.7:
+        if event.intensity > 0.7:
             content = _extract_raw_fragments(event)
         else:
             content = _extract_skeleton(event)
@@ -109,7 +109,7 @@ def prepare_materials(
             "content": content,
             "dynamics": dynamics,
             "when": when,
-            "arousal": event.arousal,
+            "intensity": event.intensity,
         })
 
     # Attach relationship edges between recalled events

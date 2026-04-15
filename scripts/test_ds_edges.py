@@ -70,8 +70,7 @@ def load_event_meta(store_dir: Path, event_id: str) -> dict:
         meta = yaml.safe_load(parts[1])
         return {
             "time": str(meta.get("time", "")),
-            "valence": round(meta.get("valence", 0), 2),
-            "arousal": round(meta.get("arousal", 0), 2),
+            "intensity": round(meta.get("intensity", 0), 2),
         }
     return {}
 
@@ -124,7 +123,7 @@ def main():
         meta = load_event_meta(store_dir, eid)
         body = load_event_body(store_dir, eid)
         events_block += f"### {eid}\n"
-        events_block += f"Time: {meta.get('time', '?')}  Valence: {meta.get('valence', '?')}  Arousal: {meta.get('arousal', '?')}\n"
+        events_block += f"Time: {meta.get('time', '?')}  Intensity: {meta.get('intensity', '?')}\n"
         events_block += f"{body}\n\n"
 
     prompt = EDGE_PROMPT.format(events_block=events_block)

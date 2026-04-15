@@ -97,7 +97,6 @@ class FiamConfig:
     # ------------------------------------------------------------------
     # Event extraction parameters
     # ------------------------------------------------------------------
-    arousal_threshold: float = 0.6      # storage gate: pairs below this are discarded
     half_life_base: float = 14.0        # Ebbinghaus base half-life in days (strength=1.0)
 
     # ------------------------------------------------------------------
@@ -338,7 +337,6 @@ class FiamConfig:
             f"temporal_window_hours = {self.temporal_window_hours}",
             "",
             "[extraction]",
-            f"arousal_threshold = {self.arousal_threshold}",
             f"half_life_base = {self.half_life_base}",
             "",
             "[narrative]",
@@ -412,7 +410,6 @@ class FiamConfig:
             min_event_age_hours=retrieval.get("min_event_age_hours", cls.min_event_age_hours),
             temporal_window_hours=retrieval.get("temporal_window_hours", cls.temporal_window_hours),
             # Extraction
-            arousal_threshold=extraction.get("arousal_threshold", cls.arousal_threshold),
             half_life_base=extraction.get("half_life_base", cls.half_life_base),
             # Narrative
             narrative_llm_enabled=narrative.get("llm_enabled", cls.narrative_llm_enabled),

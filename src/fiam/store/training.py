@@ -52,8 +52,7 @@ def log_implicit_recall(
     label: int,
     context: str = "",
     *,
-    event_arousal: float = 0.0,
-    event_valence: float = 0.0,
+    event_intensity: float = 0.0,
     event_age_hours: float = 0.0,
     user_weight: float = 1.0,
 ) -> None:
@@ -64,8 +63,7 @@ def log_implicit_recall(
         "event_id": event_id,
         "label": label,
         "context": context[:500],  # truncate to save space
-        "event_arousal": round(event_arousal, 4),
-        "event_valence": round(event_valence, 4),
+        "event_intensity": round(event_intensity, 4),
         "event_age_hours": round(event_age_hours, 2),
         "user_weight": round(user_weight, 4),
     })

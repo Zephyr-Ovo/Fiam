@@ -23,7 +23,6 @@ min_event_age_hours = 6      # set to 0 for smoke testing
 temporal_window_hours = 4.0
 
 [extraction]
-arousal_threshold = 0.6      # lower = store more events
 half_life_base = 14.0
 
 [daemon]

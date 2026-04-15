@@ -162,7 +162,6 @@ def post_session(
     with trace.step("extractor", inputs={"turn_count": len(conversation)}) as rec:
         extracted = event_extractor.segment(
             conversation,
-            arousal_threshold=config.arousal_threshold,
             embedder=embedder,
             stored_vecs=stored_vecs,
             debug=config.debug_mode,
@@ -233,14 +232,11 @@ def post_session(
         all_embedding_stats.append(stats)
 
         # Create EventRecord
-        # New events use text_intensity for arousal; valence=0 (no classifier).
-        # Existing events in store retain their original V/A values.
+        # New events use text_intensity directly.
         record = EventRecord(
             filename=event_id,
             time=now,
-            valence=0.0,
-            arousal=ext_event.intensity,
-            confidence=0.0,
+            intensity=ext_event.intensity,
             embedding=emb_path,
             embedding_dim=vec.shape[-1],
             body=body,
@@ -360,7 +356,7 @@ def store_segment(
     """Store a pre-segmented conversation segment as a single event.
 
     Called by the daemon when topic drift is detected.  The turns have
-    already been segmented by drift detection — no arousal gating or
+    already been segmented by drift detection — no additional gating or
     TextTiling is applied.  We classify for metadata, embed, save,
     create edges (temporal + semantic + LLM), and name the event.
     """
@@ -429,9 +425,7 @@ def store_segment(
     record = EventRecord(
         filename=event_id,
         time=now,
-        valence=0.0,
-        arousal=ext_event.intensity,
-        confidence=0.0,
+        intensity=ext_event.intensity,
         embedding=emb_path,
         embedding_dim=vec.shape[-1],
         body=body,

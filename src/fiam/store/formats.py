@@ -5,9 +5,7 @@ An event file looks like:
 
     ---
     time: 2026-04-03T14:32:00Z
-    valence: -0.3
-    arousal: 0.8
-    confidence: 0.85
+    intensity: 0.45
     access_count: 0
     embedding: embeddings/ev_20260403_001.npy
     tags: [Zephyr, prank]
@@ -37,10 +35,8 @@ class EventRecord:
     # Temporal
     time: datetime
 
-    # Emotion coordinates
-    valence: float                     # [-1.0, 1.0]
-    arousal: float                     # [0.0,  1.0]
-    confidence: float                  # [0.0,  1.0]
+    # Text intensity (surface-level conversational heat)
+    intensity: float = 0.0             # [0.0, 1.0]
 
     # State
     access_count: int = 0
@@ -62,9 +58,6 @@ class EventRecord:
     # Embedding metadata
     embedding_dim: int = 0             # 0 = unknown/legacy (will be set on embed)
 
-    # Emotion metadata (extensibility)
-    dominant_label: str = ""           # e.g. "joy", "anger", "positive"
-
     # Body text (the non-frontmatter portion of the file)
     body: str = ""
 
@@ -80,17 +73,13 @@ class EventRecord:
         """Return a dict suitable for writing as YAML frontmatter."""
         d: dict[str, Any] = {
             "time": self.time.strftime("%m-%d %H:%M"),
-            "valence": round(float(self.valence), 6),
-            "arousal": round(float(self.arousal), 6),
-            "confidence": round(float(self.confidence), 6),
+            "intensity": round(float(self.intensity), 4),
             "access_count": int(self.access_count),
             "strength": round(float(self.strength), 4),
             "embedding": self.embedding,
             "embedding_dim": self.embedding_dim,
             "tags": list(self.tags),
         }
-        if self.dominant_label:
-            d["dominant_label"] = self.dominant_label
         if self.last_accessed is not None:
             d["last_accessed"] = self.last_accessed.strftime("%m-%d %H:%M")
         if self.user_weight != 1.0:
@@ -117,7 +106,7 @@ class ValidationError(ValueError):
     pass
 
 
-_REQUIRED_KEYS = {"time", "valence", "arousal", "confidence"}
+_REQUIRED_KEYS = {"time"}
 
 
 def validate_frontmatter(data: dict[str, Any], filename: str = "<unknown>") -> None:
@@ -128,24 +117,15 @@ def validate_frontmatter(data: dict[str, Any], filename: str = "<unknown>") -> N
             f"{filename}: missing required frontmatter keys: {sorted(missing)}"
         )
 
-    for float_key in ("valence", "arousal", "confidence"):
-        val = data[float_key]
+    if "intensity" in data:
+        val = data["intensity"]
         if not isinstance(val, (int, float)):
             raise ValidationError(
-                f"{filename}: '{float_key}' must be a number, got {type(val).__name__}"
+                f"{filename}: 'intensity' must be a number, got {type(val).__name__}"
             )
-
-    v = float(data["valence"])
-    if not (-1.0 <= v <= 1.0):
-        raise ValidationError(f"{filename}: valence {v} out of range [-1.0, 1.0]")
-
-    a = float(data["arousal"])
-    if not (0.0 <= a <= 1.0):
-        raise ValidationError(f"{filename}: arousal {a} out of range [0.0, 1.0]")
-
-    c = float(data["confidence"])
-    if not (0.0 <= c <= 1.0):
-        raise ValidationError(f"{filename}: confidence {c} out of range [0.0, 1.0]")
+        i = float(val)
+        if not (0.0 <= i <= 1.0):
+            raise ValidationError(f"{filename}: intensity {i} out of range [0.0, 1.0]")
 
     if "access_count" in data and not isinstance(data["access_count"], int):
         raise ValidationError(
@@ -191,9 +171,7 @@ def parse_event(
     return EventRecord(
         filename=filename,
         time=time,
-        valence=float(frontmatter["valence"]),
-        arousal=float(frontmatter["arousal"]),
-        confidence=float(frontmatter["confidence"]),
+        intensity=float(frontmatter.get("intensity", 0.0)),
         access_count=int(frontmatter.get("access_count", 0)),
         strength=float(frontmatter.get("strength", 1.0)),
         last_accessed=last_accessed,
@@ -202,6 +180,5 @@ def parse_event(
         tags=list(frontmatter.get("tags") or []),
         links=EventRecord.normalise_links(list(frontmatter.get("links") or [])),
         embedding_dim=int(frontmatter.get("embedding_dim", 0)),
-        dominant_label=str(frontmatter.get("dominant_label", "")),
         body=body.strip(),
     )

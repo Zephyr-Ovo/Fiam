@@ -306,7 +306,7 @@ def _render_cluster(cluster: list) -> str:
         if len(body_clean) > 100:
             body_clean = body_clean[:97] + "..."
 
-        va = f"v={ev.valence:+.1f} a={ev.arousal:.1f}"
+        va = f"i={ev.intensity:.2f}"
         lines.append(f"  [{ev.filename}] ({time_str}, {va}) {body_clean}")
 
     return "\n".join(lines)
@@ -324,9 +324,7 @@ def _apply_merge(cluster: list, summary: str, config, store, console) -> None:
     new_id = store.new_event_id()
 
     # Average emotion values
-    avg_valence = sum(e.valence for e in cluster) / len(cluster)
-    avg_arousal = sum(e.arousal for e in cluster) / len(cluster)
-    avg_confidence = sum(e.confidence for e in cluster) / len(cluster)
+    avg_intensity = sum(e.intensity for e in cluster) / len(cluster)
 
     # Highest user_weight from the cluster
     max_weight = max(e.user_weight for e in cluster)
@@ -347,9 +345,7 @@ def _apply_merge(cluster: list, summary: str, config, store, console) -> None:
     merged = EventRecord(
         filename=new_id,
         time=datetime.now(timezone.utc),
-        valence=avg_valence,
-        arousal=avg_arousal,
-        confidence=avg_confidence,
+        intensity=avg_intensity,
         strength=max(e.strength for e in cluster),
         user_weight=max_weight,
         embedding=embedding_rel,

@@ -118,7 +118,7 @@ def cmd_graph(args: argparse.Namespace) -> None:
 
         lines = [
             f"*{ev.time.strftime('%Y-%m-%d %H:%M')}*",
-            f"v={ev.valence:+.2f}  a={ev.arousal:.2f}",
+            f"i={ev.intensity:.2f}",
             "",
             clean_body,
             "",

@@ -48,7 +48,7 @@ class MemoryGraph:
 
         event_times: dict[str, datetime] = {}
         for ev in events:
-            self.G.add_node(ev.event_id, time=ev.time, arousal=ev.arousal)
+            self.G.add_node(ev.event_id, time=ev.time, intensity=ev.intensity)
             event_times[ev.event_id] = ev.time
 
         # Determine edge source: graph.jsonl edges OR legacy event.links

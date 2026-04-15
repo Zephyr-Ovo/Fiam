@@ -90,7 +90,7 @@ def _format_events_block(events: list[EventRecord]) -> str:
         if len(body) > 400:
             body = body[:397] + "..."
         time_str = ev.time.strftime("%Y-%m-%d %H:%M")
-        lines.append(f"### {ev.event_id} ({time_str}, v={ev.valence:+.2f} a={ev.arousal:.2f})")
+        lines.append(f"### {ev.event_id} ({time_str}, i={ev.intensity:.2f})")
         lines.append(body)
         lines.append("")
     return "\n".join(lines)

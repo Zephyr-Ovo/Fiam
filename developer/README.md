@@ -45,12 +45,11 @@ Fixture format: `[{"role": "user"|"assistant", "text": "..."}]`
 fiam post --test-file test_vault/fixtures/emotional_gradient.json --debug
 ```
 
-Debug output: gate decisions (`arousal`, `novelty`, `elaboration`), cosine scores, merge trace.
+Debug output: gate decisions (`intensity`, `novelty`, `elaboration`), cosine scores, merge trace.
 Logs written to `logs/sessions/<MMDD_HHMM>/`.
 
 Threshold tuning (fiam.toml):
 ```toml
-arousal_threshold = 0.3   # default 0.6 — lower to capture quieter moments
 novelty_threshold = 0.5   # default 0.7 — lower to allow similar events
 ```
 

@@ -64,9 +64,7 @@ def generate(
     if events:
         for ev in events:
             sections.append(f"### {ev.filename}\n")
-            sections.append(f"- **Valence:** {ev.valence:.4f}")
-            sections.append(f"- **Arousal:** {ev.arousal:.4f}")
-            sections.append(f"- **Confidence:** {ev.confidence:.4f}")
+            sections.append(f"- **Intensity:** {ev.intensity:.4f}")
             sections.append(f"- **Time:** {ev.time.isoformat()}")
             sections.append(f"\n{ev.body}\n")
     else:
@@ -117,12 +115,12 @@ def generate(
     sections.append("---\n## Home Summary\n")
     sections.append(f"**Total events:** {len(all_events)}\n")
     if all_events:
-        sections.append("| Event ID | Valence | Arousal | Confidence | Time |")
-        sections.append("|----------|---------|---------|------------|------|")
+        sections.append("| Event ID | Intensity | Time |")
+        sections.append("|----------|-----------|------|")
         for ev in all_events:
             sections.append(
-                f"| {ev.filename} | {ev.valence:.4f} | {ev.arousal:.4f} "
-                f"| {ev.confidence:.4f} | {ev.time.strftime('%Y-%m-%d %H:%M')} |"
+                f"| {ev.filename} | {ev.intensity:.4f} "
+                f"| {ev.time.strftime('%Y-%m-%d %H:%M')} |")
             )
         sections.append("")
 

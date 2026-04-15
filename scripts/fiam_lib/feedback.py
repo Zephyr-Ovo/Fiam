@@ -78,7 +78,7 @@ def _run_tui(events: list, store, config) -> None:
         )
         table.add_column("#", width=3, justify="right")
         table.add_column("Age", width=4)
-        table.add_column("V/A", width=12)
+        table.add_column("Int", width=6)
         table.add_column("Wt", width=6)
         table.add_column("Δ", width=5)
         table.add_column("Event", ratio=1)
@@ -86,7 +86,7 @@ def _run_tui(events: list, store, config) -> None:
         for i, ev in enumerate(events):
             is_selected = (i == cursor)
             age = _age_str(ev)
-            va = f"v={ev.valence:+.1f} a={ev.arousal:.1f}"
+            va = f"i={ev.intensity:.2f}"
             new_wt = max(_WEIGHT_MIN, min(_WEIGHT_MAX, ev.user_weight + deltas[i]))
             wt_display = f"{new_wt:.1f}"
 
@@ -234,8 +234,7 @@ def _log_feedback_training(events: list, deltas: list[float], code_path) -> None
         candidates.append({
             "event_id": ev.event_id,
             "label": label,
-            "event_arousal": round(ev.arousal, 4),
-            "event_valence": round(ev.valence, 4),
+            "event_intensity": round(ev.intensity, 4),
             "event_age_hours": round(age_hours, 2),
             "user_weight": round(ev.user_weight, 4),
         })

@@ -71,7 +71,7 @@ def cmd_init(args: argparse.Namespace) -> None:
     print()
     print("  Language profile:")
     print("    1) zh    — 中文（中文专项模型，中文情感检测最佳）")
-    print("    2) en    — English (English-specific models, fine-grained arousal)")
+    print("    2) en    — English (English-specific models)")
     print("    3) multi — 双语/多语 (single multilingual model, unified vector space)")
     print()
     print("    ⚠ zh/en 各自只下载对应语言的模型，体积小，效果最优。")

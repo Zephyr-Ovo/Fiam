@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 @dataclass
 class Significance:
     """Multi-signal significance scores for a conversation pair."""
-    emotional: float    # max(user, asst) arousal
+    emotional: float    # max(user, asst) intensity
     novelty: float      # 1 - max_cosine_sim with stored events
     elaboration: float  # log2(user_chars / session_median_chars)
 
@@ -41,8 +41,7 @@ class ExtractedEvent:
     timestamp: str = ""     # ISO 8601 from source JSONL (earliest turn in event)
 
 
-# --- Significance thresholds ---
-_AROUSAL_THRESHOLD = 0.6
+# --- Significance thresholds (metadata only, no gating) ---
 _NOVELTY_THRESHOLD = 0.7
 _ELABORATION_THRESHOLD = 1.5
 
@@ -71,7 +70,6 @@ class _Pair:
 def segment(
     conversation: list[dict[str, str]],
     *,
-    arousal_threshold: float = _AROUSAL_THRESHOLD,
     novelty_threshold: float = _NOVELTY_THRESHOLD,
     elaboration_threshold: float = _ELABORATION_THRESHOLD,
     embedder: Embedder | None = None,
@@ -84,9 +82,6 @@ def segment(
     Significance (emotional / novelty / elaboration) is computed as
     metadata on each pair for downstream retrieval weighting, but
     no hard gate filters pairs before segmentation.
-
-    Threshold params are retained for backward compatibility but
-    are no longer used for gating.
 
     Text intensity (surface heuristic) replaces V/A classification.
     """
