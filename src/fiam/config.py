@@ -125,8 +125,8 @@ class FiamConfig:
     # ------------------------------------------------------------------
     # Retrieval parameters
     # ------------------------------------------------------------------
-    top_k: int = 3                      # max events retrieved per pre-session
-    min_score: float = 0.15             # floor: skip events with combined score below this
+    top_k: int = 3                      # safety cap: max events per retrieval
+    min_score: float = 0.15             # primary gate: skip events below this combined score
     diversity_threshold: float = 0.88   # cosine similarity ceiling for dedup
     min_event_age_hours: int = 6        # skip events newer than this
     temporal_window_hours: float = 4.0  # legacy; kept for toml compat (unused)

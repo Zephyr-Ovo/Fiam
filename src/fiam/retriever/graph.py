@@ -111,6 +111,18 @@ class MemoryGraph:
     # Spreading activation
     # ------------------------------------------------------------------
 
+    # Edge-type multipliers: how much energy each relation type propagates.
+    # causal > remind > elaboration > semantic > temporal > contrast
+    _TYPE_MULT: dict[str, float] = {
+        "causal":      1.4,
+        "cause":       1.4,   # alias used by edge_typer
+        "remind":      1.2,
+        "elaboration": 1.0,
+        "semantic":    0.8,
+        "temporal":    0.5,
+        "contrast":    0.3,
+    }
+
     def spread(
         self,
         seed_ids: list[str],
@@ -148,7 +160,9 @@ class MemoryGraph:
                     continue
                 for _, neighbor, data in self.G.out_edges(node, data=True):
                     w = data.get("weight", 0.5)
-                    propagated = energy * w * decay_per_step
+                    edge_type = data.get("type", "temporal")
+                    type_mult = self._TYPE_MULT.get(edge_type, 0.5)
+                    propagated = energy * w * type_mult * decay_per_step
                     if propagated > 0.001:
                         delta[neighbor] = delta.get(neighbor, 0.0) + propagated
 

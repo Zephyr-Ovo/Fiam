@@ -117,15 +117,17 @@ def search(
 
     scored.sort(key=lambda t: t[1], reverse=True)
 
-    # --- Floor gate: drop events below min_score ---
+    # --- Floor gate: min_score is the primary recall control ---
+    # Only events above min_score are eligible; top_k is a safety cap.
     min_score = config.min_score
     scored = [(e, s, v) for e, s, v in scored if s >= min_score]
 
     # --- Greedy MMR selection ---
-    # Coarse cut to limit the MMR loop
-    pool = scored[:effective_top_k * 4]
+    # Pool = all qualifying events; top_k caps the final count.
+    pool = scored
+    n_select = min(effective_top_k, len(pool)) if effective_top_k else len(pool)
 
-    selected = _mmr_select(pool, effective_top_k, _MMR_LAMBDA)
+    selected = _mmr_select(pool, n_select, _MMR_LAMBDA)
 
     # Record access for selected events
     for event in selected:
