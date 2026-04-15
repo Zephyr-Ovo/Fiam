@@ -24,9 +24,6 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-import torch
-from transformers import pipeline as hf_pipeline
-
 from fiam.config import FiamConfig
 
 
@@ -226,6 +223,9 @@ class EmotionClassifier:
         )
         if not model_name:
             return None
+
+        import torch
+        from transformers import pipeline as hf_pipeline
 
         device: int | str = -1
         if torch.cuda.is_available():
