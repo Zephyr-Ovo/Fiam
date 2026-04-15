@@ -58,7 +58,7 @@ novelty_threshold = 0.5   # default 0.7 — lower to allow similar events
 ## Common issues
 
 **No events saved** — check `logs/sessions/<latest>/extractor.json` for gate decisions.
-Most often: arousal too low, or events too similar to existing store (novelty gate).
+Most often: intensity too low, or events too similar to existing store (novelty gate).
 
 **Embedding mismatch after model change** — `fiam reindex`.
 

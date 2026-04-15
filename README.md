@@ -8,7 +8,7 @@ Long-term emotional memory for AI coding agents. Runs alongside Claude Code, wat
 - **Intensity-aware storage** — text intensity heuristic scores conversational heat; TextTiling depth segmentation decides structure, not emotion gates
 - **Memory graph** — events linked by semantic, temporal, causal, and associative edges; SYNAPSE-inspired spreading activation with fire-once propagation and fan penalty
 - **Multi-channel communication** — Telegram and email inbound/outbound, with identity continuity across channels
-- **Affective state** — `state.md` emotional state + `goals.md` active motivations injected into synthesis; foundation for Goals→Appraisal→State system
+- **Affective state** — Goals→Appraisal→State pipeline: reads `goals.md` + recent events → LLM appraises emotional impact → writes `state.md` (mood, tension, reflection) → injected into synthesis
 - **Hook-mediated injection** — 4 CC hooks (UserPromptSubmit, Stop, SessionStart, PostCompact) for seamless context flow
 - **Session management** — resume-based messaging, interactive lock, daily lifecycle with compact archival
 
