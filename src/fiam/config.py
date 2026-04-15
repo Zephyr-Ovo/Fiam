@@ -19,45 +19,25 @@ from pathlib import Path
 # ------------------------------------------------------------------
 # Language profile presets
 # ------------------------------------------------------------------
-# Each profile defines which models to download and use.
-# "zh"    — Chinese-focused: bge-zh embedding, Chinese-Emotion (8 labels)
-# "en"    — English-focused: bge-en embedding, GoEmotions (28 labels)
-# "multi" — Multilingual: bge-m3 embedding, auto-detect → zh or en emotion model
+# Each profile defines which embedding model to use.
+# "zh"    — Chinese-focused: bge-zh embedding
+# "en"    — English-focused: bge-en embedding
+# "multi" — Multilingual: bge-m3 embedding (unified vector space)
 
 from typing import Any
-
-# Chinese emotion model variants (same 8-class labels, different backbones)
-EMOTION_ZH_MODELS: dict[str, dict[str, str | int]] = {
-    "small": {
-        "name": "Johnson8187/Chinese-Emotion-Small",
-        "backbone": "mDeBERTa-v3-base",
-        "size_mb": 300,
-    },
-    "large": {
-        "name": "Johnson8187/Chinese-Emotion",
-        "backbone": "xlm-roberta-large",
-        "size_mb": 2240,
-    },
-}
 
 LANGUAGE_PROFILES: dict[str, dict[str, Any]] = {
     "zh": {
         "embedding": "BAAI/bge-base-zh-v1.5",
         "embedding_dim": 768,
-        "emotion_zh": "Johnson8187/Chinese-Emotion-Small",
-        "emotion_en": "",
     },
     "en": {
         "embedding": "BAAI/bge-base-en-v1.5",
         "embedding_dim": 768,
-        "emotion_zh": "",
-        "emotion_en": "SamLowe/roberta-base-go_emotions",
     },
     "multi": {
         "embedding": "BAAI/bge-m3",
         "embedding_dim": 1024,
-        "emotion_zh": "Johnson8187/Chinese-Emotion-Small",
-        "emotion_en": "SamLowe/roberta-base-go_emotions",
     },
 }
 
@@ -85,23 +65,6 @@ class FiamConfig:
     # Language profile  ("zh" | "en" | "multi")
     # ------------------------------------------------------------------
     language_profile: str = "multi"
-
-    # ------------------------------------------------------------------
-    # Emotion provider  ("local" = WDI models | "api" = LLM API)
-    # ------------------------------------------------------------------
-    emotion_provider: str = "local"
-
-    # ------------------------------------------------------------------
-    # Emotion backend  ("local" = in-process | "remote" = API server on DO)
-    # ------------------------------------------------------------------
-    emotion_backend: str = "local"
-    emotion_remote_url: str = ""  # e.g. "http://127.0.0.1:8819" (via SSH tunnel)
-
-    # ------------------------------------------------------------------
-    # Emotion models (only used when emotion_provider == "local")
-    # ------------------------------------------------------------------
-    emotion_model_zh: str = ""   # Chinese emotion: Johnson8187/Chinese-Emotion-Small
-    emotion_model_en: str = ""   # English emotion: SamLowe/roberta-base-go_emotions
 
     # ------------------------------------------------------------------
     # Embedding model (single model, derived from language_profile)
@@ -209,15 +172,7 @@ class FiamConfig:
             self.embedding_model = str(profile["embedding"])
         if not self.embedding_dim:
             self.embedding_dim = int(profile["embedding_dim"])
-        if self.emotion_provider == "local":
-            if not self.emotion_model_zh:
-                self.emotion_model_zh = str(profile.get("emotion_zh", ""))
-            if not self.emotion_model_en:
-                self.emotion_model_en = str(profile.get("emotion_en", ""))
-        else:
-            # API mode — no local emotion models needed
-            self.emotion_model_zh = ""
-            self.emotion_model_en = ""
+
 
     # ------------------------------------------------------------------
     # Derived paths — code side (store/ = the "basement")
@@ -366,12 +321,9 @@ class FiamConfig:
             f'ai_name = "{self.ai_name}"',
             f'user_name = "{self.user_name}"',
             f'language_profile = "{self.language_profile}"',
-            f'emotion_provider = "{self.emotion_provider}"',
             "",
             "[models]",
             f'embedding = "{self.embedding_model}"',
-            f'emotion_zh = "{self.emotion_model_zh}"',
-            f'emotion_en = "{self.emotion_model_en}"',
             f"embedding_dim = {self.embedding_dim}",
             f'embedding_backend = "{self.embedding_backend}"',
             f'embedding_remote_url = "{self.embedding_remote_url}"',
@@ -444,18 +396,13 @@ class FiamConfig:
             ai_name=raw.get("ai_name", ""),
             user_name=raw.get("user_name", ""),
             language_profile=raw.get("language_profile", "multi"),
-            emotion_provider=raw.get("emotion_provider", "local"),
             # Models
-            emotion_model_zh=models.get("emotion_zh", ""),
-            emotion_model_en=models.get("emotion_en", ""),
             embedding_model=models.get("embedding",
                                        # backward compat: old toml had embedding_zh/embedding_en
                                        models.get("embedding_zh", "")),
             embedding_dim=models.get("embedding_dim", 0),  # 0 = derive from profile
             embedding_backend=models.get("embedding_backend", "local"),
             embedding_remote_url=models.get("embedding_remote_url", ""),
-            emotion_backend=models.get("emotion_backend", "local"),
-            emotion_remote_url=models.get("emotion_remote_url", ""),
             # Retrieval
             top_k=retrieval.get("top_k", cls.top_k),
             semantic_weight=retrieval.get("semantic_weight", cls.semantic_weight),

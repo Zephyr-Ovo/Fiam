@@ -84,7 +84,6 @@ class Trace:
         event_path: str,
         embedding_path: str,
         embedding_vec: np.ndarray | None = None,
-        emotion: Any = None,
         body_preview: str = "",
     ) -> Path:
         """Specialised record for store_write steps — includes embedding stats."""
@@ -94,9 +93,6 @@ class Trace:
             "embedding_path": embedding_path,
             "body_preview": body_preview[:200],
         }
-
-        if emotion is not None:
-            outputs["emotion"] = _serialise(emotion)
 
         if embedding_vec is not None:
             outputs["embedding_stats"] = _embedding_stats(embedding_vec)

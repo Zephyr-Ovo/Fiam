@@ -16,7 +16,7 @@ from fiam_lib.ui import _conjure
 
 def cmd_init(args: argparse.Namespace) -> None:
     """Interactive setup wizard."""
-    from fiam.config import FiamConfig, LANGUAGE_PROFILES, EMOTION_ZH_MODELS
+    from fiam.config import FiamConfig, LANGUAGE_PROFILES
     from fiam.injector.claude_code import write_claude_md, write_gitignore
 
     code_path = _project_root()
@@ -88,47 +88,6 @@ def cmd_init(args: argparse.Namespace) -> None:
     profile = LANGUAGE_PROFILES[language_profile]
     print(f"  → {language_profile}: embedding={profile['embedding']}, dim={profile['embedding_dim']}")
 
-    # ── Emotion provider ──
-    default_provider = existing.emotion_provider if existing else "local"
-    print()
-    print("  Emotion intensity — who decides?")
-    print("    1) local ★ — 本地模型 (WDI, 无需联网, 需下载 300~500 MB 情感模型)")
-    print("    2) api     — LLM API (用 narrative LLM 判断, 无需下载情感模型, 消耗 token)")
-    print()
-    provider_input = input(f"  Choose [1/2, default={default_provider}]: ").strip()
-    provider_map = {"1": "local", "2": "api"}
-    emotion_provider = provider_map.get(provider_input, "")
-    if not emotion_provider:
-        emotion_provider = provider_input if provider_input in ("local", "api") else default_provider
-    print(f"  → {emotion_provider}")
-
-    # ── Emotion model size (local + zh/multi only) ──
-    emotion_zh_model = ""
-    if emotion_provider == "local":
-        emotion_zh_model = str(profile.get("emotion_zh", ""))
-        if emotion_zh_model:
-            print()
-            print("  Chinese emotion model size:")
-            small = EMOTION_ZH_MODELS["small"]
-            large = EMOTION_ZH_MODELS["large"]
-            print(f"    1) small ★  {small['name']}")
-            print(f"               backbone: {small['backbone']}, ~{small['size_mb']} MB")
-            print(f"    2) large    {large['name']}")
-            print(f"               backbone: {large['backbone']}, ~{large['size_mb']} MB")
-            print()
-            print("    两者使用相同的 8 类中文情感标签，精度差异很小。")
-            print("    large 是 2.2 GB，边际提升不大，不特别执着不推荐。")
-            print()
-            size_input = input("  Choose [1/2, default=1 small]: ").strip()
-            if size_input == "2":
-                emotion_zh_model = str(large["name"])
-                print(f"  → large: {emotion_zh_model}")
-            else:
-                emotion_zh_model = str(small["name"])
-                print(f"  → small: {emotion_zh_model}")
-    else:
-        print("  (skip emotion model download — API handles emotion analysis)")
-
     # ── Identity ──
     default_ai = existing.ai_name if existing else ""
     default_user = existing.user_name if existing else ""
@@ -165,11 +124,8 @@ def cmd_init(args: argparse.Namespace) -> None:
         ai_name=ai_name,
         user_name=user_name,
         language_profile=language_profile,
-        emotion_provider=emotion_provider,
         embedding_model=str(profile["embedding"]),
         embedding_dim=int(profile["embedding_dim"]),
-        emotion_model_zh=emotion_zh_model if emotion_zh_model else str(profile.get("emotion_zh", "")),
-        emotion_model_en=str(profile.get("emotion_en", "")),
         git_enabled=git_enabled,
     )
 

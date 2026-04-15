@@ -61,7 +61,7 @@ def load_event_body(store_dir: Path, event_id: str) -> str:
 
 
 def load_event_meta(store_dir: Path, event_id: str) -> dict:
-    """Load event time and emotion from frontmatter."""
+    """Load event time and metadata from frontmatter."""
     import yaml
     path = store_dir / "events" / f"{event_id}.md"
     raw = path.read_text(encoding="utf-8")
