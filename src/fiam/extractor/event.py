@@ -635,6 +635,11 @@ def _build_event(pairs: list[_Pair]) -> ExtractedEvent:
         body = t.get("text", "")
         if role == "user" and _is_paste_dump(body):
             body = "(略)"
+        # Include inbox context for wake events (actual message content
+        # from TG/email, extracted from hook additionalContext)
+        inbox = t.get("inbox_context", "")
+        if inbox:
+            body = (body + "\n" + inbox) if body else inbox
         parts.append(f"[{role}]\n{body}")
     text = "\n\n".join(parts)
 

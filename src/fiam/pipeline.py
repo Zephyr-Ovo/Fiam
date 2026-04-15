@@ -392,7 +392,12 @@ def store_segment(
 
     # Content-hash dedup: skip if we already stored this exact user text
     import hashlib
-    _user_text = "\n".join(t.get("text", "") for t in turns if t.get("role") == "user")
+    _user_parts = []
+    for t in turns:
+        if t.get("role") == "user":
+            _user_parts.append(t.get("text", ""))
+            _user_parts.append(t.get("inbox_context", ""))
+    _user_text = "\n".join(_user_parts)
     _body_hash = hashlib.md5(_user_text.encode()).hexdigest()[:16]
     _dedup_path = config.store_dir / "dedup_hashes.txt"
     _known: set[str] = set()
