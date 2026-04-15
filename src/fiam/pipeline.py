@@ -20,7 +20,6 @@ from typing import Any
 import numpy as np
 
 from fiam.config import FiamConfig
-from fiam.classifier.emotion import get_classifier
 from fiam.extractor import event as event_extractor
 from fiam.extractor.signals import extract_session_signals
 from fiam.injector import claude_code as injector
@@ -59,11 +58,22 @@ def pre_session(config: FiamConfig) -> dict[str, Any]:
         else:
             print("[pre_session] No personality.md yet (Day 1)")
 
+    # Step 2b: Read current psychological state (written by appraisal)
+    state_text = ""
+    if config.state_path.exists():
+        state_text = config.state_path.read_text(encoding="utf-8").strip()
+    if config.debug_mode:
+        if state_text:
+            print(f"[pre_session] State: {state_text[:80]}...")
+        else:
+            print("[pre_session] No state.md yet")
+
     # Step 3: Synthesize background
     with trace.step("synthesizer", inputs={"event_count": len(events)}) as rec:
         synthesis_text = synth.generate(
             retrieved_events=events,
             personality=personality,
+            state=state_text,
             session_id=trace.session_id,
         )
         rec["outputs"] = {"synthesis_text": synthesis_text}
@@ -116,14 +126,13 @@ def post_session(
     session_id: str | None = None,
     session_time: datetime | None = None,
 ) -> dict[str, Any]:
-    """Run the post-session pipeline: classify → extract → embed → store → report.
+    """Run the post-session pipeline: extract → embed → store → report.
 
     If *session_time* is given, events are timestamped to that moment
     (e.g. JSONL file mtime during scan) instead of ``now()``.
     """
     trace = Trace(logs_root=config.logs_dir, session_id=session_id)
     store = HomeStore(config)
-    classifier = get_classifier(config)
     embedder = Embedder(config)
 
     # Build full text for debug save
@@ -137,30 +146,7 @@ def post_session(
         conv_path.write_text(full_text, encoding="utf-8")
         print(f"[post_session] Saved conversation to {conv_path}")
 
-    # Step 0: Pre-classify ALL turns once — shared by extractor + signals
-    #
-    # This is the biggest single optimisation: batch classification is
-    # 30-100× faster than per-turn, and we avoid classifying the same
-    # turns twice (once in segment(), once in extract_session_signals()).
-    user_texts = [t["text"] for t in conversation if t.get("role") == "user"]
-    asst_texts = [t["text"] for t in conversation if t.get("role") == "assistant"]
-    all_classify_texts = user_texts + asst_texts
-
-    if all_classify_texts:
-        all_emotions = classifier.analyze_batch(all_classify_texts)
-        user_emotions = all_emotions[:len(user_texts)]
-        asst_emotions = all_emotions[len(user_texts):]
-    else:
-        user_emotions = []
-        asst_emotions = []
-
-    # Build arousal cache for signals (avoids second classification pass)
-    precomputed_arousals = {
-        "user": [e.arousal for e in user_emotions],
-        "asst": [e.arousal for e in asst_emotions],
-    }
-
-    # Step 1: Extract events (classifier runs inside extractor per-turn)
+    # Step 1: Extract events (text_intensity replaces emotion classification)
     # Pre-load stored vectors for novelty check — as a single stack operation
     stored_vecs: list[np.ndarray] = []
     emb_dir = config.embeddings_dir
@@ -175,12 +161,10 @@ def post_session(
 
     with trace.step("extractor", inputs={"turn_count": len(conversation)}) as rec:
         extracted = event_extractor.segment(
-            conversation, classifier,
+            conversation,
             arousal_threshold=config.arousal_threshold,
             embedder=embedder,
             stored_vecs=stored_vecs,
-            precomputed_user_emotions=user_emotions,
-            precomputed_asst_emotions=asst_emotions,
             debug=config.debug_mode,
         )
         rec["outputs"] = {"event_count": len(extracted)}
@@ -195,27 +179,14 @@ def post_session(
                 if ev.significance:
                     s = ev.significance
                     sig = f" [emo={s.emotional:.2f} nov={s.novelty:.2f} elab={s.elaboration:.2f}]"
-                print(f"  event {i+1}: v={ev.emotion.valence:.2f} a={ev.emotion.arousal:.2f}"
+                print(f"  event {i+1}: int={ev.intensity:.2f}"
                       f"{sig}{hint}{merged}")
         else:
-            print("[post_session] 0 events extracted (no significant emotional moments)")
-
-    # Collect overall emotion results for the report
-    emotion_results = [
-        {
-            "valence": ev.emotion.valence,
-            "arousal": ev.emotion.arousal,
-            "confidence": ev.emotion.confidence,
-        }
-        for ev in extracted
-    ]
+            print("[post_session] 0 events extracted")
 
     # Step 2: Extract session side-channel signals
     with trace.step("signals", inputs={"turn_count": len(conversation)}) as rec:
-        signals = extract_session_signals(
-            conversation, classifier,
-            precomputed_arousals=precomputed_arousals,
-        )
+        signals = extract_session_signals(conversation)
         rec["outputs"] = signals.to_dict()
 
     if config.debug_mode:
@@ -262,13 +233,14 @@ def post_session(
         all_embedding_stats.append(stats)
 
         # Create EventRecord
+        # New events use text_intensity for arousal; valence=0 (no classifier).
+        # Existing events in store retain their original V/A values.
         record = EventRecord(
             filename=event_id,
             time=now,
-            valence=ext_event.emotion.valence,
-            arousal=ext_event.emotion.arousal,
-            confidence=ext_event.emotion.confidence,
-            dominant_label=ext_event.emotion.dominant_label,
+            valence=0.0,
+            arousal=ext_event.intensity,
+            confidence=0.0,
             embedding=emb_path,
             embedding_dim=vec.shape[-1],
             body=body,
@@ -284,7 +256,6 @@ def post_session(
             event_path=str(written_path),
             embedding_path=emb_path,
             embedding_vec=vec,
-            emotion=ext_event.emotion,
             body_preview=ext_event.text[:200],
         )
 
@@ -355,7 +326,6 @@ def post_session(
             config,
             trace.session_id,
             conversation=conversation,
-            emotion_results=emotion_results,
             events=written_events,
             embedding_stats=all_embedding_stats,
             all_events=all_events,
@@ -417,51 +387,20 @@ def store_segment(
 
     trace = Trace(logs_root=config.logs_dir, session_id=session_id)
     store = HomeStore(config)
-    classifier = get_classifier(config)
     embedder = Embedder(config)
 
-    # Classify all turns (metadata only — not used for gating)
-    user_texts = [t["text"] for t in turns if t.get("role") == "user"]
-    asst_texts = [t["text"] for t in turns if t.get("role") == "assistant"]
-    all_texts = user_texts + asst_texts
-    if all_texts:
-        all_emos = classifier.analyze_batch(all_texts)
-        user_emos = all_emos[:len(user_texts)]
-        asst_emos = all_emos[len(user_texts):]
-    else:
-        user_emos, asst_emos = [], []
-
-    # Build event from all turns using _build_event's Pair structure
+    # Compute text intensity for metadata (replaces classifier)
+    from fiam.classifier.text_intensity import pair_intensity
     from fiam.extractor.event import _build_event, _Pair, _extract_keywords
-    from fiam.classifier.emotion import EmotionResult
-
-    # Construct a single pair encompassing all turns
-    if user_emos and asst_emos:
-        u_arousal = max(e.arousal for e in user_emos)
-        a_emo = asst_emos[-1]
-        emotion = EmotionResult(
-            valence=a_emo.valence,
-            arousal=max(u_arousal, a_emo.arousal),
-            confidence=(user_emos[0].confidence + a_emo.confidence) / 2,
-            dominant_label=a_emo.dominant_label,
-            label_scores=a_emo.label_scores,
-        )
-    elif asst_emos:
-        emotion = asst_emos[-1]
-    elif user_emos:
-        emotion = user_emos[-1]
-    else:
-        emotion = EmotionResult(valence=0.0, arousal=0.1, confidence=0.0)
 
     ut = "\n".join(t.get("text", "") for t in turns if t.get("role") == "user")
     at = "\n".join(t.get("text", "") for t in turns if t.get("role") == "assistant")
+    intensity = pair_intensity(ut, at)
     keywords = _extract_keywords(ut + " " + at)
 
     pair = _Pair(
         turns=turns,
-        emotion=emotion,
-        arousal=emotion.arousal,
-        valence=emotion.valence,
+        intensity=intensity,
         keywords=keywords,
         index=0,
     )
@@ -490,10 +429,9 @@ def store_segment(
     record = EventRecord(
         filename=event_id,
         time=now,
-        valence=emotion.valence,
-        arousal=emotion.arousal,
-        confidence=emotion.confidence,
-        dominant_label=emotion.dominant_label,
+        valence=0.0,
+        arousal=ext_event.intensity,
+        confidence=0.0,
         embedding=emb_path,
         embedding_dim=vec.shape[-1],
         body=body,

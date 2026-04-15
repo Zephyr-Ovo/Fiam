@@ -20,6 +20,7 @@ class StanceSynthesizer:
         self,
         retrieved_events: list[EventRecord],
         personality: str = "",
+        state: str = "",
         current_context: str = "",
         session_id: str = "",
     ) -> str:
@@ -28,6 +29,8 @@ class StanceSynthesizer:
         Prepares materials from retrieved events and synthesizes
         a first-person narrative (rule-based by default, LLM optional).
         Personality text (from self/personality.md) is prepended if present.
+        State text (from self/state.md) is injected after personality.
+        Injection order: personality → state → recall (memories).
         """
         header = (
             f"<!-- fiam synthesis | session {session_id} -->"
@@ -37,9 +40,13 @@ class StanceSynthesizer:
 
         parts: list[str] = [header]
 
-        # Personality section (AI's self-description)
+        # Personality section (AI's self-description) — base layer
         if personality:
             parts.append(f"\n{personality}")
+
+        # State section (current psychological state) — foreground layer
+        if state:
+            parts.append(f"\n---\n\n{state}")
 
         if not retrieved_events:
             if not personality:

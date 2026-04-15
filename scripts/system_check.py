@@ -146,11 +146,11 @@ except Exception as e:
     log(FAIL, "Event extractor import", str(e))
 
 try:
-    from fiam.classifier.emotion import get_classifier
-    clf = get_classifier(config)
-    log(PASS, "Emotion classifier loaded", type(clf).__name__)
+    from fiam.classifier.text_intensity import text_intensity
+    score = text_intensity("hello!!!")
+    log(PASS, "Text intensity heuristic", f"score={score:.2f}")
 except Exception as e:
-    log(FAIL, "Emotion classifier", str(e))
+    log(FAIL, "Text intensity", str(e))
 
 # ================================================================
 section("6. EMAIL READ/WRITE")
@@ -605,13 +605,13 @@ try:
 except Exception as e:
     log(FAIL, "Event extractor import", str(e))
 
-# Check classifier
+# Check text intensity
 try:
-    from fiam.classifier.emotion import get_classifier
-    clf = get_classifier(config)
-    log(PASS, "Emotion classifier loaded", type(clf).__name__)
+    from fiam.classifier.text_intensity import text_intensity
+    score = text_intensity("hello!!!")
+    log(PASS, "Text intensity heuristic", f"score={score:.2f}")
 except Exception as e:
-    log(FAIL, "Emotion classifier", str(e))
+    log(FAIL, "Text intensity", str(e))
 
 section("6. EMAIL READ/WRITE")
 

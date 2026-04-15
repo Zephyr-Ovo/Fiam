@@ -5,9 +5,10 @@ Long-term emotional memory for AI coding agents. Runs alongside Claude Code, wat
 ## Features
 
 - **Real-time recall** — daemon monitors CC sessions, detects topic drift via cosine similarity, and refreshes contextual memories on the fly
-- **Emotion-aware storage** — WDI (Weighted Dimensional Intensity) classifier tags emotional metadata; TextTiling depth segmentation decides structure, not arousal gates
+- **Intensity-aware storage** — text intensity heuristic scores conversational heat; TextTiling depth segmentation decides structure, not emotion gates
 - **Memory graph** — events linked by semantic, temporal, causal, and associative edges; SYNAPSE-inspired spreading activation with fire-once propagation and fan penalty
 - **Multi-channel communication** — Telegram and email inbound/outbound, with identity continuity across channels
+- **Affective state** — `state.md` emotional state + `goals.md` active motivations injected into synthesis; foundation for Goals→Appraisal→State system
 - **Hook-mediated injection** — 4 CC hooks (UserPromptSubmit, Stop, SessionStart, PostCompact) for seamless context flow
 - **Session management** — resume-based messaging, interactive lock, daily lifecycle with compact archival
 
@@ -29,7 +30,7 @@ Claude Code session
 
 **Real-time loop**: daemon polls JSONL → embeds user text → cosine drift detection → retrieves memories → writes `recall.md` → hook injects every turn.
 
-**Post-session**: idle timeout → emotion classification → TextTiling depth segmentation → store events → build graph edges (DS open type system) → refresh recall.
+**Post-session**: idle timeout → text intensity scoring → TextTiling depth segmentation → store events → build graph edges (DS open type system) → refresh recall.
 
 **Inbound**: daemon polls Telegram Bot API + IMAP → writes `inbox.jsonl` → hook injects on next turn (or wakes AI via `claude -p --resume`).
 
@@ -47,7 +48,7 @@ cd ~/ai-home && claude                 # start CC from AI's home directory
 
 Requires [uv](https://astral.sh/uv) and [Claude Code](https://claude.ai/code).
 
-For remote embedding/emotion inference (recommended for low-RAM machines), deploy `serve_embeddings.py` on a GPU/high-RAM server and set `embedding_backend = "remote"` in `fiam.toml`.
+For remote embedding inference (recommended for low-RAM machines), deploy `serve_embeddings.py` on a GPU/high-RAM server and set `embedding_backend = "remote"` in `fiam.toml`.
 
 ## Structure
 
@@ -56,7 +57,7 @@ src/fiam/
   pipeline.py              # Pre/post session orchestration
   config.py                # FiamConfig dataclass + fiam.toml parsing
   adapter/                 # JSONL parsing (CC adapter, attachment handling)
-  classifier/              # WDI emotion classification (local or remote)
+  classifier/              # Text intensity heuristic (surface-level conversational heat)
   extractor/               # TextTiling depth segmentation
   retriever/               # Joint retrieval + SYNAPSE spreading activation (fire-once, fan penalty)
   store/                   # EventRecord persistence + graph.jsonl edges
@@ -96,10 +97,8 @@ developer/hooks/           # CC hook scripts (deploy to ~/.claude/hooks/)
 Copy `fiam.toml.example` → `fiam.toml` (or run `fiam init`).
 
 Key settings:
-- `language_profile`: `multi` (default) / `zh` / `en` — determines embedding + emotion models
-- `emotion_provider`: `local` / `api` / `remote` — where emotion classification runs
+- `language_profile`: `multi` (default) / `zh` / `en` — determines embedding model
 - `embedding_backend`: `local` / `remote` — local HuggingFace or remote API server
-- `arousal_threshold`: emotional metadata threshold (legacy — no longer gates storage)
 - `idle_timeout_minutes`: how long after last activity before processing (default 30)
 - `tg_chat_id` / `email_*`: multi-channel communication settings
 

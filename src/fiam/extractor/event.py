@@ -12,12 +12,13 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from fiam.classifier.text_intensity import text_intensity, pair_intensity
+
 if TYPE_CHECKING:
-    from fiam.classifier.emotion import EmotionClassifier, ApiEmotionClassifier, EmotionResult
     from fiam.retriever.embedder import Embedder
 
 
@@ -32,7 +33,7 @@ class Significance:
 @dataclass
 class ExtractedEvent:
     text: str               # full user+assistant conversation fragment (for embedding)
-    emotion: EmotionResult  # emotion for this segment
+    intensity: float        # text intensity score [0.0, 0.85]
     thinking: str = ""      # assistant thinking chain (stored, NOT embedded)
     topic_hint: str = ""    # keywords for topic overlap check
     pair_count: int = 1     # how many pairs were merged into this event
@@ -61,25 +62,20 @@ _PASTE_INDICATOR_COUNT = 3  # 3+ code blocks or terminal lines = likely paste
 class _Pair:
     """One user-assistant exchange."""
     turns: list[dict[str, str]]
-    emotion: EmotionResult
-    arousal: float
-    valence: float
+    intensity: float            # text intensity [0.0, 0.85]
     keywords: set[str]
-    index: int = 0          # position among all pairs (for adjacency check)
+    index: int = 0              # position among all pairs (for adjacency check)
     significance: Significance | None = None
 
 
 def segment(
     conversation: list[dict[str, str]],
-    classifier: EmotionClassifier | ApiEmotionClassifier,
     *,
     arousal_threshold: float = _AROUSAL_THRESHOLD,
     novelty_threshold: float = _NOVELTY_THRESHOLD,
     elaboration_threshold: float = _ELABORATION_THRESHOLD,
     embedder: Embedder | None = None,
     stored_vecs: list[np.ndarray] | None = None,
-    precomputed_user_emotions: list | None = None,
-    precomputed_asst_emotions: list | None = None,
     debug: bool = False,
 ) -> list[ExtractedEvent]:
     """Extract events using TextTiling depth segmentation.
@@ -92,18 +88,13 @@ def segment(
     Threshold params are retained for backward compatibility but
     are no longer used for gating.
 
-    If *precomputed_user/asst_emotions* are given (from pipeline-level
-    batch classification), they are reused instead of re-classifying.
+    Text intensity (surface heuristic) replaces V/A classification.
     """
     if not conversation:
         return []
 
-    # Step 1: group into pairs and classify (batch)
-    pairs = _make_pairs(
-        conversation, classifier,
-        precomputed_user_emotions=precomputed_user_emotions,
-        precomputed_asst_emotions=precomputed_asst_emotions,
-    )
+    # Step 1: group into pairs and compute text intensity
+    pairs = _make_pairs(conversation)
     if not pairs:
         return []
 
@@ -220,8 +211,8 @@ def _compute_significance(
     session_median_chars: float,
 ) -> Significance:
     """Compute significance across three independent channels."""
-    # Emotional channel: raw arousal.
-    emotional = pair.arousal
+    # Emotional channel: text intensity (surface heuristic).
+    emotional = pair.intensity
 
     # Novelty: semantic distance from all stored events (vectorised)
     novelty = 1.0  # cold start = everything is novel
@@ -416,17 +407,8 @@ def _depth_score_boundaries(
 
 def _make_pairs(
     conversation: list[dict[str, str]],
-    classifier: EmotionClassifier | ApiEmotionClassifier,
-    *,
-    precomputed_user_emotions: list | None = None,
-    precomputed_asst_emotions: list | None = None,
 ) -> list[_Pair]:
-    """Group turns into user-assistant pairs and classify each (batch).
-
-    If *precomputed_user/asst_emotions* are given (per-turn EmotionResults
-    aligned with user/assistant turns in conversation order), we map them
-    to pairs without any new model calls.
-    """
+    """Group turns into user-assistant pairs and compute text intensity."""
     # Step 1: Group turns into raw pair buffers
     raw_buffers: list[list[dict[str, str]]] = []
     buf: list[dict[str, str]] = []
@@ -450,137 +432,21 @@ def _make_pairs(
     if not raw_buffers:
         return []
 
-    # --- Fast path: reuse pipeline-level per-turn emotions ---
-    if precomputed_user_emotions is not None and precomputed_asst_emotions is not None:
-        from fiam.classifier.emotion import EmotionResult
-
-        user_idx = 0
-        asst_idx = 0
-        pairs: list[_Pair] = []
-        for i, turns in enumerate(raw_buffers):
-            pair_user_emos: list = []
-            pair_asst_emos: list = []
-            for t in turns:
-                role = t.get("role", "")
-                if role == "user" and user_idx < len(precomputed_user_emotions):
-                    pair_user_emos.append(precomputed_user_emotions[user_idx])
-                    user_idx += 1
-                elif role == "assistant" and asst_idx < len(precomputed_asst_emotions):
-                    pair_asst_emos.append(precomputed_asst_emotions[asst_idx])
-                    asst_idx += 1
-
-            if pair_asst_emos and pair_user_emos:
-                u_arousal = max(e.arousal for e in pair_user_emos)
-                a_emo = pair_asst_emos[-1]
-                emotion = EmotionResult(
-                    valence=a_emo.valence,
-                    arousal=max(u_arousal, a_emo.arousal),
-                    confidence=(pair_user_emos[0].confidence + a_emo.confidence) / 2,
-                    dominant_label=a_emo.dominant_label,
-                    label_scores=a_emo.label_scores,
-                )
-            elif pair_asst_emos:
-                emotion = pair_asst_emos[-1]
-            elif pair_user_emos:
-                emotion = pair_user_emos[-1]
-            else:
-                emotion = EmotionResult(valence=0.0, arousal=0.1, confidence=0.0)
-
-            ut = "\n".join(t.get("text", "") for t in turns if t.get("role") == "user")
-            at = "\n".join(t.get("text", "") for t in turns if t.get("role") == "assistant")
-            keywords = _extract_keywords(ut + " " + at)
-            pairs.append(_Pair(
-                turns=turns,
-                emotion=emotion,
-                arousal=emotion.arousal,
-                valence=emotion.valence,
-                keywords=keywords,
-                index=i,
-            ))
-        return pairs
-
-    # --- Slow path: batch classify from scratch ---
-    # Step 2: Extract user/assistant texts for each pair
-    user_texts: list[str] = []
-    asst_texts: list[str] = []
-    for turns in raw_buffers:
+    # Step 2: Compute text intensity for each pair
+    pairs: list[_Pair] = []
+    for i, turns in enumerate(raw_buffers):
         ut = "\n".join(t.get("text", "") for t in turns if t.get("role") == "user")
         at = "\n".join(t.get("text", "") for t in turns if t.get("role") == "assistant")
-        user_texts.append(ut)
-        asst_texts.append(at)
-
-    # Step 3: Batch classify all user + assistant texts
-    all_texts = user_texts + asst_texts
-    all_results = classifier.analyze_batch(all_texts)
-    user_results = all_results[:len(user_texts)]
-    asst_results = all_results[len(user_texts):]
-
-    # Step 4: Build pairs with merged emotion
-    pairs = []
-    for i, turns in enumerate(raw_buffers):
-        u_emo = user_results[i]
-        a_emo = asst_results[i]
-
-        if user_texts[i] and asst_texts[i]:
-            from fiam.classifier.emotion import EmotionResult
-            emotion = EmotionResult(
-                valence=a_emo.valence,
-                arousal=max(u_emo.arousal, a_emo.arousal),
-                confidence=(u_emo.confidence + a_emo.confidence) / 2,
-                dominant_label=a_emo.dominant_label,
-                label_scores=a_emo.label_scores,
-            )
-        elif asst_texts[i]:
-            emotion = a_emo
-        elif user_texts[i]:
-            emotion = u_emo
-        else:
-            emotion = u_emo  # fallback (empty)
-
-        keywords = _extract_keywords(user_texts[i] + " " + asst_texts[i])
+        intensity = pair_intensity(ut, at)
+        keywords = _extract_keywords(ut + " " + at)
         pairs.append(_Pair(
             turns=turns,
-            emotion=emotion,
-            arousal=emotion.arousal,
-            valence=emotion.valence,
+            intensity=intensity,
             keywords=keywords,
             index=i,
         ))
 
     return pairs
-
-
-def _classify_pair(
-    turns: list[dict[str, str]],
-    classifier: EmotionClassifier | ApiEmotionClassifier,
-) -> _Pair:
-    """Classify one pair and extract keywords."""
-    user_text = "\n".join(
-        t.get("text", "") for t in turns if t.get("role") == "user"
-    )
-    asst_text = "\n".join(
-        t.get("text", "") for t in turns if t.get("role") == "assistant"
-    )
-
-    if user_text and asst_text:
-        emotion = classifier.analyze_event(user_text, asst_text)
-    elif asst_text:
-        emotion = classifier.analyze(asst_text)
-    elif user_text:
-        emotion = classifier.analyze(user_text)
-    else:
-        emotion = classifier.analyze("")
-
-    keywords = _extract_keywords(user_text + " " + asst_text)
-
-    return _Pair(
-        turns=turns,
-        emotion=emotion,
-        arousal=emotion.arousal,
-        valence=emotion.valence,
-        keywords=keywords,
-    )
-
 
 def _extract_keywords(text: str) -> set[str]:
     """Extract simple content keywords from text (lowercase, 4+ chars, no stopwords)."""
@@ -606,7 +472,7 @@ def _extract_keywords(text: str) -> set[str]:
 def _build_event(pairs: list[_Pair]) -> ExtractedEvent:
     """Build an ExtractedEvent from a group of pairs.
 
-    For merged events: arousal = max, valence = average.
+    For merged events: intensity = max across pairs.
     Paste-heavy user turns are replaced with (略) — the AI response
     already summarises what the user pasted.
     """
@@ -637,13 +503,8 @@ def _build_event(pairs: list[_Pair]) -> ExtractedEvent:
             thinking_parts.append(th)
     thinking = "\n\n".join(thinking_parts)
 
-    # Merge rule: max arousal, average valence, average confidence
-    max_a = max(p.arousal for p in pairs)
-    avg_v = sum(p.valence for p in pairs) / len(pairs)
-    avg_c = sum(p.emotion.confidence for p in pairs) / len(pairs)
-
-    ER = type(pairs[0].emotion)
-    emotion = ER(valence=avg_v, arousal=max_a, confidence=avg_c)
+    # Merge rule: max intensity across pairs
+    max_intensity = max(p.intensity for p in pairs)
 
     # Combine keywords for topic hint
     all_kw = set()
@@ -668,7 +529,7 @@ def _build_event(pairs: list[_Pair]) -> ExtractedEvent:
     return ExtractedEvent(
         text=text,
         thinking=thinking,
-        emotion=emotion,
+        intensity=max_intensity,
         topic_hint=hint,
         pair_count=len(pairs),
         significance=best_sig,

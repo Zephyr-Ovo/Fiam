@@ -27,7 +27,6 @@ def generate(
     session_id: str,
     *,
     conversation: list[dict[str, str]],
-    emotion_results: list[dict[str, Any]],
     events: list[EventRecord],
     embedding_stats: list[dict[str, Any]],
     all_events: list[EventRecord],
@@ -59,20 +58,6 @@ def generate(
             sections.append(f"```\n{thinking}\n```\n")
         sections.append(f"### [{role}]\n")
         sections.append(f"{text}\n")
-
-    # --- Emotion Analysis ---
-    sections.append("---\n## Emotion Analysis\n")
-    if emotion_results:
-        for i, emo in enumerate(emotion_results):
-            sections.append(f"### Event {i + 1}\n")
-            sections.append(f"- **Valence:** {emo.get('valence', 'N/A')}")
-            sections.append(f"- **Arousal:** {emo.get('arousal', 'N/A')}")
-            sections.append(f"- **Confidence:** {emo.get('confidence', 'N/A')}")
-            if "corrected" in emo:
-                sections.append(f"- **RLHF corrected:** {emo['corrected']}")
-            sections.append("")
-    else:
-        sections.append("No emotion analysis results.\n")
 
     # --- Extracted Events ---
     sections.append("---\n## Extracted Events\n")

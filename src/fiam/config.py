@@ -269,6 +269,16 @@ class FiamConfig:
         return self.self_dir / "personality.md"
 
     @property
+    def state_path(self) -> Path:
+        """Current psychological state snapshot (written by appraisal)."""
+        return self.self_dir / "state.md"
+
+    @property
+    def goals_path(self) -> Path:
+        """AI's self-maintained goals and desires."""
+        return self.self_dir / "goals.md"
+
+    @property
     def journal_dir(self) -> Path:
         return self.self_dir / "journal"
 

@@ -1,13 +1,13 @@
 """
 Session side-channel signal extractor.
 
-Extracts structural conversation metadata that reveals emotional dynamics
-beyond what individual turn emotion scores capture:
+Extracts structural conversation metadata that reveals dynamics
+beyond what individual turn content captures:
 
-  - volatility:       arousal range across turns (max - min)
+  - volatility:       text intensity range across turns (max - min)
   - length_delta:     max ratio of reply length change vs session average
   - density:          conversation pairs per hour
-  - temperature_gap:  |mean_user_arousal - mean_assistant_arousal|
+  - temperature_gap:  |mean_user_intensity - mean_assistant_intensity|
 
 These signals are injected into the pre-session background when abnormal
 and stored in the session report for longitudinal analysis.
@@ -17,18 +17,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from fiam.classifier.emotion import EmotionClassifier, ApiEmotionClassifier
+from fiam.classifier.text_intensity import text_intensity
 
 
 @dataclass
 class SessionSignals:
-    volatility: float       # [0.0, 1.0] — arousal range across all turns
+    volatility: float       # [0.0, 1.0] — intensity range across all turns
     length_delta: float     # ≥ 1.0 — max reply length / session avg length
     density: float          # pairs per hour
-    temperature_gap: float  # |mean_user_arousal - mean_assistant_arousal|
+    temperature_gap: float  # |mean_user_intensity - mean_assistant_intensity|
 
     # Thresholds for flagging
     volatility_flag: bool = False    # > 0.4
@@ -57,19 +55,15 @@ _TEMP_GAP_THRESHOLD = 0.3
 
 def extract_session_signals(
     conversation: list[dict[str, str]],
-    classifier: EmotionClassifier | ApiEmotionClassifier,
     session_start: datetime | None = None,
     session_end: datetime | None = None,
-    *,
-    precomputed_arousals: dict[str, list[float]] | None = None,
 ) -> SessionSignals:
     """Compute side-channel signals from a full conversation.
 
     *conversation* is the same list[dict] used by the pipeline:
     each dict has 'role' and 'text' keys.
 
-    If *precomputed_arousals* is given (keys 'user' and 'asst'),
-    skip re-classification entirely.
+    Uses text_intensity heuristic instead of emotion classification.
     """
     if not conversation:
         return SessionSignals(
@@ -80,27 +74,17 @@ def extract_session_signals(
     user_texts = [t["text"] for t in conversation if t.get("role") == "user"]
     asst_texts = [t["text"] for t in conversation if t.get("role") == "assistant"]
 
-    if precomputed_arousals is not None:
-        user_arousals = precomputed_arousals["user"]
-        asst_arousals = precomputed_arousals["asst"]
-    else:
-        # --- Arousal per turn (batch for speed) ---
-        all_texts = user_texts + asst_texts
-        if all_texts:
-            all_results = classifier.analyze_batch(all_texts)
-            user_arousals = [r.arousal for r in all_results[:len(user_texts)]]
-            asst_arousals = [r.arousal for r in all_results[len(user_texts):]]
-        else:
-            user_arousals = []
-            asst_arousals = []
-    all_arousals = user_arousals + asst_arousals
+    # --- Intensity per turn (pure heuristic, no model) ---
+    user_intensities = [text_intensity(t) for t in user_texts]
+    asst_intensities = [text_intensity(t) for t in asst_texts]
+    all_intensities = user_intensities + asst_intensities
 
-    # Volatility: range of arousal across all turns
-    volatility = (max(all_arousals) - min(all_arousals)) if all_arousals else 0.0
+    # Volatility: range of intensity across all turns
+    volatility = (max(all_intensities) - min(all_intensities)) if all_intensities else 0.0
 
-    # Temperature gap: |mean user arousal - mean assistant arousal|
-    mean_user = sum(user_arousals) / len(user_arousals) if user_arousals else 0.0
-    mean_asst = sum(asst_arousals) / len(asst_arousals) if asst_arousals else 0.0
+    # Temperature gap: |mean user intensity - mean assistant intensity|
+    mean_user = sum(user_intensities) / len(user_intensities) if user_intensities else 0.0
+    mean_asst = sum(asst_intensities) / len(asst_intensities) if asst_intensities else 0.0
     temperature_gap = abs(mean_user - mean_asst)
 
     # --- Length delta ---
