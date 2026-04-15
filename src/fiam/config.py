@@ -180,6 +180,11 @@ class FiamConfig:
     email_smtp_port: int = 1025
 
     # ------------------------------------------------------------------
+    # Budget / Quota
+    # ------------------------------------------------------------------
+    daily_budget_usd: float = 0.0     # 0 = unlimited; positive = daily spend cap
+
+    # ------------------------------------------------------------------
     # Features
     # ------------------------------------------------------------------
     git_enabled: bool = True
@@ -454,6 +459,7 @@ class FiamConfig:
             # Daemon
             idle_timeout_minutes=daemon.get("idle_timeout_minutes", cls.idle_timeout_minutes),
             poll_interval_seconds=daemon.get("poll_interval_seconds", cls.poll_interval_seconds),
+            daily_budget_usd=daemon.get("daily_budget_usd", cls.daily_budget_usd),
             # Features
             git_enabled=features.get("git_enabled", cls.git_enabled),
             # Graph edge typing

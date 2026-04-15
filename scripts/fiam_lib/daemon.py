@@ -31,6 +31,7 @@ from fiam_lib.jsonl import (
 from fiam_lib.postman import sweep_outbox, fetch_inbox, fetch_tg_inbox
 from fiam_lib.recall import _write_recall
 from fiam_lib.scheduler import extract_wake_tags, append_to_schedule, load_due
+from fiam_lib.cost import log_cost, check_budget
 from fiam_lib.ui import _console, _flow, _ANIM_IDLE, _ANIM_ACTIVE, _animated_sleep
 
 
@@ -160,6 +161,13 @@ def _wake_session(config, message: str, tag: str = "tg") -> bool:
                        data.get("total_cost_usd", 0),
                        data.get("session_id", "?")[:8],
                        data.get("subtype", ""))
+            # Log cost to ledger
+            cost = data.get("total_cost_usd", 0)
+            if cost > 0:
+                log_cost(config, cost,
+                         session_id=data.get("session_id", ""),
+                         tag=tag,
+                         turns=data.get("num_turns", 0))
         except (json.JSONDecodeError, ValueError):
             pass
 
@@ -491,27 +499,33 @@ def cmd_start(args: argparse.Namespace) -> None:
                         interactive = _is_interactive(config)
                         _plog.debug("interactive=%s", interactive)
                         if not interactive:
-                            inbox_jsonl = config.inbox_jsonl_path
-                            jsonl_exists = inbox_jsonl.exists() and inbox_jsonl.stat().st_size > 0
-                            _plog.debug("inbox_jsonl exists=%s path=%s", jsonl_exists, inbox_jsonl)
-                            if jsonl_exists:
-                                tag = "tg" if n_tg else "email"
-                                summary = f"{n_tg + n_email} new message(s)"
-                                _plog.info("wake attempt  tag=%s summary=%s", tag, summary)
-                                ok = _wake_session(config, summary, tag=tag)
-                                if ok:
-                                    ts2 = time.strftime("%H:%M")
-                                    _console.print(f"  [dim]└[{ts2}][/dim] [bold #a8f0e8]↗[/]  wake sent")
-                                    _plog.info("wake OK")
-                                else:
-                                    _plog.warning("wake FAILED, retrying...")
-                                    ok2 = _wake_session(config, summary, tag=tag)
-                                    if not ok2:
-                                        _console.print(f"  [yellow]wake failed twice — messages remain queued[/]")
-                                        _plog.error("wake FAILED x2 — messages queued")
-                                        session = _load_active_session(config)
-                                        if session:
-                                            _retire_session(config, reason="wake_failed")
+                            # Budget check before wake
+                            budget_ok, budget_reason = check_budget(config)
+                            if not budget_ok:
+                                _plog.warning("budget exceeded — skipping inbox wake: %s", budget_reason)
+                                _console.print(f"  [yellow]budget: {budget_reason}[/]")
+                            else:
+                                inbox_jsonl = config.inbox_jsonl_path
+                                jsonl_exists = inbox_jsonl.exists() and inbox_jsonl.stat().st_size > 0
+                                _plog.debug("inbox_jsonl exists=%s path=%s", jsonl_exists, inbox_jsonl)
+                                if jsonl_exists:
+                                    tag = "tg" if n_tg else "email"
+                                    summary = f"{n_tg + n_email} new message(s)"
+                                    _plog.info("wake attempt  tag=%s summary=%s", tag, summary)
+                                    ok = _wake_session(config, summary, tag=tag)
+                                    if ok:
+                                        ts2 = time.strftime("%H:%M")
+                                        _console.print(f"  [dim]└[{ts2}][/dim] [bold #a8f0e8]↗[/]  wake sent")
+                                        _plog.info("wake OK")
+                                    else:
+                                        _plog.warning("wake FAILED, retrying...")
+                                        ok2 = _wake_session(config, summary, tag=tag)
+                                        if not ok2:
+                                            _console.print(f"  [yellow]wake failed twice — messages remain queued[/]")
+                                            _plog.error("wake FAILED x2 — messages queued")
+                                            session = _load_active_session(config)
+                                            if session:
+                                                _retire_session(config, reason="wake_failed")
                         else:
                             _console.print(f"  [dim]interactive session — messages queued for hook[/dim]")
                             _plog.info("interactive — skipping wake")
@@ -533,6 +547,14 @@ def cmd_start(args: argparse.Namespace) -> None:
                 reason = entry.get("reason", "scheduled wake")
                 wake_type = entry.get("type", "check")
                 _plog.info("scheduler fire  type=%s reason=%s", wake_type, reason)
+
+                # Budget check before scheduled wake
+                budget_ok, budget_reason = check_budget(config)
+                if not budget_ok:
+                    _plog.warning("budget exceeded — skipping scheduled wake: %s", budget_reason)
+                    _console.print(f"  [yellow]⏰ {reason} — skipped ({budget_reason})[/]")
+                    continue
+
                 _console.print(f"  [bold #e8c8ff]⏰[/] scheduled: {reason}")
                 # Trigger via normal wake mechanism
                 ok = _wake_session(config, f"[scheduled:{wake_type}] {reason}", tag="sched")

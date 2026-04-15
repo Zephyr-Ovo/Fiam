@@ -170,6 +170,16 @@ def build_awareness(config: FiamConfig) -> str:
 
     sections.append("")
 
+    # -- Cost / quota awareness
+    try:
+        from fiam_lib.cost import budget_awareness
+        cost_lines = budget_awareness(config)
+        if cost_lines:
+            sections.extend(cost_lines)
+            sections.append("")
+    except Exception:
+        pass
+
     # -- Outbox reminder
     sections.append("通信: 写文件到 outbox/ (frontmatter via:telegram|email) 即自动发送")
     sections.append("调度: 在回复中写 <<WAKE:ISO时间:private|notify|seek|check:原因>> 设定下次自主唤醒")

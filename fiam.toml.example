@@ -32,6 +32,7 @@ half_life_base = 14.0
 [daemon]
 idle_timeout_minutes = 30    # post-session triggers after this many idle minutes
 poll_interval_seconds = 30
+daily_budget_usd = 5.0       # 0 = unlimited; daily CC spend cap for auto-wakes
 
 [features]
 git_enabled = true
