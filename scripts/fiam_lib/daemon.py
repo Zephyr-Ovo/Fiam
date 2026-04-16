@@ -708,6 +708,8 @@ def cmd_start(args: argparse.Namespace) -> None:
 
     last_inbox_check: float = 0.0
     inbox_interval = 60  # check TG + email every 60s
+    last_replay_check: float = 0.0
+    replay_interval = 30 * 60  # memory replay every 30 minutes when idle
 
     while running:
         _animated_sleep(
@@ -792,6 +794,35 @@ def cmd_start(args: argparse.Namespace) -> None:
             sweep_outbox(config)
         except Exception as e:
             _plog.error("outbox error: %s", e)
+
+        # ── Memory replay (idle consolidation) ──
+        # When no active conversation for > 30min, periodically replay
+        # top-priority memories to strengthen fading-but-important events.
+        if (not active
+                and (time.time() - last_replay_check > replay_interval)
+                and last_activity > 0
+                and (time.time() - last_activity) > 30 * 60):
+            last_replay_check = time.time()
+            try:
+                from fiam.retriever.decay import replay_priority, record_access
+                from fiam.store.home import HomeStore
+                from datetime import datetime, timezone
+                store = HomeStore(config)
+                all_events = store.all_events()
+                if all_events:
+                    now_dt = datetime.now(timezone.utc)
+                    scored = [(ev, replay_priority(ev, now_dt)) for ev in all_events]
+                    scored.sort(key=lambda t: t[1], reverse=True)
+                    top = scored[:5]
+                    for ev, prio in top:
+                        if prio > 0.05:  # skip trivially low priorities
+                            record_access(ev, now_dt)
+                            store.update_metadata(ev)
+                    _plog.info("replay: consolidated %d memories (top priority=%.2f)",
+                               sum(1 for _, p in top if p > 0.05),
+                               top[0][1] if top else 0.0)
+            except Exception as e:
+                _plog.error("replay error: %s", e)
 
         # ── Scheduler: check for due wakes ──
         try:

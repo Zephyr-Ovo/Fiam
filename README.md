@@ -9,6 +9,9 @@ Long-term emotional memory for AI coding agents. Runs alongside Claude Code, wat
 - **Memory graph** — events linked by semantic, temporal, causal, and associative edges; SYNAPSE-inspired spreading activation with fire-once propagation and fan penalty
 - **Multi-channel communication** — Telegram and email inbound/outbound, with identity continuity across channels
 - **Affective state** — Goals→Appraisal→State pipeline: reads `goals.md` + recent events → LLM appraises emotional impact → writes `state.md` (mood, tension, reflection) → injected into synthesis
+- **Memory replay** — during idle periods the daemon re-activates fading-but-important memories (`intensity × (1 − retention)` priority), mimicking hippocampal consolidation
+- **Self-profile materials** — `fiam self-profile` distills memory graph into `self/materials.md` (centrality, intensity peaks, active hours, goal history) that the AI reads to self-author `personality.md` / `interests.md`
+- **Trajectory logging** — every post-session transition recorded as JSONL with state-before/action/reward-signals/state-after, ready for future offline RL fine-tuning
 - **Hook-mediated injection** — 4 CC hooks (UserPromptSubmit, Stop, SessionStart, PostCompact) for seamless context flow
 - **Session management** — resume-based messaging, interactive lock, daily lifecycle with compact archival
 
@@ -90,6 +93,7 @@ developer/hooks/           # CC hook scripts (deploy to ~/.claude/hooks/)
 | `fiam scan` | One-time import of CC session history |
 | `fiam status` | Show store counts + daemon state |
 | `fiam graph` | Generate Obsidian-compatible graph visualization |
+| `fiam self-profile` | Regenerate `self/materials.md` from the memory graph |
 | `fiam clean` | Reset event store |
 
 ## Configuration

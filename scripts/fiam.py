@@ -147,6 +147,13 @@ def main() -> None:
     sub_rm_home.add_argument("path", type=str, help="Path of the home directory to remove")
     sub_rm_home.set_defaults(func=_cmd_remove_home)
 
+    # self-profile
+    sub_profile = subparsers.add_parser(
+        "self-profile",
+        help="Regenerate self/materials.md from the memory graph",
+    )
+    sub_profile.set_defaults(func=_cmd_self_profile)
+
     args = parser.parse_args()
     args.func(args)
 
@@ -226,6 +233,21 @@ def _cmd_add_home(args):
 def _cmd_remove_home(args):
     from fiam_lib.home_mgmt import cmd_remove_home
     cmd_remove_home(args)
+
+
+def _cmd_self_profile(args):
+    from pathlib import Path
+    from fiam.config import FiamConfig
+    from fiam.personality.self_profile import generate_materials
+
+    code_path = Path(__file__).parent.parent
+    toml_path = code_path / "fiam.toml"
+    config = FiamConfig.from_toml(toml_path, code_path)
+    out = generate_materials(config)
+    if out:
+        print(f"Materials written to: {out}")
+    else:
+        print("Not enough memory data yet (need 5+ events).")
 
 
 if __name__ == "__main__":

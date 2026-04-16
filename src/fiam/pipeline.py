@@ -135,6 +135,10 @@ def post_session(
     store = HomeStore(config)
     embedder = Embedder(config)
 
+    # Snapshot state before any changes (for trajectory logging)
+    from fiam.logging.trajectory import snapshot_state_before, record_transition
+    state_before = snapshot_state_before(config)
+
     # Build full text for debug save
     full_text = "\n\n".join(
         f"[{t.get('role', 'unknown')}]\n{t['text']}" for t in conversation
@@ -347,6 +351,19 @@ def post_session(
 
     # Step 6: HOLD detection — AI self-censorship for continued thinking
     hold_count = _detect_and_schedule_holds(config, conversation)
+
+    # Step 7: Trajectory logging (for future Offline RL)
+    try:
+        record_transition(
+            config,
+            state_before=state_before,
+            events=written_events,
+            signals=signals.to_dict(),
+            trigger="post_session",
+        )
+    except Exception as e:
+        if config.debug_mode:
+            print(f"[post_session] Trajectory log failed: {e}")
 
     return {
         "session_id": trace.session_id,

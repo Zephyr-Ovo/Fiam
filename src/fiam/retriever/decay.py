@@ -75,3 +75,18 @@ def diversity_penalty(event: EventRecord, now: datetime, *, recent_days: int = 3
         return 1.0
     # Linear ramp: 0.7 at day 0 → 1.0 at recent_days
     return 0.7 + 0.3 * (days_since / recent_days)
+
+
+def replay_priority(event: EventRecord, now: datetime, *, half_life_base: float = _HALF_LIFE_BASE) -> float:
+    """Priority score for memory replay: importance × fade-risk.
+
+    High-intensity events that are fading toward being forgotten score highest.
+    Recently accessed events score low (no need to replay).
+
+        priority = intensity × (1 - retention)
+
+    The (1 - retention) term means: the more an event has faded, the more
+    it benefits from replay. Retention ~ 1.0 means "still fresh" → skip.
+    """
+    retention = compute_retention(event, now, half_life_base=half_life_base)
+    return event.intensity * (1.0 - retention)
