@@ -159,12 +159,17 @@ def load_pending(config: FiamConfig) -> list[dict]:
 
 
 def load_due(config: FiamConfig) -> list[dict]:
-    """Load schedule entries whose wake_at has passed (due to fire)."""
+    """Load schedule entries whose wake_at has passed (due to fire).
+
+    Skips entries already attempted too many times or past the grace window
+    (those are archived separately by :func:`archive_stale`).
+    """
     path = config.schedule_path
     if not path.exists():
         return []
 
     now = datetime.now(timezone.utc)
+    grace = timedelta(hours=MISSED_GRACE_HOURS)
     due = []
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
@@ -175,12 +180,146 @@ def load_due(config: FiamConfig) -> list[dict]:
             wake_at = datetime.fromisoformat(entry["wake_at"])
             if wake_at.tzinfo is None:
                 wake_at = wake_at.replace(tzinfo=timezone.utc)
-            if wake_at <= now:
-                entry["_wake_utc"] = wake_at
-                due.append(entry)
+            if wake_at > now:
+                continue
+            # Skip if past the grace window — those get archived, not fired.
+            if now - wake_at > grace:
+                continue
+            # Skip if too many failed attempts — also archived.
+            if int(entry.get("attempts", 0)) >= MAX_ATTEMPTS:
+                continue
+            entry["_wake_utc"] = wake_at
+            due.append(entry)
         except (json.JSONDecodeError, KeyError, ValueError):
             continue
     return due
+
+
+# ------------------------------------------------------------------
+# Fault-tolerance constants
+# ------------------------------------------------------------------
+
+# If a wake is overdue by more than this, don't fire it — archive as missed.
+# Covers daemon downtime / ISP reboots.
+MISSED_GRACE_HOURS = 2
+
+# After this many failed/deferred attempts, give up and archive to failed queue.
+MAX_ATTEMPTS = 3
+
+# Exponential backoff between retries (seconds): 5min, 20min, 80min.
+RETRY_BACKOFF = [5 * 60, 20 * 60, 80 * 60]
+
+
+def _archive_path(config: FiamConfig, kind: str) -> Path:
+    """Path to schedule_missed.jsonl or schedule_failed.jsonl."""
+    return config.self_dir / f"schedule_{kind}.jsonl"
+
+
+def _append_archive(entry: dict, config: FiamConfig, kind: str, note: str = "") -> None:
+    """Append an entry to the archive (missed/failed) for later review."""
+    entry = {k: v for k, v in entry.items() if not k.startswith("_")}
+    entry["archived_at"] = datetime.now(timezone.utc).isoformat()
+    entry["archive_reason"] = note
+    path = _archive_path(config, kind)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def archive_stale(config: FiamConfig) -> tuple[int, int]:
+    """Archive entries that are past grace window or past max attempts.
+
+    Returns (missed_count, failed_count). Called before :func:`load_due`.
+    """
+    path = config.schedule_path
+    if not path.exists():
+        return 0, 0
+    now = datetime.now(timezone.utc)
+    grace = timedelta(hours=MISSED_GRACE_HOURS)
+    keep: list[dict] = []
+    missed = 0
+    failed = 0
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+            wake_at = datetime.fromisoformat(entry["wake_at"])
+            if wake_at.tzinfo is None:
+                wake_at = wake_at.replace(tzinfo=timezone.utc)
+            attempts = int(entry.get("attempts", 0))
+            if attempts >= MAX_ATTEMPTS:
+                _append_archive(entry, config, "failed",
+                                note=f"exceeded {MAX_ATTEMPTS} attempts")
+                failed += 1
+                continue
+            if wake_at <= now and (now - wake_at) > grace:
+                _append_archive(entry, config, "missed",
+                                note=f"past grace window ({MISSED_GRACE_HOURS}h)")
+                missed += 1
+                continue
+            keep.append(entry)
+        except (json.JSONDecodeError, KeyError, ValueError):
+            # Malformed line — drop silently to avoid blocking the queue.
+            continue
+    if missed or failed:
+        _atomic_write_jsonl(path, keep)
+    return missed, failed
+
+
+def _atomic_write_jsonl(path: Path, entries: list[dict]) -> None:
+    """Write JSONL atomically (write to .tmp, fsync, rename)."""
+    import os
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        for entry in entries:
+            clean = {k: v for k, v in entry.items() if not k.startswith("_")}
+            f.write(json.dumps(clean, ensure_ascii=False) + "\n")
+        f.flush()
+        try:
+            os.fsync(f.fileno())
+        except OSError:
+            pass  # e.g. on non-POSIX FS; best-effort only
+    tmp.replace(path)  # atomic on same filesystem
+
+
+def mark_fired(entry: dict, config: FiamConfig, success: bool) -> None:
+    """After triggering a wake, update schedule.jsonl in place.
+
+    - success=True: remove the entry entirely.
+    - success=False: increment attempts, bump wake_at by backoff. If max
+      attempts reached, next :func:`archive_stale` call moves it to failed.
+    """
+    path = config.schedule_path
+    if not path.exists():
+        return
+    target_key = (entry.get("wake_at", ""), entry.get("reason", ""))
+    now = datetime.now(timezone.utc)
+    new_entries: list[dict] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            e = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        key = (e.get("wake_at", ""), e.get("reason", ""))
+        if key != target_key:
+            new_entries.append(e)
+            continue
+        if success:
+            continue  # drop the successful entry
+        # Defer: increment attempts, push wake_at to now + backoff.
+        attempts = int(e.get("attempts", 0)) + 1
+        backoff = RETRY_BACKOFF[min(attempts - 1, len(RETRY_BACKOFF) - 1)]
+        e["attempts"] = attempts
+        e["last_attempt_at"] = now.isoformat()
+        e["wake_at"] = (now + timedelta(seconds=backoff)).isoformat()
+        new_entries.append(e)
+    _atomic_write_jsonl(path, new_entries)
 
 
 def queue_summary(config: FiamConfig) -> str:
@@ -202,8 +341,11 @@ def queue_summary(config: FiamConfig) -> str:
 # Trigger logic
 # ------------------------------------------------------------------
 
-def _trigger_session(entry: dict, config: FiamConfig) -> None:
-    """Launch a CC session with the scheduled note as context."""
+def _trigger_session(entry: dict, config: FiamConfig) -> bool:
+    """Launch a CC session with the scheduled note as context.
+
+    Returns True on successful launch, False on failure (retry candidate).
+    """
     reason = entry.get("reason", "scheduled wake")
     wake_type = entry.get("type", "private")
 
@@ -240,27 +382,34 @@ def _trigger_session(entry: dict, config: FiamConfig) -> None:
     prompt = prompts.get(wake_type, f"你之前安排了这次活动: {reason}。")
 
     try:
-        subprocess.run(
+        result = subprocess.run(
             ["claude", "-p", prompt, "--no-input"],
             cwd=str(config.home_path),
             timeout=300,  # 5 minute max per scheduled session
         )
+        ok = result.returncode == 0
     except FileNotFoundError:
         print("[scheduler] claude command not found")
+        ok = False
     except subprocess.TimeoutExpired:
         print("[scheduler] Session timed out (5min)")
+        ok = False
+    except Exception as e:  # pragma: no cover - defensive
+        print(f"[scheduler] Session failed: {e}")
+        ok = False
     finally:
         note_path.unlink(missing_ok=True)
+    return ok
 
 
 def _rewrite_schedule(config: FiamConfig) -> None:
-    """Remove past entries from schedule.jsonl (compact)."""
+    """Atomically compact schedule.jsonl (drop only fired/expired entries).
+
+    Kept for backwards compatibility with callers that don't use
+    :func:`mark_fired` per-entry. Uses :func:`_atomic_write_jsonl`.
+    """
     pending = load_pending(config)
-    path = config.schedule_path
-    with open(path, "w", encoding="utf-8") as f:
-        for entry in pending:
-            entry.pop("_wake_utc", None)
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    _atomic_write_jsonl(config.schedule_path, pending)
 
 
 # ------------------------------------------------------------------
@@ -272,18 +421,20 @@ def run_scheduler_loop(config: FiamConfig, poll_seconds: int = 30) -> None:
     print(f"[scheduler] Watching {config.schedule_path} (poll={poll_seconds}s)")
     while True:
         try:
-            now = datetime.now(timezone.utc)
-            pending = load_pending(config)
+            # Archive stale entries (missed / max-attempts) before firing.
+            missed, failed = archive_stale(config)
+            if missed or failed:
+                print(f"[scheduler] archived {missed} missed, {failed} failed")
 
-            for entry in pending:
-                wake_at = entry["_wake_utc"]
-                if wake_at <= now:
-                    reason = entry.get("reason", "?")
-                    print(f"[scheduler] ⏰ Triggering: {reason}")
-                    _trigger_session(entry, config)
-
-            # Compact: remove spent entries
-            _rewrite_schedule(config)
+            due = load_due(config)
+            for entry in due:
+                reason = entry.get("reason", "?")
+                print(f"[scheduler] ⏰ Triggering: {reason}")
+                ok = _trigger_session(entry, config)
+                mark_fired(entry, config, success=ok)
+                if not ok:
+                    attempts = int(entry.get("attempts", 0)) + 1
+                    print(f"[scheduler] wake failed, retry {attempts}/{MAX_ATTEMPTS}")
 
         except KeyboardInterrupt:
             print("[scheduler] Stopped.")

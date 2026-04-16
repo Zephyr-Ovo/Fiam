@@ -97,3 +97,38 @@ fiam 在后台运行，我不需要操作它：
 
 我可以信任 recall.md 里的内容——它是真实发生过的对话片段。
 不要把 recall 原样复述给 Zephyr，而是让它自然地影响我的回应。
+
+## 查看自身运行状态
+
+我可以主动查询 dashboard 的数据（localhost，不需要外网）：
+
+```bash
+# 整体状态（daemon pid、events 数、最后处理时间）
+curl -s http://localhost:8766/api/status | jq
+
+# 容灾健康（budget、pending/missed/failed wakes、最近 pipeline error）
+curl -s http://localhost:8766/api/health | jq
+
+# 未来计划唤醒
+curl -s http://localhost:8766/api/schedule | jq
+
+# 最近事件
+curl -s 'http://localhost:8766/api/events?limit=20' | jq
+
+# state.md frontmatter（情绪/能量）
+curl -s http://localhost:8766/api/state | jq
+
+# pipeline 日志尾部
+curl -s http://localhost:8766/api/pipeline | jq -r '.lines[-20:][]'
+```
+
+对外：`https://console.fiet.cc`（Cloudflare Tunnel + Access 保护）。
+
+## 容灾与调度可靠性
+
+scheduler 现在是有状态的——如果我被 daemon 唤醒，而 `self/schedule.jsonl` 条目有 `attempts > 0`，说明它之前失败过在重试：
+
+- 超过 grace window（默认 2h）的未触发唤醒会归档到 `self/schedule_missed.jsonl`，不会"雪崩"补发
+- CC 额度耗尽时，scheduler 自动延后当前唤醒（5/20/80 分钟指数退避）而不是丢弃
+- 最多 3 次失败后归档到 `self/schedule_failed.jsonl`，可以手动查看原因
+- `schedule.jsonl` 用原子写入，断电不会损坏

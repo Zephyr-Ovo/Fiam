@@ -151,7 +151,12 @@ def _api_status() -> dict:
                     os.kill(pid, 0)
                     daemon = "running"
                 except (OSError, ProcessLookupError):
+                    # Stale pidfile — process is gone. Clean it up.
                     pid = None
+                    try:
+                        pidfile.unlink()
+                    except OSError:
+                        pass
             except ValueError:
                 pid = None
 
@@ -253,6 +258,67 @@ def _api_schedule() -> list[dict]:
         except (json.JSONDecodeError, KeyError, ValueError):
             continue
     out.sort(key=lambda e: e["wake_at"])
+    return out
+
+
+def _api_health() -> dict:
+    """Aggregate fault-tolerance signals — daemon, scheduler, budget."""
+    status = _api_status()
+    out: dict = {
+        "daemon": status["daemon"],
+        "pid": status["pid"],
+        "events": status["events"],
+        "last_processed": status["last_processed"],
+        "missed_wakes": 0,
+        "failed_wakes": 0,
+        "pending_wakes": 0,
+        "retry_wakes": 0,
+        "budget": None,
+        "budget_ok": True,
+        "last_pipeline_error": None,
+    }
+    if not _CONFIG:
+        return out
+
+    # Pending + retry counts
+    sched = _CONFIG.schedule_path
+    if sched.exists():
+        for line in sched.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                e = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            out["pending_wakes"] += 1
+            if int(e.get("attempts", 0)) > 0:
+                out["retry_wakes"] += 1
+
+    # Missed / failed archives
+    for kind in ("missed", "failed"):
+        p = _CONFIG.self_dir / f"schedule_{kind}.jsonl"
+        if p.exists():
+            out[f"{kind}_wakes"] = sum(
+                1 for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()
+            )
+
+    # Budget
+    try:
+        from fiam_lib.cost import check_budget, daily_spend
+        ok, reason = check_budget(_CONFIG)
+        out["budget_ok"] = ok
+        out["budget"] = {"daily_spend": daily_spend(_CONFIG), "reason": reason}
+    except Exception as e:  # pragma: no cover - best effort
+        out["budget"] = {"error": str(e)}
+
+    # Last pipeline error line
+    tail = _pipeline_tail(200)
+    for ln in reversed(tail.splitlines()):
+        if "ERROR" in ln or "error" in ln.lower():
+            out["last_pipeline_error"] = ln
+            break
+
     return out
 
 
@@ -372,6 +438,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 user = self.headers.get("X-Forwarded-User", "anon").lower()
                 role = user if user in ("iris", "ai", "fiet") else "anon"
                 self._serve_json({"role": role})
+            elif path == "/api/health":
+                self._serve_json(_api_health())
             else:
                 self.send_error(404)
         except Exception as e:

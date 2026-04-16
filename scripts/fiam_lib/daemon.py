@@ -826,30 +826,35 @@ def cmd_start(args: argparse.Namespace) -> None:
 
         # ── Scheduler: check for due wakes ──
         try:
+            from fiam_lib.scheduler import archive_stale, mark_fired
+            # Archive anything past grace window or max attempts.
+            missed, failed = archive_stale(config)
+            if missed or failed:
+                _plog.info("scheduler archived  missed=%d failed=%d", missed, failed)
+
             due = load_due(config)
             for entry in due:
                 reason = entry.get("reason", "scheduled wake")
                 wake_type = entry.get("type", "check")
                 _plog.info("scheduler fire  type=%s reason=%s", wake_type, reason)
 
-                # Budget check before scheduled wake
+                # Budget check before scheduled wake.
+                # Defer (don't drop) so the wake retries once quota refreshes.
                 budget_ok, budget_reason = check_budget(config)
                 if not budget_ok:
-                    _plog.warning("budget exceeded — skipping scheduled wake: %s", budget_reason)
-                    _console.print(f"  [yellow]⏰ {reason} — skipped ({budget_reason})[/]")
+                    _plog.warning("budget exceeded — deferring scheduled wake: %s", budget_reason)
+                    _console.print(f"  [yellow]⏰ {reason} — deferred ({budget_reason})[/]")
+                    mark_fired(entry, config, success=False)
                     continue
 
                 _console.print(f"  [bold #e8c8ff]⏰[/] scheduled: {reason}")
-                # Trigger via normal wake mechanism
                 ok = _wake_session(config, f"[scheduled:{wake_type}] {reason}", tag="sched")
+                mark_fired(entry, config, success=ok)
                 if ok:
                     _plog.info("scheduler wake OK")
                 else:
-                    _plog.warning("scheduler wake FAILED")
-            # Compact: remove spent entries (keep only future ones)
-            if due:
-                from fiam_lib.scheduler import _rewrite_schedule
-                _rewrite_schedule(config)
+                    attempts = int(entry.get("attempts", 0)) + 1
+                    _plog.warning("scheduler wake FAILED  retry=%d", attempts)
         except Exception as e:
             _plog.error("scheduler error: %s", e, exc_info=True)
 
