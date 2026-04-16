@@ -22,7 +22,7 @@ import re
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fiam.config import FiamConfig
@@ -70,8 +70,9 @@ def append_to_schedule(tags: list[dict], config: FiamConfig) -> int:
     schedule_path = config.schedule_path
     schedule_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Load existing entries for dedup (wake_at + reason)
+    # Load existing entries for dedup (wake_at + reason) and quota check (wake_at list)
     existing: set[tuple[str, str]] = set()
+    existing_times: list[datetime] = []
     if schedule_path.exists():
         for line in schedule_path.read_text(encoding="utf-8").splitlines():
             line = line.strip()
@@ -80,10 +81,20 @@ def append_to_schedule(tags: list[dict], config: FiamConfig) -> int:
             try:
                 entry = json.loads(line)
                 existing.add((entry.get("wake_at", ""), entry.get("reason", "")))
-            except (json.JSONDecodeError, KeyError):
+                t = datetime.fromisoformat(entry["wake_at"])
+                if t.tzinfo is None:
+                    t = t.replace(tzinfo=timezone.utc)
+                if t > now:
+                    existing_times.append(t)
+            except (json.JSONDecodeError, KeyError, ValueError):
                 continue
 
+    # Quota: in any rolling 5h window, ≤7 scheduled wakes (CC token window).
+    QUOTA_MAX = 7
+    QUOTA_WINDOW = timedelta(hours=5)
+
     count = 0
+    skipped_quota = 0
     with open(schedule_path, "a", encoding="utf-8") as f:
         for tag in tags:
             try:
@@ -93,14 +104,25 @@ def append_to_schedule(tags: list[dict], config: FiamConfig) -> int:
                 if wake_at <= now:
                     continue  # skip already-expired entries
             except (KeyError, ValueError):
-                pass
+                continue
             # Dedup: skip if same wake_at + reason already scheduled
             key = (tag.get("wake_at", ""), tag.get("reason", ""))
             if key in existing:
                 continue
+            # Quota check: count existing wakes within ±2.5h of this one.
+            overlapping = sum(
+                1 for t in existing_times
+                if abs((t - wake_at).total_seconds()) <= QUOTA_WINDOW.total_seconds() / 2
+            )
+            if overlapping >= QUOTA_MAX:
+                skipped_quota += 1
+                continue
             f.write(json.dumps(tag, ensure_ascii=False) + "\n")
             existing.add(key)
+            existing_times.append(wake_at)
             count += 1
+    if skipped_quota:
+        print(f"[scheduler] skipped {skipped_quota} wake(s): 5h window quota ({QUOTA_MAX}) reached")
     return count
 
 

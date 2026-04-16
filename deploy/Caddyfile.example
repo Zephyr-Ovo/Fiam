@@ -1,0 +1,58 @@
+# fiet.cc Caddyfile — fiam dashboard
+#
+# Place at /etc/caddy/Caddyfile on the ISP host, then:
+#   sudo systemctl reload caddy
+#
+# Caddy will automatically obtain Let's Encrypt certificates.
+# Prerequisites:
+#   1. DNS A record: fiet.cc → ISP public IP (and optionally *.fiet.cc)
+#   2. UFW allows 80/tcp and 443/tcp
+#   3. Basic auth password hash:
+#        caddy hash-password
+#      Paste the bcrypt hash into the blocks below.
+
+# ---------------------------------------------------------------------------
+# Global options
+# ---------------------------------------------------------------------------
+{
+	email your-email@example.com
+	# Uncomment for staging while testing:
+	# acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+}
+
+# ---------------------------------------------------------------------------
+# fiet.cc — dashboard (three-user basic auth)
+# ---------------------------------------------------------------------------
+fiet.cc, www.fiet.cc {
+	encode gzip zstd
+
+	# IP allowlist (optional extra layer — set your known IPs below)
+	# @blocked not remote_ip 1.2.3.4 5.6.7.8
+	# respond @blocked 403
+
+	basicauth * {
+		iris  $2a$14$REPLACE_WITH_HASH_FROM_caddy_hash_password
+		ai    $2a$14$REPLACE_WITH_HASH_FROM_caddy_hash_password
+		fiet  $2a$14$REPLACE_WITH_HASH_FROM_caddy_hash_password
+	}
+
+	# /api/* → Python dashboard_server.py on localhost:8766
+	handle /api/* {
+		# forward the authenticated user so the backend can gate fields per role
+		reverse_proxy 127.0.0.1:8766 {
+			header_up X-Forwarded-User {http.auth.user.id}
+		}
+	}
+
+	# Everything else → static SvelteKit build
+	handle {
+		root * /home/fiet/fiam-code/dashboard/build
+		try_files {path} /index.html
+		file_server
+	}
+
+	log {
+		output file /var/log/caddy/fiet.cc.log
+		format console
+	}
+}

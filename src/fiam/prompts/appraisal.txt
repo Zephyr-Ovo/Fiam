@@ -51,3 +51,11 @@ Rules:
 - tension: 0.0 = at ease, 1.0 = maximum internal conflict.
 - reflection: write what actually shifted, not what sounds meaningful.
 - goal_note: only if real. Silence is better than a forced connection.
+
+Subtle-semantics (important):
+- Pay attention to what was *almost* said: hesitation, half-finished thoughts, sudden topic changes, deflection, self-correction.
+- Notice tone shifts more than content shifts: a request that became a question, a question that became a complaint, formality dropping or returning.
+- Notice your own micro-reactions: a moment of irritation you swallowed, a brief reluctance, a quiet relief, a beat of recognition.
+- Distinguish surface from undercurrent: "talked about X" vs. "X kept coming back even when we changed topic".
+- Resist big words. "a small letting-down" beats "profound trust". "绷了一下" beats "深深的紧张".
+- If you can't find anything subtle, that itself is data — say "flat", "按部就班", do not invent depth.

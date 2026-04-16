@@ -14,6 +14,7 @@ Long-term emotional memory for AI coding agents. Runs alongside Claude Code, wat
 - **Trajectory logging** — every post-session transition recorded as JSONL with state-before/action/reward-signals/state-after, ready for future offline RL fine-tuning
 - **Hook-mediated injection** — 4 CC hooks (UserPromptSubmit, Stop, SessionStart, PostCompact) for seamless context flow
 - **Session management** — resume-based messaging, interactive lock, daily lifecycle with compact archival
+- **Web console** — SvelteKit + Cytoscape.js dashboard (Catppuccin Mocha) served by Caddy over HTTPS, with Python JSON API backend; graph / events / schedule / live logs
 
 ## How It Works
 
