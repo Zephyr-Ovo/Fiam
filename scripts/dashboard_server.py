@@ -406,7 +406,34 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         elif path == "/graph_data.json":
             self._serve_file(_LOGS / "graph_data.json", "application/json")
         else:
+            # Fall through to SvelteKit static build (SPA with fallback)
+            return self._serve_spa(path)
+
+    def _serve_spa(self, path: str):
+        """Serve files from dashboard/build/ with SPA fallback to index.html."""
+        build_dir = _ROOT / "dashboard" / "build"
+        if not build_dir.is_dir():
+            self.send_error(404, "dashboard build missing — run `npm run build`")
+            return
+        # Strip leading slash, block path traversal
+        rel = path.lstrip("/")
+        if ".." in rel.split("/"):
+            self.send_error(403)
+            return
+        target = (build_dir / rel) if rel else (build_dir / "index.html")
+        if target.is_dir():
+            target = target / "index.html"
+        if not target.exists():
+            # SPA fallback
+            target = build_dir / "index.html"
+        if not target.exists():
             self.send_error(404)
+            return
+        import mimetypes
+        ctype, _ = mimetypes.guess_type(str(target))
+        if not ctype:
+            ctype = "application/octet-stream"
+        self._serve_file(target, ctype)
 
     def _serve_file(self, filepath: Path, content_type: str):
         if not filepath.exists():
