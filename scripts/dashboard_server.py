@@ -52,85 +52,6 @@ def _pipeline_tail(n: int = 40) -> str:
     return "\n".join(lines[-n:])
 
 
-def _recent_events(n: int = 10) -> list[dict]:
-    """Return n most recent events (id, time, preview)."""
-    if not _CONFIG:
-        return []
-    events_dir = _CONFIG.events_dir
-    if not events_dir.is_dir():
-        return []
-    all_events: list[dict] = []
-    for md in events_dir.glob("*.md"):
-        text = md.read_text(encoding="utf-8", errors="replace")
-        etime = ""
-        preview = ""
-        in_frontmatter = False
-        body_lines: list[str] = []
-        for line in text.split("\n"):
-            if line.strip() == "---":
-                in_frontmatter = not in_frontmatter
-                continue
-            if in_frontmatter and line.startswith("time:"):
-                etime = line.split(":", 1)[1].strip()
-            elif not in_frontmatter:
-                body_lines.append(line)
-        preview = " ".join(body_lines[:3]).strip()[:120]
-        all_events.append({
-            "id": md.stem,
-            "time": etime,
-            "preview": preview,
-        })
-    # Sort by time descending (ISO-ish format sorts lexically)
-    all_events.sort(key=lambda e: e["time"], reverse=True)
-    return all_events[:n]
-
-
-def _recall_content() -> str:
-    """Read current recall.md."""
-    if not _CONFIG:
-        return ""
-    path = _CONFIG.background_path
-    if path.exists():
-        return path.read_text(encoding="utf-8", errors="replace")
-    return ""
-
-
-def _schedule_data() -> list[dict]:
-    """Read schedule.json."""
-    if not _CONFIG:
-        return []
-    path = Path(_CONFIG.home_path) / "self" / "schedule.json"
-    if not path.exists():
-        return []
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return []
-
-
-def _cost_today() -> str:
-    """Read today's cost from ledger."""
-    if not _CONFIG:
-        return "no config"
-    ledger_path = Path(_CONFIG.home_path) / "self" / "cost_ledger.jsonl"
-    if not ledger_path.exists():
-        return "no ledger"
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    total = 0.0
-    entries = 0
-    try:
-        for line in ledger_path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            obj = json.loads(line)
-            if obj.get("date", "").startswith(today):
-                total += obj.get("cost_usd", 0)
-                entries += 1
-    except Exception:
-        pass
-    return f"Today ({today}): ${total:.4f} across {entries} entries\nBudget: ${_CONFIG.daily_budget_usd:.2f}/day"
-
-
 # ----------------------------------------------------------------------
 # /api/* helpers
 # ----------------------------------------------------------------------
@@ -316,10 +237,21 @@ def _api_health() -> dict:
 
     # Budget
     try:
-        from fiam_lib.cost import check_budget, daily_spend
-        ok, reason = check_budget(_CONFIG)
-        out["budget_ok"] = ok
-        out["budget"] = {"daily_spend": daily_spend(_CONFIG), "reason": reason}
+        # fiam_lib lives under scripts/; path was removed at startup to avoid
+        # fiam.py shadowing the fiam package, so re-add briefly for this import.
+        _scripts_str = str(_ROOT / "scripts")
+        _added = False
+        if _scripts_str not in sys.path:
+            sys.path.insert(0, _scripts_str)
+            _added = True
+        try:
+            from fiam_lib.cost import check_budget, daily_spend
+            ok, reason = check_budget(_CONFIG)
+            out["budget_ok"] = ok
+            out["budget"] = {"daily_spend": daily_spend(_CONFIG), "reason": reason}
+        finally:
+            if _added and _scripts_str in sys.path:
+                sys.path.remove(_scripts_str)
     except Exception as e:  # pragma: no cover - best effort
         out["budget"] = {"error": str(e)}
 
@@ -470,31 +402,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         raw = self.path
         path = raw.split("?")[0]
 
-        # --- New /api/* endpoints for SvelteKit frontend ---
+        # /api/* JSON endpoints used by the SvelteKit SPA
         if path.startswith("/api/"):
             return self._handle_api(path, raw)
 
-        if path == "/" or path == "/dashboard.html":
-            self._serve_file(_LOGS / "dashboard.html", "text/html")
-        elif path == "/daemon_state.json":
-            self._serve_file(_LOGS / "daemon_state.json", "application/json")
-        elif path == "/pipeline_tail.txt":
-            self._serve_text(_pipeline_tail(), "text/plain")
-        elif path == "/recent_events.json":
-            self._serve_json({"events": _recent_events()})
-        elif path == "/recall.md":
-            self._serve_text(_recall_content(), "text/plain")
-        elif path == "/schedule.json":
-            self._serve_json(_schedule_data())
-        elif path == "/cost_today.txt":
-            self._serve_text(_cost_today(), "text/plain")
-        elif path == "/graph_3d.html":
-            self._serve_file(_LOGS / "graph_3d.html", "text/html")
-        elif path == "/graph_data.json":
-            self._serve_file(_LOGS / "graph_data.json", "application/json")
-        else:
-            # Fall through to SvelteKit static build (SPA with fallback)
-            return self._serve_spa(path)
+        # Everything else → SvelteKit static build (SPA with index.html fallback)
+        return self._serve_spa(path)
 
     def _serve_spa(self, path: str):
         """Serve files from dashboard/build/ with SPA fallback to index.html."""

@@ -164,7 +164,6 @@ def test_pipeline_imports():
     from fiam.personality.reader import read_personality
     from fiam.retriever.semantic_link import link_semantic
     from fiam.retriever.temporal import link_new_events
-    from fiam.retriever.graph_viz import render_html
     # All good
 
 test("All pipeline modules importable", test_pipeline_imports)

@@ -142,14 +142,6 @@ def search(
             g_score = activation.get(ev.event_id, 0.0)
             print(f"  {ev.filename}  str={ev.strength:.2f}  "
                   f"acc={ev.access_count}  i={ev.intensity:.2f}  g={g_score:.3f}")
-        # Dump interactive HTML graph for inspection
-        try:
-            from fiam.retriever.graph_viz import render_html
-            viz_path = config.logs_dir / "graph_debug.html"
-            render_html(graph, viz_path)
-            print(f"[joint] graph viz → {viz_path}")
-        except Exception as e:
-            print(f"[joint] graph viz failed: {e}")
 
     return selected
 
