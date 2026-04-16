@@ -42,7 +42,14 @@ export interface StateSnapshot {
 }
 
 export interface GraphPayload {
-	nodes: { id: string; label: string; intensity: number; time?: string }[];
+	nodes: {
+		id: string;
+		label: string;
+		intensity: number;
+		time?: string;
+		last_accessed?: string;
+		access_count?: number;
+	}[];
 	edges: { source: string; target: string; kind: string; weight: number }[];
 }
 

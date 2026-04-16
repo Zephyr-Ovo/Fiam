@@ -203,6 +203,8 @@ def _api_events(limit: int = 50) -> list[dict]:
         etime = ""
         intensity = 0.0
         preview = ""
+        last_accessed = ""
+        access_count = 0
         in_fm = False
         body: list[str] = []
         for line in text.split("\n"):
@@ -212,10 +214,17 @@ def _api_events(limit: int = 50) -> list[dict]:
                 continue
             if in_fm:
                 if s.startswith("time:"):
-                    etime = s.split(":", 1)[1].strip()
+                    etime = s.split(":", 1)[1].strip().strip("'\"")
                 elif s.startswith("intensity:"):
                     try:
                         intensity = float(s.split(":", 1)[1].strip())
+                    except ValueError:
+                        pass
+                elif s.startswith("last_accessed:"):
+                    last_accessed = s.split(":", 1)[1].strip().strip("'\"")
+                elif s.startswith("access_count:"):
+                    try:
+                        access_count = int(s.split(":", 1)[1].strip())
                     except ValueError:
                         pass
             else:
@@ -225,6 +234,8 @@ def _api_events(limit: int = 50) -> list[dict]:
             "id": md.stem,
             "time": etime,
             "intensity": intensity,
+            "last_accessed": last_accessed,
+            "access_count": access_count,
             "preview": preview,
         })
     out.sort(key=lambda e: e["time"], reverse=True)
@@ -367,14 +378,20 @@ def _api_graph() -> dict:
     # Build intensity map from events
     intensity_map: dict[str, float] = {}
     time_map: dict[str, str] = {}
+    last_acc_map: dict[str, str] = {}
+    acc_cnt_map: dict[str, int] = {}
     for ev in _api_events(10000):
         intensity_map[ev["id"]] = ev["intensity"]
         time_map[ev["id"]] = ev["time"]
+        last_acc_map[ev["id"]] = ev.get("last_accessed", "")
+        acc_cnt_map[ev["id"]] = ev.get("access_count", 0)
         nodes[ev["id"]] = {
             "id": ev["id"],
             "label": ev["id"][-6:],
             "intensity": ev["intensity"],
             "time": ev["time"],
+            "last_accessed": ev.get("last_accessed", ""),
+            "access_count": ev.get("access_count", 0),
         }
     if graph_path.exists():
         for line in graph_path.read_text(encoding="utf-8").splitlines():
@@ -401,6 +418,8 @@ def _api_graph() -> dict:
                             "label": eid[-6:],
                             "intensity": intensity_map.get(eid, 0.3),
                             "time": time_map.get(eid, ""),
+                            "last_accessed": last_acc_map.get(eid, ""),
+                            "access_count": acc_cnt_map.get(eid, 0),
                         }
             except (json.JSONDecodeError, KeyError, ValueError):
                 continue
