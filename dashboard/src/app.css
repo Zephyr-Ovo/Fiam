@@ -44,54 +44,45 @@
 /* Anthropic-branded fonts — loaded from user's local installation only (no upload). */
 /* If the font isn't installed locally, browser falls through to the stack. */
 @font-face {
-	font-family: 'Styrene';
+	font-family: 'Anthropic Sans';
 	src:
-		local('Styrene B LC'),
-		local('Styrene B'),
-		local('StyreneB-Regular'),
-		local('Styrene A'),
-		local('StyreneA-Regular');
+		local('Anthropic Sans Web Display Light'),
+		local('AnthropicSansWebDisplay-Light'),
+		local('Anthropic Sans Web Light'),
+		local('Anthropic Sans Light');
+	font-weight: 300;
+	font-style: normal;
+	font-display: swap;
+}
+@font-face {
+	font-family: 'Anthropic Sans';
+	src:
+		local('Anthropic Sans Web Display'),
+		local('AnthropicSansWebDisplay-Regular'),
+		local('Anthropic Sans Web'),
+		local('Anthropic Sans');
 	font-weight: 400;
 	font-style: normal;
 	font-display: swap;
 }
 @font-face {
-	font-family: 'Styrene';
+	font-family: 'Anthropic Serif';
 	src:
-		local('Styrene B LC Medium'),
-		local('Styrene B Medium'),
-		local('StyreneB-Medium');
-	font-weight: 500;
-	font-style: normal;
-	font-display: swap;
-}
-@font-face {
-	font-family: 'Styrene';
-	src:
-		local('Styrene B LC Bold'),
-		local('Styrene B Bold'),
-		local('StyreneB-Bold');
-	font-weight: 700;
-	font-style: normal;
-	font-display: swap;
-}
-@font-face {
-	font-family: 'Copernicus';
-	src:
-		local('Copernicus Book Italic'),
-		local('Copernicus-BookItalic'),
-		local('Copernicus Italic'),
-		local('Copernicus-Italic');
-	font-weight: 400;
+		local('Anthropic Serif Web Display Light Italic'),
+		local('AnthropicSerifWebDisplay-LightItalic'),
+		local('Anthropic Serif Web Light Italic'),
+		local('Anthropic Serif Light Italic');
+	font-weight: 300;
 	font-style: italic;
 	font-display: swap;
 }
 @font-face {
-	font-family: 'Copernicus';
+	font-family: 'Anthropic Serif';
 	src:
-		local('Copernicus Book'),
-		local('Copernicus-Book'),
-		local('Copernicus');
+		local('Anthropic Serif Web Display'),
+		local('AnthropicSerifWebDisplay-Regular'),
+		local('Anthropic Serif Web'),
+		local('Anthropic Serif');
 	font-weight: 400;
 	font-style: normal;
 	font-display: swap;
@@ -100,10 +91,11 @@
 :root {
 	/* Chinese fallback kept so CJK text stays readable. */
 	--font-sans:
-		'Styrene', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei',
-		'Noto Sans CJK SC', sans-serif;
+		'Anthropic Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+		'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif;
 	--font-serif:
-		'Copernicus', Georgia, 'Times New Roman', 'Source Han Serif SC', 'Noto Serif CJK SC', serif;
+		'Anthropic Serif', Georgia, 'Times New Roman', 'Source Han Serif SC', 'Noto Serif CJK SC',
+		serif;
 }
 
 /* Claude-palette light theme — warm paper, terracotta accents, muted ink */

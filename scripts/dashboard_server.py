@@ -385,6 +385,61 @@ def _api_graph() -> dict:
     return {"nodes": list(nodes.values()), "edges": edges}
 
 
+def _api_capture(payload: dict) -> dict:
+    """Ingest a mobile/quick-capture event.
+
+    Expected payload keys: text (required), source (optional), url (optional),
+    tags (optional list). Writes a markdown file to events_dir with the same
+    frontmatter shape used elsewhere.
+    """
+    if not _CONFIG:
+        raise RuntimeError("config not loaded")
+    text = (payload.get("text") or "").strip()
+    if not text:
+        raise ValueError("missing text")
+    source = (payload.get("source") or "mobile").strip()
+    url = (payload.get("url") or "").strip()
+    tags = payload.get("tags") or []
+    if not isinstance(tags, list):
+        tags = []
+    tags = [str(t).strip() for t in tags if str(t).strip()]
+    if source and source not in tags:
+        tags.insert(0, source)
+
+    now = datetime.now(timezone.utc)
+    import secrets
+    ev_id = now.strftime("%m%d_%H%M") + "_" + secrets.token_hex(2)
+    ev_path = _CONFIG.events_dir / f"{ev_id}.md"
+    ev_path.parent.mkdir(parents=True, exist_ok=True)
+    tags_yaml = "[" + ", ".join(json.dumps(t) for t in tags) + "]" if tags else "[]"
+    fm = (
+        "---\n"
+        f"time: '{now.isoformat()}'\n"
+        "intensity: 0.4\n"
+        "access_count: 0\n"
+        f"tags: {tags_yaml}\n"
+        f"source: {json.dumps(source)}\n"
+        + (f"url: {json.dumps(url)}\n" if url else "")
+        + "---\n\n"
+    )
+    body = f"[capture]\n{text}\n"
+    ev_path.write_text(fm + body, encoding="utf-8")
+    return {"ok": True, "id": ev_id, "path": str(ev_path)}
+
+
+def _ingest_token_ok(handler) -> bool:
+    """Constant-time comparison of X-Fiam-Token header against env secret."""
+    import os
+    import hmac
+    expected = os.environ.get("FIAM_INGEST_TOKEN", "")
+    if not expected:
+        return False
+    got = handler.headers.get("X-Fiam-Token", "")
+    if not got:
+        return False
+    return hmac.compare_digest(got, expected)
+
+
 class DashboardHandler(SimpleHTTPRequestHandler):
     """Serve dashboard HTML and dynamic data endpoints."""
 
@@ -442,6 +497,37 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
         # Everything else → SvelteKit static build (SPA with index.html fallback)
         return self._serve_spa(path)
+
+    def do_POST(self):
+        path = self.path.split("?")[0]
+        if path != "/api/capture":
+            self.send_error(404)
+            return
+        if not _ingest_token_ok(self):
+            self._serve_json({"error": "unauthorized"}, status=401)
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        if length <= 0 or length > 256 * 1024:
+            self._serve_json({"error": "bad length"}, status=400)
+            return
+        try:
+            body = self.rfile.read(length).decode("utf-8")
+            payload = json.loads(body)
+        except (UnicodeDecodeError, json.JSONDecodeError) as e:
+            self._serve_json({"error": f"bad json: {e}"}, status=400)
+            return
+        try:
+            result = _api_capture(payload)
+        except ValueError as e:
+            self._serve_json({"error": str(e)}, status=400)
+            return
+        except Exception as e:
+            self._serve_json({"error": str(e)}, status=500)
+            return
+        self._serve_json(result)
 
     def _serve_spa(self, path: str):
         """Serve files from dashboard/build/ with SPA fallback to index.html."""
