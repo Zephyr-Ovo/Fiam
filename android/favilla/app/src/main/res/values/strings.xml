@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Favilla</string>
+    <string name="capture_label">Send to fiam</string>
+    <string name="tagline">a spark → fiam</string>
+    <string name="usage_hint">Highlight any text in any app → tap the "Send to fiam" option in the selection menu. Or use the share sheet → Favilla.</string>
+</resources>

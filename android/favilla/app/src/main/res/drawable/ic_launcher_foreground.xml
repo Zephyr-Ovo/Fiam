@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 108x108dp adaptive-icon foreground. Safe zone is the inner 66dp circle.
+     A warm spark: outer soft glow + inner bright core. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- outer glow -->
+    <path
+        android:fillColor="#4DD59575"
+        android:pathData="M54,54m-22,0a22,22 0 1,0 44,0a22,22 0 1,0 -44,0" />
+    <!-- mid flare -->
+    <path
+        android:fillColor="#99E8A77A"
+        android:pathData="M54,54m-13,0a13,13 0 1,0 26,0a13,13 0 1,0 -26,0" />
+    <!-- bright core -->
+    <path
+        android:fillColor="#FFF5D28B"
+        android:pathData="M54,54m-6,0a6,6 0 1,0 12,0a6,6 0 1,0 -12,0" />
+    <!-- four cardinal spark rays -->
+    <path
+        android:fillColor="#CCFFE4A8"
+        android:pathData="M54,30 L56,50 L54,48 L52,50 Z" />
+    <path
+        android:fillColor="#CCFFE4A8"
+        android:pathData="M54,78 L52,58 L54,60 L56,58 Z" />
+    <path
+        android:fillColor="#CCFFE4A8"
+        android:pathData="M30,54 L50,52 L48,54 L50,56 Z" />
+    <path
+        android:fillColor="#CCFFE4A8"
+        android:pathData="M78,54 L58,56 L60,54 L58,52 Z" />
+</vector>
