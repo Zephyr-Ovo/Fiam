@@ -35,6 +35,11 @@ class FloatingService : Service() {
     override fun onCreate() {
         super.onCreate()
         wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        // A new bubble session = a new conversation boundary. Every capture
+        // sent while this service is alive carries the same session tag so the
+        // server (or later batching) can group them into one fiam event.
+        sessionId = java.util.UUID.randomUUID().toString().substring(0, 8) +
+            "-" + (System.currentTimeMillis() / 1000).toString()
         startInForeground()
         addBubble()
     }
@@ -50,6 +55,10 @@ class FloatingService : Service() {
     override fun onDestroy() {
         bubble?.let { runCatching { wm.removeView(it) } }
         bubble = null
+        sessionId = null
+        // Ending the bubble = ending the conversation. Any follow-up cached
+        // selection from the previous session must not leak into the next one.
+        FavillaAccessibilityService.clearCache()
         super.onDestroy()
     }
 
@@ -137,6 +146,15 @@ class FloatingService : Service() {
         const val NOTIF_CHANNEL = "favilla_bubble"
         const val NOTIF_ID = 4201
         const val ACTION_STOP = "cc.fiet.favilla.STOP_BUBBLE"
+
+        /**
+         * Non-null while the floating bubble is active. All captures sent
+         * during the same bubble lifetime share this id; toggling the bubble
+         * off = closing the conversation (the event boundary).
+         */
+        @Volatile
+        var sessionId: String? = null
+            private set
 
         fun start(ctx: Context) {
             val i = Intent(ctx, FloatingService::class.java)
