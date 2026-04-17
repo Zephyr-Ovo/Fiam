@@ -1,8 +1,29 @@
 <script lang="ts">
 	import '../app.css';
 	import favicon from '$lib/assets/favicon.svg';
+	import { onMount } from 'svelte';
 
 	let { children } = $props();
+	let theme = $state<'dark' | 'light'>('dark');
+
+	onMount(() => {
+		try {
+			const saved = localStorage.getItem('fiam-theme');
+			if (saved === 'light' || saved === 'dark') theme = saved;
+		} catch {}
+	});
+
+	$effect(() => {
+		if (typeof document === 'undefined') return;
+		document.documentElement.setAttribute('data-theme', theme);
+		try {
+			localStorage.setItem('fiam-theme', theme);
+		} catch {}
+	});
+
+	function toggleTheme() {
+		theme = theme === 'dark' ? 'light' : 'dark';
+	}
 </script>
 
 <svelte:head>
@@ -22,7 +43,14 @@
 			<a href="/schedule" class="hover:text-[var(--color-lavender)]">schedule</a>
 			<a href="/logs" class="hover:text-[var(--color-lavender)]">logs</a>
 		</nav>
-		<span class="ml-auto text-xs text-[var(--color-overlay0)] font-mono" id="user-badge">—</span>
+		<button
+			onclick={toggleTheme}
+			class="ml-auto text-xs font-mono px-2 py-0.5 rounded border border-[var(--color-surface1)] hover:bg-[var(--color-surface0)] cursor-pointer"
+			title="toggle theme"
+		>
+			{theme === 'dark' ? '☾ dark' : '☀ light'}
+		</button>
+		<span class="text-xs text-[var(--color-overlay0)] font-mono" id="user-badge">—</span>
 	</header>
 
 	<main class="flex-1 p-4">
@@ -32,7 +60,7 @@
 	<footer
 		class="border-t border-[var(--color-surface0)] px-4 py-1 text-xs text-[var(--color-overlay0)] font-mono flex justify-between bg-[var(--color-mantle)]"
 	>
-		<span>console · catppuccin mocha</span>
+		<span>console · {theme === 'dark' ? 'catppuccin mocha' : 'claude paper'}</span>
 		<span id="status-ping">·</span>
 	</footer>
 </div>

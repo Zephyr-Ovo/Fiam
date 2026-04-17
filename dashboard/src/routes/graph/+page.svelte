@@ -36,8 +36,27 @@
 
 	let rotY = 0;
 	let dragging = false;
+	let dragMode: 'rotate' | 'pan' = 'rotate';
 	let lastPx = 0;
+	let lastPy = 0;
 	let zoom = 1;
+	let panX = 0;
+	let panY = 0;
+
+	function prettyLabel(id: string): string {
+		const s = id.replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
+		return s.length > 22 ? s.slice(0, 21) + '\u2026' : s;
+	}
+
+	// Sync theme to html[data-theme] for local toggles on this page.
+	// (Layout restores from localStorage on first paint — this keeps parity when user toggles the graph's own button.)
+	$effect(() => {
+		if (typeof document === 'undefined') return;
+		document.documentElement.setAttribute('data-theme', theme);
+		try {
+			localStorage.setItem('fiam-theme', theme);
+		} catch {}
+	});
 
 	// Dark: catppuccin mocha. Light: Claude-palette from user css.
 	const themes = {
@@ -199,8 +218,8 @@
 			const zr = localX * sinR + n.z * 140 * cosR;
 			const depth = zr / 140; // normalized roughly [-1, 1]
 			const scale = zoom * (0.55 + 0.45 * ((depth + 1) / 2));
-			const sx = cx + xr * zoom;
-			const sy = cy + (n.y - cy) * zoom;
+			const sx = cx + xr * zoom + panX;
+			const sy = cy + (n.y - cy) * zoom + panY;
 			return { n, sx, sy, scale, depth };
 		});
 		projected.sort((a, b) => a.depth - b.depth);
@@ -265,9 +284,10 @@
 			const p = projected.find((q) => q.n.id === hovered);
 			if (h && p) {
 				ctx.font = '11px ui-monospace, monospace';
-				const text = `${h.label}  i=${h.intensity.toFixed(2)}${
-					h.access_count ? `  acc=${h.access_count}` : ''
-				}`;
+				const parts: string[] = [h.label];
+				if (h.intensity > 0.01) parts.push(`i=${h.intensity.toFixed(2)}`);
+				if (h.access_count && h.access_count > 0) parts.push(`recalls=${h.access_count}`);
+				const text = parts.join('  ');
 				const m = ctx.measureText(text);
 				const tx = p.sx + 10;
 				const ty = p.sy - 10;
@@ -290,7 +310,9 @@
 
 	function onPointerDown(ev: PointerEvent) {
 		dragging = true;
+		dragMode = ev.shiftKey || ev.button === 1 || ev.buttons === 4 ? 'pan' : 'rotate';
 		lastPx = ev.clientX;
+		lastPy = ev.clientY;
 		autoRotate = false;
 		canvas!.setPointerCapture(ev.pointerId);
 	}
@@ -303,8 +325,14 @@
 	function onPointerMove(ev: PointerEvent) {
 		if (!canvas) return;
 		if (dragging) {
-			rotY += (ev.clientX - lastPx) * 0.01;
+			if (dragMode === 'pan') {
+				panX += ev.clientX - lastPx;
+				panY += ev.clientY - lastPy;
+			} else {
+				rotY += (ev.clientX - lastPx) * 0.01;
+			}
 			lastPx = ev.clientX;
+			lastPy = ev.clientY;
 			return;
 		}
 		const rect = canvas.getBoundingClientRect();
@@ -318,8 +346,8 @@
 		const cosR = Math.cos(rotY);
 		for (const n of nodes) {
 			const xr = (n.x - cx) * cosR - n.z * 140 * sinR;
-			const sx = cx + xr * zoom;
-			const sy = cy + (n.y - cy) * zoom;
+			const sx = cx + xr * zoom + panX;
+			const sy = cy + (n.y - cy) * zoom + panY;
 			const dx = sx - x;
 			const dy = sy - y;
 			const d2 = dx * dx + dy * dy;
@@ -332,7 +360,22 @@
 	}
 	function onWheel(ev: WheelEvent) {
 		ev.preventDefault();
-		zoom = Math.max(0.3, Math.min(3, zoom * (ev.deltaY < 0 ? 1.08 : 0.93)));
+		const rect = canvas!.getBoundingClientRect();
+		const mx = ev.clientX - rect.left - canvas!.width / 2;
+		const my = ev.clientY - rect.top - canvas!.height / 2;
+		const factor = ev.deltaY < 0 ? 1.1 : 1 / 1.1;
+		const newZoom = Math.max(0.2, Math.min(6, zoom * factor));
+		// keep point under cursor stationary
+		const k = newZoom / zoom - 1;
+		panX -= (mx - panX) * k;
+		panY -= (my - panY) * k;
+		zoom = newZoom;
+	}
+	function resetView() {
+		zoom = 1;
+		panX = 0;
+		panY = 0;
+		rotY = 0;
 	}
 
 	function resize() {
@@ -344,6 +387,10 @@
 
 	onMount(async () => {
 		try {
+			const saved = localStorage.getItem('fiam-theme');
+			if (saved === 'light' || saved === 'dark') theme = saved;
+		} catch {}
+		try {
 			const payload: GraphPayload = await api.graph();
 			const W = canvas!.clientWidth || 800;
 			const H = canvas!.clientHeight || 600;
@@ -354,7 +401,7 @@
 				const r = 60 + hash01(n.id, 2) * 140;
 				return {
 					id: n.id,
-					label: n.label,
+					label: prettyLabel(n.label ?? n.id),
 					intensity: n.intensity ?? 0.5,
 					last_accessed: n.last_accessed,
 					access_count: n.access_count,
@@ -386,14 +433,21 @@
 </script>
 
 <div class="flex flex-col h-[calc(100vh-8rem)] relative">
-	<div class="flex items-center gap-4 mb-2 text-xs font-mono">
+	<div class="flex items-center gap-4 mb-2 text-xs font-mono flex-wrap">
 		<span class="text-[var(--color-subtext0)]">nodes {stats.nodes}</span>
 		<span class="text-[var(--color-subtext0)]">edges {stats.edges}</span>
 		<span class="text-[var(--color-pink)]">recalled {stats.recalled}</span>
+		<span class="text-[var(--color-overlay0)] hidden md:inline">
+			drag = rotate · shift+drag = pan · wheel = zoom
+		</span>
 		<label class="ml-auto flex items-center gap-1 cursor-pointer">
 			<input type="checkbox" bind:checked={autoRotate} class="accent-[var(--color-mauve)]" />
 			<span class="text-[var(--color-overlay1)]">auto-rotate</span>
 		</label>
+		<button
+			class="px-2 py-0.5 border border-[var(--color-surface1)] rounded text-[var(--color-subtext0)] hover:border-[var(--color-mauve)]"
+			onclick={resetView}
+		>reset</button>
 		<button
 			class="px-2 py-0.5 border border-[var(--color-surface1)] rounded text-[var(--color-subtext0)] hover:border-[var(--color-mauve)]"
 			onclick={() => (theme = theme === 'dark' ? 'light' : 'dark')}
@@ -403,12 +457,23 @@
 	</div>
 	<canvas
 		bind:this={canvas}
-		class="flex-1 border border-[var(--color-surface0)] rounded cursor-grab active:cursor-grabbing"
+		class="flex-1 border border-[var(--color-surface0)] rounded cursor-grab active:cursor-grabbing touch-none"
 		onpointerdown={onPointerDown}
 		onpointerup={onPointerUp}
 		onpointermove={onPointerMove}
 		onwheel={onWheel}
 	></canvas>
+	<!-- edge-type legend -->
+	<div
+		class="absolute bottom-10 left-3 flex flex-col gap-1 px-2 py-1.5 rounded text-[10px] font-mono bg-[var(--color-mantle)]/80 border border-[var(--color-surface0)] backdrop-blur-sm pointer-events-none"
+	>
+		{#each Object.entries(themes[theme].kinds) as [k, c]}
+			<div class="flex items-center gap-1.5">
+				<span class="inline-block w-3 h-[2px]" style="background:{c}"></span>
+				<span class="text-[var(--color-subtext0)]">{k}</span>
+			</div>
+		{/each}
+	</div>
 	{#if loading}
 		<p class="absolute inset-0 flex items-center justify-center text-[var(--color-overlay0)]">
 			loading graph…

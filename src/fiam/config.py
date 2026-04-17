@@ -98,6 +98,27 @@ class FiamConfig:
     # Event extraction parameters
     # ------------------------------------------------------------------
     half_life_base: float = 14.0        # Ebbinghaus base half-life in days (strength=1.0)
+    strength_cap: float = 3.0           # upper bound on memory strength (slows decay)
+
+    # ------------------------------------------------------------------
+    # Retrieval tuning (advanced)
+    # ------------------------------------------------------------------
+    mmr_lambda: float = 0.7             # MMR trade-off: 1.0 = pure relevance, 0.0 = pure diversity
+    graph_edge_decay_half_life: float = 30.0  # days — edge weight decays toward 0 over time
+    graph_spread_steps: int = 2               # propagation hops for spreading activation
+    graph_spread_decay: float = 0.5           # energy multiplier per hop
+    graph_inhibition_factor: float = 0.3      # lateral inhibition when multiple sources co-fire
+    # Edge-type multipliers: how much energy each relation type propagates.
+    # Keys: causal | cause | remind | elaboration | semantic | temporal | contrast
+    graph_edge_type_weights: dict = field(default_factory=lambda: {
+        "causal":      1.4,
+        "cause":       1.4,
+        "remind":      1.2,
+        "elaboration": 1.0,
+        "semantic":    0.8,
+        "temporal":    0.5,
+        "contrast":    0.3,
+    })
 
     # ------------------------------------------------------------------
     # Narrative synthesis
@@ -411,6 +432,17 @@ class FiamConfig:
             temporal_window_hours=retrieval.get("temporal_window_hours", cls.temporal_window_hours),
             # Extraction
             half_life_base=extraction.get("half_life_base", cls.half_life_base),
+            strength_cap=extraction.get("strength_cap", 3.0),
+            # Retrieval tuning (advanced)
+            mmr_lambda=retrieval.get("mmr_lambda", 0.7),
+            graph_edge_decay_half_life=graph.get("edge_decay_half_life_days", 30.0),
+            graph_spread_steps=graph.get("spread_steps", 2),
+            graph_spread_decay=graph.get("spread_decay_per_step", 0.5),
+            graph_inhibition_factor=graph.get("inhibition_factor", 0.3),
+            graph_edge_type_weights=dict(graph.get("edge_type_weights", {
+                "causal": 1.4, "cause": 1.4, "remind": 1.2, "elaboration": 1.0,
+                "semantic": 0.8, "temporal": 0.5, "contrast": 0.3,
+            })),
             # Narrative
             narrative_llm_enabled=narrative.get("llm_enabled", cls.narrative_llm_enabled),
             narrative_llm_provider=narrative.get("llm_provider", cls.narrative_llm_provider),

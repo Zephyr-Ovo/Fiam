@@ -25,9 +25,6 @@ from fiam.retriever.graph import MemoryGraph
 from fiam.store.formats import EventRecord
 from fiam.store.home import HomeStore
 
-# MMR trade-off: 1.0 = pure relevance, 0.0 = pure diversity
-_MMR_LAMBDA = 0.7
-
 
 def search(
     conversation_text: str,
@@ -95,7 +92,7 @@ def search(
     # --- Second pass: graph-based spreading activation ---
     # Build graph from all events + graph.jsonl edges
     from fiam.store.graph_store import GraphStore
-    graph = MemoryGraph()
+    graph = MemoryGraph(config=config)
     graph_store = GraphStore(config.graph_jsonl_path)
     graph.build(all_events, now=now, edges=graph_store.load_as_dicts())
 
@@ -127,7 +124,7 @@ def search(
     pool = scored
     n_select = min(effective_top_k, len(pool)) if effective_top_k else len(pool)
 
-    selected = _mmr_select(pool, n_select, _MMR_LAMBDA)
+    selected = _mmr_select(pool, n_select, config.mmr_lambda)
 
     # Record access for selected events
     for event in selected:
@@ -136,7 +133,7 @@ def search(
 
     if config.debug_mode:
         print(f"[joint] {len(all_events)} total → {len(eligible)} eligible "
-              f"→ {len(selected)} selected (top_k={effective_top_k}, λ={_MMR_LAMBDA})")
+              f"→ {len(selected)} selected (top_k={effective_top_k}, λ={config.mmr_lambda})")
         print(f"[joint] graph: {graph.node_count} nodes, {graph.edge_count} edges")
         for ev in selected:
             g_score = activation.get(ev.event_id, 0.0)

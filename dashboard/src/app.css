@@ -41,6 +41,37 @@
 	--font-mono: 'JetBrains Mono', 'Consolas', ui-monospace, monospace;
 }
 
+/* Claude-palette light theme — warm paper, terracotta accents, muted ink */
+html[data-theme='light'] {
+	--color-base: #F8F8F3;
+	--color-mantle: #F2F0EB;
+	--color-crust: #EDEBE4;
+	--color-surface0: #E2DFD6;
+	--color-surface1: #D4D0C4;
+	--color-surface2: #BDB8A9;
+	--color-overlay0: #8C8880;
+	--color-overlay1: #727068;
+	--color-overlay2: #5A5854;
+	--color-subtext0: #3E3C38;
+	--color-subtext1: #2A2824;
+	--color-text: #141413;
+
+	--color-rosewater: #C8A89A;
+	--color-flamingo: #B8978B;
+	--color-pink: #B594A0;
+	--color-mauve: #725E85;
+	--color-red: #96452A;
+	--color-maroon: #b86548;
+	--color-peach: #D59575;
+	--color-yellow: #B89450;
+	--color-green: #5A8060;
+	--color-teal: #6B8F8A;
+	--color-sky: #849EB8;
+	--color-sapphire: #5F7A99;
+	--color-blue: #849EB8;
+	--color-lavender: #8E83A3;
+}
+
 html,
 body {
 	background: var(--color-base);

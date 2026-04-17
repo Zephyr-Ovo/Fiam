@@ -14,12 +14,13 @@ embedding_backend = "local"       # "local" = in-process SentenceTransformer | "
 embedding_remote_url = ""         # e.g. "http://127.0.0.1:8819" (tunnelled via SSH: ssh -L 8819:127.0.0.1:8819 root@DO)
 
 [retrieval]
-top_k = 5
+top_k = 50                    # safety cap — real gate is min_score
+min_score = 0.15              # primary recall gate
 semantic_weight = 0.5
 recency_weight = 0.3
 temporal_link_weight = 0.2
 diversity_threshold = 0.88
-min_event_age_hours = 6      # set to 0 for smoke testing
+min_event_age_hours = 24     # skip last 24h (already in CC context); set to 0 for smoke testing
 temporal_window_hours = 4.0
 
 [extraction]

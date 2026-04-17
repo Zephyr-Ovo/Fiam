@@ -24,9 +24,34 @@ from fiam.store.formats import EventRecord
 class MemoryGraph:
     """In-memory directed graph over events."""
 
-    def __init__(self, decay_half_life_days: float = 30.0) -> None:
+    # Default edge-type multipliers (fallback when no config is supplied).
+    # Kept as a class attribute so pipeline edge_typer can still `setdefault()`
+    # on newly-discovered types without needing the config.
+    _TYPE_MULT: dict[str, float] = {
+        "causal":      1.4,
+        "cause":       1.4,
+        "remind":      1.2,
+        "elaboration": 1.0,
+        "semantic":    0.8,
+        "temporal":    0.5,
+        "contrast":    0.3,
+    }
+
+    def __init__(self, decay_half_life_days: float = 30.0,
+                 config: FiamConfig | None = None) -> None:
         self.G: nx.DiGraph = nx.DiGraph()
-        self._decay_half_life = decay_half_life_days
+        if config is not None:
+            self._decay_half_life = config.graph_edge_decay_half_life
+            self._type_mult = dict(config.graph_edge_type_weights)
+            self._spread_steps = config.graph_spread_steps
+            self._spread_decay = config.graph_spread_decay
+            self._inhibition = config.graph_inhibition_factor
+        else:
+            self._decay_half_life = decay_half_life_days
+            self._type_mult = dict(self._TYPE_MULT)
+            self._spread_steps = 2
+            self._spread_decay = 0.5
+            self._inhibition = 0.3
 
     # ------------------------------------------------------------------
     # Construction
@@ -111,26 +136,14 @@ class MemoryGraph:
     # Spreading activation
     # ------------------------------------------------------------------
 
-    # Edge-type multipliers: how much energy each relation type propagates.
-    # causal > remind > elaboration > semantic > temporal > contrast
-    _TYPE_MULT: dict[str, float] = {
-        "causal":      1.4,
-        "cause":       1.4,   # alias used by edge_typer
-        "remind":      1.2,
-        "elaboration": 1.0,
-        "semantic":    0.8,
-        "temporal":    0.5,
-        "contrast":    0.3,
-    }
-
     def spread(
         self,
         seed_ids: list[str],
         seed_scores: list[float],
         *,
-        steps: int = 2,
-        decay_per_step: float = 0.5,
-        inhibition_factor: float = 0.3,
+        steps: int | None = None,
+        decay_per_step: float | None = None,
+        inhibition_factor: float | None = None,
     ) -> dict[str, float]:
         """Run spreading activation from seed nodes.
 
@@ -145,6 +158,14 @@ class MemoryGraph:
         Returns:
             Dict mapping event_id → accumulated activation score.
         """
+        # Fall back to instance defaults (from config) if caller didn't override
+        if steps is None:
+            steps = self._spread_steps
+        if decay_per_step is None:
+            decay_per_step = self._spread_decay
+        if inhibition_factor is None:
+            inhibition_factor = self._inhibition
+
         activation: dict[str, float] = {}
 
         # Seed
@@ -165,7 +186,7 @@ class MemoryGraph:
                 for _, neighbor, data in self.G.out_edges(node, data=True):
                     w = data.get("weight", 0.5)
                     edge_type = data.get("type", "temporal")
-                    type_mult = self._TYPE_MULT.get(edge_type, 0.5)
+                    type_mult = self._type_mult.get(edge_type, 0.5)
                     # Fan penalty: high-degree nodes dilute their energy
                     fan_out = max(1, self.G.out_degree(node))
                     fan_penalty = 1.0 / (1.0 + log(fan_out))
