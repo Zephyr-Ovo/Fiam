@@ -440,6 +440,41 @@ def _ingest_token_ok(handler) -> bool:
     return hmac.compare_digest(got, expected)
 
 
+def _viewer_token_ok(handler) -> bool:
+    """Auth for dashboard viewing. Accepts FIAM_VIEW_TOKEN via:
+    1. Cookie  fiam_view=<token>   (set by /login redirect)
+    2. Query   ?token=<token>       (one-shot, used by /login)
+    3. Header  X-Fiam-View-Token    (programmatic clients)
+    Returns True if any source matches.
+    """
+    import os
+    import hmac
+    expected = os.environ.get("FIAM_VIEW_TOKEN", "")
+    if not expected:
+        return False
+    # cookie
+    cookie = handler.headers.get("Cookie", "")
+    for part in cookie.split(";"):
+        part = part.strip()
+        if part.startswith("fiam_view="):
+            got = part[len("fiam_view="):]
+            if got and hmac.compare_digest(got, expected):
+                return True
+    # header
+    got = handler.headers.get("X-Fiam-View-Token", "")
+    if got and hmac.compare_digest(got, expected):
+        return True
+    # query (only used by /login below)
+    raw = handler.path
+    if "?" in raw:
+        import urllib.parse as _u
+        qs = dict(_u.parse_qsl(raw.split("?", 1)[1]))
+        got = qs.get("token", "")
+        if got and hmac.compare_digest(got, expected):
+            return True
+    return False
+
+
 class DashboardHandler(SimpleHTTPRequestHandler):
     """Serve dashboard HTML and dynamic data endpoints."""
 
@@ -490,6 +525,28 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # Strip query string
         raw = self.path
         path = raw.split("?")[0]
+
+        # /login?token=<view_token> → set cookie + redirect to /
+        if path == "/login":
+            if _viewer_token_ok(self):
+                import os
+                tok = os.environ.get("FIAM_VIEW_TOKEN", "")
+                self.send_response(302)
+                # 30-day cookie, HttpOnly, SameSite=Lax. Secure inferred from CF tunnel TLS.
+                self.send_header(
+                    "Set-Cookie",
+                    f"fiam_view={tok}; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax; Secure",
+                )
+                self.send_header("Location", "/")
+                self.end_headers()
+                return
+            self._serve_json({"error": "unauthorized"}, status=401)
+            return
+
+        # All other GETs require viewer auth
+        if not _viewer_token_ok(self):
+            self._serve_json({"error": "unauthorized"}, status=401)
+            return
 
         # /api/* JSON endpoints used by the SvelteKit SPA
         if path.startswith("/api/"):
@@ -595,11 +652,17 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 def main():
     parser = argparse.ArgumentParser(description="fiam debug dashboard")
     parser.add_argument("--port", type=int, default=8766)
+    parser.add_argument("--bind", default="127.0.0.1",
+                        help="Bind address (default 127.0.0.1; use 0.0.0.0 only behind a trusted proxy)")
     args = parser.parse_args()
 
     _load_config()
-    server = HTTPServer(("0.0.0.0", args.port), DashboardHandler)
-    print(f"Dashboard: http://localhost:{args.port}/")
+    import os
+    if not os.environ.get("FIAM_VIEW_TOKEN"):
+        print("WARN: FIAM_VIEW_TOKEN not set — all GET requests will return 401.",
+              file=sys.stderr)
+    server = HTTPServer((args.bind, args.port), DashboardHandler)
+    print(f"Dashboard: http://{args.bind}:{args.port}/")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
