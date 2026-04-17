@@ -1,7 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Favilla</string>
-    <string name="capture_label">Send to fiam</string>
+    <string name="capture_label">🐦‍⬛</string>
     <string name="tagline">a spark → fiam</string>
-    <string name="usage_hint">Highlight any text in any app → tap the "Send to fiam" option in the selection menu. Or use the share sheet → Favilla.</string>
+    <string name="usage_hint">1) Grant "display over other apps" permission. 2) Enable the Favilla accessibility service (silent, no audio — only reads on tap). 3) Start the bubble. Then: select text in any app → tap the crow → sent to fiam. If nothing is selected, a typing dialog appears. Double-tap the bubble to dismiss it.</string>
+    <string name="btn_start_bubble">Start bubble</string>
+    <string name="btn_stop_bubble">Stop bubble</string>
+    <string name="need_overlay_perm">Grant "Display over other apps" for Favilla first.</string>
+    <string name="notif_channel_name">Favilla bubble</string>
+    <string name="notif_running">Favilla is watching. Tap crow → capture selection.</string>
+    <string name="a11y_description">Reads the text you have selected in another app when you tap the Favilla bubble. No audio, no events subscribed, no background reads.</string>
+    <string name="a11y_summary">On-demand text selection reader for the floating bubble.</string>
+    <string name="btn_open_a11y">Open Accessibility settings</string>
+    <string name="btn_open_overlay">Grant floating-window permission</string>
+    <string name="status_overlay_ok">overlay permission: OK</string>
+    <string name="status_overlay_missing">overlay permission: missing</string>
+    <string name="status_a11y_ok">accessibility service: connected</string>
+    <string name="status_a11y_missing">accessibility service: not enabled</string>
+    <string name="dialog_input_title">Send to fiam</string>
+    <string name="dialog_input_hint">type text to capture</string>
+    <string name="dialog_input_send">Send</string>
+    <string name="dialog_input_cancel">Cancel</string>
+    <string name="toast_nothing_selected">no selection; type below</string>
 </resources>

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Favilla accessibility service configuration.
+
+  - accessibilityEventTypes is empty: we never react to events.
+  - canRetrieveWindowContent is required to call rootInActiveWindow on demand.
+  - No feedback type / no notification / no audio.
+  - description shown in system Settings > Accessibility.
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes=""
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault"
+    android:canRetrieveWindowContent="true"
+    android:notificationTimeout="0"
+    android:description="@string/a11y_description"
+    android:summary="@string/a11y_summary" />

@@ -6,3 +6,6 @@ local.properties
 .kotlin/
 .DS_Store
 captures/
+out/
+*.apk
+*.zip
