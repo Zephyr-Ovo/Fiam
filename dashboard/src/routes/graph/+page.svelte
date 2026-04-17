@@ -137,8 +137,22 @@
 				b.vx += dx * rep * dt;
 				b.vy += dy * rep * dt;
 			}
-			a.vx += (cx - a.x) * 0.00035;
-			a.vy += (cy - a.y) * 0.00035;
+			// Soft brain-shaped containment: ellipse wider than tall, gentle inside, firm outside.
+			const rx = W * 0.42;
+			const ry = H * 0.34;
+			const nx = (a.x - cx) / rx;
+			const ny = (a.y - cy) / ry;
+			const r2 = nx * nx + ny * ny;
+			if (r2 > 1) {
+				// outside the shell — pull back proportionally to how far out
+				const pull = (r2 - 1) * 0.04;
+				a.vx -= nx * rx * pull;
+				a.vy -= ny * ry * pull;
+			} else {
+				// inside — very weak centering, so nodes spread to fill the shape
+				a.vx += (cx - a.x) * 0.00008;
+				a.vy += (cy - a.y) * 0.00008;
+			}
 		}
 
 		for (const e of edges) {
@@ -206,6 +220,20 @@
 		g.addColorStop(1, t.bg);
 		ctx.fillStyle = g;
 		ctx.fillRect(0, 0, W, H);
+
+		// Soft "brain" outline — matches the containment ellipse.
+		{
+			const rx = W * 0.42 * zoom;
+			const ry = H * 0.34 * zoom;
+			ctx.save();
+			ctx.strokeStyle = hexAlpha(t.text, 0.07);
+			ctx.lineWidth = 1;
+			ctx.setLineDash([4, 6]);
+			ctx.beginPath();
+			ctx.ellipse(cx + panX, cy + panY, rx, ry, 0, 0, Math.PI * 2);
+			ctx.stroke();
+			ctx.restore();
+		}
 
 		if (autoRotate) rotY += 0.0035;
 		const sinR = Math.sin(rotY);
