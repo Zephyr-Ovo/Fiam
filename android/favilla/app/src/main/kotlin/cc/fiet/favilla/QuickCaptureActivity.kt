@@ -74,6 +74,7 @@ class QuickCaptureActivity : AppCompatActivity() {
                 if (r.ok) "Favilla ✓ ${r.id ?: ""}" else "Favilla ✗ ${r.error ?: "failed"}",
                 Toast.LENGTH_SHORT,
             ).show()
+            if (r.ok && tag == "selection") FavillaAccessibilityService.clearCache()
             finish()
         }
     }
