@@ -53,9 +53,16 @@ export interface GraphPayload {
 	edges: { source: string; target: string; kind: string; weight: number }[];
 }
 
+export interface EventDetail {
+	id: string;
+	frontmatter: Record<string, string>;
+	body: string;
+}
+
 export const api = {
 	status: () => j<Status>('/status'),
 	events: (limit = 50) => j<EventRow[]>(`/events?limit=${limit}`),
+	event: (id: string) => j<EventDetail>(`/event/${encodeURIComponent(id)}`),
 	schedule: () => j<ScheduleRow[]>('/schedule'),
 	state: () => j<StateSnapshot>('/state'),
 	graph: () => j<GraphPayload>('/graph'),

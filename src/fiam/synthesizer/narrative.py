@@ -315,13 +315,26 @@ def _call_anthropic(config: FiamConfig, system: str, user: str) -> str:
         kwargs["api_key"] = os.environ[config.narrative_llm_api_key_env]
 
     client = anthropic.Anthropic(**kwargs)
+    # Cache the system prompt — it's identity + instruction text, stable across calls.
+    # Anthropic charges ~10% of write cost on cache hits and (on subscription tiers)
+    # cache hits don't count against rate limits. Requires the system field to be a
+    # list of content blocks with a cache_control marker.
+    system_blocks: list[dict[str, Any]] = [
+        {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
+    ]
     response = client.messages.create(
         model=config.narrative_llm_model,
         max_tokens=400,
         temperature=0.7,
-        system=system,
+        system=system_blocks,  # type: ignore[arg-type]
         messages=[{"role": "user", "content": user}],
     )
+    if config.debug_mode:
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            cc_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+            cc_write = getattr(usage, "cache_creation_input_tokens", 0) or 0
+            print(f"[narrative] anthropic cache: read={cc_read} write={cc_write}")
     block = response.content[0]
     if isinstance(block, TextBlock):
         return block.text.strip()

@@ -163,6 +163,33 @@ def _api_events(limit: int = 50) -> list[dict]:
     return out[:limit]
 
 
+def _api_event(event_id: str) -> dict | None:
+    """Full content of one event by id (markdown stem)."""
+    if not _CONFIG:
+        return None
+    md = _CONFIG.events_dir / f"{event_id}.md"
+    if not md.is_file():
+        return None
+    text = md.read_text(encoding="utf-8", errors="replace")
+    frontmatter: dict[str, str] = {}
+    body_lines: list[str] = []
+    in_fm = False
+    fm_seen = 0
+    for line in text.split("\n"):
+        if line.strip() == "---":
+            fm_seen += 1
+            in_fm = fm_seen == 1
+            continue
+        if in_fm:
+            if ":" in line:
+                k, v = line.split(":", 1)
+                frontmatter[k.strip()] = v.strip().strip("'\"")
+        else:
+            body_lines.append(line)
+    body = "\n".join(body_lines).strip()
+    return {"id": event_id, "frontmatter": frontmatter, "body": body}
+
+
 def _api_schedule() -> list[dict]:
     """Pending wakes from schedule.jsonl."""
     if not _CONFIG:
@@ -376,6 +403,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             elif path == "/api/events":
                 limit = int(query.get("limit", 50))
                 self._serve_json(_api_events(limit))
+            elif path.startswith("/api/event/"):
+                ev_id = path[len("/api/event/") :]
+                ev = _api_event(ev_id)
+                if ev is None:
+                    self.send_error(404)
+                else:
+                    self._serve_json(ev)
             elif path == "/api/schedule":
                 self._serve_json(_api_schedule())
             elif path == "/api/state":

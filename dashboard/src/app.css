@@ -41,6 +41,71 @@
 	--font-mono: 'JetBrains Mono', 'Consolas', ui-monospace, monospace;
 }
 
+/* Anthropic-branded fonts — loaded from user's local installation only (no upload). */
+/* If the font isn't installed locally, browser falls through to the stack. */
+@font-face {
+	font-family: 'Styrene';
+	src:
+		local('Styrene B LC'),
+		local('Styrene B'),
+		local('StyreneB-Regular'),
+		local('Styrene A'),
+		local('StyreneA-Regular');
+	font-weight: 400;
+	font-style: normal;
+	font-display: swap;
+}
+@font-face {
+	font-family: 'Styrene';
+	src:
+		local('Styrene B LC Medium'),
+		local('Styrene B Medium'),
+		local('StyreneB-Medium');
+	font-weight: 500;
+	font-style: normal;
+	font-display: swap;
+}
+@font-face {
+	font-family: 'Styrene';
+	src:
+		local('Styrene B LC Bold'),
+		local('Styrene B Bold'),
+		local('StyreneB-Bold');
+	font-weight: 700;
+	font-style: normal;
+	font-display: swap;
+}
+@font-face {
+	font-family: 'Copernicus';
+	src:
+		local('Copernicus Book Italic'),
+		local('Copernicus-BookItalic'),
+		local('Copernicus Italic'),
+		local('Copernicus-Italic');
+	font-weight: 400;
+	font-style: italic;
+	font-display: swap;
+}
+@font-face {
+	font-family: 'Copernicus';
+	src:
+		local('Copernicus Book'),
+		local('Copernicus-Book'),
+		local('Copernicus');
+	font-weight: 400;
+	font-style: normal;
+	font-display: swap;
+}
+
+:root {
+	/* Chinese fallback kept so CJK text stays readable. */
+	--font-sans:
+		'Styrene', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei',
+		'Noto Sans CJK SC', sans-serif;
+	--font-serif:
+		'Copernicus', Georgia, 'Times New Roman', 'Source Han Serif SC', 'Noto Serif CJK SC', serif;
+}
+
 /* Claude-palette light theme — warm paper, terracotta accents, muted ink */
 html[data-theme='light'] {
 	--color-base: #F8F8F3;
@@ -76,8 +141,15 @@ html,
 body {
 	background: var(--color-base);
 	color: var(--color-text);
-	font-family:
-		-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+	font-family: var(--font-sans);
+}
+
+/* Italic emphasis uses the serif — matches Claude UI aesthetic. */
+em,
+i,
+.font-serif {
+	font-family: var(--font-serif);
+	font-style: italic;
 }
 
 /* Compact table reset */

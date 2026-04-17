@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { api, type GraphPayload } from '$lib/api';
+	import EventDetail from '$lib/EventDetail.svelte';
 
 	let canvas = $state<HTMLCanvasElement | undefined>();
 	let err = $state<string | null>(null);
@@ -11,9 +12,16 @@
 	let autoRotate = $state(true);
 	let raf = 0;
 
-	interface Node {
+	interface Edge {
+		source: string;
+		target: string;
+		kind: string;
+		weight: number;
+	}
+
+	interface DisplayNode {
 		id: string;
-		label: string;
+		label: string; // human-readable
 		intensity: number;
 		last_accessed?: string;
 		access_count?: number;
@@ -22,21 +30,18 @@
 		z: number;
 		vx: number;
 		vy: number;
-	}
-	interface Edge {
-		source: string;
-		target: string;
-		kind: string;
-		weight: number;
+		pinned?: boolean;
 	}
 
-	let nodes: Node[] = [];
+	let nodes: DisplayNode[] = [];
 	let edges: Edge[] = [];
-	let nodeById = new Map<string, Node>();
+	let nodeById = new Map<string, DisplayNode>();
 
 	let rotY = 0;
+	let rotX = 0.35; // pitch — slight downward tilt by default
 	let dragging = false;
-	let dragMode: 'rotate' | 'pan' = 'rotate';
+	let dragMode: 'rotate' | 'pan' | 'node' = 'rotate';
+	let draggedNode: DisplayNode | null = null;
 	let lastPx = 0;
 	let lastPy = 0;
 	let zoom = 1;
@@ -44,8 +49,7 @@
 	let panY = 0;
 
 	function prettyLabel(id: string): string {
-		const s = id.replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
-		return s.length > 22 ? s.slice(0, 21) + '\u2026' : s;
+		return id.replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
 	}
 
 	// Sync theme to html[data-theme] for local toggles on this page.
@@ -123,19 +127,19 @@
 
 		for (let i = 0; i < nodes.length; i++) {
 			const a = nodes[i];
+			if (a.pinned) { a.vx = 0; a.vy = 0; }
 			for (let j = i + 1; j < nodes.length; j++) {
 				const b = nodes[j];
 				let dx = b.x - a.x;
 				let dy = b.y - a.y;
-				const d2 = dx * dx + dy * dy + 0.01;
-				const rep = 2800 / d2;
+				// clamp minimum distance so repulsion can't explode when nodes overlap
+				const d2 = Math.max(25, dx * dx + dy * dy);
+				const rep = Math.min(120, 2800 / d2);
 				const d = Math.sqrt(d2);
 				dx /= d;
 				dy /= d;
-				a.vx -= dx * rep * dt;
-				a.vy -= dy * rep * dt;
-				b.vx += dx * rep * dt;
-				b.vy += dy * rep * dt;
+				if (!a.pinned) { a.vx -= dx * rep * dt; a.vy -= dy * rep * dt; }
+				if (!b.pinned) { b.vx += dx * rep * dt; b.vy += dy * rep * dt; }
 			}
 			// Soft brain-shaped containment: ellipse wider than tall, gentle inside, firm outside.
 			const rx = W * 0.42;
@@ -164,13 +168,19 @@
 			const d = Math.sqrt(dx * dx + dy * dy) + 0.01;
 			const target = 110;
 			const f = ((d - target) * 0.015 * e.weight) / d;
-			s.vx += dx * f;
-			s.vy += dy * f;
-			t.vx -= dx * f;
-			t.vy -= dy * f;
+			if (!s.pinned) { s.vx += dx * f; s.vy += dy * f; }
+			if (!t.pinned) { t.vx -= dx * f; t.vy -= dy * f; }
 		}
 
 		for (const n of nodes) {
+			if (n.pinned) continue;
+			// cap velocity magnitude to prevent runaway
+			const v2 = n.vx * n.vx + n.vy * n.vy;
+			if (v2 > 400) {
+				const s = 20 / Math.sqrt(v2);
+				n.vx *= s;
+				n.vy *= s;
+			}
 			n.vx *= 0.82;
 			n.vy *= 0.82;
 			n.x += n.vx;
@@ -236,18 +246,26 @@
 		}
 
 		if (autoRotate) rotY += 0.0035;
-		const sinR = Math.sin(rotY);
-		const cosR = Math.cos(rotY);
+		const sinY = Math.sin(rotY);
+		const cosY = Math.cos(rotY);
+		const sinX = Math.sin(rotX);
+		const cosX = Math.cos(rotX);
 
-		// project pseudo-3D: Y-axis rotation of (x-cx, z) plane
+		// Full 3D: yaw around Y, pitch around X.
 		const projected = nodes.map((n) => {
-			const localX = n.x - cx;
-			const xr = localX * cosR - n.z * 140 * sinR;
-			const zr = localX * sinR + n.z * 140 * cosR;
-			const depth = zr / 140; // normalized roughly [-1, 1]
+			const lx = n.x - cx;
+			const ly = n.y - cy;
+			const lz = n.z * 140;
+			// yaw (around Y): rotates x/z
+			const x1 = lx * cosY - lz * sinY;
+			const z1 = lx * sinY + lz * cosY;
+			// pitch (around X): rotates y/z
+			const y2 = ly * cosX - z1 * sinX;
+			const z2 = ly * sinX + z1 * cosX;
+			const depth = z2 / 200;
 			const scale = zoom * (0.55 + 0.45 * ((depth + 1) / 2));
-			const sx = cx + xr * zoom + panX;
-			const sy = cy + (n.y - cy) * zoom + panY;
+			const sx = cx + x1 * zoom + panX;
+			const sy = cy + y2 * zoom + panY;
 			return { n, sx, sy, scale, depth };
 		});
 		projected.sort((a, b) => a.depth - b.depth);
@@ -311,16 +329,15 @@
 			const h = nodeById.get(hovered);
 			const p = projected.find((q) => q.n.id === hovered);
 			if (h && p) {
-				ctx.font = '11px ui-monospace, monospace';
+				ctx.font = '12px var(--font-mono, ui-monospace), monospace';
 				const parts: string[] = [h.label];
-				if (h.intensity > 0.01) parts.push(`i=${h.intensity.toFixed(2)}`);
-				if (h.access_count && h.access_count > 0) parts.push(`recalls=${h.access_count}`);
-				const text = parts.join('  ');
+				if (h.access_count && h.access_count > 0) parts.push(`· ${h.access_count}★`);
+				const text = parts.join(' ');
 				const m = ctx.measureText(text);
 				const tx = p.sx + 10;
 				const ty = p.sy - 10;
 				ctx.fillStyle = hexAlpha(t.bgGrid, 0.92);
-				ctx.fillRect(tx - 4, ty - 11, m.width + 8, 16);
+				ctx.fillRect(tx - 4, ty - 13, m.width + 8, 18);
 				ctx.fillStyle = t.text;
 				ctx.fillText(text, tx, ty);
 			}
@@ -336,55 +353,100 @@
 		raf = requestAnimationFrame(loop);
 	}
 
+	function projectHit(cx: number, cy: number) {
+		const sinY = Math.sin(rotY);
+		const cosY = Math.cos(rotY);
+		const sinX = Math.sin(rotX);
+		const cosX = Math.cos(rotX);
+		return (n: DisplayNode) => {
+			const lx = n.x - cx;
+			const ly = n.y - cy;
+			const lz = n.z * 140;
+			const x1 = lx * cosY - lz * sinY;
+			const z1 = lx * sinY + lz * cosY;
+			const y2 = ly * cosX - z1 * sinX;
+			const sx = cx + x1 * zoom + panX;
+			const sy = cy + y2 * zoom + panY;
+			return { sx, sy };
+		};
+	}
+
+	function pickNode(ev: PointerEvent): DisplayNode | null {
+		if (!canvas) return null;
+		const rect = canvas.getBoundingClientRect();
+		const x = ev.clientX - rect.left;
+		const y = ev.clientY - rect.top;
+		const proj = projectHit(canvas.width / 2, canvas.height / 2);
+		let best: DisplayNode | null = null;
+		let bestD2 = 20 * 20;
+		for (const n of nodes) {
+			const { sx, sy } = proj(n);
+			const dx = sx - x;
+			const dy = sy - y;
+			const d2 = dx * dx + dy * dy;
+			if (d2 < bestD2) { bestD2 = d2; best = n; }
+		}
+		return best;
+	}
+
 	function onPointerDown(ev: PointerEvent) {
+		if (!canvas) return;
+		const hit = pickNode(ev);
+		if (hit && !ev.shiftKey && ev.button === 0) {
+			dragMode = 'node';
+			draggedNode = hit;
+			hit.pinned = true;
+		} else if (ev.shiftKey || ev.button === 1 || ev.buttons === 4) {
+			dragMode = 'pan';
+		} else {
+			dragMode = 'rotate';
+		}
 		dragging = true;
-		dragMode = ev.shiftKey || ev.button === 1 || ev.buttons === 4 ? 'pan' : 'rotate';
 		lastPx = ev.clientX;
 		lastPy = ev.clientY;
 		autoRotate = false;
-		canvas!.setPointerCapture(ev.pointerId);
+		canvas.setPointerCapture(ev.pointerId);
 	}
 	function onPointerUp(ev: PointerEvent) {
 		dragging = false;
-		try {
-			canvas!.releasePointerCapture(ev.pointerId);
-		} catch {}
+		draggedNode = null; // leave it pinned until user double-clicks or resets
+		try { canvas!.releasePointerCapture(ev.pointerId); } catch {}
 	}
 	function onPointerMove(ev: PointerEvent) {
 		if (!canvas) return;
 		if (dragging) {
+			const ddx = ev.clientX - lastPx;
+			const ddy = ev.clientY - lastPy;
 			if (dragMode === 'pan') {
-				panX += ev.clientX - lastPx;
-				panY += ev.clientY - lastPy;
+				panX += ddx;
+				panY += ddy;
+			} else if (dragMode === 'node' && draggedNode) {
+				// Convert screen delta back to world delta via inverse yaw (ignoring pitch for simplicity; drag in canvas plane).
+				const sinY = Math.sin(rotY);
+				const cosY = Math.cos(rotY);
+				const wdx = (ddx / zoom) * cosY + 0 * sinY;
+				const wdy = ddy / zoom;
+				draggedNode.x += wdx;
+				draggedNode.y += wdy;
 			} else {
-				rotY += (ev.clientX - lastPx) * 0.01;
+				// Flexible 3D: horizontal drag = yaw, vertical drag = pitch.
+				rotY += ddx * 0.01;
+				rotX = Math.max(-1.3, Math.min(1.3, rotX + ddy * 0.01));
 			}
 			lastPx = ev.clientX;
 			lastPy = ev.clientY;
 			return;
 		}
-		const rect = canvas.getBoundingClientRect();
-		const x = ev.clientX - rect.left;
-		const y = ev.clientY - rect.top;
-		let best: string | null = null;
-		let bestD2 = 18 * 18;
-		const cx = canvas.width / 2;
-		const cy = canvas.height / 2;
-		const sinR = Math.sin(rotY);
-		const cosR = Math.cos(rotY);
-		for (const n of nodes) {
-			const xr = (n.x - cx) * cosR - n.z * 140 * sinR;
-			const sx = cx + xr * zoom + panX;
-			const sy = cy + (n.y - cy) * zoom + panY;
-			const dx = sx - x;
-			const dy = sy - y;
-			const d2 = dx * dx + dy * dy;
-			if (d2 < bestD2) {
-				bestD2 = d2;
-				best = n.id;
-			}
+		const hit = pickNode(ev);
+		hovered = hit ? hit.id : null;
+	}
+
+	function onDoubleClick(ev: MouseEvent) {
+		const hit = pickNode(ev as unknown as PointerEvent);
+		if (hit) {
+			hit.pinned = false;
+			openDetail(hit.id);
 		}
-		hovered = best;
 	}
 	function onWheel(ev: WheelEvent) {
 		ev.preventDefault();
@@ -404,7 +466,13 @@
 		panX = 0;
 		panY = 0;
 		rotY = 0;
+		rotX = 0.35;
+		for (const n of nodes) n.pinned = false;
 	}
+
+	let detailId = $state<string | null>(null);
+	function openDetail(id: string) { detailId = id; }
+	function closeDetail() { detailId = null; }
 
 	function resize() {
 		if (!canvas) return;
@@ -413,18 +481,26 @@
 		canvas.height = rect.height;
 	}
 
-	onMount(async () => {
-		try {
-			const saved = localStorage.getItem('fiam-theme');
-			if (saved === 'light' || saved === 'dark') theme = saved;
-		} catch {}
+	let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+	async function loadGraph(initial = false) {
 		try {
 			const payload: GraphPayload = await api.graph();
-			const W = canvas!.clientWidth || 800;
-			const H = canvas!.clientHeight || 600;
+			const W = canvas?.clientWidth || 800;
+			const H = canvas?.clientHeight || 600;
 			const cx = W / 2;
 			const cy = H / 2;
-			nodes = payload.nodes.map((n) => {
+			const existing = nodeById;
+			const next: DisplayNode[] = payload.nodes.map((n) => {
+				const prior = existing.get(n.id);
+				if (prior) {
+					// preserve position/velocity so existing nodes don't jump
+					prior.intensity = n.intensity ?? prior.intensity;
+					prior.last_accessed = n.last_accessed ?? prior.last_accessed;
+					prior.access_count = n.access_count ?? prior.access_count;
+					prior.label = prettyLabel(n.label ?? n.id);
+					return prior;
+				}
 				const a = hash01(n.id, 1) * Math.PI * 2;
 				const r = 60 + hash01(n.id, 2) * 140;
 				return {
@@ -440,22 +516,36 @@
 					vy: 0
 				};
 			});
+			nodes = next;
 			edges = payload.edges;
 			nodeById = new Map(nodes.map((n) => [n.id, n]));
 			const recalled = nodes.filter((n) => recallGlow(n) > 0.2).length;
 			stats = { nodes: nodes.length, edges: edges.length, recalled };
-			resize();
-			window.addEventListener('resize', resize);
-			raf = requestAnimationFrame(loop);
+			if (initial) {
+				resize();
+				raf = requestAnimationFrame(loop);
+			}
 			loading = false;
 		} catch (e) {
-			err = (e as Error).message;
+			if (initial) err = (e as Error).message;
 			loading = false;
 		}
+	}
+
+	onMount(async () => {
+		try {
+			const saved = localStorage.getItem('fiam-theme');
+			if (saved === 'light' || saved === 'dark') theme = saved;
+		} catch {}
+		await loadGraph(true);
+		window.addEventListener('resize', resize);
+		// Refresh every 30s so new events appear without manual reload.
+		pollTimer = setInterval(() => loadGraph(false), 30000);
 	});
 
 	onDestroy(() => {
 		if (raf) cancelAnimationFrame(raf);
+		if (pollTimer) clearInterval(pollTimer);
 		window.removeEventListener('resize', resize);
 	});
 </script>
@@ -466,7 +556,7 @@
 		<span class="text-[var(--color-subtext0)]">edges {stats.edges}</span>
 		<span class="text-[var(--color-pink)]">recalled {stats.recalled}</span>
 		<span class="text-[var(--color-overlay0)] hidden md:inline">
-			drag = rotate · shift+drag = pan · wheel = zoom
+			drag=orbit · shift+drag=pan · drag node=move · dbl-click=detail · wheel=zoom
 		</span>
 		<label class="ml-auto flex items-center gap-1 cursor-pointer">
 			<input type="checkbox" bind:checked={autoRotate} class="accent-[var(--color-mauve)]" />
@@ -489,6 +579,7 @@
 		onpointerdown={onPointerDown}
 		onpointerup={onPointerUp}
 		onpointermove={onPointerMove}
+		ondblclick={onDoubleClick}
 		onwheel={onWheel}
 	></canvas>
 	<!-- edge-type legend -->
@@ -509,5 +600,9 @@
 	{/if}
 	{#if err}
 		<p class="text-[var(--color-red)] font-mono text-xs mt-2">{err}</p>
+	{/if}
+
+	{#if detailId}
+		<EventDetail id={detailId} onclose={closeDetail} />
 	{/if}
 </div>
