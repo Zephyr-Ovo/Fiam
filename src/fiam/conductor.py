@@ -43,7 +43,7 @@ class Conductor:
         user_status: "UserStatus" = "away",
         ai_status: "AiStatus" = "online",
         drift_threshold: float = 0.65,
-        gorge_max_blocks: int = 20,
+        gorge_max_beat: int = 30,
         gorge_min_depth: float = 0.01,
         recall_top_k: int = 3,
     ) -> None:
@@ -61,7 +61,7 @@ class Conductor:
 
         # StreamGorge for real-time segmentation
         self._gorge = StreamGorge(
-            max_blocks=gorge_max_blocks,
+            max_beat=gorge_max_beat,
             min_depth=gorge_min_depth,
         )
 

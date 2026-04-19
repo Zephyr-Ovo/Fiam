@@ -147,14 +147,14 @@ class StreamGorge:
         window: int = 2,
         depth_confirm: int = 2,
         stream_confirm: int = 2,
-        max_blocks: int = 20,
+        max_beat: int = 30,
         min_depth: float = 0.01,
     ) -> None:
         self._vecs: list[np.ndarray] = []
         self._window = window
         self._depth_confirm = depth_confirm
         self._stream_confirm = stream_confirm
-        self._max_blocks = max_blocks
+        self._max_beat = max_beat
         self._min_depth = min_depth
 
         # Streaming cut tracking
@@ -191,15 +191,15 @@ class StreamGorge:
             self._cut_cand = None
             self._cut_depth = 0.0
             self._cut_confirm = 0
-            # Safety valve
-            if n > self._max_blocks:
-                return n // 2 - 1  # cut in the middle
+            # Safety valve: cut at the widest gap (lowest similarity)
+            if n > self._max_beat:
+                return self._find_widest_gap(sims)
             return None
 
         best_idx = max(peaks, key=lambda i: depths[i])
 
-        # Safety valve: force cut at best peak
-        if n > self._max_blocks:
+        # Safety valve: force cut at best confirmed peak
+        if n > self._max_beat:
             return best_idx
 
         # Stream confirmation: same gap must survive stream_confirm more pushes
@@ -214,6 +214,13 @@ class StreamGorge:
             return best_idx
 
         return None
+
+    @staticmethod
+    def _find_widest_gap(sims: list[float]) -> int:
+        """Find the gap with lowest similarity (widest conceptual distance)."""
+        if not sims:
+            return 0
+        return int(np.argmin(sims))
 
     def consume(self, gap_index: int) -> list[np.ndarray]:
         """Remove and return embeddings 0..gap_index (inclusive).

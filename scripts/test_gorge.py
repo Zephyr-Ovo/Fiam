@@ -131,7 +131,7 @@ def test_stream_basic():
     """Stream feeding → eventually gets a cut."""
     topics = [0]*6 + [1]*6
     embs = _make_topic_embeddings(topics, dim=64, noise=0.02)
-    sg = StreamGorge(window=2, depth_confirm=2, stream_confirm=2, max_blocks=20)
+    sg = StreamGorge(window=2, depth_confirm=2, stream_confirm=2, max_beat=20)
     cut = None
     for i, vec in enumerate(embs):
         result = sg.push(vec)
@@ -150,7 +150,7 @@ def test_stream_basic():
 
 def test_stream_safety_valve():
     """Buffer exceeding max_blocks → force cut."""
-    sg = StreamGorge(window=2, depth_confirm=2, stream_confirm=2, max_blocks=5)
+    sg = StreamGorge(window=2, depth_confirm=2, stream_confirm=2, max_beat=5)
     rng = np.random.default_rng(77)
     # All same topic → no natural cut, but max_blocks triggers
     centroid = rng.standard_normal(64).astype(np.float32)
@@ -185,7 +185,7 @@ def test_stream_multiple_cuts():
     """Three topics → at least 1 cut confirmed during streaming."""
     topics = [0]*5 + [1]*5 + [2]*5
     embs = _make_topic_embeddings(topics, dim=64, noise=0.02)
-    sg = StreamGorge(window=2, depth_confirm=2, stream_confirm=2, max_blocks=30)
+    sg = StreamGorge(window=2, depth_confirm=2, stream_confirm=2, max_beat=30)
     cuts = []
     for vec in embs:
         result = sg.push(vec)

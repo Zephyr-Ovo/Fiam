@@ -122,6 +122,15 @@ class FiamConfig:
     })
 
     # ------------------------------------------------------------------
+    # Conductor / Gorge parameters
+    # ------------------------------------------------------------------
+    gorge_max_beat: int = 30                  # safety valve: force cut if buffer exceeds this
+    gorge_min_depth: float = 0.01             # depth floor to filter noise peaks
+    gorge_stream_confirm: int = 2             # beats after candidate before confirming cut
+    drift_threshold: float = 0.65             # cosine below this triggers recall refresh
+    recall_top_k: int = 3                     # max events returned by recall retrieval
+
+    # ------------------------------------------------------------------
     # Narrative synthesis
     # ------------------------------------------------------------------
     narrative_llm_enabled: bool = False  # False = rule-based only, no API call
@@ -425,6 +434,7 @@ class FiamConfig:
         features = raw.get("features", {})
         comm = raw.get("communication", raw.get("comms", {}))
         graph = raw.get("graph", {})
+        conductor_cfg = raw.get("conductor", {})
 
         return cls(
             home_path=home_path,
@@ -462,6 +472,12 @@ class FiamConfig:
                 "causal": 1.4, "cause": 1.4, "remind": 1.2, "elaboration": 1.0,
                 "semantic": 0.8, "temporal": 0.5, "contrast": 0.3,
             })),
+            # Conductor
+            gorge_max_beat=conductor_cfg.get("gorge_max_beat", cls.gorge_max_beat),
+            gorge_min_depth=conductor_cfg.get("gorge_min_depth", cls.gorge_min_depth),
+            gorge_stream_confirm=conductor_cfg.get("gorge_stream_confirm", cls.gorge_stream_confirm),
+            drift_threshold=conductor_cfg.get("drift_threshold", cls.drift_threshold),
+            recall_top_k=conductor_cfg.get("recall_top_k", cls.recall_top_k),
             # Narrative
             narrative_llm_enabled=narrative.get("llm_enabled", cls.narrative_llm_enabled),
             narrative_llm_provider=narrative.get("llm_provider", cls.narrative_llm_provider),

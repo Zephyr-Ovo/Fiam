@@ -40,7 +40,7 @@ def _make_conductor(tmp: str, dim: int = 64) -> Conductor:
     return Conductor(
         pool, embedder, flow_path, recall_path,
         user_status="cc", ai_status="online",
-        gorge_max_blocks=5,
+        gorge_max_beat=5,
     )
 
 
@@ -204,7 +204,7 @@ def test_recall_on_drift():
         c = Conductor(
             pool, embedder, flow_path, recall_path,
             drift_threshold=0.99,  # high → drift triggers easily
-            gorge_max_blocks=50,
+            gorge_max_beat=50,
         )
         c.ingest_beat(_make_beat("topic A about cooking", minutes_offset=0))
         c.ingest_beat(_make_beat("completely different topic about quantum physics", minutes_offset=1))
