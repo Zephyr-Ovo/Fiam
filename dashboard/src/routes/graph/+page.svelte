@@ -10,6 +10,7 @@
 	let theme = $state<'dark' | 'light'>('dark');
 	let stats = $state({ nodes: 0, edges: 0, recalled: 0 });
 	let hovered = $state<string | null>(null);
+	let hoveredEdge = $state<Edge | null>(null);
 	let autoRotate = $state(true);
 	let raf = 0;
 
@@ -310,7 +311,6 @@
 		const idx = new Map(projected.map((p, i) => [p.n.id, i]));
 
 		// Draw edges
-		ctx.lineWidth = 0.7;
 		for (const e of edges) {
 			const si = idx.get(e.source);
 			const ti = idx.get(e.target);
@@ -318,8 +318,10 @@
 			const s = projected[si];
 			const tn = projected[ti];
 			const depth = (s.depth + tn.depth) / 2;
-			const alpha = (0.12 + 0.38 * ((depth + 1) / 2)) * (0.5 + 0.5 * e.weight);
+			const isHov = hoveredEdge && hoveredEdge.source === e.source && hoveredEdge.target === e.target;
+			const alpha = isHov ? 0.9 : (0.12 + 0.38 * ((depth + 1) / 2)) * (0.5 + 0.5 * e.weight);
 			const col = t.kinds[e.kind] ?? t.edge;
+			ctx.lineWidth = isHov ? 2.5 : 0.7;
 			ctx.strokeStyle = hexAlpha(col, alpha);
 			ctx.beginPath();
 			ctx.moveTo(s.sx, s.sy);
@@ -405,6 +407,26 @@
 				ctx.fillRect(tx - 4, ty - 13, m.width + 8, 18);
 				ctx.fillStyle = t.text;
 				ctx.fillText(text, tx, ty);
+			}
+		}
+
+		// Hovered edge tooltip — show kind + weight
+		if (hoveredEdge && !hovered) {
+			const sn = nodeById.get(hoveredEdge.source);
+			const tn2 = nodeById.get(hoveredEdge.target);
+			const sp = sn ? projected.find((q) => q.n.id === sn.id) : null;
+			const tp = tn2 ? projected.find((q) => q.n.id === tn2.id) : null;
+			if (sp && tp) {
+				const mx2 = (sp.sx + tp.sx) / 2;
+				const my2 = (sp.sy + tp.sy) / 2;
+				ctx.font = '11px var(--font-mono, ui-monospace), monospace';
+				const text2 = `${hoveredEdge.kind}  w=${hoveredEdge.weight.toFixed(2)}`;
+				const m2 = ctx.measureText(text2);
+				ctx.fillStyle = hexAlpha(t.bgGrid, 0.92);
+				ctx.fillRect(mx2 - 4, my2 - 13, m2.width + 8, 18);
+				const col2 = t.kinds[hoveredEdge.kind] ?? t.edge;
+				ctx.fillStyle = col2;
+				ctx.fillText(text2, mx2, my2);
 			}
 		}
 	}
@@ -507,6 +529,7 @@
 			return;
 		}
 
+		if (ev.button === 2) return; // right-click handled by contextmenu
 		const hit = pickNode(ev);
 		if (hit && !ev.shiftKey && ev.button === 0) {
 			dragMode = 'node';
@@ -553,6 +576,7 @@
 		}
 		const hit = pickNode(ev);
 		hovered = hit ? hit.id : null;
+		hoveredEdge = hit ? null : pickEdge(ev);
 	}
 
 	function onClick(ev: MouseEvent) {

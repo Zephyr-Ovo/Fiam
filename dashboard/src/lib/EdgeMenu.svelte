@@ -30,6 +30,24 @@
 	let editWeight = $state(weight);
 	let saving = $state(false);
 	let err = $state<string | null>(null);
+	let menuEl = $state<HTMLDivElement>();
+
+	// Close when clicking outside the menu (no backdrop — lets canvas events through)
+	onMount(() => {
+		function handleOutside(e: PointerEvent) {
+			if (menuEl && !menuEl.contains(e.target as Node)) {
+				onclose();
+			}
+		}
+		// Delay to avoid the same click that opened the menu from closing it
+		const frame = requestAnimationFrame(() => {
+			window.addEventListener('pointerdown', handleOutside, true);
+		});
+		return () => {
+			cancelAnimationFrame(frame);
+			window.removeEventListener('pointerdown', handleOutside, true);
+		};
+	});
 
 	async function save() {
 		if (saving) return;
@@ -76,17 +94,10 @@
 
 <svelte:window onkeydown={onKey} />
 
-<!-- Backdrop -->
-<div
-	class="fixed inset-0 z-50"
-	onclick={onclose}
-	role="button"
-	tabindex="-1"
-></div>
-
-<!-- Menu -->
+<!-- Menu (no backdrop — click-outside handled by pointerdown listener) -->
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <div
+	bind:this={menuEl}
 	class="fixed z-[51] w-52 rounded border border-[var(--color-surface1)] bg-[var(--color-mantle)] shadow-xl p-3 font-mono text-xs"
 	style="left:{left}px;top:{top}px"
 	onclick={(e) => e.stopPropagation()}
