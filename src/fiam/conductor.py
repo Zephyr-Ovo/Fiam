@@ -40,8 +40,8 @@ class Conductor:
         self,
         pool: Pool,
         embedder: "Embedder",
-        flow_path: Path,
-        recall_path: Path,
+        flow_path: Path | None,
+        recall_path: Path | None,
         *,
         user_status: "UserStatus" = "away",
         ai_status: "AiStatus" = "online",
@@ -95,8 +95,9 @@ class Conductor:
 
         Returns event_id if gorge cuts a segment, else None.
         """
-        # 1. Append to flow.jsonl
-        append_beat(self.flow_path, beat)
+        # 1. Append to flow.jsonl (skip when flow_path is None, e.g. reprocess)
+        if self.flow_path is not None:
+            append_beat(self.flow_path, beat)
 
         # 2. Embed (may fail — beat is persisted in flow.jsonl regardless)
         try:
@@ -109,7 +110,7 @@ class Conductor:
             return None
 
         # 3. Drift detection → recall refresh
-        if self._last_vec is not None and beat.source not in ("action",):
+        if self._last_vec is not None and beat.source not in ("action",) and self.recall_path is not None:
             if detect_drift(self._last_vec, vec, self._drift_threshold):
                 self._refresh_recall(vec)
         self._last_vec = vec
