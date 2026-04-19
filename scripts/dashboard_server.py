@@ -26,7 +26,6 @@ logger = logging.getLogger(__name__)
 # Resolve paths relative to fiam-code root
 _ROOT = Path(__file__).resolve().parent.parent
 _LOGS = _ROOT / "logs"
-_STORE = None  # set after config load
 _CONFIG = None
 _POOL = None        # Pool instance (lazy)
 _EMBEDDER = None    # Embedder instance (lazy)
@@ -42,12 +41,11 @@ if _scripts_dir in sys.path:
 
 
 def _load_config():
-    global _CONFIG, _STORE, _POOL
+    global _CONFIG, _POOL
     from fiam.config import FiamConfig
     toml_path = _ROOT / "fiam.toml"
     if toml_path.exists():
         _CONFIG = FiamConfig.from_toml(toml_path, _ROOT)
-        _STORE = Path(_CONFIG.home_path) / "store"
     # Init Pool
     if _CONFIG:
         from fiam.store.pool import Pool
@@ -140,51 +138,24 @@ def _api_status() -> dict:
 
 
 def _api_events(limit: int = 50) -> list[dict]:
-    """Events with intensity parsed from frontmatter."""
-    if not _CONFIG:
+    """Events from Pool metadata + body preview."""
+    if not _POOL:
         return []
-    events_dir = _CONFIG.events_dir
-    if not events_dir.is_dir():
+    events = _POOL.load_events()
+    if not events:
         return []
     out: list[dict] = []
-    for md in events_dir.glob("*.md"):
-        text = md.read_text(encoding="utf-8", errors="replace")
-        etime = ""
-        intensity = 0.0
-        preview = ""
-        last_accessed = ""
-        access_count = 0
-        in_fm = False
-        body: list[str] = []
-        for line in text.split("\n"):
-            s = line.strip()
-            if s == "---":
-                in_fm = not in_fm
-                continue
-            if in_fm:
-                if s.startswith("time:"):
-                    etime = s.split(":", 1)[1].strip().strip("'\"")
-                elif s.startswith("intensity:"):
-                    try:
-                        intensity = float(s.split(":", 1)[1].strip())
-                    except ValueError:
-                        pass
-                elif s.startswith("last_accessed:"):
-                    last_accessed = s.split(":", 1)[1].strip().strip("'\"")
-                elif s.startswith("access_count:"):
-                    try:
-                        access_count = int(s.split(":", 1)[1].strip())
-                    except ValueError:
-                        pass
-            else:
-                body.append(line)
-        preview = " ".join(l.strip() for l in body if l.strip())[:140]
+    for ev in events:
+        body = _POOL.read_body(ev.id)
+        preview = " ".join(body.split())[:140]
+        # Intensity from access_count (0→0.3, 10+→1.0)
+        intensity = min(1.0, 0.3 + ev.access_count * 0.07)
         out.append({
-            "id": md.stem,
-            "time": etime,
+            "id": ev.id,
+            "time": ev.t.isoformat(),
             "intensity": intensity,
-            "last_accessed": last_accessed,
-            "access_count": access_count,
+            "last_accessed": "",
+            "access_count": ev.access_count,
             "preview": preview,
         })
     out.sort(key=lambda e: e["time"], reverse=True)
@@ -192,30 +163,22 @@ def _api_events(limit: int = 50) -> list[dict]:
 
 
 def _api_event(event_id: str) -> dict | None:
-    """Full content of one event by id (markdown stem)."""
-    if not _CONFIG:
+    """Full content of one event from Pool."""
+    if not _POOL:
         return None
-    md = _CONFIG.events_dir / f"{event_id}.md"
-    if not md.is_file():
+    ev = _POOL.get_event(event_id)
+    if ev is None:
         return None
-    text = md.read_text(encoding="utf-8", errors="replace")
-    frontmatter: dict[str, str] = {}
-    body_lines: list[str] = []
-    in_fm = False
-    fm_seen = 0
-    for line in text.split("\n"):
-        if line.strip() == "---":
-            fm_seen += 1
-            in_fm = fm_seen == 1
-            continue
-        if in_fm:
-            if ":" in line:
-                k, v = line.split(":", 1)
-                frontmatter[k.strip()] = v.strip().strip("'\"")
-        else:
-            body_lines.append(line)
-    body = "\n".join(body_lines).strip()
-    return {"id": event_id, "frontmatter": frontmatter, "body": body}
+    body = _POOL.read_body(event_id)
+    return {
+        "id": ev.id,
+        "frontmatter": {
+            "time": ev.t.isoformat(),
+            "access_count": str(ev.access_count),
+            "fingerprint_idx": str(ev.fingerprint_idx),
+        },
+        "body": body,
+    }
 
 
 def _api_schedule() -> list[dict]:
@@ -355,104 +318,47 @@ def _api_state() -> dict | None:
     return {"mood": mood, "tension": tension, "reflection": reflection, "updated_at": updated_at}
 
 
-def _api_graph() -> dict:
-    """Return nodes/edges from graph.jsonl for visualization."""
-    if not _CONFIG:
-        return {"nodes": [], "edges": []}
-    graph_path = _CONFIG.graph_jsonl_path
-    nodes: dict[str, dict] = {}
-    edges: list[dict] = []
-    # Build intensity map from events
-    intensity_map: dict[str, float] = {}
-    time_map: dict[str, str] = {}
-    last_acc_map: dict[str, str] = {}
-    acc_cnt_map: dict[str, int] = {}
-    for ev in _api_events(10000):
-        intensity_map[ev["id"]] = ev["intensity"]
-        time_map[ev["id"]] = ev["time"]
-        last_acc_map[ev["id"]] = ev.get("last_accessed", "")
-        acc_cnt_map[ev["id"]] = ev.get("access_count", 0)
-        nodes[ev["id"]] = {
-            "id": ev["id"],
-            "label": ev["id"][-6:],
-            "intensity": ev["intensity"],
-            "time": ev["time"],
-            "last_accessed": ev.get("last_accessed", ""),
-            "access_count": ev.get("access_count", 0),
-        }
-    if graph_path.exists():
-        for line in graph_path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                e = json.loads(line)
-                src = e.get("source") or e.get("src")
-                tgt = e.get("target") or e.get("dst")
-                if not src or not tgt:
-                    continue
-                edges.append({
-                    "source": src,
-                    "target": tgt,
-                    "kind": e.get("kind", e.get("type", "associative")),
-                    "weight": float(e.get("weight", e.get("score", 0.5))),
-                })
-                # ensure endpoints exist as nodes
-                for eid in (src, tgt):
-                    if eid not in nodes:
-                        nodes[eid] = {
-                            "id": eid,
-                            "label": eid[-6:],
-                            "intensity": intensity_map.get(eid, 0.3),
-                            "time": time_map.get(eid, ""),
-                            "last_accessed": last_acc_map.get(eid, ""),
-                            "access_count": acc_cnt_map.get(eid, 0),
-                        }
-            except (json.JSONDecodeError, KeyError, ValueError):
-                continue
-    return {"nodes": list(nodes.values()), "edges": edges}
-
-
 def _api_capture(payload: dict) -> dict:
-    """Ingest a mobile/quick-capture event.
+    """Ingest a mobile/quick-capture event via Pool.
 
     Expected payload keys: text (required), source (optional), url (optional),
-    tags (optional list). Writes a markdown file to events_dir with the same
-    frontmatter shape used elsewhere.
+    tags (optional list). Creates a Pool event with embedding + edges.
     """
-    if not _CONFIG:
-        raise RuntimeError("config not loaded")
+    if not _POOL or not _CONFIG:
+        raise RuntimeError("pool/config not loaded")
     text = (payload.get("text") or "").strip()
     if not text:
         raise ValueError("missing text")
     source = (payload.get("source") or "mobile").strip()
     url = (payload.get("url") or "").strip()
-    tags = payload.get("tags") or []
-    if not isinstance(tags, list):
-        tags = []
-    tags = [str(t).strip() for t in tags if str(t).strip()]
-    if source and source not in tags:
-        tags.insert(0, source)
+
+    body = f"[capture:{source}]\n{text}\n"
+    if url:
+        body += f"\n(source: {url})\n"
 
     now = datetime.now(timezone.utc)
-    import secrets
-    ev_id = now.strftime("%m%d_%H%M") + "_" + secrets.token_hex(2)
-    ev_path = _CONFIG.events_dir / f"{ev_id}.md"
-    ev_path.parent.mkdir(parents=True, exist_ok=True)
-    tags_yaml = "[" + ", ".join(json.dumps(t) for t in tags) + "]" if tags else "[]"
-    fm = (
-        "---\n"
-        f"time: '{now.isoformat()}'\n"
-        "intensity: 0.4\n"
-        "access_count: 0\n"
-        f"tags: {tags_yaml}\n"
-        f"source: {json.dumps(source)}\n"
-        + (f"url: {json.dumps(url)}\n" if url else "")
-        + "---\n\n"
-    )
-    body = f"[capture]\n{text}\n"
-    ev_path.write_text(fm + body, encoding="utf-8")
-    return {"ok": True, "id": ev_id, "path": str(ev_path)}
+    ev_id = _POOL.new_event_id()
+
+    # Embed
+    embedder = _get_embedder()
+    if embedder:
+        import numpy as np
+        with _COMPUTE_LOCK:
+            vec = embedder.embed(text)
+            _POOL.ingest_event(ev_id, now, body, vec)
+            # Generate edges
+            try:
+                from fiam.retriever.graph_builder import build_edges
+                build_edges(_POOL, [ev_id], _CONFIG)
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error("capture edge build: %s", e)
+    else:
+        # No embedder — store without fingerprint
+        import numpy as np
+        _POOL.ingest_event(ev_id, now, body, np.zeros(_POOL.dim, dtype=np.float32))
+
+    return {"ok": True, "id": ev_id}
 
 
 # ------------------------------------------------------------------
@@ -755,12 +661,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             elif path == "/api/state":
                 self._serve_json(_api_state())
             elif path == "/api/graph":
-                # Pool-based graph (fallback to legacy if pool empty)
-                pool_data = _pool_graph()
-                if pool_data["nodes"]:
-                    self._serve_json(pool_data)
-                else:
-                    self._serve_json(_api_graph())
+                self._serve_json(_pool_graph())
             elif path == "/api/pool/graph":
                 self._serve_json(_pool_graph())
             elif path.startswith("/api/pool/event/"):

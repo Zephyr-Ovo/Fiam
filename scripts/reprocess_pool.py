@@ -91,6 +91,7 @@ def reprocess(code_path: Path, *, force: bool = False) -> None:
     conductor = Conductor(
         pool=pool,
         embedder=embedder,
+        config=config,
         flow_path=flow_path,
         recall_path=pool_dir / "_reprocess_recall.md",  # temp
     )

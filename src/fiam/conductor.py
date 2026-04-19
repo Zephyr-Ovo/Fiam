@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from fiam.config import FiamConfig
 from fiam.gorge import StreamGorge, detect_drift
 from fiam.retriever.spread import retrieve
 from fiam.store.beat import Beat, append_beat
@@ -40,6 +41,7 @@ class Conductor:
         self,
         pool: Pool,
         embedder: "Embedder",
+        config: FiamConfig,
         flow_path: Path | None,
         recall_path: Path | None,
         *,
@@ -52,6 +54,7 @@ class Conductor:
     ) -> None:
         self.pool = pool
         self.embedder = embedder
+        self.config = config
         self.flow_path = flow_path
         self.recall_path = recall_path
 
@@ -192,6 +195,7 @@ class Conductor:
                 event_id, len(consumed_beats),
             )
             raise
+        self._post_ingest([event_id])
         return event_id
 
     def flush_all(self) -> list[str]:
@@ -214,7 +218,23 @@ class Conductor:
 
         event_id = self.pool.new_event_id()
         self.pool.ingest_event(event_id, t, body, fp)
+        self._post_ingest([event_id])
         return [event_id]
+
+    # ==================================================================
+    # Post-ingest: edge generation + DS naming
+    # ==================================================================
+
+    def _post_ingest(self, event_ids: list[str]) -> None:
+        """Run graph_builder after new events are created."""
+        if self.config is None:
+            return  # test environment — skip edge generation
+        try:
+            from fiam.retriever.graph_builder import build_edges
+            summary = build_edges(self.pool, event_ids, self.config)
+            logger.info("post_ingest: %s", summary)
+        except Exception:
+            logger.error("post_ingest graph_builder failed for %s", event_ids, exc_info=True)
 
     # ==================================================================
     # Recall

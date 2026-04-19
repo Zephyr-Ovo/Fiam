@@ -38,7 +38,7 @@ def _make_conductor(tmp: str, dim: int = 64) -> Conductor:
     flow_path = Path(tmp) / "flow.jsonl"
     recall_path = Path(tmp) / "recall.md"
     return Conductor(
-        pool, embedder, flow_path, recall_path,
+        pool, embedder, config=None, flow_path=flow_path, recall_path=recall_path,
         user_status="cc", ai_status="online",
         gorge_max_beat=5,
     )
@@ -202,7 +202,7 @@ def test_recall_on_drift():
         flow_path = Path(tmp) / "flow.jsonl"
         recall_path = Path(tmp) / "recall.md"
         c = Conductor(
-            pool, embedder, flow_path, recall_path,
+            pool, embedder, config=None, flow_path=flow_path, recall_path=recall_path,
             drift_threshold=0.99,  # high → drift triggers easily
             gorge_max_beat=50,
         )

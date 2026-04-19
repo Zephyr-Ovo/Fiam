@@ -1,5 +1,9 @@
 """
-fiam pipeline — orchestrates pre_session and post_session flows.
+DEPRECATED — fiam pipeline (pre-S15 architecture).
+
+Active runtime now uses Conductor + Pool + graph_builder.
+This module remains for fiam_lib CLI utilities (session.py, storage.py, etc.)
+that haven't been migrated yet. Do not add new callers.
 
 pre_session:
   retriever.joint.search() → synthesizer.stance.generate() → injector.write()

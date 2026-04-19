@@ -29,7 +29,6 @@ from fiam_lib.jsonl import (
     _save_cursor,
 )
 from fiam_lib.postman import sweep_outbox, fetch_inbox, fetch_tg_inbox
-from fiam_lib.recall import _write_recall
 from fiam_lib.scheduler import extract_wake_tags, append_to_schedule, load_due
 from fiam_lib.cost import log_cost, check_budget
 from fiam_lib.ui import _console, _flow, _ANIM_IDLE, _ANIM_ACTIVE, _animated_sleep
@@ -310,23 +309,20 @@ def cmd_start(args: argparse.Namespace) -> None:
     if sys.platform == "win32":
         signal.signal(signal.SIGBREAK, _shutdown)
 
-    # Initial pre_session
-    from fiam.pipeline import pre_session
+    # Initial imports for new architecture
     from fiam.retriever.embedder import Embedder
-    from fiam.store.home import HomeStore
     from fiam.store.pool import Pool
     from fiam.conductor import Conductor
     import numpy as np
 
-    result = pre_session(config)
-    event_count = result["event_count"]
-
     # ── Conductor: new architecture routing layer ──
     _pool = Pool(config.pool_dir, dim=config.embedding_dim)
     _conductor_embedder = Embedder(config)
+    event_count = _pool.event_count
     _conductor = Conductor(
         pool=_pool,
         embedder=_conductor_embedder,
+        config=config,
         flow_path=config.flow_path,
         recall_path=config.background_path,
         drift_threshold=0.65,
@@ -357,19 +353,14 @@ def cmd_start(args: argparse.Namespace) -> None:
     def _refresh_recall_for_task(context: str) -> None:
         """Refresh recall.md based on task context before a wake.
 
-        Called before scheduled wakes and inbox wakes so the AI has
-        relevant long-term memory when starting a non-dialogue task.
+        Uses conductor's embedder + spreading activation retrieval.
         """
         if len(context) < recall_min_chars:
             return
         try:
-            store = HomeStore(config)
-            from fiam.retriever import joint as joint_retriever
-            events = joint_retriever.search(context, store, config)
-            if events:
-                _write_recall(config, events)
-                _plog.info("task recall  context=%s  fragments=%d",
-                           context[:60], len(events))
+            vec = _conductor_embedder.embed(context)
+            _conductor._refresh_recall(vec)
+            _plog.info("task recall (spread)  context=%s", context[:60])
         except Exception as e:
             _plog.error("task recall error: %s", e, exc_info=True)
 
@@ -596,23 +587,18 @@ def cmd_start(args: argparse.Namespace) -> None:
                 and (time.time() - last_activity) > 30 * 60):
             last_replay_check = time.time()
             try:
-                from fiam.retriever.decay import replay_priority, record_access
-                from fiam.store.home import HomeStore
                 from datetime import datetime, timezone
-                store = HomeStore(config)
-                all_events = store.all_events()
-                if all_events:
-                    now_dt = datetime.now(timezone.utc)
-                    scored = [(ev, replay_priority(ev, now_dt)) for ev in all_events]
-                    scored.sort(key=lambda t: t[1], reverse=True)
-                    top = scored[:5]
-                    for ev, prio in top:
-                        if prio > 0.05:  # skip trivially low priorities
-                            record_access(ev, now_dt)
-                            store.update_metadata(ev)
-                    _plog.info("replay: consolidated %d memories (top priority=%.2f)",
-                               sum(1 for _, p in top if p > 0.05),
-                               top[0][1] if top else 0.0)
+                events = _pool.load_events()
+                if events:
+                    # Simple replay: bump access_count on least-accessed events
+                    sorted_by_access = sorted(events, key=lambda e: e.access_count)
+                    top = sorted_by_access[:5]
+                    bumped = 0
+                    for ev in top:
+                        ev.access_count += 1
+                        bumped += 1
+                    _pool.save_events()
+                    _plog.info("replay: consolidated %d memories (pool-based)", bumped)
             except Exception as e:
                 _plog.error("replay error: %s", e)
 

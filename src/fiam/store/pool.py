@@ -501,3 +501,29 @@ class Pool:
 
         logger.info("Deleted event %s (fingerprint_idx=%d)", event_id, idx)
         return True
+
+    def rename_event(self, old_id: str, new_id: str) -> bool:
+        """Rename an event: update metadata ID and content filename.
+
+        Fingerprint index, edges, cosine matrix are all index-based so
+        they don't need updating.  Returns True if renamed successfully.
+        """
+        ev = self.get_event(old_id)
+        if ev is None:
+            return False
+        if self.get_event(new_id) is not None:
+            logger.warning("rename_event: target %s already exists", new_id)
+            return False
+
+        # Rename body file
+        old_path = self.content_dir / f"{old_id}.md"
+        new_path = self.content_dir / f"{new_id}.md"
+        if old_path.exists():
+            old_path.rename(new_path)
+
+        # Update in-memory event ID and rewrite metadata
+        ev.id = new_id
+        self.save_events()
+
+        logger.info("Renamed event %s → %s", old_id, new_id)
+        return True
