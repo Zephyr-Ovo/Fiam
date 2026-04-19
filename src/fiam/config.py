@@ -104,6 +104,7 @@ class FiamConfig:
     # Retrieval tuning (advanced)
     # ------------------------------------------------------------------
     mmr_lambda: float = 0.7             # MMR trade-off: 1.0 = pure relevance, 0.0 = pure diversity
+    recall_stochastic: bool = True       # if True, use score-as-probability sampling instead of top-k
     graph_edge_decay_half_life: float = 30.0  # days — edge weight decays toward 0 over time
     graph_spread_steps: int = 2               # propagation hops for spreading activation
     graph_spread_decay: float = 0.5           # energy multiplier per hop
@@ -202,6 +203,8 @@ class FiamConfig:
     def store_dir(self) -> Path:
         return self.code_path / "store"
 
+    # --- Legacy store paths (pre-pool, still used during migration) ---
+
     @property
     def events_dir(self) -> Path:
         return self.store_dir / "events"
@@ -217,6 +220,19 @@ class FiamConfig:
     @property
     def narrative_cache_path(self) -> Path:
         return self.store_dir / "narrative_cache.json"
+
+    # --- Pool (v2 unified storage) ---
+
+    @property
+    def pool_dir(self) -> Path:
+        return self.store_dir / "pool"
+
+    # --- Flow (narrative stream) ---
+
+    @property
+    def flow_path(self) -> Path:
+        """flow.jsonl — append-only beat stream."""
+        return self.store_dir / "flow.jsonl"
 
     @property
     def logs_dir(self) -> Path:
@@ -312,6 +328,8 @@ class FiamConfig:
             self.events_dir,
             self.embeddings_dir,
             self.logs_dir,
+            # Pool (v2)
+            self.pool_dir / "events",
             # Home side
             self.self_dir,
             self.journal_dir,
@@ -435,6 +453,7 @@ class FiamConfig:
             strength_cap=extraction.get("strength_cap", 3.0),
             # Retrieval tuning (advanced)
             mmr_lambda=retrieval.get("mmr_lambda", 0.7),
+            recall_stochastic=retrieval.get("stochastic", True),
             graph_edge_decay_half_life=graph.get("edge_decay_half_life_days", 30.0),
             graph_spread_steps=graph.get("spread_steps", 2),
             graph_spread_decay=graph.get("spread_decay_per_step", 0.5),
