@@ -22,6 +22,8 @@
 			.catch((e) => (err = (e as Error).message));
 	});
 
+	let confirmDelete = $state(false);
+
 	async function save() {
 		if (!data || saving) return;
 		saving = true;
@@ -34,6 +36,22 @@
 			err = (e as Error).message;
 		} finally {
 			saving = false;
+		}
+	}
+
+	async function deleteEvent() {
+		if (!data || saving) return;
+		saving = true;
+		err = null;
+		try {
+			await api.poolDeleteEvent(data.id);
+			onsaved();
+			onclose();
+		} catch (e) {
+			err = (e as Error).message;
+		} finally {
+			saving = false;
+			confirmDelete = false;
 		}
 	}
 
@@ -115,9 +133,26 @@
 				>
 					cancel
 				</button>
-				<span class="text-[10px] text-[var(--color-overlay0)] ml-auto">
+				<span class="text-[10px] text-[var(--color-overlay0)] ml-auto mr-2">
 					re-embed on save
 				</span>
+				{#if !confirmDelete}
+					<button
+						onclick={() => (confirmDelete = true)}
+						disabled={saving}
+						class="px-3 py-1.5 rounded border border-[var(--color-red)]/40 text-[var(--color-red)] text-xs hover:border-[var(--color-red)] disabled:opacity-50 cursor-pointer"
+					>
+						del
+					</button>
+				{:else}
+					<button
+						onclick={deleteEvent}
+						disabled={saving}
+						class="px-3 py-1.5 rounded bg-[var(--color-red)] text-[var(--color-crust)] text-xs font-medium hover:opacity-90 disabled:opacity-50 cursor-pointer"
+					>
+						{saving ? 'deleting…' : 'confirm delete'}
+					</button>
+				{/if}
 			</div>
 		{/if}
 	</div>

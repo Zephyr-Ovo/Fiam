@@ -637,6 +637,17 @@ def _pool_delete_edge(payload: dict) -> dict:
     return {"ok": True}
 
 
+def _pool_delete_event(event_id: str) -> dict:
+    """Delete an event and all related data."""
+    if not _POOL:
+        raise RuntimeError("pool not loaded")
+    with _COMPUTE_LOCK:
+        ok = _POOL.delete_event(event_id)
+    if not ok:
+        raise ValueError(f"event not found: {event_id}")
+    return {"ok": True, "id": event_id}
+
+
 def _api_flow(offset: int = 0, limit: int = 50) -> dict:
     """Read beats from flow.jsonl with pagination."""
     if not _CONFIG:
@@ -871,7 +882,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     self._serve_json({"error": f"bad json: {e}"}, status=400)
                     return
             try:
-                if path.startswith("/api/pool/event/"):
+                if path.startswith("/api/pool/event/delete/"):
+                    ev_id = path[len("/api/pool/event/delete/"):]
+                    result = _pool_delete_event(ev_id)
+                elif path.startswith("/api/pool/event/"):
                     ev_id = path[len("/api/pool/event/"):]
                     result = _pool_update_event(ev_id, payload)
                 elif path == "/api/pool/edge":

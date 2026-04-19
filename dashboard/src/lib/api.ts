@@ -102,6 +102,8 @@ export const api = {
 	poolEvent: (id: string) => j<PoolEventDetail>(`/pool/event/${encodeURIComponent(id)}`),
 	poolUpdateEvent: (id: string, body: string) =>
 		mutate<{ ok: boolean; re_embedded: boolean }>('POST', `/pool/event/${encodeURIComponent(id)}`, { body }),
+	poolDeleteEvent: (id: string) =>
+		mutate<{ ok: boolean }>('POST', `/pool/event/delete/${encodeURIComponent(id)}`, {}),
 	poolCreateEdge: (source: string, target: string, kind: string, weight = 0.5) =>
 		mutate<{ ok: boolean }>('POST', '/pool/edge', { source, target, kind, weight }),
 	poolUpdateEdge: (source: string, target: string, kind?: string, weight?: number) =>

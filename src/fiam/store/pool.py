@@ -448,3 +448,56 @@ class Pool:
         self._cosine = None
         self._edge_index = None
         self._edge_attr = None
+
+    def delete_event(self, event_id: str) -> bool:
+        """Delete an event and all related data (body, fingerprint row, cosine row/col, edges).
+
+        Because removing a fingerprint row shifts all higher indices,
+        edges referencing shifted indices are updated accordingly.
+        Returns True if the event existed and was deleted.
+        """
+        ev = self.get_event(event_id)
+        if ev is None:
+            return False
+
+        idx = ev.fingerprint_idx
+
+        # 1. Remove edges involving this node
+        self.remove_edges_for(idx)
+
+        # 2. Shift edge indices > idx down by 1 (because fingerprint row removed)
+        ei, ea = self.load_edges()
+        if ei.shape[1] > 0:
+            ei = ei.copy()
+            ei[0, ei[0] > idx] -= 1
+            ei[1, ei[1] > idx] -= 1
+            self._edge_index = ei
+            self._save_edges()
+
+        # 3. Remove fingerprint row
+        fp = self.load_fingerprints()
+        if 0 <= idx < fp.shape[0]:
+            self._fingerprints = np.delete(fp, idx, axis=0)
+            self._save_fingerprints()
+
+        # 4. Remove cosine row + column
+        cos = self.load_cosine()
+        if 0 <= idx < cos.shape[0]:
+            self._cosine = np.delete(np.delete(cos, idx, axis=0), idx, axis=1)
+            self._save_cosine()
+
+        # 5. Remove from event list and update fingerprint_idx for shifted events
+        events = self.load_events()
+        events = [e for e in events if e.id != event_id]
+        for e in events:
+            if e.fingerprint_idx > idx:
+                e.fingerprint_idx -= 1
+        self.save_events(events)
+
+        # 6. Remove body file
+        body_path = self.content_dir / f"{event_id}.md"
+        if body_path.exists():
+            body_path.unlink()
+
+        logger.info("Deleted event %s (fingerprint_idx=%d)", event_id, idx)
+        return True
