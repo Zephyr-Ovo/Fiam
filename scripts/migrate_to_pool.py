@@ -114,7 +114,7 @@ def migrate(code_path: Path, *, force: bool = False) -> None:
 
     # --- Migrate edges to PyG format ---
     graph_store = GraphStore(config.graph_jsonl_path)
-    old_edges = graph_store.load()
+    old_edges = graph_store.load_all()
     src_list, dst_list, type_list, weight_list = [], [], [], []
     edge_skip = 0
     for edge in old_edges:
