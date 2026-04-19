@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { api, type GraphPayload } from '$lib/api';
-	import EventDetail from '$lib/EventDetail.svelte';
+	import NodeEditor from '$lib/NodeEditor.svelte';
+	import EdgeMenu from '$lib/EdgeMenu.svelte';
 
 	let canvas = $state<HTMLCanvasElement | undefined>();
 	let err = $state<string | null>(null);
@@ -12,6 +13,30 @@
 	let autoRotate = $state(true);
 	let raf = 0;
 
+	// Edge types (loaded from server)
+	let edgeTypes = $state<string[]>(['semantic', 'temporal', 'causal', 'remind', 'elaboration', 'contrast']);
+
+	// Ctrl+click edge creation state
+	let ctrlPickFirst = $state<string | null>(null);
+
+	// Edge menu state
+	let edgeMenu = $state<{
+		x: number; y: number;
+		source: string; target: string;
+		kind: string; weight: number;
+		mode: 'edit' | 'create';
+	} | null>(null);
+
+	// Node editor state
+	let editNodeId = $state<string | null>(null);
+
+	// Undo stack
+	interface UndoAction {
+		type: 'update_event' | 'create_edge' | 'update_edge' | 'delete_edge';
+		data: Record<string, unknown>;
+	}
+	let undoStack: UndoAction[] = [];
+
 	interface Edge {
 		source: string;
 		target: string;
@@ -21,7 +46,7 @@
 
 	interface DisplayNode {
 		id: string;
-		label: string; // human-readable
+		label: string;
 		intensity: number;
 		last_accessed?: string;
 		access_count?: number;
@@ -38,7 +63,7 @@
 	let nodeById = new Map<string, DisplayNode>();
 
 	let rotY = 0;
-	let rotX = 0.35; // pitch — slight downward tilt by default
+	let rotX = 0.35;
 	let dragging = false;
 	let dragMode: 'rotate' | 'pan' | 'node' = 'rotate';
 	let draggedNode: DisplayNode | null = null;
@@ -48,12 +73,14 @@
 	let panX = 0;
 	let panY = 0;
 
+	// Recall glow animation tracking — "快亮慢散"
+	const glowTargets = new Map<string, number>();
+	const glowCurrent = new Map<string, number>();
+
 	function prettyLabel(id: string): string {
 		return id.replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
 	}
 
-	// Sync theme to html[data-theme] for local toggles on this page.
-	// (Layout restores from localStorage on first paint — this keeps parity when user toggles the graph's own button.)
 	$effect(() => {
 		if (typeof document === 'undefined') return;
 		document.documentElement.setAttribute('data-theme', theme);
@@ -62,11 +89,10 @@
 		} catch {}
 	});
 
-	// Dark: catppuccin mocha. Light: Claude-palette from user css.
 	const themes = {
 		dark: {
-			bg: '#11111b',
-			bgGrid: '#181825',
+			bg: '#0a0a18',
+			bgGrid: '#10101e',
 			text: '#cdd6f4',
 			edge: 'rgba(166,173,200,0.18)',
 			nodeBase: '#89b4fa',
@@ -78,8 +104,10 @@
 				temporal: '#94e2d5',
 				causal: '#f38ba8',
 				associative: '#cba6f7',
-				reference: '#fab387',
-				contrast: '#f9e2af'
+				remind: '#fab387',
+				elaboration: '#a6e3a1',
+				contrast: '#f9e2af',
+				reference: '#fab387'
 			} as Record<string, string>
 		},
 		light: {
@@ -96,8 +124,10 @@
 				temporal: '#5A8060',
 				causal: '#b86548',
 				associative: '#725E85',
-				reference: '#87604A',
-				contrast: '#B594A0'
+				remind: '#87604A',
+				elaboration: '#5A8060',
+				contrast: '#B594A0',
+				reference: '#87604A'
 			} as Record<string, string>
 		}
 	};
@@ -108,14 +138,30 @@
 		return ((h >>> 0) % 100000) / 100000;
 	}
 
-	function recallGlow(n: { last_accessed?: string; access_count?: number }): number {
-		if (!n.last_accessed) return 0;
-		const t = Date.parse(n.last_accessed);
-		if (isNaN(t)) return 0;
-		const hoursSince = (Date.now() - t) / 3_600_000;
-		const base = Math.exp(-hoursSince / 12);
-		const boost = Math.min(1, (n.access_count ?? 0) / 10);
-		return Math.min(1, base + 0.2 * boost);
+	function recallGlow(n: { id: string; last_accessed?: string; access_count?: number }): number {
+		// Compute target glow from data
+		let target = 0;
+		if (n.last_accessed) {
+			const t = Date.parse(n.last_accessed);
+			if (!isNaN(t)) {
+				const hoursSince = (Date.now() - t) / 3_600_000;
+				const base = Math.exp(-hoursSince / 12);
+				const boost = Math.min(1, (n.access_count ?? 0) / 10);
+				target = Math.min(1, base + 0.2 * boost);
+			}
+		}
+		glowTargets.set(n.id, target);
+		const cur = glowCurrent.get(n.id) ?? 0;
+		// Fast rise (快亮), slow decay (慢散)
+		let next: number;
+		if (target > cur) {
+			next = cur + (target - cur) * 0.3;  // fast rise
+		} else {
+			next = cur + (target - cur) * 0.02; // slow fade
+		}
+		if (Math.abs(next) < 0.001) next = 0;
+		glowCurrent.set(n.id, next);
+		return next;
 	}
 
 	function step(dt: number) {
@@ -132,7 +178,6 @@
 				const b = nodes[j];
 				let dx = b.x - a.x;
 				let dy = b.y - a.y;
-				// clamp minimum distance so repulsion can't explode when nodes overlap
 				const d2 = Math.max(25, dx * dx + dy * dy);
 				const rep = Math.min(120, 2800 / d2);
 				const d = Math.sqrt(d2);
@@ -141,19 +186,16 @@
 				if (!a.pinned) { a.vx -= dx * rep * dt; a.vy -= dy * rep * dt; }
 				if (!b.pinned) { b.vx += dx * rep * dt; b.vy += dy * rep * dt; }
 			}
-			// Soft brain-shaped containment: ellipse wider than tall, gentle inside, firm outside.
 			const rx = W * 0.42;
 			const ry = H * 0.34;
 			const nx = (a.x - cx) / rx;
 			const ny = (a.y - cy) / ry;
 			const r2 = nx * nx + ny * ny;
 			if (r2 > 1) {
-				// outside the shell — pull back proportionally to how far out
 				const pull = (r2 - 1) * 0.04;
 				a.vx -= nx * rx * pull;
 				a.vy -= ny * ry * pull;
 			} else {
-				// inside — very weak centering, so nodes spread to fill the shape
 				a.vx += (cx - a.x) * 0.00008;
 				a.vy += (cy - a.y) * 0.00008;
 			}
@@ -174,7 +216,6 @@
 
 		for (const n of nodes) {
 			if (n.pinned) continue;
-			// cap velocity magnitude to prevent runaway
 			const v2 = n.vx * n.vx + n.vy * n.vy;
 			if (v2 > 400) {
 				const s = 20 / Math.sqrt(v2);
@@ -231,7 +272,7 @@
 		ctx.fillStyle = g;
 		ctx.fillRect(0, 0, W, H);
 
-		// Soft "brain" outline — matches the containment ellipse.
+		// Soft "brain" outline
 		{
 			const rx = W * 0.42 * zoom;
 			const ry = H * 0.34 * zoom;
@@ -251,15 +292,12 @@
 		const sinX = Math.sin(rotX);
 		const cosX = Math.cos(rotX);
 
-		// Full 3D: yaw around Y, pitch around X.
 		const projected = nodes.map((n) => {
 			const lx = n.x - cx;
 			const ly = n.y - cy;
 			const lz = n.z * 140;
-			// yaw (around Y): rotates x/z
 			const x1 = lx * cosY - lz * sinY;
 			const z1 = lx * sinY + lz * cosY;
-			// pitch (around X): rotates y/z
 			const y2 = ly * cosX - z1 * sinX;
 			const z2 = ly * sinX + z1 * cosX;
 			const depth = z2 / 200;
@@ -271,6 +309,7 @@
 		projected.sort((a, b) => a.depth - b.depth);
 		const idx = new Map(projected.map((p, i) => [p.n.id, i]));
 
+		// Draw edges
 		ctx.lineWidth = 0.7;
 		for (const e of edges) {
 			const si = idx.get(e.source);
@@ -288,12 +327,14 @@
 			ctx.stroke();
 		}
 
+		// Draw nodes
 		for (const p of projected) {
 			const { n, sx, sy, scale, depth } = p;
 			const radius = (3 + n.intensity * 6) * scale;
 			const depthAlpha = 0.45 + 0.55 * ((depth + 1) / 2);
 			const glow = recallGlow(n);
 
+			// Recall halo — "快亮慢散"
 			if (glow > 0.05) {
 				const haloR = radius + 10 + glow * 18;
 				const halo = ctx.createRadialGradient(sx, sy, radius, sx, sy, haloR);
@@ -303,6 +344,17 @@
 				ctx.beginPath();
 				ctx.arc(sx, sy, haloR, 0, Math.PI * 2);
 				ctx.fill();
+			}
+
+			// Ctrl+click highlight
+			if (ctrlPickFirst === n.id) {
+				ctx.strokeStyle = hexAlpha(t.glow, 0.8);
+				ctx.lineWidth = 2;
+				ctx.setLineDash([3, 3]);
+				ctx.beginPath();
+				ctx.arc(sx, sy, radius + 6, 0, Math.PI * 2);
+				ctx.stroke();
+				ctx.setLineDash([]);
 			}
 
 			let body: string;
@@ -323,8 +375,21 @@
 				ctx.arc(sx, sy, radius + 3, 0, Math.PI * 2);
 				ctx.stroke();
 			}
+
+			// Enlarged node label — always show
+			if (depthAlpha > 0.55 && scale > 0.5) {
+				const fontSize = Math.max(9, Math.min(13, 11 * scale));
+				ctx.font = `${fontSize}px var(--font-sans, sans-serif)`;
+				const labelText = n.label.length > 20 ? n.label.slice(0, 18) + '…' : n.label;
+				const m = ctx.measureText(labelText);
+				const lx = sx - m.width / 2;
+				const ly = sy + radius + fontSize + 2;
+				ctx.fillStyle = hexAlpha(t.text, depthAlpha * 0.85);
+				ctx.fillText(labelText, lx, ly);
+			}
 		}
 
+		// Hovered node tooltip — show full label + access count
 		if (hovered) {
 			const h = nodeById.get(hovered);
 			const p = projected.find((q) => q.n.id === hovered);
@@ -371,7 +436,7 @@
 		};
 	}
 
-	function pickNode(ev: PointerEvent): DisplayNode | null {
+	function pickNode(ev: PointerEvent | MouseEvent): DisplayNode | null {
 		if (!canvas) return null;
 		const rect = canvas.getBoundingClientRect();
 		const x = ev.clientX - rect.left;
@@ -389,8 +454,59 @@
 		return best;
 	}
 
+	function pickEdge(ev: MouseEvent): Edge | null {
+		if (!canvas) return null;
+		const rect = canvas.getBoundingClientRect();
+		const mx = ev.clientX - rect.left;
+		const my = ev.clientY - rect.top;
+		const proj = projectHit(canvas.width / 2, canvas.height / 2);
+		let best: Edge | null = null;
+		let bestD = 8; // pixel threshold
+		for (const e of edges) {
+			const sn = nodeById.get(e.source);
+			const tn = nodeById.get(e.target);
+			if (!sn || !tn) continue;
+			const a = proj(sn);
+			const b = proj(tn);
+			// Point-to-segment distance
+			const dx = b.sx - a.sx;
+			const dy = b.sy - a.sy;
+			const len2 = dx * dx + dy * dy;
+			if (len2 < 1) continue;
+			const t = Math.max(0, Math.min(1, ((mx - a.sx) * dx + (my - a.sy) * dy) / len2));
+			const px = a.sx + t * dx;
+			const py = a.sy + t * dy;
+			const d = Math.sqrt((mx - px) ** 2 + (my - py) ** 2);
+			if (d < bestD) { bestD = d; best = e; }
+		}
+		return best;
+	}
+
 	function onPointerDown(ev: PointerEvent) {
 		if (!canvas) return;
+		// Ctrl+click → edge creation
+		if (ev.ctrlKey || ev.metaKey) {
+			const hit = pickNode(ev);
+			if (hit) {
+				if (!ctrlPickFirst) {
+					ctrlPickFirst = hit.id;
+				} else if (ctrlPickFirst !== hit.id) {
+					// Open edge create menu
+					edgeMenu = {
+						x: ev.clientX,
+						y: ev.clientY,
+						source: ctrlPickFirst,
+						target: hit.id,
+						kind: 'semantic',
+						weight: 0.5,
+						mode: 'create'
+					};
+					ctrlPickFirst = null;
+				}
+			}
+			return;
+		}
+
 		const hit = pickNode(ev);
 		if (hit && !ev.shiftKey && ev.button === 0) {
 			dragMode = 'node';
@@ -409,7 +525,7 @@
 	}
 	function onPointerUp(ev: PointerEvent) {
 		dragging = false;
-		draggedNode = null; // leave it pinned until user double-clicks or resets
+		draggedNode = null;
 		try { canvas!.releasePointerCapture(ev.pointerId); } catch {}
 	}
 	function onPointerMove(ev: PointerEvent) {
@@ -421,7 +537,6 @@
 				panX += ddx;
 				panY += ddy;
 			} else if (dragMode === 'node' && draggedNode) {
-				// Convert screen delta back to world delta via inverse yaw (ignoring pitch for simplicity; drag in canvas plane).
 				const sinY = Math.sin(rotY);
 				const cosY = Math.cos(rotY);
 				const wdx = (ddx / zoom) * cosY + 0 * sinY;
@@ -429,7 +544,6 @@
 				draggedNode.x += wdx;
 				draggedNode.y += wdy;
 			} else {
-				// Flexible 3D: horizontal drag = yaw, vertical drag = pitch.
 				rotY += ddx * 0.01;
 				rotX = Math.max(-1.3, Math.min(1.3, rotX + ddy * 0.01));
 			}
@@ -441,13 +555,39 @@
 		hovered = hit ? hit.id : null;
 	}
 
-	function onDoubleClick(ev: MouseEvent) {
+	function onClick(ev: MouseEvent) {
+		if (ev.ctrlKey || ev.metaKey) return; // handled by pointerdown
 		const hit = pickNode(ev as unknown as PointerEvent);
 		if (hit) {
-			hit.pinned = false;
-			openDetail(hit.id);
+			editNodeId = hit.id;
 		}
 	}
+
+	function onContextMenu(ev: MouseEvent) {
+		ev.preventDefault();
+		// Try picking an edge first
+		const edge = pickEdge(ev);
+		if (edge) {
+			edgeMenu = {
+				x: ev.clientX,
+				y: ev.clientY,
+				source: edge.source,
+				target: edge.target,
+				kind: edge.kind,
+				weight: edge.weight,
+				mode: 'edit'
+			};
+			return;
+		}
+		// Try picking a node for edge creation start
+		const node = pickNode(ev as unknown as PointerEvent);
+		if (node) {
+			if (!ctrlPickFirst) {
+				ctrlPickFirst = node.id;
+			}
+		}
+	}
+
 	function onWheel(ev: WheelEvent) {
 		ev.preventDefault();
 		const rect = canvas!.getBoundingClientRect();
@@ -455,24 +595,66 @@
 		const my = ev.clientY - rect.top - canvas!.height / 2;
 		const factor = ev.deltaY < 0 ? 1.1 : 1 / 1.1;
 		const newZoom = Math.max(0.2, Math.min(6, zoom * factor));
-		// keep point under cursor stationary
 		const k = newZoom / zoom - 1;
 		panX -= (mx - panX) * k;
 		panY -= (my - panY) * k;
 		zoom = newZoom;
 	}
+
+	function onKeyDown(ev: KeyboardEvent) {
+		// Ctrl+Z undo
+		if ((ev.ctrlKey || ev.metaKey) && ev.key === 'z' && !ev.shiftKey) {
+			ev.preventDefault();
+			performUndo();
+		}
+		// Escape to cancel ctrl pick
+		if (ev.key === 'Escape') {
+			ctrlPickFirst = null;
+			edgeMenu = null;
+		}
+	}
+
+	async function performUndo() {
+		const action = undoStack.pop();
+		if (!action) return;
+		try {
+			switch (action.type) {
+				case 'create_edge':
+					// Undo = delete the edge we just created
+					await api.poolDeleteEdge(action.data.source as string, action.data.target as string);
+					break;
+				case 'delete_edge':
+					// Undo = recreate the edge
+					await api.poolCreateEdge(
+						action.data.source as string,
+						action.data.target as string,
+						action.data.kind as string,
+						action.data.weight as number
+					);
+					break;
+				case 'update_edge':
+					// Undo = restore old values
+					await api.poolUpdateEdge(
+						action.data.source as string,
+						action.data.target as string,
+						action.data.oldKind as string,
+						action.data.oldWeight as number
+					);
+					break;
+			}
+			await loadGraph(false);
+		} catch { /* ignore undo failures */ }
+	}
+
 	function resetView() {
 		zoom = 1;
 		panX = 0;
 		panY = 0;
 		rotY = 0;
 		rotX = 0.35;
+		ctrlPickFirst = null;
 		for (const n of nodes) n.pinned = false;
 	}
-
-	let detailId = $state<string | null>(null);
-	function openDetail(id: string) { detailId = id; }
-	function closeDetail() { detailId = null; }
 
 	function resize() {
 		if (!canvas) return;
@@ -494,18 +676,17 @@
 			const next: DisplayNode[] = payload.nodes.map((n) => {
 				const prior = existing.get(n.id);
 				if (prior) {
-					// preserve position/velocity so existing nodes don't jump
 					prior.intensity = n.intensity ?? prior.intensity;
 					prior.last_accessed = n.last_accessed ?? prior.last_accessed;
 					prior.access_count = n.access_count ?? prior.access_count;
-					prior.label = prettyLabel(n.label ?? n.id);
+					prior.label = n.label || prettyLabel(n.id);
 					return prior;
 				}
 				const a = hash01(n.id, 1) * Math.PI * 2;
 				const r = 60 + hash01(n.id, 2) * 140;
 				return {
 					id: n.id,
-					label: prettyLabel(n.label ?? n.id),
+					label: n.label || prettyLabel(n.id),
 					intensity: n.intensity ?? 0.5,
 					last_accessed: n.last_accessed,
 					access_count: n.access_count,
@@ -532,14 +713,25 @@
 		}
 	}
 
+	function onEdgeSaved() {
+		loadGraph(false);
+	}
+	function onNodeSaved() {
+		loadGraph(false);
+	}
+
 	onMount(async () => {
 		try {
 			const saved = localStorage.getItem('fiam-theme');
 			if (saved === 'light' || saved === 'dark') theme = saved;
 		} catch {}
+		// Load edge types
+		try {
+			const resp = await api.poolEdgeTypes();
+			if (resp.types?.length) edgeTypes = resp.types;
+		} catch {}
 		await loadGraph(true);
 		window.addEventListener('resize', resize);
-		// Refresh every 30s so new events appear without manual reload.
 		pollTimer = setInterval(() => loadGraph(false), 30000);
 	});
 
@@ -550,24 +742,35 @@
 	});
 </script>
 
+<svelte:window onkeydown={onKeyDown} />
+
 <div class="flex flex-col h-[calc(100vh-8rem)] relative">
 	<div class="flex items-center gap-4 mb-2 text-xs font-mono flex-wrap">
 		<span class="text-[var(--color-subtext0)]">nodes {stats.nodes}</span>
 		<span class="text-[var(--color-subtext0)]">edges {stats.edges}</span>
 		<span class="text-[var(--color-pink)]">recalled {stats.recalled}</span>
+		{#if ctrlPickFirst}
+			<span class="text-[var(--color-yellow)]">
+				pick 2nd node (Ctrl+click) · Esc cancel
+			</span>
+		{/if}
 		<span class="text-[var(--color-overlay0)] hidden md:inline">
-			drag=orbit · shift+drag=pan · drag node=move · dbl-click=detail · wheel=zoom
+			click=edit · right-click edge=menu · ctrl+click 2 nodes=link · ctrl+z=undo
 		</span>
 		<label class="ml-auto flex items-center gap-1 cursor-pointer">
 			<input type="checkbox" bind:checked={autoRotate} class="accent-[var(--color-mauve)]" />
 			<span class="text-[var(--color-overlay1)]">auto-rotate</span>
 		</label>
 		<button
-			class="px-2 py-0.5 border border-[var(--color-surface1)] rounded text-[var(--color-subtext0)] hover:border-[var(--color-mauve)]"
+			class="px-2 py-0.5 border border-[var(--color-surface1)] rounded text-[var(--color-subtext0)] hover:border-[var(--color-mauve)] cursor-pointer"
+			onclick={() => loadGraph(false)}
+		>refresh</button>
+		<button
+			class="px-2 py-0.5 border border-[var(--color-surface1)] rounded text-[var(--color-subtext0)] hover:border-[var(--color-mauve)] cursor-pointer"
 			onclick={resetView}
 		>reset</button>
 		<button
-			class="px-2 py-0.5 border border-[var(--color-surface1)] rounded text-[var(--color-subtext0)] hover:border-[var(--color-mauve)]"
+			class="px-2 py-0.5 border border-[var(--color-surface1)] rounded text-[var(--color-subtext0)] hover:border-[var(--color-mauve)] cursor-pointer"
 			onclick={() => (theme = theme === 'dark' ? 'light' : 'dark')}
 		>
 			{theme === 'dark' ? '☾ dark' : '☀ light'}
@@ -579,7 +782,8 @@
 		onpointerdown={onPointerDown}
 		onpointerup={onPointerUp}
 		onpointermove={onPointerMove}
-		ondblclick={onDoubleClick}
+		onclick={onClick}
+		oncontextmenu={onContextMenu}
 		onwheel={onWheel}
 	></canvas>
 	<!-- edge-type legend -->
@@ -602,7 +806,22 @@
 		<p class="text-[var(--color-red)] font-mono text-xs mt-2">{err}</p>
 	{/if}
 
-	{#if detailId}
-		<EventDetail id={detailId} onclose={closeDetail} />
+	{#if editNodeId}
+		<NodeEditor id={editNodeId} onclose={() => (editNodeId = null)} onsaved={onNodeSaved} />
+	{/if}
+
+	{#if edgeMenu}
+		<EdgeMenu
+			x={edgeMenu.x}
+			y={edgeMenu.y}
+			source={edgeMenu.source}
+			target={edgeMenu.target}
+			kind={edgeMenu.kind}
+			weight={edgeMenu.weight}
+			mode={edgeMenu.mode}
+			{edgeTypes}
+			onclose={() => (edgeMenu = null)}
+			onsaved={onEdgeSaved}
+		/>
 	{/if}
 </div>

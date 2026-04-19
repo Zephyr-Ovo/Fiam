@@ -36,16 +36,17 @@
 		class="border-b border-[var(--color-surface0)] px-4 py-2 flex items-center gap-4 bg-[var(--color-mantle)]"
 	>
 		<span class="font-mono text-sm text-[var(--color-mauve)]">fiam</span>
-		<nav class="flex gap-3 text-sm">
+		<nav class="flex gap-3 text-sm text-[var(--color-subtext1)]">
 			<a href="/" class="hover:text-[var(--color-lavender)]">overview</a>
 			<a href="/events" class="hover:text-[var(--color-lavender)]">events</a>
 			<a href="/graph" class="hover:text-[var(--color-lavender)]">graph</a>
+			<a href="/flow" class="hover:text-[var(--color-lavender)]">flow</a>
 			<a href="/schedule" class="hover:text-[var(--color-lavender)]">schedule</a>
 			<a href="/logs" class="hover:text-[var(--color-lavender)]">logs</a>
 		</nav>
 		<button
 			onclick={toggleTheme}
-			class="ml-auto text-xs font-mono px-2 py-0.5 rounded border border-[var(--color-surface1)] hover:bg-[var(--color-surface0)] cursor-pointer"
+			class="ml-auto text-xs font-mono px-2 py-0.5 rounded border border-[var(--color-surface1)] text-[var(--color-subtext0)] hover:bg-[var(--color-surface0)] cursor-pointer"
 			title="toggle theme"
 		>
 			{theme === 'dark' ? '☾ dark' : '☀ light'}

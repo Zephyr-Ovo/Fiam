@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from http.server import HTTPServer, SimpleHTTPRequestHandler
@@ -24,6 +25,9 @@ _ROOT = Path(__file__).resolve().parent.parent
 _LOGS = _ROOT / "logs"
 _STORE = None  # set after config load
 _CONFIG = None
+_POOL = None        # Pool instance (lazy)
+_EMBEDDER = None    # Embedder instance (lazy)
+_COMPUTE_LOCK = threading.Lock()  # gate concurrent mutations
 
 # Fix sys.path: add src/, remove scripts/ (fiam.py shadows fiam package)
 _src_dir = str(_ROOT / "src")
@@ -35,12 +39,32 @@ if _scripts_dir in sys.path:
 
 
 def _load_config():
-    global _CONFIG, _STORE
+    global _CONFIG, _STORE, _POOL
     from fiam.config import FiamConfig
     toml_path = _ROOT / "fiam.toml"
     if toml_path.exists():
         _CONFIG = FiamConfig.from_toml(toml_path, _ROOT)
         _STORE = Path(_CONFIG.home_path) / "store"
+    # Init Pool
+    if _CONFIG:
+        from fiam.store.pool import Pool
+        _POOL = Pool(_CONFIG.pool_dir)
+        _POOL.ensure_dirs()
+
+
+def _get_embedder():
+    """Lazy-init embedder — may fail if torch not installed."""
+    global _EMBEDDER
+    if _EMBEDDER is not None:
+        return _EMBEDDER
+    if not _CONFIG:
+        return None
+    try:
+        from fiam.retriever.embedder import Embedder
+        _EMBEDDER = Embedder(_CONFIG)
+        return _EMBEDDER
+    except Exception:
+        return None
 
 
 def _pipeline_tail(n: int = 40) -> str:
@@ -427,6 +451,223 @@ def _api_capture(payload: dict) -> dict:
     return {"ok": True, "id": ev_id, "path": str(ev_path)}
 
 
+# ------------------------------------------------------------------
+# Pool-based APIs
+# ------------------------------------------------------------------
+
+def _pool_graph() -> dict:
+    """Return nodes/edges from Pool for visualization."""
+    if not _POOL:
+        return {"nodes": [], "edges": []}
+    from fiam.store.pool import Pool
+
+    events = _POOL.load_events()
+    if not events:
+        return {"nodes": [], "edges": []}
+
+    # Build idx→id map and node list
+    idx_to_id: dict[int, str] = {}
+    nodes: list[dict] = []
+    for ev in events:
+        idx_to_id[ev.fingerprint_idx] = ev.id
+        body = _POOL.read_body(ev.id)
+        # First non-empty line as label
+        label = ev.id
+        for line in body.splitlines():
+            stripped = line.strip().lstrip("#").strip()
+            if stripped:
+                label = stripped[:60]
+                break
+        # Intensity from access_count (0→0.3, 10+→1.0)
+        intensity = min(1.0, 0.3 + ev.access_count * 0.07)
+        nodes.append({
+            "id": ev.id,
+            "label": label,
+            "intensity": intensity,
+            "time": ev.t.isoformat(),
+            "last_accessed": "",  # TODO: track in Event if needed
+            "access_count": ev.access_count,
+        })
+
+    # Convert PyG edges to {source, target, kind, weight}
+    ei, ea = _POOL.load_edges()
+    edge_list: list[dict] = []
+    for i in range(ei.shape[1]):
+        src_idx = int(ei[0, i])
+        dst_idx = int(ei[1, i])
+        src_id = idx_to_id.get(src_idx)
+        dst_id = idx_to_id.get(dst_idx)
+        if not src_id or not dst_id:
+            continue
+        type_id = int(ea[i, 0])
+        weight = float(ea[i, 1])
+        edge_list.append({
+            "source": src_id,
+            "target": dst_id,
+            "kind": Pool.edge_type_name(type_id),
+            "weight": weight,
+        })
+
+    return {"nodes": nodes, "edges": edge_list}
+
+
+def _pool_event_detail(event_id: str) -> dict | None:
+    """Full event detail for editing."""
+    if not _POOL:
+        return None
+    ev = _POOL.get_event(event_id)
+    if not ev:
+        return None
+    body = _POOL.read_body(event_id)
+    return {
+        "id": ev.id,
+        "body": body,
+        "time": ev.t.isoformat(),
+        "access_count": ev.access_count,
+        "fingerprint_idx": ev.fingerprint_idx,
+    }
+
+
+def _pool_update_event(event_id: str, payload: dict) -> dict:
+    """Update event body. Re-embed if embedder available."""
+    if not _POOL:
+        raise RuntimeError("pool not loaded")
+    ev = _POOL.get_event(event_id)
+    if not ev:
+        raise ValueError(f"event not found: {event_id}")
+
+    new_body = payload.get("body")
+    if new_body is None:
+        raise ValueError("missing body")
+
+    with _COMPUTE_LOCK:
+        _POOL.write_body(event_id, new_body)
+        re_embedded = False
+        embedder = _get_embedder()
+        if embedder and ev.fingerprint_idx >= 0:
+            try:
+                import numpy as np
+                vec = embedder.embed(new_body)
+                _POOL.update_fingerprint(ev.fingerprint_idx, vec)
+                _POOL.rebuild_cosine()
+                re_embedded = True
+            except Exception:
+                pass
+    return {"ok": True, "id": event_id, "re_embedded": re_embedded}
+
+
+def _pool_create_edge(payload: dict) -> dict:
+    """Create an edge between two events."""
+    if not _POOL:
+        raise RuntimeError("pool not loaded")
+    from fiam.store.pool import Pool
+
+    src_id = payload.get("source")
+    dst_id = payload.get("target")
+    kind = payload.get("kind", "semantic")
+    weight = float(payload.get("weight", 0.5))
+
+    if not src_id or not dst_id:
+        raise ValueError("missing source or target")
+
+    src_ev = _POOL.get_event(src_id)
+    dst_ev = _POOL.get_event(dst_id)
+    if not src_ev or not dst_ev:
+        raise ValueError("event not found")
+    if src_ev.fingerprint_idx < 0 or dst_ev.fingerprint_idx < 0:
+        raise ValueError("event not embedded")
+
+    type_id = Pool.edge_type_id(kind)
+    with _COMPUTE_LOCK:
+        _POOL.add_edge(src_ev.fingerprint_idx, dst_ev.fingerprint_idx, type_id, weight)
+    return {"ok": True}
+
+
+def _pool_update_edge(payload: dict) -> dict:
+    """Update an existing edge's type and/or weight."""
+    if not _POOL:
+        raise RuntimeError("pool not loaded")
+    from fiam.store.pool import Pool
+
+    src_id = payload.get("source")
+    dst_id = payload.get("target")
+    if not src_id or not dst_id:
+        raise ValueError("missing source or target")
+
+    src_ev = _POOL.get_event(src_id)
+    dst_ev = _POOL.get_event(dst_id)
+    if not src_ev or not dst_ev:
+        raise ValueError("event not found")
+
+    import numpy as np
+    ei, ea = _POOL.load_edges()
+    mask = (ei[0] == src_ev.fingerprint_idx) & (ei[1] == dst_ev.fingerprint_idx)
+    if not mask.any():
+        raise ValueError("edge not found")
+
+    with _COMPUTE_LOCK:
+        if "kind" in payload:
+            ea[mask, 0] = Pool.edge_type_id(payload["kind"])
+        if "weight" in payload:
+            ea[mask, 1] = float(payload["weight"])
+        _POOL._save_edges()
+    return {"ok": True}
+
+
+def _pool_delete_edge(payload: dict) -> dict:
+    """Remove an edge."""
+    if not _POOL:
+        raise RuntimeError("pool not loaded")
+
+    src_id = payload.get("source")
+    dst_id = payload.get("target")
+    if not src_id or not dst_id:
+        raise ValueError("missing source or target")
+
+    src_ev = _POOL.get_event(src_id)
+    dst_ev = _POOL.get_event(dst_id)
+    if not src_ev or not dst_ev:
+        raise ValueError("event not found")
+
+    import numpy as np
+    with _COMPUTE_LOCK:
+        ei, ea = _POOL.load_edges()
+        mask = ~((ei[0] == src_ev.fingerprint_idx) & (ei[1] == dst_ev.fingerprint_idx))
+        _POOL._edge_index = ei[:, mask]
+        _POOL._edge_attr = ea[mask]
+        _POOL._save_edges()
+    return {"ok": True}
+
+
+def _api_flow(offset: int = 0, limit: int = 50) -> dict:
+    """Read beats from flow.jsonl with pagination."""
+    if not _CONFIG:
+        return {"beats": [], "offset": 0, "total": 0}
+    flow_path = _CONFIG.flow_path
+    if not flow_path.exists():
+        return {"beats": [], "offset": 0, "total": 0}
+
+    lines = flow_path.read_text(encoding="utf-8").splitlines()
+    total = len(lines)
+    # Return from the end (most recent) if offset is 0
+    if offset <= 0:
+        start = max(0, total - limit)
+    else:
+        start = offset
+    end = min(start + limit, total)
+
+    beats: list[dict] = []
+    for line in lines[start:end]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            beats.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return {"beats": beats, "offset": start, "total": total}
+
+
 def _ingest_token_ok(handler) -> bool:
     """Constant-time comparison of X-Fiam-Token header against env secret."""
     import os
@@ -505,7 +746,25 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             elif path == "/api/state":
                 self._serve_json(_api_state())
             elif path == "/api/graph":
-                self._serve_json(_api_graph())
+                # Pool-based graph (fallback to legacy if pool empty)
+                pool_data = _pool_graph()
+                if pool_data["nodes"]:
+                    self._serve_json(pool_data)
+                else:
+                    self._serve_json(_api_graph())
+            elif path == "/api/pool/graph":
+                self._serve_json(_pool_graph())
+            elif path.startswith("/api/pool/event/"):
+                ev_id = path[len("/api/pool/event/"):]
+                ev = _pool_event_detail(ev_id)
+                if ev is None:
+                    self.send_error(404)
+                else:
+                    self._serve_json(ev)
+            elif path == "/api/flow":
+                offset = int(query.get("offset", 0))
+                limit = int(query.get("limit", 50))
+                self._serve_json(_api_flow(offset, limit))
             elif path == "/api/pipeline":
                 self._serve_json({"lines": _pipeline_tail(200).splitlines()})
             elif path == "/api/whoami":
@@ -515,6 +774,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 self._serve_json({"role": role})
             elif path == "/api/health":
                 self._serve_json(_api_health())
+            elif path == "/api/pool/edge-types":
+                from fiam.store.pool import Pool
+                self._serve_json({"types": list(Pool.EDGE_TYPE_NAMES.values())})
             else:
                 self.send_error(404)
         except Exception as e:
@@ -557,18 +819,92 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.split("?")[0]
-        if path != "/api/capture":
-            self.send_error(404)
+        # Mutation endpoints require ingest token
+        pool_write_paths = {"/api/pool/edge", "/api/pool/edge/delete"}
+        pool_write_prefixes = ("/api/pool/event/",)
+        is_pool_write = path in pool_write_paths or any(path.startswith(p) for p in pool_write_prefixes)
+
+        if path == "/api/capture":
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = 0
+            if length <= 0 or length > 256 * 1024:
+                self._serve_json({"error": "bad length"}, status=400)
+                return
+            try:
+                body = self.rfile.read(length).decode("utf-8")
+                payload = json.loads(body)
+            except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                self._serve_json({"error": f"bad json: {e}"}, status=400)
+                return
+            try:
+                result = _api_capture(payload)
+            except ValueError as e:
+                self._serve_json({"error": str(e)}, status=400)
+                return
+            except Exception as e:
+                self._serve_json({"error": str(e)}, status=500)
+                return
+            self._serve_json(result)
             return
-        if not _ingest_token_ok(self):
+
+        if is_pool_write:
+            # Pool mutations — require viewer auth (console user)
+            if not _viewer_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = 0
+            if length > 1024 * 1024:
+                self._serve_json({"error": "payload too large"}, status=400)
+                return
+            payload = {}
+            if length > 0:
+                try:
+                    body = self.rfile.read(length).decode("utf-8")
+                    payload = json.loads(body)
+                except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                    self._serve_json({"error": f"bad json: {e}"}, status=400)
+                    return
+            try:
+                if path.startswith("/api/pool/event/"):
+                    ev_id = path[len("/api/pool/event/"):]
+                    result = _pool_update_event(ev_id, payload)
+                elif path == "/api/pool/edge":
+                    result = _pool_create_edge(payload)
+                elif path == "/api/pool/edge/delete":
+                    result = _pool_delete_edge(payload)
+                else:
+                    self.send_error(404)
+                    return
+            except ValueError as e:
+                self._serve_json({"error": str(e)}, status=400)
+                return
+            except Exception as e:
+                self._serve_json({"error": str(e)}, status=500)
+                return
+            self._serve_json(result)
+            return
+
+        self.send_error(404)
+
+    def do_PUT(self):
+        path = self.path.split("?")[0]
+        if not _viewer_token_ok(self):
             self._serve_json({"error": "unauthorized"}, status=401)
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             length = 0
-        if length <= 0 or length > 256 * 1024:
-            self._serve_json({"error": "bad length"}, status=400)
+        if length <= 0 or length > 1024 * 1024:
+            self._serve_json({"error": "bad payload"}, status=400)
             return
         try:
             body = self.rfile.read(length).decode("utf-8")
@@ -577,7 +913,14 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._serve_json({"error": f"bad json: {e}"}, status=400)
             return
         try:
-            result = _api_capture(payload)
+            if path.startswith("/api/pool/event/"):
+                ev_id = path[len("/api/pool/event/"):]
+                result = _pool_update_event(ev_id, payload)
+            elif path == "/api/pool/edge":
+                result = _pool_update_edge(payload)
+            else:
+                self.send_error(404)
+                return
         except ValueError as e:
             self._serve_json({"error": str(e)}, status=400)
             return
@@ -585,6 +928,15 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._serve_json({"error": str(e)}, status=500)
             return
         self._serve_json(result)
+
+    def do_OPTIONS(self):
+        """CORS preflight for mutation endpoints."""
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Fiam-Token, X-Fiam-View-Token")
+        self.send_header("Access-Control-Max-Age", "86400")
+        self.end_headers()
 
     def _serve_spa(self, path: str):
         """Serve files from dashboard/build/ with SPA fallback to index.html."""

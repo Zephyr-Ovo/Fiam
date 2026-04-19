@@ -2,13 +2,13 @@
 
 /* Catppuccin Mocha palette — dark, warm, easy on eyes */
 @theme {
-	/* Base */
-	--color-base: #1e1e2e;
-	--color-mantle: #181825;
-	--color-crust: #11111b;
-	--color-surface0: #313244;
-	--color-surface1: #45475a;
-	--color-surface2: #585b70;
+	/* Base — deeper dark blue */
+	--color-base: #0c0c1a;
+	--color-mantle: #10101e;
+	--color-crust: #080814;
+	--color-surface0: #1e1e36;
+	--color-surface1: #2e2e4a;
+	--color-surface2: #3e3e5a;
 	--color-overlay0: #6c7086;
 	--color-overlay1: #7f849c;
 	--color-overlay2: #9399b2;
