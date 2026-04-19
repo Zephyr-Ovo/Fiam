@@ -474,14 +474,8 @@ def _pool_graph() -> dict:
     nodes: list[dict] = []
     for ev in events:
         idx_to_id[ev.fingerprint_idx] = ev.id
-        body = _POOL.read_body(ev.id)
-        # First non-empty line as label (skip [user]/[assistant] markers)
+        # Label = pretty version of DS-given event name
         label = ev.id.replace("_", " ")
-        for line in body.splitlines():
-            stripped = line.strip().lstrip("#").strip()
-            if stripped and stripped not in ("[user]", "[assistant]"):
-                label = stripped[:60]
-                break
         # Intensity from access_count (0→0.3, 10+→1.0)
         intensity = min(1.0, 0.3 + ev.access_count * 0.07)
         nodes.append({

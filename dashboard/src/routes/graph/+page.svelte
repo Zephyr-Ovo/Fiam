@@ -11,7 +11,7 @@
 	let stats = $state({ nodes: 0, edges: 0, recalled: 0 });
 	let hovered = $state<string | null>(null);
 	let hoveredEdge = $state<Edge | null>(null);
-	let autoRotate = $state(true);
+	let autoDrift = $state(true);
 	let raf = 0;
 
 	// Edge types (loaded from server)
@@ -77,6 +77,27 @@
 	// Recall glow animation tracking — "快亮慢散"
 	const glowTargets = new Map<string, number>();
 	const glowCurrent = new Map<string, number>();
+	const sparkledIds = new Set<string>(); // track which nodes already played sound
+
+	// Sparkle sound via Web Audio — bulingbuling
+	let audioCtx: AudioContext | null = null;
+	function playSparkle() {
+		if (!audioCtx) audioCtx = new AudioContext();
+		const now = audioCtx.currentTime;
+		const notes = [1200, 1600, 2000, 1800, 2400];
+		for (let i = 0; i < notes.length; i++) {
+			const osc = audioCtx.createOscillator();
+			const gain = audioCtx.createGain();
+			osc.type = 'sine';
+			osc.frequency.value = notes[i];
+			gain.gain.setValueAtTime(0, now + i * 0.07);
+			gain.gain.linearRampToValueAtTime(0.08, now + i * 0.07 + 0.02);
+			gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.07 + 0.15);
+			osc.connect(gain).connect(audioCtx.destination);
+			osc.start(now + i * 0.07);
+			osc.stop(now + i * 0.07 + 0.2);
+		}
+	}
 
 	function prettyLabel(id: string): string {
 		return id.replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
@@ -287,7 +308,12 @@
 			ctx.restore();
 		}
 
-		if (autoRotate) rotY += 0.0035;
+		// Gentle drift — slow pan + tiny z wobble, no rotation
+		if (autoDrift) {
+			const t2 = lastT * 0.0001;
+			panX += Math.sin(t2 * 0.7) * 0.08;
+			panY += Math.cos(t2 * 0.5) * 0.06;
+		}
 		const sinY = Math.sin(rotY);
 		const cosY = Math.cos(rotY);
 		const sinX = Math.sin(rotX);
@@ -543,7 +569,7 @@
 		dragging = true;
 		lastPx = ev.clientX;
 		lastPy = ev.clientY;
-		autoRotate = false;
+		autoDrift = false;
 		canvas.setPointerCapture(ev.pointerId);
 	}
 	function onPointerUp(ev: PointerEvent) {
@@ -725,6 +751,20 @@
 			edges = payload.edges;
 			nodeById = new Map(nodes.map((n) => [n.id, n]));
 			const recalled = nodes.filter((n) => recallGlow(n) > 0.2).length;
+			// Sparkle when new recalls appear
+			let newRecall = false;
+			for (const n of nodes) {
+				if (recallGlow(n) > 0.2 && !sparkledIds.has(n.id)) {
+					sparkledIds.add(n.id);
+					newRecall = true;
+				}
+			}
+			// Remove stale sparkle tracking
+			for (const sid of sparkledIds) {
+				const nd = nodeById.get(sid);
+				if (!nd || recallGlow(nd) <= 0.05) sparkledIds.delete(sid);
+			}
+			if (newRecall && !initial) playSparkle();
 			stats = { nodes: nodes.length, edges: edges.length, recalled };
 			if (initial) {
 				resize();
@@ -782,8 +822,8 @@
 			click=edit · right-click edge=menu · ctrl+click 2 nodes=link · ctrl+z=undo
 		</span>
 		<label class="ml-auto flex items-center gap-1 cursor-pointer">
-			<input type="checkbox" bind:checked={autoRotate} class="accent-[var(--color-mauve)]" />
-			<span class="text-[var(--color-overlay1)]">auto-rotate</span>
+			<input type="checkbox" bind:checked={autoDrift} class="accent-[var(--color-mauve)]" />
+			<span class="text-[var(--color-overlay1)]">drift</span>
 		</label>
 		<button
 			class="px-2 py-0.5 border border-[var(--color-surface1)] rounded text-[var(--color-subtext0)] hover:border-[var(--color-mauve)] cursor-pointer"
@@ -810,17 +850,19 @@
 		oncontextmenu={onContextMenu}
 		onwheel={onWheel}
 	></canvas>
-	<!-- edge-type legend -->
-	<div
-		class="absolute bottom-10 left-3 flex flex-col gap-1 px-2 py-1.5 rounded text-[10px] font-mono bg-[var(--color-mantle)]/80 border border-[var(--color-surface0)] backdrop-blur-sm pointer-events-none"
-	>
-		{#each Object.entries(themes[theme].kinds) as [k, c]}
-			<div class="flex items-center gap-1.5">
-				<span class="inline-block w-3 h-[2px]" style="background:{c}"></span>
-				<span class="text-[var(--color-subtext0)]">{k}</span>
-			</div>
-		{/each}
-	</div>
+	<!-- edge-type legend — only visible when zoomed in -->
+	{#if zoom >= 2}
+		<div
+			class="absolute bottom-10 left-3 flex flex-col gap-1 px-2 py-1.5 rounded text-[10px] font-mono bg-[var(--color-mantle)]/80 border border-[var(--color-surface0)] backdrop-blur-sm pointer-events-none transition-opacity duration-300"
+		>
+			{#each Object.entries(themes[theme].kinds) as [k, c]}
+				<div class="flex items-center gap-1.5">
+					<span class="inline-block w-3 h-[2px]" style="background:{c}"></span>
+					<span class="text-[var(--color-subtext0)]">{k}</span>
+				</div>
+			{/each}
+		</div>
+	{/if}
 	{#if loading}
 		<p class="absolute inset-0 flex items-center justify-center text-[var(--color-overlay0)]">
 			loading graph…

@@ -27,7 +27,6 @@ from fiam_lib.jsonl import (
     _sanitize_home_path,
     _load_cursor,
     _save_cursor,
-    _parse_jsonl_from,
 )
 from fiam_lib.postman import sweep_outbox, fetch_inbox, fetch_tg_inbox
 from fiam_lib.recall import _write_recall
@@ -312,13 +311,26 @@ def cmd_start(args: argparse.Namespace) -> None:
         signal.signal(signal.SIGBREAK, _shutdown)
 
     # Initial pre_session
-    from fiam.pipeline import pre_session, post_session, store_segment
+    from fiam.pipeline import pre_session
     from fiam.retriever.embedder import Embedder
     from fiam.store.home import HomeStore
+    from fiam.store.pool import Pool
+    from fiam.conductor import Conductor
     import numpy as np
 
     result = pre_session(config)
     event_count = result["event_count"]
+
+    # ── Conductor: new architecture routing layer ──
+    _pool = Pool(config.pool_dir, dim=config.embedding_dim)
+    _conductor_embedder = Embedder(config)
+    _conductor = Conductor(
+        pool=_pool,
+        embedder=_conductor_embedder,
+        flow_path=config.flow_path,
+        recall_path=config.background_path,
+        drift_threshold=0.65,
+    )
 
     _console.print()
     _console.print(_flow("  fiam  ✦"))
@@ -337,87 +349,10 @@ def cmd_start(args: argparse.Namespace) -> None:
     idle_timeout = config.idle_timeout_minutes * 60
     poll_interval = config.poll_interval_seconds
 
-    # Live recall state
-    recall_query_vec: np.ndarray | None = None  # embedding of last recall query
-    recall_drift_threshold = 0.65               # cosine sim below this = topic shift
+    # Live recall: conductor handles drift detection and recall internally
     recall_min_chars = 40                       # skip trivial messages
-    embedder_lazy: Embedder | None = None
     # Regex to strip daemon wake signal tags from user text
     _wake_tag_re = re.compile(r"\[wake:[^\]]*\]\s*")
-
-    def _get_embedder() -> Embedder:
-        nonlocal embedder_lazy
-        if embedder_lazy is None:
-            embedder_lazy = Embedder(config)
-        return embedder_lazy
-
-    def _peek_recent_user_text(jsonl_files: list[Path], max_chars: int = 600) -> str:
-        """Read the last ~max_chars of user text from JSONL files (read-only peek)."""
-        parts: list[str] = []
-        total = 0
-        for jf in sorted(jsonl_files, key=lambda p: p.stat().st_mtime, reverse=True):
-            try:
-                raw = jf.read_bytes()
-            except OSError:
-                continue
-            # Walk lines backward
-            for raw_line in reversed(raw.split(b"\n")):
-                line_text = raw_line.decode("utf-8", errors="replace").strip()
-                if not line_text:
-                    continue
-                try:
-                    obj = json.loads(line_text)
-                except json.JSONDecodeError:
-                    continue
-                if obj.get("type") == "user":
-                    msg = obj.get("message", {})
-                    content = msg.get("content", "")
-                    if isinstance(content, str) and content.strip():
-                        # Strip [wake:xxx] tags — daemon signals, not real content
-                        cleaned = _wake_tag_re.sub("", content).strip()
-                        if cleaned:
-                            parts.append(cleaned)
-                        total += len(content)
-                        if total >= max_chars:
-                            break
-            if total >= max_chars:
-                break
-        # Return in chronological order
-        parts.reverse()
-        return "\n".join(parts)
-
-    def _update_recall_if_drifted(jsonl_files: list[Path]) -> None:
-        """Check if conversation topic drifted from current recall; update if so."""
-        nonlocal recall_query_vec
-
-        user_text = _peek_recent_user_text(jsonl_files)
-        if len(user_text) < recall_min_chars:
-            return
-
-        emb = _get_embedder()
-        current_vec = emb.embed(user_text)
-
-        # Check drift against last recall query
-        if recall_query_vec is not None:
-            sim = float(np.dot(current_vec, recall_query_vec) / (
-                np.linalg.norm(current_vec) * np.linalg.norm(recall_query_vec)
-            ))
-            if sim > recall_drift_threshold:
-                return  # topic hasn't shifted enough
-
-        # Topic shifted — run retrieval and update recall.md
-        recall_query_vec = current_vec
-
-        store = HomeStore(config)
-        from fiam.retriever import joint as joint_retriever
-        events = joint_retriever.search(user_text, store, config)
-
-        if not events:
-            return
-
-        _write_recall(config, events)
-        ts = time.strftime("%H:%M")
-        _console.print(f"  [dim]└[{ts}][/dim] [bold #7eb8f7]↻[/]  recall  [bold #f7e08a]{len(events)}[/]")
 
     def _refresh_recall_for_task(context: str) -> None:
         """Refresh recall.md based on task context before a wake.
@@ -439,120 +374,22 @@ def cmd_start(args: argparse.Namespace) -> None:
             _plog.error("task recall error: %s", e, exc_info=True)
 
     # ------------------------------------------------------------------
-    # Streaming depth-based event segmentation
+    # Beat ingestion via Conductor
     #
-    # Instead of cutting on absolute cosine threshold (fragile),
-    # we use TextTiling depth scores — the same algorithm as post_session.
-    # Turns are grouped into "blocks" (user-assistant exchanges).
-    # Depth scores detect relative dips in inter-block similarity.
-    # A candidate cut is confirmed after CONFIRM_WINDOW more blocks
-    # still agree it's the deepest point, preventing premature cuts.
+    # Conductor handles: embed → StreamGorge segmentation → Pool storage
+    # → drift detection → recall refresh.  Replaces the old manual
+    # TextTiling depth code + store_segment pipeline.
     # ------------------------------------------------------------------
-    _DEPTH_WINDOW = 2          # blocks on each side for similarity
-    _DEPTH_CONFIRM = 2         # consecutive declines to confirm a peak
-    _CONFIRM_WINDOW = 2        # blocks after candidate before confirming
-    _MAX_BLOCKS = 20           # safety valve: force cut if buffer grows too large
-    _MIN_BLOCK_CHARS = 40      # skip embedding for trivial blocks
 
-    # A lightweight block: just turns + embedding vector
-    @dataclass
-    class _Block:
-        turns: list[dict[str, str]]
-        vec: np.ndarray | None = None
-
-    segment_blocks: list[_Block] = []    # accumulated blocks
-    _cut_candidate: int | None = None    # gap index of best cut candidate
-    _cut_depth: float = 0.0              # depth at candidate
-    _cut_confirm: int = 0                # blocks seen since candidate was set
-
-    def _group_turns_into_block(turns: list[dict[str, str]]) -> _Block:
-        """Group new turns into a single block and embed the user text."""
-        user_text = "\n".join(
-            t.get("text", "") for t in turns if t.get("role") == "user"
-        )
-        user_text = _wake_tag_re.sub("", user_text).strip()
-
-        vec = None
-        if len(user_text) >= _MIN_BLOCK_CHARS:
-            emb = _get_embedder()
-            vec = emb.embed(user_text)
-
-        return _Block(turns=turns, vec=vec)
-
-    def _compute_depths() -> np.ndarray:
-        """Compute TextTiling depth scores across current segment_blocks."""
-        n = len(segment_blocks)
-        if n < 3:
-            return np.zeros(max(n - 1, 0))
-
-        dim = config.embedding_dim
-        vecs = []
-        for b in segment_blocks:
-            vecs.append(b.vec if b.vec is not None else np.zeros(dim, dtype=np.float32))
-        embeddings = np.array(vecs)
-
-        # Step 1: block similarities at each gap
-        sims = np.zeros(n - 1)
-        for i in range(n - 1):
-            left_start = max(0, i - _DEPTH_WINDOW + 1)
-            right_end = min(n, i + 1 + _DEPTH_WINDOW)
-            left_block = embeddings[left_start:i + 1].mean(axis=0)
-            right_block = embeddings[i + 1:right_end].mean(axis=0)
-            denom = np.linalg.norm(left_block) * np.linalg.norm(right_block)
-            sims[i] = float(np.dot(left_block, right_block) / (denom + 1e-9)) if denom > 1e-9 else 0.0
-
-        # Step 2: depth = sum of drops from nearest left peak and right peak
-        depths = np.zeros(len(sims))
-        for i in range(len(sims)):
-            left_peak = sims[i]
-            for j in range(i - 1, -1, -1):
-                if sims[j] >= left_peak:
-                    left_peak = sims[j]
-                else:
-                    break
-            right_peak = sims[i]
-            for j in range(i + 1, len(sims)):
-                if sims[j] >= right_peak:
-                    right_peak = sims[j]
-                else:
-                    break
-            depths[i] = (left_peak - sims[i]) + (right_peak - sims[i])
-
-        return depths
-
-    def _find_best_cut(depths: np.ndarray) -> tuple[int, float] | None:
-        """Find the deepest confirmed peak in the depth sequence.
-
-        Uses peak-valley confirmation: walk through depths, track the
-        running maximum as candidate. When depth drops below candidate
-        for _DEPTH_CONFIRM consecutive steps, that peak is confirmed.
-        Returns the confirmed peak with highest depth value, or None.
-        """
-        confirmed: list[tuple[int, float]] = []
-        cand_idx, cand_val, decline = -1, 0.0, 0
-        for i in range(len(depths)):
-            if depths[i] > cand_val:
-                cand_idx, cand_val = i, depths[i]
-                decline = 0
-            elif depths[i] < cand_val:
-                decline += 1
-                if decline >= _DEPTH_CONFIRM and cand_idx >= 0:
-                    confirmed.append((cand_idx, cand_val))
-                    cand_idx, cand_val, decline = i, depths[i], 0
-        if not confirmed:
-            return None
-        return max(confirmed, key=lambda x: x[1])
-
-    def _parse_new_turns() -> list[dict[str, str]]:
-        """Parse unread JSONL content and advance cursor. Returns new turns."""
+    def _ingest_new_beats() -> None:
+        """Parse unread CC JSONL via Conductor; it handles segment cuts internally."""
         if not jsonl_dir.is_dir():
-            return []
+            return
         jf_list = list(jsonl_dir.glob("*.jsonl"))
         if not jf_list:
-            return []
+            return
 
         cursor = _load_cursor(code_path)
-        new_turns: list[dict[str, str]] = []
 
         for jf in sorted(jf_list, key=lambda p: p.stat().st_mtime):
             jkey = jf.name
@@ -563,132 +400,45 @@ def cmd_start(args: argparse.Namespace) -> None:
                 continue
             if jf_mtime < entry["mtime"]:
                 entry["byte_offset"] = 0
-            turns, new_offset = _parse_jsonl_from(jf, entry["byte_offset"])
-            if turns:
-                new_turns.extend(turns)
+
+            results, new_offset = _conductor.ingest_cc_output(jf, entry["byte_offset"])
+            n_beats = len(results)
+            n_events = sum(1 for r in results if r is not None)
+            if n_beats:
+                _log_action("ingest", f"{n_beats} beats", events=n_events)
+                if n_events:
+                    for eid in results:
+                        if eid:
+                            _console.print(f"  [bold #a8f0e8]+1[/] memory [{eid}]")
+                            _plog.info("conductor event  id=%s", eid)
+
             cursor[jkey] = {"byte_offset": new_offset, "mtime": jf_mtime}
 
         _save_cursor(code_path, cursor)
-        return new_turns
-
-    def _flush_blocks(blocks: list[_Block], reason: str = "depth") -> None:
-        """Finalize a list of blocks as a single event via store_segment()."""
-        if not blocks:
-            return
-        all_turns = [t for b in blocks for t in b.turns]
-        if not all_turns:
-            return
-        try:
-            r = store_segment(config, all_turns)
-            eid = r.get("event_id", "?")
-            _console.print(f"  [bold #a8f0e8]+1[/] memory ({reason}) [{eid}]")
-            _plog.info("store_segment  reason=%s event=%s turns=%d blocks=%d",
-                        reason, eid, len(all_turns), len(blocks))
-            _log_action("store", f"{eid} ({reason})", turns=len(all_turns))
-        except Exception as e:
-            _console.print(f"  [red]segment error:[/] {e}")
-            _plog.error("store_segment error: %s", e, exc_info=True)
-            _log_action("error", f"store_segment: {e}")
-
-    def _cut_at(gap_index: int, reason: str = "depth") -> None:
-        """Cut segment_blocks at gap_index: flush blocks 0..gap_index, keep the rest."""
-        nonlocal segment_blocks, _cut_candidate, _cut_depth, _cut_confirm
-
-        to_flush = segment_blocks[:gap_index + 1]
-        segment_blocks = segment_blocks[gap_index + 1:]
-        _cut_candidate = None
-        _cut_depth = 0.0
-        _cut_confirm = 0
-
-        _flush_blocks(to_flush, reason=reason)
-
-    def _ingest_and_check_depth(new_turns: list[dict[str, str]]) -> None:
-        """Add new turns as a block; check streaming depth for confirmed cuts."""
-        nonlocal segment_blocks, _cut_candidate, _cut_depth, _cut_confirm
-
-        if not new_turns:
-            return
-
-        block = _group_turns_into_block(new_turns)
-        segment_blocks.append(block)
-
-        n = len(segment_blocks)
-
-        # Need at least 3 blocks before depth scoring is meaningful
-        if n < 3:
-            return
-
-        depths = _compute_depths()
-        best = _find_best_cut(depths)
-
-        if best is None:
-            # No significant cut point — reset candidate
-            _cut_candidate = None
-            _cut_depth = 0.0
-            _cut_confirm = 0
-            return
-
-        gap_idx, gap_depth = best
-
-        # Safety valve: force cut if buffer is too large
-        if n > _MAX_BLOCKS:
-            _plog.info("depth force-cut  blocks=%d gap=%d depth=%.3f", n, gap_idx, gap_depth)
-            _log_action("depth", f"force gap={gap_idx} d={gap_depth:.3f}", blocks=n)
-            _cut_at(gap_idx, reason="depth-force")
-            return
-
-        # Track candidate confirmation
-        if _cut_candidate == gap_idx:
-            _cut_confirm += 1
-        else:
-            # New (or shifted) candidate
-            _cut_candidate = gap_idx
-            _cut_depth = gap_depth
-            _cut_confirm = 0
-
-        # Confirmed: same gap survived CONFIRM_WINDOW more blocks
-        if _cut_confirm >= _CONFIRM_WINDOW:
-            _plog.info("depth confirmed  gap=%d depth=%.3f after %d blocks",
-                        gap_idx, gap_depth, _cut_confirm)
-            _log_action("depth", f"confirmed gap={gap_idx} d={gap_depth:.3f}",
-                        blocks=n, confirm=_cut_confirm)
-            _cut_at(gap_idx, reason="depth")
 
     def _process_pending() -> None:
-        """Parse remaining JSONL, flush segment buffer, and refresh recall."""
-        nonlocal active, recall_query_vec, segment_blocks, _cut_candidate, _cut_depth, _cut_confirm
+        """Flush conductor beat buffer and any unread JSONL on idle/shutdown."""
+        nonlocal active
 
-        # Parse any remaining unread turns into a new block
-        new_turns = _parse_new_turns()
-        if new_turns:
-            block = _group_turns_into_block(new_turns)
-            segment_blocks.append(block)
+        # Parse any remaining unread beats
+        try:
+            _ingest_new_beats()
+        except Exception as e:
+            _plog.error("final ingest error: %s", e, exc_info=True)
 
-        total_turns = sum(len(b.turns) for b in segment_blocks)
-        _plog.info("process  blocks=%d turns=%d", len(segment_blocks), total_turns)
-
-        # Flush all remaining blocks as the final event
-        if segment_blocks:
-            _flush_blocks(segment_blocks, reason="idle")
-            segment_blocks = []
-            _cut_candidate = None
-            _cut_depth = 0.0
-            _cut_confirm = 0
-
-            # Rebuild recall after storing
-            try:
-                store = HomeStore(config)
-                from fiam.retriever import joint as joint_retriever
-                events = joint_retriever.search("", store, config)
-                _write_recall(config, events)
-                recall_query_vec = None
-                _console.print(f"  recall [#f7a8d0]←[/] [bold #f7e08a]{len(events)}[/] fragments")
-                _plog.info("recall updated  fragments=%d", len(events))
-            except Exception as e:
-                _console.print(f"  [red]recall error:[/] {e}")
-                _plog.error("recall error: %s", e, exc_info=True)
-        else:
-            _console.print(f"  [dim]·  up to date[/dim]")
+        # Flush conductor buffer → pool events
+        try:
+            event_ids = _conductor.flush_all()
+            if event_ids:
+                for eid in event_ids:
+                    _console.print(f"  [bold #a8f0e8]+1[/] memory (idle) [{eid}]")
+                    _plog.info("conductor flush  id=%s", eid)
+                _log_action("flush", f"{len(event_ids)} events")
+            else:
+                _console.print(f"  [dim]·  up to date[/dim]")
+        except Exception as e:
+            _console.print(f"  [red]flush error:[/] {e}")
+            _plog.error("conductor flush error: %s", e, exc_info=True)
 
         active = False
 
@@ -722,10 +472,8 @@ def cmd_start(args: argparse.Namespace) -> None:
                 "active": active,
                 "comm_state": comm,
                 "session": session.get("session_id", "")[:8] if session else None,
-                "segment_buffer_turns": sum(len(b.turns) for b in segment_blocks),
-                "segment_blocks": len(segment_blocks),
-                "segment_cut_candidate": _cut_candidate,
-                "recall_has_vec": recall_query_vec is not None,
+                "conductor_beat_buf": len(_conductor._beat_buf),
+                "pool_events": len(_pool.load_events()),
                 "last_activity": time.strftime("%H:%M:%S", time.localtime(last_activity)) if last_activity else None,
                 "recent_actions": state_log[-20:],
             }
@@ -922,24 +670,14 @@ def cmd_start(args: argparse.Namespace) -> None:
                 active = True
             last_activity = max_mtime
 
-            # Parse new turns and check for topic drift
+            # Ingest new beats via Conductor (handles embed + gorge + recall)
             try:
-                new_turns = _parse_new_turns()
-                if new_turns:
-                    _log_action("ingest", f"{len(new_turns)} turns parsed")
-                    _ingest_and_check_depth(new_turns)
+                _ingest_new_beats()
             except Exception as e:
                 _log_action("error", f"ingest: {e}")
                 _plog.error("ingest error: %s", e, exc_info=True)
                 if config.debug_mode:
                     print(f"  [ingest] Error: {e}", file=sys.stderr)
-
-            # Live recall: check topic drift on each new activity burst
-            try:
-                _update_recall_if_drifted(jsonl_files)
-            except Exception as e:
-                if config.debug_mode:
-                    print(f"  [recall] Error: {e}", file=sys.stderr)
 
             _write_daemon_state()
             continue
