@@ -14,6 +14,7 @@ Responsibilities:
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -28,6 +29,8 @@ from fiam.store.pool import Pool
 if TYPE_CHECKING:
     from fiam.retriever.embedder import Embedder
     from fiam.store.beat import AiStatus, BeatSource, UserStatus
+
+logger = logging.getLogger(__name__)
 
 
 class Conductor:
@@ -95,8 +98,15 @@ class Conductor:
         # 1. Append to flow.jsonl
         append_beat(self.flow_path, beat)
 
-        # 2. Embed
-        vec = self.embedder.embed(beat.text)
+        # 2. Embed (may fail — beat is persisted in flow.jsonl regardless)
+        try:
+            vec = self.embedder.embed(beat.text)
+        except Exception:
+            logger.error("embed failed for beat at %s, skipping gorge", beat.t.isoformat())
+            # Beat is in flow.jsonl but not in gorge/beat_buf.
+            # This is acceptable: flow.jsonl is the source of truth;
+            # gorge operates on what it can embed.
+            return None
 
         # 3. Drift detection → recall refresh
         if self._last_vec is not None and beat.source not in ("action",):
@@ -173,7 +183,14 @@ class Conductor:
         t = consumed_beats[0].t if consumed_beats else datetime.now(timezone.utc)
 
         event_id = self.pool.new_event_id()
-        self.pool.ingest_event(event_id, t, body, fp)
+        try:
+            self.pool.ingest_event(event_id, t, body, fp)
+        except Exception:
+            logger.error(
+                "pool.ingest_event failed for %s (%d beats lost)",
+                event_id, len(consumed_beats),
+            )
+            raise
         return event_id
 
     def flush_all(self) -> list[str]:

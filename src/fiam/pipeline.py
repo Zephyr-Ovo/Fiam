@@ -294,14 +294,24 @@ def post_session(
                    {w.event_id for w in written_events}][-6:]
         with trace.step("edge_typer", inputs={"new": len(written_events),
                                                "context": len(context)}) as rec:
-            llm_edges, name_map, new_types = type_edges_and_name(
+            llm_edges, name_map, new_types, tag_map = type_edges_and_name(
                 written_events, config, context_events=context)
             if llm_edges:
                 graph_store.append(llm_edges)
+            # Apply tags before rename (rename re-writes the event file)
+            for ev in written_events:
+                ev_tags = tag_map.get(ev.event_id)
+                if ev_tags:
+                    ev.tags = ev_tags
             unnamed = [w.event_id for w in written_events
                        if w.event_id not in name_map]
             if name_map:
                 _rename_events(store, written_events, name_map, config)
+            else:
+                # No renames — still need to re-write events with tags
+                for ev in written_events:
+                    if ev.tags:
+                        store.write_event(ev)
             if unnamed:
                 print(f"[post_session] WARNING: DS did not name: {unnamed}")
             if new_types:
@@ -482,12 +492,18 @@ def store_segment(
         from fiam.retriever.edge_typer import type_edges_and_name
         context = [e for e in all_events
                    if e.event_id != record.event_id][-6:]
-        llm_edges, name_map, new_types = type_edges_and_name(
+        llm_edges, name_map, new_types, tag_map = type_edges_and_name(
             [record], config, context_events=context)
         if llm_edges:
             graph_store.append(llm_edges)
+        if tag_map:
+            rec_tags = tag_map.get(record.event_id)
+            if rec_tags:
+                record.tags = rec_tags
         if name_map:
             _rename_events(store, [record], name_map, config)
+        elif record.tags:
+            store.write_event(record)
         if new_types:
             from fiam.retriever.graph import MemoryGraph
             for etype, importance in new_types.items():

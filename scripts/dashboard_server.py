@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 import threading
 import time
@@ -19,6 +20,8 @@ from datetime import datetime, timezone
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from io import BytesIO
+
+logger = logging.getLogger(__name__)
 
 # Resolve paths relative to fiam-code root
 _ROOT = Path(__file__).resolve().parent.parent
@@ -63,7 +66,8 @@ def _get_embedder():
         from fiam.retriever.embedder import Embedder
         _EMBEDDER = Embedder(_CONFIG)
         return _EMBEDDER
-    except Exception:
+    except Exception as exc:
+        logger.warning("embedder init failed (re-embed disabled): %s", exc)
         return None
 
 
@@ -551,8 +555,8 @@ def _pool_update_event(event_id: str, payload: dict) -> dict:
                 _POOL.update_fingerprint(ev.fingerprint_idx, vec)
                 _POOL.rebuild_cosine()
                 re_embedded = True
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("re-embed failed for %s: %s", event_id, exc)
     return {"ok": True, "id": event_id, "re_embedded": re_embedded}
 
 

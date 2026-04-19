@@ -47,7 +47,7 @@ _ELABORATION_THRESHOLD = 1.5
 
 # --- Topic segmentation (TextTiling depth score) ---
 _DEPTH_WINDOW = 2              # block width for depth-score computation
-_DEPTH_CUTOFF = 0.1            # minimum depth to be a topic boundary
+_DEPTH_CONFIRM = 2             # consecutive declines needed to confirm a peak
 
 # --- Paste detection ---
 # If user text has high code/markup ratio vs original prose, discount elaboration
@@ -374,18 +374,30 @@ def _depth_score_boundaries(
                 break
         depths[i] = (left_peak - sims[i]) + (right_peak - sims[i])
 
-    # Step 3: cut at local maxima of depth that exceed cutoff
+    # Step 3: peak-valley confirmation on depth sequence
+    #
+    # Walk through depths tracking the running maximum as a candidate.
+    # When a new depth exceeds the candidate, update it.
+    # When depth drops below the candidate for _DEPTH_CONFIRM consecutive
+    # steps, confirm the candidate as a boundary and reset.
     boundaries: list[int] = []
+    cand_idx = -1
+    cand_val = 0.0
+    decline_count = 0
     for i in range(len(depths)):
-        if depths[i] < _DEPTH_CUTOFF:
-            continue
-        is_peak = True
-        if i > 0 and depths[i - 1] > depths[i]:
-            is_peak = False
-        if i < len(depths) - 1 and depths[i + 1] > depths[i]:
-            is_peak = False
-        if is_peak:
-            boundaries.append(i)
+        if depths[i] > cand_val:
+            cand_idx = i
+            cand_val = depths[i]
+            decline_count = 0
+        elif depths[i] < cand_val:
+            decline_count += 1
+            if decline_count >= _DEPTH_CONFIRM and cand_idx >= 0:
+                boundaries.append(cand_idx)
+                # reset: start fresh after confirmed boundary
+                cand_idx = i
+                cand_val = depths[i]
+                decline_count = 0
+        # equal → no change to decline_count or candidate
 
     if debug:
         print(f"  [depth] {len(boundaries)} topic boundaries found at gaps: {boundaries}")

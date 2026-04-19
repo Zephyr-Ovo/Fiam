@@ -25,6 +25,8 @@ from fiam.retriever.graph import MemoryGraph
 from fiam.store.formats import EventRecord
 from fiam.store.home import HomeStore
 
+import random
+
 
 def search(
     conversation_text: str,
@@ -119,12 +121,14 @@ def search(
     min_score = config.min_score
     scored = [(e, s, v) for e, s, v in scored if s >= min_score]
 
-    # --- Greedy MMR selection ---
-    # Pool = all qualifying events; top_k caps the final count.
+    # --- Selection: stochastic (score-as-probability) or deterministic (MMR) ---
     pool = scored
-    n_select = min(effective_top_k, len(pool)) if effective_top_k else len(pool)
 
-    selected = _mmr_select(pool, n_select, config.mmr_lambda)
+    if config.recall_stochastic:
+        selected = _stochastic_select(pool, effective_top_k, config.mmr_lambda)
+    else:
+        n_select = min(effective_top_k, len(pool)) if effective_top_k else len(pool)
+        selected = _mmr_select(pool, n_select, config.mmr_lambda)
 
     # Record access for selected events
     for event in selected:
@@ -139,6 +143,67 @@ def search(
             g_score = activation.get(ev.event_id, 0.0)
             print(f"  {ev.filename}  str={ev.strength:.2f}  "
                   f"acc={ev.access_count}  i={ev.intensity:.2f}  g={g_score:.3f}")
+
+    return selected
+
+
+# ------------------------------------------------------------------
+# Stochastic selection: score-as-probability with diversity penalty
+# ------------------------------------------------------------------
+
+def _stochastic_select(
+    pool: list[tuple[EventRecord, float, np.ndarray | None]],
+    top_k: int,
+    lam: float,
+) -> list[EventRecord]:
+    """Probabilistic recall: each event's score is its independent selection probability.
+
+    Instead of deterministic top-k, each candidate is sampled with probability
+    proportional to its normalised score. Selected events suppress similar
+    candidates (diversity via MMR penalty on remaining probabilities).
+
+    top_k acts as a safety cap, not a target — may return fewer events.
+    """
+    if not pool:
+        return []
+
+    # Normalise scores to [0, 1] range
+    max_score = max(s for _, s, _ in pool)
+    if max_score <= 0:
+        return []
+
+    # Build mutable candidate list: (event, probability, vec)
+    candidates = [
+        [event, score / max_score, vec]
+        for event, score, vec in pool
+    ]
+
+    selected: list[EventRecord] = []
+    selected_vecs: list[np.ndarray] = []
+
+    # Iterate: each candidate independently decides whether to fire.
+    # After each selection, suppress similar candidates.
+    # Shuffle to avoid order bias.
+    order = list(range(len(candidates)))
+    random.shuffle(order)
+
+    for idx in order:
+        if len(selected) >= top_k:
+            break
+
+        event, prob, vec = candidates[idx]
+
+        # Apply diversity suppression: reduce probability if similar
+        # to already-selected events (uses 1-λ as suppression strength)
+        if vec is not None and selected_vecs:
+            max_sim = max(_cosine(vec, sv) for sv in selected_vecs)
+            prob *= (1.0 - (1.0 - lam) * max_sim)
+
+        # Bernoulli trial: fire with probability = adjusted score
+        if random.random() < prob:
+            selected.append(event)
+            if vec is not None:
+                selected_vecs.append(vec)
 
     return selected
 

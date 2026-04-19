@@ -14,6 +14,7 @@ All layers use fingerprint_idx as the shared index into the matrix rows.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -21,6 +22,8 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 # ------------------------------------------------------------------
@@ -116,13 +119,14 @@ class Pool:
         events: list[Event] = []
         if self.meta_path.exists():
             with open(self.meta_path, "r", encoding="utf-8") as f:
-                for line in f:
+                for line_no, line in enumerate(f, 1):
                     line = line.strip()
                     if not line:
                         continue
                     try:
                         events.append(Event.from_dict(json.loads(line)))
-                    except (json.JSONDecodeError, KeyError):
+                    except (json.JSONDecodeError, KeyError) as exc:
+                        logger.warning("events.jsonl:%d skipped (corrupt): %s", line_no, exc)
                         continue
         self._events = events
         return events
@@ -177,7 +181,11 @@ class Pool:
         if self._fingerprints is not None:
             return self._fingerprints
         if self.fingerprints_path.exists():
-            self._fingerprints = np.load(self.fingerprints_path)
+            try:
+                self._fingerprints = np.load(self.fingerprints_path)
+            except (ValueError, OSError) as exc:
+                logger.error("fingerprints.npy corrupt, starting empty: %s", exc)
+                self._fingerprints = np.empty((0, self.dim), dtype=np.float32)
         else:
             self._fingerprints = np.empty((0, self.dim), dtype=np.float32)
         return self._fingerprints
@@ -211,7 +219,11 @@ class Pool:
         if self._cosine is not None:
             return self._cosine
         if self.cosine_path.exists():
-            self._cosine = np.load(self.cosine_path)
+            try:
+                self._cosine = np.load(self.cosine_path)
+            except (ValueError, OSError) as exc:
+                logger.error("cosine.npy corrupt, starting empty: %s", exc)
+                self._cosine = np.empty((0, 0), dtype=np.float32)
         else:
             self._cosine = np.empty((0, 0), dtype=np.float32)
         return self._cosine
@@ -287,8 +299,13 @@ class Pool:
         if self._edge_index is not None and self._edge_attr is not None:
             return self._edge_index, self._edge_attr
         if self.edge_index_path.exists() and self.edge_attr_path.exists():
-            self._edge_index = np.load(self.edge_index_path)
-            self._edge_attr = np.load(self.edge_attr_path)
+            try:
+                self._edge_index = np.load(self.edge_index_path)
+                self._edge_attr = np.load(self.edge_attr_path)
+            except (ValueError, OSError) as exc:
+                logger.error("edge npy files corrupt, starting empty: %s", exc)
+                self._edge_index = np.empty((2, 0), dtype=np.int64)
+                self._edge_attr = np.empty((0, 2), dtype=np.float32)
         else:
             self._edge_index = np.empty((2, 0), dtype=np.int64)
             self._edge_attr = np.empty((0, 2), dtype=np.float32)
@@ -400,17 +417,23 @@ class Pool:
         """Full pipeline: write body → append fingerprint → extend cosine → save meta.
 
         Returns the new Event with fingerprint_idx set.
+        Raises on failure — caller should handle. Partial writes are logged
+        so they can be repaired (body may exist without meta entry).
         """
         self.ensure_dirs()
 
-        # Content
+        # Content (safe to write first — orphan .md files are harmless)
         self.write_body(event_id, body)
 
-        # Fingerprint
-        idx = self.append_fingerprint(fingerprint)
+        try:
+            # Fingerprint
+            idx = self.append_fingerprint(fingerprint)
 
-        # Cosine (incremental)
-        self.extend_cosine(fingerprint)
+            # Cosine (incremental)
+            self.extend_cosine(fingerprint)
+        except Exception:
+            logger.error("ingest_event %s: fingerprint/cosine failed, body written as orphan", event_id)
+            raise
 
         # Metadata
         ev = Event(id=event_id, t=t, fingerprint_idx=idx)

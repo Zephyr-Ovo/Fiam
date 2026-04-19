@@ -105,17 +105,18 @@ def type_edges_and_name(
     config: FiamConfig,
     *,
     context_events: list[EventRecord] | None = None,
-) -> tuple[list[Edge], dict[str, str], dict[str, float]]:
-    """Call LLM to type edges and name events.
+) -> tuple[list[Edge], dict[str, str], dict[str, float], dict[str, list[str]]]:
+    """Call LLM to type edges, name events, and assign tags.
 
     Args:
         new_events: The newly created events to process.
         context_events: Optional additional events for richer context.
 
     Returns:
-        (edges, names, new_types) where edges is a list of Edge objects,
-        names maps old event_id → suggested name, and new_types maps
-        any newly discovered edge type → importance weight.
+        (edges, names, new_types, tags) where edges is a list of Edge objects,
+        names maps old event_id → suggested name, new_types maps
+        any newly discovered edge type → importance weight, and tags maps
+        event_id → list of tag strings.
 
     Raises:
         RuntimeError: If the LLM call fails (DS naming is mandatory).
@@ -132,8 +133,8 @@ def type_edges_and_name(
     if len(all_ev) < 2:
         # Need at least 2 events to find relationships
         if len(all_ev) == 1:
-            return [], {}, {}
-        return [], {}, {}
+            return [], {}, {}, {}
+        return [], {}, {}, {}
 
     events_block = _format_events_block(all_ev)
     prompt = _get_prompt_template().format(events_block=events_block)
@@ -181,4 +182,18 @@ def type_edges_and_name(
             new_name = new_name[:60]
         names[old_id] = new_name
 
-    return edges, names, new_types
+    # Parse tags
+    tags: dict[str, list[str]] = {}
+    _SAFE_TAG = re.compile(r"^[a-z0-9_\u4e00-\u9fff]+$")
+    for ev_id, tag_list in result.get("tags", {}).items():
+        if ev_id not in valid_ids or not isinstance(tag_list, list):
+            continue
+        clean = []
+        for t in tag_list:
+            t = str(t).strip().lower()
+            if t and _SAFE_TAG.match(t) and len(t) <= 40:
+                clean.append(t)
+        if clean:
+            tags[ev_id] = clean[:5]  # cap at 5 tags
+
+    return edges, names, new_types, tags

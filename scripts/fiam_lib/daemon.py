@@ -419,6 +419,25 @@ def cmd_start(args: argparse.Namespace) -> None:
         ts = time.strftime("%H:%M")
         _console.print(f"  [dim]└[{ts}][/dim] [bold #7eb8f7]↻[/]  recall  [bold #f7e08a]{len(events)}[/]")
 
+    def _refresh_recall_for_task(context: str) -> None:
+        """Refresh recall.md based on task context before a wake.
+
+        Called before scheduled wakes and inbox wakes so the AI has
+        relevant long-term memory when starting a non-dialogue task.
+        """
+        if len(context) < recall_min_chars:
+            return
+        try:
+            store = HomeStore(config)
+            from fiam.retriever import joint as joint_retriever
+            events = joint_retriever.search(context, store, config)
+            if events:
+                _write_recall(config, events)
+                _plog.info("task recall  context=%s  fragments=%d",
+                           context[:60], len(events))
+        except Exception as e:
+            _plog.error("task recall error: %s", e, exc_info=True)
+
     # ------------------------------------------------------------------
     # Streaming depth-based event segmentation
     #
@@ -430,7 +449,7 @@ def cmd_start(args: argparse.Namespace) -> None:
     # still agree it's the deepest point, preventing premature cuts.
     # ------------------------------------------------------------------
     _DEPTH_WINDOW = 2          # blocks on each side for similarity
-    _DEPTH_CUTOFF = 0.10       # minimum depth to consider a cut
+    _DEPTH_CONFIRM = 2         # consecutive declines to confirm a peak
     _CONFIRM_WINDOW = 2        # blocks after candidate before confirming
     _MAX_BLOCKS = 20           # safety valve: force cut if buffer grows too large
     _MIN_BLOCK_CHARS = 40      # skip embedding for trivial blocks
@@ -502,19 +521,27 @@ def cmd_start(args: argparse.Namespace) -> None:
         return depths
 
     def _find_best_cut(depths: np.ndarray) -> tuple[int, float] | None:
-        """Find the deepest local-maximum gap that exceeds the cutoff."""
-        best_idx, best_val = -1, 0.0
+        """Find the deepest confirmed peak in the depth sequence.
+
+        Uses peak-valley confirmation: walk through depths, track the
+        running maximum as candidate. When depth drops below candidate
+        for _DEPTH_CONFIRM consecutive steps, that peak is confirmed.
+        Returns the confirmed peak with highest depth value, or None.
+        """
+        confirmed: list[tuple[int, float]] = []
+        cand_idx, cand_val, decline = -1, 0.0, 0
         for i in range(len(depths)):
-            if depths[i] < _DEPTH_CUTOFF:
-                continue
-            # Must be local maximum
-            if i > 0 and depths[i - 1] > depths[i]:
-                continue
-            if i < len(depths) - 1 and depths[i + 1] > depths[i]:
-                continue
-            if depths[i] > best_val:
-                best_idx, best_val = i, depths[i]
-        return (best_idx, best_val) if best_idx >= 0 else None
+            if depths[i] > cand_val:
+                cand_idx, cand_val = i, depths[i]
+                decline = 0
+            elif depths[i] < cand_val:
+                decline += 1
+                if decline >= _DEPTH_CONFIRM and cand_idx >= 0:
+                    confirmed.append((cand_idx, cand_val))
+                    cand_idx, cand_val, decline = i, depths[i], 0
+        if not confirmed:
+            return None
+        return max(confirmed, key=lambda x: x[1])
 
     def _parse_new_turns() -> list[dict[str, str]]:
         """Parse unread JSONL content and advance cursor. Returns new turns."""
@@ -766,6 +793,23 @@ def cmd_start(args: argparse.Namespace) -> None:
                                 if jsonl_exists:
                                     tag = "tg" if n_tg else "email"
                                     summary = f"{n_tg + n_email} new message(s)"
+                                    # Read inbox content for recall context
+                                    try:
+                                        inbox_text = inbox_jsonl.read_text(encoding="utf-8").strip()
+                                        # Extract message bodies from JSONL
+                                        inbox_parts = []
+                                        for line in inbox_text.splitlines():
+                                            try:
+                                                obj = json.loads(line)
+                                                body = obj.get("body", obj.get("text", ""))
+                                                if body:
+                                                    inbox_parts.append(body[:200])
+                                            except json.JSONDecodeError:
+                                                pass
+                                        if inbox_parts:
+                                            _refresh_recall_for_task("\n".join(inbox_parts))
+                                    except Exception as e:
+                                        _plog.debug("inbox recall skip: %s", e)
                                     _plog.info("wake attempt  tag=%s summary=%s", tag, summary)
                                     ok = _wake_session(config, summary, tag=tag)
                                     if ok:
@@ -848,6 +892,7 @@ def cmd_start(args: argparse.Namespace) -> None:
                     continue
 
                 _console.print(f"  [bold #e8c8ff]⏰[/] scheduled: {reason}")
+                _refresh_recall_for_task(reason)
                 ok = _wake_session(config, f"[scheduled:{wake_type}] {reason}", tag="sched")
                 mark_fired(entry, config, success=ok)
                 if ok:
