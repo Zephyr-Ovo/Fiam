@@ -17,9 +17,11 @@ import shutil
 import sys
 from pathlib import Path
 
-# Allow running from repo root
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+# Allow running from repo root — src/ must come BEFORE scripts/ to avoid
+# scripts/fiam.py shadowing the fiam package.
+_here = Path(__file__).resolve().parent
+sys.path.insert(0, str(_here))
+sys.path.insert(0, str(_here.parent / "src"))
 
 from fiam.config import FiamConfig
 from fiam.store.pool import Pool
