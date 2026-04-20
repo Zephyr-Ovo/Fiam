@@ -16,9 +16,6 @@ dependencies = [
     "rich>=13.0.0",
 ]
 
-[project.scripts]
-fiam = "fiam.cli:main"
-
 [project.optional-dependencies]
 ml = [
     "transformers>=4.40.0",

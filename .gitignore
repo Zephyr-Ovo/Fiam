@@ -46,10 +46,11 @@ self/
 *.toml.bak
 *.log
 
-# Developer-only docs (private design notes, not for public repo)
-/developer/design/
-/developer/debug.md
-/developer/test_plan_isp.md
+# Old setup scripts
+setup.ps1
+setup.sh
+setup_isp.sh
+favilla-v04/
 
 # Private dev notes (not for public repo)
 /DEVLOG.md
@@ -67,9 +68,8 @@ texput.log
 # Copy fiam.toml.example to fiam.toml and run `fiam init` to configure
 fiam.toml
 
-# Test fixtures with real data
-test_vault/fixtures/conversation.json
-test_vault/fixtures/conversations.json
+# Test fixtures
+test_vault/
 
 # Secrets
 .env
