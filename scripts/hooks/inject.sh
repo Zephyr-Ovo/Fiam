@@ -1,30 +1,51 @@
 #!/bin/bash
-# fiam hook: UserPromptSubmit -> inject recall + external messages as additionalContext
+# fiam hook: UserPromptSubmit -> inject self + recall + external as additionalContext
 #
-# Two sources:
-#   1. recall.md              -- memory fragments (surfaced by retrieval, NOT into flow.jsonl)
-#   2. pending_external.txt   -- pre-formatted external messages (Conductor-prepared)
-#
-# External messages (TG/email) are already ingested into flow.jsonl by Conductor.
-# This hook only handles CC delivery for interactive sessions.
-# For non-interactive wakes, daemon delivers via `claude -p` user field directly.
+# Injection order (cache-optimized: static → semi-static → dynamic):
+#   1. self/*.md          -- AI's identity/personality (AI-maintained, changes rarely)
+#   2. recall.md          -- memory fragments (surfaced by retrieval, changes on drift)
+#   3. pending_external.txt -- external messages (changes per-message)
 
 HOME_DIR="$CLAUDE_PROJECT_DIR"
+SELF_DIR="$HOME_DIR/self"
 RECALL_FILE="$HOME_DIR/recall.md"
 PENDING_FILE="$HOME_DIR/pending_external.txt"
 PENDING_PROCESSING="$HOME_DIR/pending_external.processing"
 
 PARTS=""
 
-# ── 1. Recall ──
-if [ -f "$RECALL_FILE" ] && [ -s "$RECALL_FILE" ]; then
-    RECALL=$(sed 's/<!--.*-->//g' "$RECALL_FILE" | tr -s '\n' | sed '/^$/d')
-    if [ -n "$RECALL" ]; then
-        PARTS="[recall]\n${RECALL}"
+# ── 1. Self (AI's identity — all .md files in self/, skip journal/) ──
+if [ -d "$SELF_DIR" ]; then
+    SELF_CONTENT=""
+    for f in "$SELF_DIR"/*.md; do
+        [ -f "$f" ] || continue
+        [ -s "$f" ] || continue
+        CONTENT=$(cat "$f")
+        if [ -n "$CONTENT" ]; then
+            FNAME=$(basename "$f")
+            if [ -n "$SELF_CONTENT" ]; then
+                SELF_CONTENT="${SELF_CONTENT}\n"
+            fi
+            SELF_CONTENT="${SELF_CONTENT}# ${FNAME%.md}\n${CONTENT}"
+        fi
+    done
+    if [ -n "$SELF_CONTENT" ]; then
+        PARTS="[self]\n${SELF_CONTENT}"
     fi
 fi
 
-# ── 2. External messages (Conductor-prepared, pre-formatted) ──
+# ── 2. Recall ──
+if [ -f "$RECALL_FILE" ] && [ -s "$RECALL_FILE" ]; then
+    RECALL=$(sed 's/<!--.*-->//g' "$RECALL_FILE" | tr -s '\n' | sed '/^$/d')
+    if [ -n "$RECALL" ]; then
+        if [ -n "$PARTS" ]; then
+            PARTS="${PARTS}\n\n"
+        fi
+        PARTS="${PARTS}[recall]\n${RECALL}"
+    fi
+fi
+
+# ── 3. External messages (Conductor-prepared, pre-formatted) ──
 if [ -f "$PENDING_FILE" ] && [ -s "$PENDING_FILE" ]; then
     mv "$PENDING_FILE" "$PENDING_PROCESSING" 2>/dev/null
     if [ -f "$PENDING_PROCESSING" ]; then
