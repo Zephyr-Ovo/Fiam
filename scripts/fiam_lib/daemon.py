@@ -364,6 +364,14 @@ def cmd_start(args: argparse.Namespace) -> None:
         except Exception as e:
             _plog.error("task recall error: %s", e, exc_info=True)
 
+    def _write_pending_external(config, msgs: list[dict]) -> None:
+        """Append pre-formatted external messages for inject.sh hook delivery."""
+        labels = [(f"{m['source']}:{m['from_name']}", m["text"]) for m in msgs]
+        formatted = Conductor.format_user_message(labels)
+        path = config.pending_external_path
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(formatted + "\n")
+
     # ------------------------------------------------------------------
     # Beat ingestion via Conductor
     #
@@ -495,8 +503,9 @@ def cmd_start(args: argparse.Namespace) -> None:
         if now_ts - last_inbox_check > inbox_interval:
             last_inbox_check = now_ts
             try:
-                n_tg = fetch_tg_inbox(config)
-                n_email = fetch_inbox(config)
+                msgs_tg = fetch_tg_inbox(config)
+                msgs_email = fetch_inbox(config)
+                n_tg, n_email = len(msgs_tg), len(msgs_email)
                 _plog.debug("poll  tg=%d email=%d", n_tg, n_email)
                 if n_tg or n_email:
                     ts = time.strftime("%H:%M")
@@ -504,69 +513,64 @@ def cmd_start(args: argparse.Namespace) -> None:
                     _plog.info("inbox  tg=+%d email=+%d", n_tg, n_email)
                     _log_action("inbox", f"tg={n_tg} email={n_email}")
 
-                    # Check comm state
+                    all_msgs = msgs_tg + msgs_email
+
+                    # Ingest ALL messages into Conductor → flow.jsonl + embed + gorge
+                    for msg in all_msgs:
+                        try:
+                            _conductor.ingest_external(msg["text"], msg["source"])
+                        except Exception as e:
+                            _plog.error("ingest_external failed: %s", e)
+
+                    # Check comm state for CC delivery
                     comm_state = _load_comm_state(config)
                     _plog.debug("comm_state=%s", comm_state)
 
                     if comm_state == "block":
-                        _plog.info("comm_state=block — messages archived, no wake")
-                        _console.print(f"  [dim]comm: block — messages archived[/dim]")
+                        _plog.info("comm_state=block — recorded in flow, no CC delivery")
+                        _console.print(f"  [dim]comm: block — recorded, no delivery[/dim]")
                     elif comm_state == "mute":
-                        _plog.info("comm_state=mute — messages queued, wake deferred")
+                        _plog.info("comm_state=mute — recorded + queued, wake deferred")
                         _console.print(f"  [dim]comm: mute — queued for later[/dim]")
+                        _write_pending_external(config, all_msgs)
                     else:
-                        # notify (default) — wake Fiet
-                        # Wake Fiet if inbox has messages and not interactive
+                        # notify (default) — deliver to CC
                         interactive = _is_interactive(config)
                         _plog.debug("interactive=%s", interactive)
                         if not interactive:
                             # Budget check before wake
                             budget_ok, budget_reason = check_budget(config)
                             if not budget_ok:
-                                _plog.warning("budget exceeded — skipping inbox wake: %s", budget_reason)
+                                _plog.warning("budget exceeded — queuing messages: %s", budget_reason)
                                 _console.print(f"  [yellow]budget: {budget_reason}[/]")
+                                _write_pending_external(config, all_msgs)
                             else:
-                                inbox_jsonl = config.inbox_jsonl_path
-                                jsonl_exists = inbox_jsonl.exists() and inbox_jsonl.stat().st_size > 0
-                                _plog.debug("inbox_jsonl exists=%s path=%s", jsonl_exists, inbox_jsonl)
-                                if jsonl_exists:
-                                    tag = "tg" if n_tg else "email"
-                                    summary = f"{n_tg + n_email} new message(s)"
-                                    # Read inbox content for recall context
-                                    try:
-                                        inbox_text = inbox_jsonl.read_text(encoding="utf-8").strip()
-                                        # Extract message bodies from JSONL
-                                        inbox_parts = []
-                                        for line in inbox_text.splitlines():
-                                            try:
-                                                obj = json.loads(line)
-                                                body = obj.get("body", obj.get("text", ""))
-                                                if body:
-                                                    inbox_parts.append(body[:200])
-                                            except json.JSONDecodeError:
-                                                pass
-                                        if inbox_parts:
-                                            _refresh_recall_for_task("\n".join(inbox_parts))
-                                    except Exception as e:
-                                        _plog.debug("inbox recall skip: %s", e)
-                                    _plog.info("wake attempt  tag=%s summary=%s", tag, summary)
-                                    ok = _wake_session(config, summary, tag=tag)
-                                    if ok:
-                                        ts2 = time.strftime("%H:%M")
-                                        _console.print(f"  [dim]└[{ts2}][/dim] [bold #a8f0e8]↗[/]  wake sent")
-                                        _plog.info("wake OK")
-                                    else:
-                                        _plog.warning("wake FAILED, retrying...")
-                                        ok2 = _wake_session(config, summary, tag=tag)
-                                        if not ok2:
-                                            _console.print(f"  [yellow]wake failed twice — messages remain queued[/]")
-                                            _plog.error("wake FAILED x2 — messages queued")
-                                            session = _load_active_session(config)
-                                            if session:
-                                                _retire_session(config, reason="wake_failed")
+                                # Refresh recall based on message content
+                                _refresh_recall_for_task("\n".join(m["text"][:200] for m in all_msgs))
+                                # Format user field with actual messages
+                                labels = [(f"{m['source']}:{m['from_name']}", m["text"]) for m in all_msgs]
+                                user_msg = Conductor.format_user_message(labels)
+                                tag = "tg" if n_tg and not n_email else ("email" if n_email and not n_tg else "inbox")
+                                _plog.info("wake attempt  tag=%s msgs=%d", tag, len(all_msgs))
+                                ok = _wake_session(config, user_msg, tag=tag)
+                                if ok:
+                                    ts2 = time.strftime("%H:%M")
+                                    _console.print(f"  [dim]└[{ts2}][/dim] [bold #a8f0e8]↗[/]  wake sent")
+                                    _plog.info("wake OK")
+                                else:
+                                    _plog.warning("wake FAILED, retrying...")
+                                    ok2 = _wake_session(config, user_msg, tag=tag)
+                                    if not ok2:
+                                        _console.print(f"  [yellow]wake failed twice — messages queued[/]")
+                                        _plog.error("wake FAILED x2 — messages queued in pending")
+                                        _write_pending_external(config, all_msgs)
+                                        session = _load_active_session(config)
+                                        if session:
+                                            _retire_session(config, reason="wake_failed")
                         else:
-                            _console.print(f"  [dim]interactive session — messages queued for hook[/dim]")
-                            _plog.info("interactive — skipping wake")
+                            _console.print(f"  [dim]interactive — messages queued for hook[/dim]")
+                            _plog.info("interactive — queuing for hook delivery")
+                            _write_pending_external(config, all_msgs)
             except Exception as e:
                 _plog.error("inbox error: %s", e, exc_info=True)
                 if config.debug_mode:

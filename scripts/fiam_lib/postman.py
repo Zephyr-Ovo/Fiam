@@ -364,33 +364,6 @@ def run_postman_loop(config: FiamConfig, poll_seconds: int = 15) -> None:
 
 
 # ------------------------------------------------------------------
-# Inbox JSONL helper — write messages for hook consumption
-# ------------------------------------------------------------------
-
-def _append_inbox_jsonl(config: FiamConfig, from_name: str, via: str, body: str) -> None:
-    """Append a message to inbox.jsonl for the UserPromptSubmit hook.
-
-    Format: one JSON object per line:
-        {"from":"Zephyr","via":"telegram","body":"message text","ts":"..."}
-
-    The hook (inject.sh) claims this file via atomic `mv` before reading.
-    """
-    import fcntl
-    path = config.inbox_jsonl_path
-    entry = json.dumps({
-        "from": from_name,
-        "via": via,
-        "body": body.strip(),
-        "ts": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
-    }, ensure_ascii=False)
-    # Append with file locking to avoid partial writes
-    with open(path, "a", encoding="utf-8") as f:
-        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-        f.write(entry + "\n")
-        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-
-
-# ------------------------------------------------------------------
 # IMAP inbox fetch — pull new emails into home/inbox/
 # ------------------------------------------------------------------
 
@@ -400,25 +373,16 @@ def fetch_inbox(
     imap_host: str = "imappro.zoho.com",
     imap_port: int = 993,
     max_fetch: int = 10,
-) -> int:
+) -> list[dict]:
     """Fetch unread emails via IMAP and save as Markdown in inbox/.
 
-    Each email becomes one .md file with YAML frontmatter:
-        ---
-        from: sender@example.com
-        subject: ...
-        date: ISO timestamp
-        via: email
-        ---
-        Body text
-
-    Returns count of new messages saved.
+    Returns list of message dicts: [{from_name, source, text}].
     """
     user = config.email_from
     password = os.environ.get("FIAM_EMAIL_PASSWORD", "")
     if not user or not password:
         print("[postman] IMAP not configured (email_from or FIAM_EMAIL_PASSWORD missing)")
-        return 0
+        return []
 
     inbox_dir = config.inbox_dir
     inbox_dir.mkdir(parents=True, exist_ok=True)
@@ -432,10 +396,10 @@ def fetch_inbox(
         status, data = conn.search(None, "UNSEEN")
         if status != "OK" or not data[0]:
             conn.logout()
-            return 0
+            return []
 
         msg_ids = data[0].split()[-max_fetch:]  # latest N
-        count = 0
+        messages = []
 
         for mid in msg_ids:
             status, msg_data = conn.fetch(mid, "(RFC822)")
@@ -480,18 +444,16 @@ def fetch_inbox(
                 f"{body.strip()}\n"
             )
             (inbox_dir / fname).write_text(md, encoding="utf-8")
-            # Also write to inbox.jsonl for hook consumption
-            _append_inbox_jsonl(config, sender, "email", body.strip())
-            count += 1
+            messages.append({"from_name": sender, "source": "email", "text": body.strip()})
 
         conn.logout()
-        if count:
-            print(f"[postman] Fetched {count} new email(s) → {inbox_dir}")
-        return count
+        if messages:
+            print(f"[postman] Fetched {len(messages)} new email(s) → {inbox_dir}")
+        return messages
 
     except Exception as e:
         print(f"[postman] IMAP fetch failed: {e}")
-        return 0
+        return []
 
 
 # ------------------------------------------------------------------
@@ -501,26 +463,18 @@ def fetch_inbox(
 _tg_update_offset: int = 0  # module-level state for long-polling offset
 
 
-def fetch_tg_inbox(config: FiamConfig, timeout: int = 0) -> int:
+def fetch_tg_inbox(config: FiamConfig, timeout: int = 0) -> list[dict]:
     """Poll Telegram Bot API for new messages and save to inbox/.
 
-    Each message becomes one .md file with YAML frontmatter:
-        ---
-        from: username or first_name
-        via: telegram
-        date: ISO timestamp
-        message_id: 12345
-        ---
-        Message text
-
-    Returns count of new messages saved.
+    Each message becomes one .md file with YAML frontmatter.
+    Returns list of message dicts: [{from_name, source, text}].
     """
     global _tg_update_offset
 
     token = os.environ.get(config.tg_bot_token_env, "")
     chat_id = config.tg_chat_id
     if not token or not chat_id:
-        return 0
+        return []
 
     url = f"https://api.telegram.org/bot{token}/getUpdates"
     params = {"timeout": timeout, "allowed_updates": '["message"]'}
@@ -534,14 +488,14 @@ def fetch_tg_inbox(config: FiamConfig, timeout: int = 0) -> int:
         with urllib.request.urlopen(req, timeout=timeout + 10) as resp:
             data = json.loads(resp.read())
     except (urllib.error.URLError, json.JSONDecodeError):
-        return 0
+        return []
 
     if not data.get("ok") or not data.get("result"):
-        return 0
+        return []
 
     inbox_dir = config.inbox_dir
     inbox_dir.mkdir(parents=True, exist_ok=True)
-    count = 0
+    messages = []
 
     for update in data["result"]:
         _tg_update_offset = update["update_id"] + 1
@@ -593,10 +547,8 @@ def fetch_tg_inbox(config: FiamConfig, timeout: int = 0) -> int:
             f"{text.strip()}\n"
         )
         (inbox_dir / fname).write_text(md, encoding="utf-8")
-        # Also write to inbox.jsonl for hook consumption
-        _append_inbox_jsonl(config, from_name, "telegram", text.strip())
-        count += 1
+        messages.append({"from_name": from_name, "source": "tg", "text": text.strip()})
 
-    if count:
-        print(f"[postman] Fetched {count} TG message(s) → {inbox_dir}")
-    return count
+    if messages:
+        print(f"[postman] Fetched {len(messages)} TG message(s) → {inbox_dir}")
+    return messages

@@ -18,7 +18,7 @@ Handles:
   - Graceful handling of mid-write incomplete lines
   - Hook-injected additionalContext (type: "attachment"):
       [recall] sections are EXCLUDED from events (anti-recursion)
-      [inbox] sections are preserved as inbox_context on the parent turn
+      [external] sections are preserved as inbox_context on the parent turn
   - (v2) tool_use blocks → action beats
   - (v2) routing markers [→tg:Name] / [→email:Name] → routed beats
 """
@@ -43,15 +43,15 @@ _SYSTEM_TAG_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Regex to extract [inbox] section from hook additionalContext
+# Regex to extract [external] section from hook additionalContext
 _INBOX_SECTION_RE = re.compile(
-    r"\[inbox\]\s*\n(.*?)(?=\[recall\]|\Z)",
+    r"\[external\]\s*\n(.*?)(?=\[recall\]|\Z)",
     re.DOTALL,
 )
 
 # Regex to detect [recall] section (we strip this entirely)
 _RECALL_SECTION_RE = re.compile(
-    r"\[recall\]\s*\n(.*?)(?=\[inbox\]|\Z)",
+    r"\[recall\]\s*\n(.*?)(?=\[external\]|\Z)",
     re.DOTALL,
 )
 
@@ -75,13 +75,13 @@ class ClaudeCodeAdapter:
         return turns
 
     def _extract_inbox_from_attachment(self, content_text: str) -> str:
-        """Extract [inbox] section from hook additionalContext, ignoring [recall].
+        """Extract [external] section from hook additionalContext, ignoring [recall].
 
-        Returns only inbox content. Recall is deliberately excluded to prevent
+        Returns only external message content. Recall is deliberately excluded to prevent
         memory fragments from re-entering the event graph (anti-recursion / 套娃).
         """
         # If no section markers, the entire content is recall-only (legacy format)
-        if "[inbox]" not in content_text:
+        if "[external]" not in content_text:
             return ""
         match = _INBOX_SECTION_RE.search(content_text)
         return match.group(1).strip() if match else ""

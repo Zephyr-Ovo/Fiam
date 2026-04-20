@@ -54,6 +54,9 @@ self/
 # Private dev notes (not for public repo)
 /DEVLOG.md
 *.md.bak
+/check.md
+/case/
+docs/copilot_session/*.jsonl
 
 # Deployment-specific scripts (contain instance IPs/configs)
 /scripts/diag_*.ps1

@@ -106,25 +106,27 @@ wheels = [
 
 [[package]]
 name = "fiam"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
     { name = "httpx" },
     { name = "numpy" },
-    { name = "protobuf" },
     { name = "python-dotenv" },
     { name = "python-frontmatter" },
     { name = "pyyaml" },
     { name = "rich" },
-    { name = "sentence-transformers" },
-    { name = "sentencepiece" },
-    { name = "transformers" },
 ]
 
 [package.optional-dependencies]
 cuda = [
     { name = "torch" },
+]
+ml = [
+    { name = "protobuf" },
+    { name = "sentence-transformers" },
+    { name = "sentencepiece" },
+    { name = "transformers" },
 ]
 
 [package.metadata]
@@ -132,18 +134,19 @@ requires-dist = [
     { name = "anthropic", specifier = ">=0.25.0" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "numpy", specifier = ">=1.24.0" },
-    { name = "protobuf", specifier = ">=7.34.1" },
+    { name = "protobuf", marker = "extra == 'ml'", specifier = ">=7.34.1" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "python-frontmatter", specifier = ">=1.1.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rich", specifier = ">=13.0.0" },
-    { name = "sentence-transformers", specifier = ">=3.0.0" },
-    { name = "sentencepiece", specifier = ">=0.2.1" },
+    { name = "sentence-transformers", marker = "extra == 'ml'", specifier = ">=3.0.0" },
+    { name = "sentencepiece", marker = "extra == 'ml'", specifier = ">=0.2.1" },
     { name = "torch", marker = "extra == 'cuda'", specifier = ">=2.0.0", index = "https://download.pytorch.org/whl/cu124" },
-    { name = "torch", marker = "extra != 'cuda'", specifier = ">=2.0.0" },
-    { name = "transformers", specifier = ">=4.40.0" },
+    { name = "torch", marker = "extra != 'cuda' and extra == 'ml'", specifier = ">=2.0.0" },
+    { name = "torch", marker = "extra == 'cuda' and extra == 'ml'", specifier = ">=2.0.0", index = "https://download.pytorch.org/whl/cu124" },
+    { name = "transformers", marker = "extra == 'ml'", specifier = ">=4.40.0" },
 ]
-provides-extras = ["cuda"]
+provides-extras = ["ml", "cuda"]
 
 [[package]]
 name = "filelock"

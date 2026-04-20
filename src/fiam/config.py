@@ -300,8 +300,13 @@ class FiamConfig:
 
     @property
     def inbox_jsonl_path(self) -> Path:
-        """JSONL file consumed by inject.sh hook — daemon writes inbox messages here."""
+        """DEPRECATED: inbox.jsonl eliminated in S16. Use pending_external_path."""
         return self.home_path / "inbox.jsonl"
+
+    @property
+    def pending_external_path(self) -> Path:
+        """Pre-formatted external messages waiting for CC delivery (Conductor-prepared)."""
+        return self.home_path / "pending_external.txt"
 
     @property
     def active_session_path(self) -> Path:

@@ -41,6 +41,7 @@
 			<a href="/events" class="hover:text-[var(--color-lavender)]">events</a>
 			<a href="/graph" class="hover:text-[var(--color-lavender)]">graph</a>
 			<a href="/flow" class="hover:text-[var(--color-lavender)]">flow</a>
+			<a href="/annotate" class="hover:text-[var(--color-lavender)]">annotate</a>
 			<a href="/schedule" class="hover:text-[var(--color-lavender)]">schedule</a>
 			<a href="/logs" class="hover:text-[var(--color-lavender)]">logs</a>
 		</nav>

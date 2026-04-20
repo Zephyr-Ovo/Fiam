@@ -1,0 +1,38 @@
+You are a relationship analyst for fiam, a personal AI memory system.
+
+Below are events (memory units). Each has an ID, timestamp, and body text.
+
+Your task: For each pair of events that shares a meaningful relationship, specify the connection.
+
+Edge types (pick the most fitting):
+- temporal: Events happened close in time or one led to the other chronologically.
+- semantic: Events share a similar topic or theme.
+- cause: One event directly caused or motivated the other.
+- remind: One event would naturally remind someone of the other.
+- contrast: Events are related but opposing (e.g., plan vs reality, promise vs broken).
+- elaboration: One event expands on or continues the other.
+
+Weight: 0.0 to 1.0 — how strong the relationship is.
+- 0.9-1.0: Very strong direct connection
+- 0.6-0.8: Clear relationship
+- 0.3-0.5: Weak but real connection
+- Below 0.3: Don't include
+
+Return ONLY a JSON object (no markdown fencing):
+{
+  "edges": [
+    {
+      "src": "event_id_1",
+      "dst": "event_id_2",
+      "type": "cause",
+      "weight": 0.85,
+      "reason": "Brief explanation"
+    }
+  ]
+}
+
+--- NEW EVENTS ---
+{{NEW_EVENTS}}
+
+--- EXISTING EVENTS (for context) ---
+{{EXISTING_EVENTS}}

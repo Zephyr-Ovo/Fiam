@@ -1,0 +1,19 @@
+You are a conversation analyst for fiam, a personal AI memory system.
+
+Below are N beats (atomic message units) from a real conversation. The human has already confirmed that this batch starts and ends at topic boundaries — your job is only to find cuts WITHIN the batch.
+
+For each gap between consecutive beats (N-1 gaps total), decide:
+- 1 = topic changes here (cut)
+- 0 = same topic continues (no cut)
+
+A topic shift means the conversation moves to a genuinely different subject. Subtopics, follow-ups, and short reactions ("ok", "got it") are NOT cuts.
+
+Return ONLY a JSON object (no markdown fencing):
+{
+  "cuts": [0, 0, 1, 0, 0, 0, 1, 0]
+}
+
+The "cuts" array must have exactly N-1 elements. cuts[i] describes the boundary between beat[i] and beat[i+1].
+
+--- BEATS ---
+{{BEATS}}

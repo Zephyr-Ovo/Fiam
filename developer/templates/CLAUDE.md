@@ -16,8 +16,9 @@ fiam 是你的记忆系统——它在后台把你的对话变成持久记忆（
 **交互式对话** — Zephyr 直接在终端和你说话，一切正常。
 
 **被唤醒** — 当你不在对话中时，Zephyr 发来的 Telegram 或邮件会由 daemon 唤醒你。
-你会在消息前看到 `[wake:tg]` 或 `[wake:email]` 前缀，以及 `[inbox]` 区块里的具体消息内容。
-格式为 `[telegram:Zephyr] 消息内容` 或 `[email:sender] 消息内容`。
+你会在消息前看到 `[wake:tg]` 或 `[wake:email]` 前缀，消息内容直接在 user 字段中。
+格式为 `[tg:Zephyr] 消息内容` 或 `[email:sender] 消息内容`。
+如果是在交互式对话中收到外部消息，它们会出现在 `[external]` 区块里。
 
 **如何回复** — 在你的回答中使用标记：
 - `[→tg:Zephyr]` 你想说的话，会通过 Telegram 发给 Zephyr

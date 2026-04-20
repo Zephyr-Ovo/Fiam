@@ -87,6 +87,31 @@ export interface FlowPayload {
 	total: number;
 }
 
+export interface AnnotateEdge {
+	src: string;
+	dst: string;
+	type: string;
+	weight: number;
+	reason: string;
+}
+
+export interface AnnotateProposal {
+	status: 'none' | 'cuts_proposed' | 'edges_proposed';
+	beats?: FlowPayload['beats'][];
+	cuts?: number[];
+	edges?: AnnotateEdge[];
+	flow_offset?: number;
+	flow_end?: number;
+}
+
+export interface AnnotateConfirmResult {
+	ok: boolean;
+	events_created: string[];
+	edges_created: number;
+	saved_boundaries: number;
+	saved_pairs: number;
+}
+
 export const api = {
 	status: () => j<Status>('/status'),
 	events: (limit = 50) => j<EventRow[]>(`/events?limit=${limit}`),
@@ -113,5 +138,14 @@ export const api = {
 	poolEdgeTypes: () => j<{ types: string[] }>('/pool/edge-types'),
 
 	// Flow
-	flow: (offset = 0, limit = 50) => j<FlowPayload>(`/flow?offset=${offset}&limit=${limit}`)
+	flow: (offset = 0, limit = 50) => j<FlowPayload>(`/flow?offset=${offset}&limit=${limit}`),
+
+	// Annotation
+	annotateProposal: () => j<AnnotateProposal>('/annotate/proposal'),
+	annotateRequest: (offset?: number, limit?: number) =>
+		mutate<AnnotateProposal>('POST', '/annotate/request', { offset, limit }),
+	annotateEdges: (cuts?: number[]) =>
+		mutate<AnnotateProposal>('POST', '/annotate/edges', { cuts }),
+	annotateConfirm: (cuts: number[], edges: AnnotateEdge[]) =>
+		mutate<AnnotateConfirmResult>('POST', '/annotate/confirm', { cuts, edges })
 };

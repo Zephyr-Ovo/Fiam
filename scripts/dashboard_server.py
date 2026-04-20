@@ -554,6 +554,218 @@ def _pool_delete_event(event_id: str) -> dict:
     return {"ok": True, "id": event_id}
 
 
+# ------------------------------------------------------------------
+# Annotation endpoints
+# ------------------------------------------------------------------
+
+_ANNOTATION_PROPOSAL: dict | None = None  # in-memory pending proposal
+
+
+def _annotate_request(payload: dict) -> dict:
+    """Trigger DS annotation on recent flow beats.
+
+    payload: {"offset"?: int, "limit"?: int} — defaults to last 100 beats.
+    Returns: {"beats": [...], "cuts": [0,1,0,...], "edges": [], ...}
+    """
+    global _ANNOTATION_PROPOSAL
+    if not _CONFIG:
+        raise RuntimeError("config not loaded")
+
+    flow_path = _CONFIG.flow_path
+    if not flow_path.exists():
+        raise ValueError("flow.jsonl not found")
+
+    lines = flow_path.read_text(encoding="utf-8").splitlines()
+    total = len(lines)
+    limit = int(payload.get("limit", 100))
+    offset = int(payload.get("offset", max(0, total - limit)))
+    end = min(offset + limit, total)
+
+    beats: list[dict] = []
+    for line in lines[offset:end]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            beats.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+
+    if not beats:
+        raise ValueError("no beats to annotate")
+
+    from fiam.annotator import propose_cuts
+    cuts = propose_cuts(beats, _CONFIG)  # list[int], len = N-1
+
+    _ANNOTATION_PROPOSAL = {
+        "beats": beats,
+        "cuts": cuts,
+        "edges": [],
+        "flow_offset": offset,
+        "flow_end": end,
+        "status": "cuts_proposed",
+    }
+    return _ANNOTATION_PROPOSAL
+
+
+def _annotate_edges(payload: dict) -> dict:
+    """Phase 2: After human reviews cuts, request edge proposals."""
+    global _ANNOTATION_PROPOSAL
+    if not _CONFIG or not _POOL:
+        raise RuntimeError("config/pool not loaded")
+    if not _ANNOTATION_PROPOSAL:
+        raise ValueError("no active proposal — run /annotate/request first")
+
+    # Accept human-corrected cuts
+    cuts = payload.get("cuts", _ANNOTATION_PROPOSAL.get("cuts", []))
+    beats = _ANNOTATION_PROPOSAL["beats"]
+
+    from fiam.annotator import cuts_to_segments, propose_edges
+    segments = cuts_to_segments(beats, cuts)
+
+    # Build new events from confirmed segments
+    new_events: list[dict] = []
+    for i, seg in enumerate(segments):
+        start, end = seg["start"], seg["end"]
+        body_lines = [b.get("text", "") for b in beats[start:end + 1]]
+        new_events.append({
+            "id": f"seg_{i}",
+            "time": beats[start].get("t", ""),
+            "body": "\n".join(body_lines),
+        })
+
+    # Existing events from pool
+    existing_events: list[dict] = []
+    if _POOL:
+        pool_events = _POOL.load_events()
+        for ev in pool_events[:50]:
+            body = _POOL.read_body(ev.id)
+            existing_events.append({
+                "id": ev.id,
+                "time": ev.t.isoformat(),
+                "body": body[:400],
+            })
+
+    result = propose_edges(new_events, existing_events, _CONFIG)
+
+    _ANNOTATION_PROPOSAL["cuts"] = cuts
+    _ANNOTATION_PROPOSAL["edges"] = result["edges"]
+    _ANNOTATION_PROPOSAL["status"] = "edges_proposed"
+    return _ANNOTATION_PROPOSAL
+
+
+def _annotate_confirm(payload: dict) -> dict:
+    """Confirm annotations: save training data (with vectors) + create events."""
+    global _ANNOTATION_PROPOSAL
+    if not _CONFIG or not _POOL:
+        raise RuntimeError("config/pool not loaded")
+    if not _ANNOTATION_PROPOSAL:
+        raise ValueError("no active proposal")
+
+    beats = _ANNOTATION_PROPOSAL["beats"]
+    cuts = payload.get("cuts", _ANNOTATION_PROPOSAL.get("cuts", []))
+    edges = payload.get("edges", _ANNOTATION_PROPOSAL.get("edges", []))
+
+    import numpy as np
+    from datetime import datetime as _dt, timezone as _tz
+    from fiam.store.pool import Pool, Event
+    from fiam.annotator import save_training_data, cuts_to_segments
+
+    # 1. Compute beat embeddings for training data
+    beat_vectors: list | None = None
+    with _COMPUTE_LOCK:
+        embedder = _get_embedder()
+        if embedder:
+            vecs = []
+            for b in beats:
+                text = b.get("text", "").strip()
+                if text:
+                    try:
+                        vecs.append(embedder.embed(text))
+                    except Exception:
+                        vecs.append(None)
+                else:
+                    vecs.append(None)
+            beat_vectors = vecs
+
+    # 2. Save training data (text + vectors + cuts)
+    training_dir = _ROOT / "training_data"
+    stats = save_training_data(
+        beats, cuts, edges, training_dir,
+        beat_vectors=beat_vectors,
+    )
+
+    # 3. Create events in pool from confirmed segments
+    segments = cuts_to_segments(beats, cuts)
+    created_events: list[str] = []
+
+    with _COMPUTE_LOCK:
+        embedder = _get_embedder()
+        for i, seg in enumerate(segments):
+            start, end = seg["start"], seg["end"]
+            body_lines = [b.get("text", "") for b in beats[start:end + 1]]
+            body = "\n".join(body_lines)
+            ev_time = beats[start].get("t", "")
+
+            # Segment fingerprint = mean of beat vectors
+            seg_vecs = []
+            if beat_vectors:
+                for idx in range(start, end + 1):
+                    if beat_vectors[idx] is not None:
+                        seg_vecs.append(beat_vectors[idx])
+            fingerprint = np.mean(seg_vecs, axis=0).astype(np.float32) if seg_vecs else None
+
+            event_id = f"ann_{_ANNOTATION_PROPOSAL['flow_offset']}_{i}"
+            try:
+                t = _dt.fromisoformat(ev_time) if ev_time else _dt.now(_tz.utc)
+            except (ValueError, TypeError):
+                t = _dt.now(_tz.utc)
+
+            _POOL.write_body(event_id, body)
+            fp_idx = -1
+            if fingerprint is not None:
+                fp_idx = _POOL.append_fingerprint(fingerprint)
+
+            ev = Event(id=event_id, t=t, access_count=0, fingerprint_idx=fp_idx)
+            _POOL.append_event(ev)
+            created_events.append(event_id)
+
+        _POOL.rebuild_cosine()
+
+        # 4. Create edges
+        created_edges = 0
+        for e in edges:
+            try:
+                src_ev = _POOL.get_event(e["src"])
+                dst_ev = _POOL.get_event(e["dst"])
+                if src_ev and dst_ev and src_ev.fingerprint_idx >= 0 and dst_ev.fingerprint_idx >= 0:
+                    _POOL.add_edge(
+                        src_ev.fingerprint_idx,
+                        dst_ev.fingerprint_idx,
+                        Pool.edge_type_id(e.get("type", "semantic")),
+                        float(e.get("weight", 0.5)),
+                    )
+                    created_edges += 1
+            except Exception as exc:
+                logger.warning("edge creation failed: %s", exc)
+
+    _ANNOTATION_PROPOSAL = None
+
+    return {
+        "ok": True,
+        "events_created": created_events,
+        "edges_created": created_edges,
+        **stats,
+    }
+
+
+def _annotate_proposal() -> dict:
+    """Return current pending proposal."""
+    if not _ANNOTATION_PROPOSAL:
+        return {"status": "none"}
+    return _ANNOTATION_PROPOSAL
+
+
 def _api_flow(offset: int = 0, limit: int = 50) -> dict:
     """Read beats from flow.jsonl with pagination."""
     if not _CONFIG:
@@ -687,6 +899,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             elif path == "/api/pool/edge-types":
                 from fiam.store.pool import Pool
                 self._serve_json({"types": list(Pool.EDGE_TYPE_NAMES.values())})
+            elif path == "/api/annotate/proposal":
+                self._serve_json(_annotate_proposal())
             else:
                 self.send_error(404)
         except Exception as e:
@@ -732,7 +946,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # Mutation endpoints require ingest token
         pool_write_paths = {"/api/pool/edge", "/api/pool/edge/delete"}
         pool_write_prefixes = ("/api/pool/event/",)
+        annotate_paths = {"/api/annotate/request", "/api/annotate/edges", "/api/annotate/confirm"}
         is_pool_write = path in pool_write_paths or any(path.startswith(p) for p in pool_write_prefixes)
+        is_annotate = path in annotate_paths
 
         if path == "/api/capture":
             if not _ingest_token_ok(self):
@@ -800,6 +1016,42 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 self._serve_json({"error": str(e)}, status=400)
                 return
             except Exception as e:
+                self._serve_json({"error": str(e)}, status=500)
+                return
+            self._serve_json(result)
+            return
+
+        if is_annotate:
+            if not _viewer_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = 0
+            payload = {}
+            if length > 0:
+                try:
+                    body = self.rfile.read(length).decode("utf-8")
+                    payload = json.loads(body)
+                except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                    self._serve_json({"error": f"bad json: {e}"}, status=400)
+                    return
+            try:
+                if path == "/api/annotate/request":
+                    result = _annotate_request(payload)
+                elif path == "/api/annotate/edges":
+                    result = _annotate_edges(payload)
+                elif path == "/api/annotate/confirm":
+                    result = _annotate_confirm(payload)
+                else:
+                    self.send_error(404)
+                    return
+            except ValueError as e:
+                self._serve_json({"error": str(e)}, status=400)
+                return
+            except Exception as e:
+                logger.exception("annotate error")
                 self._serve_json({"error": str(e)}, status=500)
                 return
             self._serve_json(result)

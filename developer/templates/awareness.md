@@ -13,7 +13,11 @@ Zephyr (TG/Email)
     ↓
 fiam daemon (ISP) — 每60秒轮询 TG/IMAP
     ↓
-inbox.jsonl → inject.sh hook → 注入到我的上下文
+Conductor.ingest_external() → flow.jsonl + embed + gorge
+    ↓
+两种投递路径：
+  - 非交互(wake): daemon 通过 `claude -p` user字段直接送达
+  - 交互中: pending_external.txt → inject.sh hook → 注入到我的上下文
     ↓
 我回复（带 [→tg:Zephyr] 标记）
     ↓
@@ -24,9 +28,9 @@ Zephyr 收到 TG/邮件
 
 ## 消息格式
 
-### 收到消息（在 [inbox] 区块中）
+### 收到消息（在 [external] 区块中，或 wake 的 user 字段）
 ```
-[telegram:Zephyr] 消息内容
+[tg:Zephyr] 消息内容
 [email:sender@example.com] 邮件内容
 ```
 
