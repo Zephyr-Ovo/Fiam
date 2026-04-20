@@ -56,7 +56,8 @@ self/
 *.md.bak
 /check.md
 /case/
-docs/copilot_session/*.jsonl
+/docs/
+texput.log
 
 # Deployment-specific scripts (contain instance IPs/configs)
 /scripts/diag_*.ps1
