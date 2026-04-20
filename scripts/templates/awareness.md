@@ -67,7 +67,7 @@ priority: normal
 
 发送：在消息中写 `[sticker:名称]`，postman 解析后通过 TG Bot API 发送。
 接收：已索引的显示为 `[sticker:名称]`，未知的显示为 `[sticker:emoji] (file_id: xxx)`。
-索引文件：`~/fiam-code/assets/stickers/index.json`（21 个已索引）。
+索引文件：`~/fiam-code/channels/tg/stickers/index.json`（21 个已索引）。
 
 ## 定时任务 (Scheduler)
 

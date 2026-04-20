@@ -3,21 +3,19 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import subprocess
 import sys
 from pathlib import Path
 
 from fiam_lib.core import _project_root, _toml_path, _detect_platform
-from fiam_lib.hooks import _INJECT_PS1_TEMPLATE, _INJECT_SH_TEMPLATE
+from fiam_lib.hooks import write_claude_md, write_gitignore, install_hooks
 from fiam_lib.ui import _conjure
 
 
 def cmd_init(args: argparse.Namespace) -> None:
     """Interactive setup wizard."""
     from fiam.config import FiamConfig, LANGUAGE_PROFILES
-    from fiam.injector.claude_code import write_claude_md, write_gitignore
 
     code_path = _project_root()
     toml = _toml_path()
@@ -148,52 +146,9 @@ def cmd_init(args: argparse.Namespace) -> None:
     write_gitignore(config)
 
     # Auto-install hook files into home/.claude/
-    claude_dir = home_path / ".claude"
-    hooks_dir = claude_dir / "hooks"
-    hooks_dir.mkdir(parents=True, exist_ok=True)
-
-    # Platform-aware hook installation
-    if platform == "windows":
-        inject_path = hooks_dir / "inject.ps1"
-        hook_template = _INJECT_PS1_TEMPLATE
-        hook_command = r'& "$env:CLAUDE_PROJECT_DIR\.claude\hooks\inject.ps1"'
-        hook_shell = "powershell"
-    else:
-        inject_path = hooks_dir / "inject.sh"
-        hook_template = _INJECT_SH_TEMPLATE
-        hook_command = '"$CLAUDE_PROJECT_DIR/.claude/hooks/inject.sh"'
-        hook_shell = "bash"
-
-    if not inject_path.exists():
-        inject_path.write_text(hook_template, encoding="utf-8")
-        if platform != "windows":
-            inject_path.chmod(0o755)
-        print(f"  hook         {inject_path}")
-    else:
-        print(f"  hook         {inject_path}  (exists, not overwritten)")
-
-    settings_path = claude_dir / "settings.local.json"
-    if not settings_path.exists():
-        hook_settings = {
-            "hooks": {
-                "UserPromptSubmit": [
-                    {
-                        "hooks": [
-                            {
-                                "type": "command",
-                                "shell": hook_shell,
-                                "command": hook_command,
-                                "statusMessage": "checking memory...",
-                            }
-                        ]
-                    }
-                ]
-            }
-        }
-        settings_path.write_text(json.dumps(hook_settings, indent=2), encoding="utf-8")
-        print(f"  hook config  {settings_path}")
-    else:
-        print(f"  hook config  {settings_path}  (exists, not overwritten)")
+    hook_results = install_hooks(config, platform)
+    for h in hook_results:
+        print(f"  hook         {h}")
 
     # Git init
     if git_enabled:

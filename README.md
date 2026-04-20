@@ -97,11 +97,16 @@ dashboard/                 # SvelteKit 5 + Svelte runes + Tailwind 4
   src/routes/flow/         # Beat stream viewer
   src/lib/                 # API client, NodeEditor, EdgeMenu
 
-developer/hooks/           # CC hook scripts
+scripts/hooks/             # CC hook scripts
   inject.sh                # recall injection (UserPromptSubmit)
   outbox.sh                # outbound message extraction (Stop)
   boot.sh                  # daily summary (SessionStart)
   compact.sh               # archive summaries (PostCompact)
+
+channels/
+  tg/stickers/             # TG sticker index
+  favilla/                 # Android text capture app
+  limen/                   # ESP32 wearable device
 ```
 
 ## Commands

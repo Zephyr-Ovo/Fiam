@@ -20,7 +20,7 @@ Fiet's physical perception anchor — a wearable pin that lets AI see the world.
 Requires [PlatformIO](https://platformio.org/).
 
 ```bash
-cd devices/limen
+cd channels/limen
 pio run                  # compile
 pio run -t upload        # flash via USB-C
 pio device monitor       # serial log

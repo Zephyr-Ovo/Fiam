@@ -94,11 +94,16 @@ dashboard/                 # SvelteKit 5 + Svelte runes + Tailwind 4
   src/routes/events/       # 事件列表 + 详情
   src/routes/flow/         # Beat 流查看器
 
-developer/hooks/           # CC hook 脚本
+scripts/hooks/             # CC hook 脚本
   inject.sh                # recall 注入 (UserPromptSubmit)
   outbox.sh                # outbox 消息提取 (Stop)
   boot.sh                  # 日报注入 (SessionStart)
   compact.sh               # 归档摘要 (PostCompact)
+
+channels/
+  tg/stickers/             # TG 表情包索引
+  favilla/                 # Android 信息采集 app
+  limen/                   # ESP32 可穿戴设备
 ```
 
 ## 命令
@@ -133,8 +138,8 @@ developer/hooks/           # CC hook 脚本
 
 ## 相关项目
 
-- **Favilla** (`android/favilla/`) — Android 信息采集 app：选中文本 + 批注 → POST /api/capture
-- **Limen** (`devices/limen/`) — ESP32S3 可穿戴设备：摄像头 + 屏幕 + WiFi，物理世界感知锚点
+- **Favilla** (`channels/favilla/`) — Android 信息采集 app：选中文本 + 批注 → POST /api/capture
+- **Limen** (`channels/limen/`) — ESP32S3 可穿戴设备：摄像头 + 屏幕 + WiFi，物理世界感知锚点
 
 ## 许可证
 

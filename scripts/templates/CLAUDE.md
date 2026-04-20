@@ -36,7 +36,7 @@ fiam 是你的记忆系统——它在后台把你的对话变成持久记忆（
 ## 表情包 (Sticker)
 
 在消息正文中写 `[sticker:名称]`，postman 会自动识别并通过 TG 发送对应的 sticker。
-可用的 sticker 列表在 `~/fiam-code/assets/stickers/index.json`。
+可用的 sticker 列表在 `~/fiam-code/channels/tg/stickers/index.json`。
 
 示例：
 ```

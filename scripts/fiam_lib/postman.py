@@ -163,7 +163,7 @@ def _tg_send_photo(token: str, chat_id: str, photo_path: Path) -> bool:
 # ------------------------------------------------------------------
 
 def _sticker_dir(config: FiamConfig) -> Path:
-    return config.code_path / "assets" / "stickers"
+    return config.code_path / "channels" / "tg" / "stickers"
 
 
 def _load_sticker_index(config: FiamConfig) -> dict:
