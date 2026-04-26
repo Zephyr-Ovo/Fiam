@@ -21,7 +21,7 @@ Claude Code session
 
 - **Beat** — atomic information unit in `flow.jsonl`. `{t, text, source, user_status, ai_status, meta?}`; embeddings and cuts use `text` only, while sender/url/route metadata lives in `meta`.
 - **Conductor** — info flow hub: beat ingestion → flow persistence → frozen vector persistence → optional auto memory pipeline
-- **FeatureStore** — frozen beat-level bge-m3 vectors in `store/features/`, keyed by beat hash for annotation/training
+- **FeatureStore** — frozen beat-level bge-m3 vectors in chunked `store/features/`, keyed by beat hash for annotation/training
 - **Gorge** — TextTiling depth segmentation with peak-valley confirmation. Used only in `memory_mode = "auto"`
 - **Pool** — unified 5-layer storage (replaces old scattered store/)
 - **Spreading activation** — graph-based recall: seed → edge propagation → probabilistic selection (not top-k)
@@ -48,7 +48,7 @@ Optional integrations are registered by `plugins/<id>/plugin.toml`. Infrastructu
 ## Features
 
 - **Manual-first annotation** — console marks event and drift cuts; processed flow ranges are locked in `store/annotation_state.json`
-- **Frozen feature capture** — every ingested beat can be saved once into `store/features/flow_vectors.npy`
+- **Frozen feature capture** — every ingested beat can be saved once into chunked files under `store/features/`
 - **Real-time segmentation** — optional auto mode where Gorge watches beat embeddings and fires event cuts
 - **Drift detection** — auto mode only: adjacent beat cosine below threshold → recall hook fires
 - **Graph spreading activation** — seed from sliding vector, propagate along edges, weight multiplication, probabilistic fire

@@ -968,14 +968,12 @@ def cmd_status(args: argparse.Namespace) -> None:
         pool = Pool(config.pool_dir, dim=config.embedding_dim)
         print(f"  events: {pool.event_count}")
 
-        feature_vectors = config.feature_dir / "flow_vectors.npy"
-        if feature_vectors.exists():
-            try:
-                import numpy as np
-                count = int(np.load(feature_vectors, mmap_mode="r").shape[0])
-            except Exception:
-                count = 0
-            print(f"  beat vectors: {count}")
+        try:
+            from fiam.store.features import FeatureStore
+            count = FeatureStore(config.feature_dir, dim=config.embedding_dim).count()
+        except Exception:
+            count = 0
+        print(f"  beat vectors: {count}")
 
         cursor = _load_cursor(code_path)
         if cursor:

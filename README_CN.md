@@ -21,7 +21,7 @@ Claude Code session
 
 - **Beat** — `flow.jsonl` 中的原子信息单元。`{t, text, source, user_status, ai_status, meta?}`；嵌入与切点只看 `text`，发送者、URL、路由目标等放在 `meta`。
 - **Conductor** — 信息流中枢：beat 摄入 → flow 持久化 → 冻结向量 → 可选自动记忆流水线
-- **FeatureStore** — beat 级 bge-m3 冻结向量库，位于 `store/features/`，用 beat hash 幂等索引
+- **FeatureStore** — beat 级 bge-m3 冻结向量库，位于分片式 `store/features/`，用 beat hash 幂等索引
 - **Gorge** — TextTiling 深度切分，峰谷确认；仅在 `memory_mode = "auto"` 时运行
 - **Pool** — 统一 5 层存储（取代旧的分散 store/）
 - **扩散激活** — 图检索：种子节点 → 沿边传播 → 概率选择（不是 top-k）
@@ -50,7 +50,7 @@ Claude Code session
 ## 特性
 
 - **标注期人工切割** — console 标 event/drift 切点，已处理 flow 区间写入 `store/annotation_state.json` 后锁定
-- **冻结特征采集** — 每条 beat 只保存一次到 `store/features/flow_vectors.npy`
+- **冻结特征采集** — 每条 beat 只保存一次到 `store/features/` 分片向量库
 - **实时事件切分** — auto 模式中 Gorge 监听 beat 嵌入流，通过 TextTiling 深度 + 峰谷确认触发事件切割
 - **语义漂移检测** — auto 模式中相邻 beat 余弦相似度低于阈值 → recall hook 触发
 - **图扩散激活检索** — 从滑动向量找种子节点，沿边传播、权重连乘、概率激发

@@ -33,6 +33,8 @@ class FeatureRecord:
     text_hash: str
     model_id: str
     dim: int
+    vector_file: str = ""
+    row_idx: int = -1
 
     def to_json(self) -> str:
         return json.dumps(self.__dict__, ensure_ascii=False)
@@ -47,22 +49,35 @@ class FeatureRecord:
             text_hash=str(data.get("text_hash", "")),
             model_id=str(data.get("model_id", "")),
             dim=int(data.get("dim", 0)),
+            vector_file=str(data.get("vector_file", "")),
+            row_idx=int(data.get("row_idx", -1)),
         )
 
 
 class FeatureStore:
-    """Append-only beat vector store."""
+    """Append-only beat vector store.
 
-    def __init__(self, root: Path, *, dim: int) -> None:
+    Older stores may have one monolithic ``flow_vectors.npy``. New writes use
+    chunk files under ``chunks/`` so appending one beat does not rewrite the
+    full historical matrix.
+    """
+
+    def __init__(self, root: Path, *, dim: int, chunk_size: int = 1024) -> None:
         self.root = root
         self.dim = dim
+        self.chunk_size = chunk_size
         self.index_path = root / "flow_index.jsonl"
         self.vectors_path = root / "flow_vectors.npy"
+        self.chunks_dir = root / "chunks"
         self._records: dict[str, FeatureRecord] | None = None
         self._vectors: np.ndarray | None = None
+        self._next_idx: int | None = None
+        self._current_chunk_path: Path | None = None
+        self._current_chunk: np.ndarray | None = None
 
     def ensure_dirs(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
+        self.chunks_dir.mkdir(parents=True, exist_ok=True)
 
     def load_records(self) -> dict[str, FeatureRecord]:
         if self._records is not None:
@@ -83,16 +98,37 @@ class FeatureStore:
         return records
 
     def load_vectors(self) -> np.ndarray:
+        """Load all vectors as one matrix.
+
+        This is mainly a compatibility helper. Hot paths should use
+        ``get_beat_vector`` by index record instead of materialising all rows.
+        """
         if self._vectors is not None:
             return self._vectors
+        arrays: list[np.ndarray] = []
         if self.vectors_path.exists():
             try:
-                self._vectors = np.load(self.vectors_path)
+                legacy = np.load(self.vectors_path)
+                if legacy.size:
+                    arrays.append(legacy.astype(np.float32, copy=False))
             except (OSError, ValueError):
-                self._vectors = np.empty((0, self.dim), dtype=np.float32)
-        else:
-            self._vectors = np.empty((0, self.dim), dtype=np.float32)
+                pass
+        for chunk in sorted(self.chunks_dir.glob("flow_vectors_*.npy")):
+            try:
+                arr = np.load(chunk)
+                if arr.size:
+                    arrays.append(arr.astype(np.float32, copy=False))
+            except (OSError, ValueError):
+                continue
+        self._vectors = np.vstack(arrays) if arrays else np.empty((0, self.dim), dtype=np.float32)
         return self._vectors
+
+    def count(self) -> int:
+        """Return the number of indexed beat vectors."""
+        records = self.load_records()
+        if records:
+            return max(rec.vector_idx for rec in records.values()) + 1
+        return int(self.load_vectors().shape[0])
 
     def append_beat_vector(self, beat: Beat, vec: np.ndarray, *, model_id: str) -> int:
         """Store a beat vector if absent; return vector row index."""
@@ -103,11 +139,11 @@ class FeatureStore:
             return existing.vector_idx
 
         self.ensure_dirs()
-        vectors = self.load_vectors()
         row = vec.astype(np.float32).reshape(1, -1)
-        next_idx = vectors.shape[0]
-        self._vectors = np.vstack([vectors, row]) if vectors.shape[0] else row
-        np.save(self.vectors_path, self._vectors)
+        if row.shape[1] != self.dim:
+            raise ValueError(f"vector dim {row.shape[1]} != expected {self.dim}")
+        next_idx = self._next_vector_idx()
+        vector_file, row_idx = self._append_chunk(row)
 
         text_hash = hashlib.sha256(beat.text.encode("utf-8")).hexdigest()
         rec = FeatureRecord(
@@ -118,17 +154,79 @@ class FeatureStore:
             text_hash=text_hash,
             model_id=model_id,
             dim=int(row.shape[1]),
+            vector_file=vector_file,
+            row_idx=row_idx,
         )
         with open(self.index_path, "a", encoding="utf-8") as handle:
             handle.write(rec.to_json() + "\n")
         records[key] = rec
+        self._next_idx = next_idx + 1
+        self._vectors = None
         return next_idx
 
     def get_beat_vector(self, beat: Beat) -> np.ndarray | None:
         rec = self.load_records().get(beat_key(beat))
         if rec is None:
             return None
+        if rec.vector_file:
+            path = self.root / rec.vector_file
+            try:
+                vectors = np.load(path, mmap_mode="r")
+            except (OSError, ValueError):
+                return None
+            if 0 <= rec.row_idx < vectors.shape[0]:
+                return np.asarray(vectors[rec.row_idx], dtype=np.float32)
+            return None
         vectors = self.load_vectors()
         if 0 <= rec.vector_idx < vectors.shape[0]:
             return vectors[rec.vector_idx]
         return None
+
+    def _next_vector_idx(self) -> int:
+        if self._next_idx is None:
+            self._next_idx = self.count()
+        return self._next_idx
+
+    def _append_chunk(self, row: np.ndarray) -> tuple[str, int]:
+        chunk_path, chunk = self._current_writable_chunk()
+        row_idx = int(chunk.shape[0])
+        updated = np.vstack([chunk, row]) if chunk.shape[0] else row
+        np.save(chunk_path, updated)
+        self._current_chunk_path = chunk_path
+        self._current_chunk = updated
+        return chunk_path.relative_to(self.root).as_posix(), row_idx
+
+    def _current_writable_chunk(self) -> tuple[Path, np.ndarray]:
+        if self._current_chunk_path is not None and self._current_chunk is not None:
+            if self._current_chunk.shape[0] < self.chunk_size:
+                return self._current_chunk_path, self._current_chunk
+
+        chunks = sorted(self.chunks_dir.glob("flow_vectors_*.npy"))
+        if chunks:
+            last = chunks[-1]
+            try:
+                arr = np.load(last).astype(np.float32, copy=False)
+            except (OSError, ValueError):
+                arr = np.empty((0, self.dim), dtype=np.float32)
+            if arr.ndim != 2 or arr.shape[1] != self.dim:
+                arr = np.empty((0, self.dim), dtype=np.float32)
+            if arr.shape[0] < self.chunk_size:
+                self._current_chunk_path = last
+                self._current_chunk = arr
+                return last, arr
+            next_num = _chunk_number(last) + 1
+        else:
+            next_num = 0
+
+        path = self.chunks_dir / f"flow_vectors_{next_num:06d}.npy"
+        arr = np.empty((0, self.dim), dtype=np.float32)
+        self._current_chunk_path = path
+        self._current_chunk = arr
+        return path, arr
+
+
+def _chunk_number(path: Path) -> int:
+    try:
+        return int(path.stem.rsplit("_", 1)[-1])
+    except ValueError:
+        return 0

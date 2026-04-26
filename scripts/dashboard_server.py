@@ -135,13 +135,11 @@ def _api_status() -> dict:
     if _CONFIG:
         if _POOL:
             events = _POOL.event_count
-        feature_vectors = _CONFIG.feature_dir / "flow_vectors.npy"
-        if feature_vectors.exists():
-            try:
-                import numpy as np
-                embeddings = int(np.load(feature_vectors, mmap_mode="r").shape[0])
-            except Exception:
-                embeddings = 0
+        try:
+            from fiam.store.features import FeatureStore
+            embeddings = FeatureStore(_CONFIG.feature_dir, dim=_CONFIG.embedding_dim).count()
+        except Exception:
+            embeddings = 0
         cursor = _CONFIG.store_dir / "cursor.json"
         if cursor.exists():
             try:
