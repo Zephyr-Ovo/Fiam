@@ -39,11 +39,18 @@ Claude Code session
 
 ### Beat sources
 
-`cc` (dialogue) · `action` (tool use) · `tg` · `email` · `favilla` (mobile) · `schedule`
+`cc` (dialogue) · `action` (tool use and image descriptions) · `tg` · `email` · `favilla` (Android) · `limen`/`xiao` (wearable) · `schedule`
 
 ### Functional plugins
 
 Optional integrations are registered by `plugins/<id>/plugin.toml`. Infrastructure such as dashboard, git diff, flow, Pool, and recall is not treated as a plugin. Inbound messages go through `fiam/receive/<source>`; outbound AI markers such as `[→tg:Iris] ...` are resolved through enabled plugin `dispatch_targets` and published to `fiam/dispatch/<target>`. See [docs/plugin_protocol.md](docs/plugin_protocol.md).
+
+### Mobile and wearable surfaces
+
+- **Favilla** (`channels/favilla`) is the Android companion app: Chat, Hub, Stats, More, selected-text capture, readalong bubble, image/voice routing entries, and token-protected `/api/app/*` calls.
+- **Limen/XIAO** (`channels/limen`) is the current screen-first wearable firmware. It polls `/api/wearable/reply` and displays `message`, `kaomoji`, or `emoji` commands emitted as `[→xiao:screen] ...` markers.
+- Multimodal data collapses into flow text beats. Voice enters as STT text; images enter as vision descriptions with `kind=action`; raw image bytes are routed away from the main chat AI.
+- `stroll` / `散步` is reserved for future ambient vision + TTS mode.
 
 ## Features
 

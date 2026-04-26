@@ -1,36 +1,55 @@
 # Favilla
 
-> a spark -> fiam
+Favilla is the Android companion app for Fiam. It is chat-first, but it also acts as the phone capture surface for text, images, future voice, readalong bubbles, and quick state markers.
 
-Favilla 是 fiam 的随身入口：主屏用于和 Fiet 对话，也保留划词捕获、悬浮窗共读和状态检查。
+## Current App
 
-## 设计
+- **Chat**: sends messages to the built-in `/api/app/chat` backend or to a user-provided custom API URL.
+- **Hub**: safety switch for AI control markers, voice placeholder, image picker, and quick marker buttons.
+- **Stats**: token-protected `/api/app/status` health panel. It reads daemon/store counts and does not write to flow.
+- **More**: backend/token/source settings, custom chat API, Vision/STT/TTS routing entries, overlay/accessibility/camera/mic permissions, bubble/readalong controls.
+- **PROCESS_TEXT / SEND intents**: selected/shared text posts to `/api/capture`, then MQTT `fiam/receive/favilla`, then daemon/Conductor write flow beats.
 
-- **Chat**：主屏直接发送消息到后端，当前内置 `cc` 后端，也可填写自定义 API URL。
-- **Recall display**：服务端返回 `recall` 时，App 会把它显示在 Fiet 侧的会话里。
-- **PROCESS_TEXT intent**：在系统文本选中菜单里加一项 "Send to fiam"。
-- **SEND intent**：在任何 app 的"分享到..."里出现 Favilla。
-- 选中 -> POST 到 `{server}/api/capture` -> MQTT `fiam/receive/favilla` -> daemon 写入 flow。
+Version: `0.3.3`, package `cc.fiet.favilla`, app id `cc.fiet.favilla`.
 
-## 首次使用
+## Multimodal Contract
 
-1. 装 APK（见下）
-2. 打开 Favilla -> 填 Server URL（`https://fiet.cc`）+ Ingest Token -> Save。
-3. Backend 默认选 `Claude Code`；如果要接自己的服务，选 `Custom API` 并填完整 URL。
-4. 在 Chat 里发消息；Stats 按钮确认 token 和服务状态 OK（不会写入 flow，也不会唤醒 AI）。
-5. 在任何 app 里：长按文字 -> 选 Send to fiam。
-6. 共读时点 Start readalong，选中文本后点悬浮按钮；结束时点 End readalong。
+- Text chat and selected text enter flow as text beats.
+- Voice input is reserved for STT; the transcript will enter flow as a normal text beat.
+- Images are routed to a separate vision provider. The vision result enters flow as `kind="action"` text, so the main chat AI does not receive raw image bytes.
+- `stroll` / `散步` is the reserved ambient mode: wearable/camera context -> vision text -> AI may speak through TTS.
 
-## 构建
+The current image/voice UI is a routing placeholder. Real Vision/STT/TTS provider calls still need to be wired.
 
-本地无需 Android 工具链。push 到仓库后 GitHub Actions 自动构建 debug APK，在 Actions artifact 里下载。
+## Local Storage
 
-手动本地构建需要：
+Sensitive local values are stored in `SharedPreferences` encrypted with an Android Keystore AES-GCM key:
+
+- ingest token
+- Vision API key
+- STT API key
+- TTS API key
+
+Non-secret routing values such as server URL, model name, and source tag remain plain local preferences. Old plaintext secret values migrate to encrypted form on first read.
+
+## First Use
+
+1. Install the debug APK.
+2. Open Favilla -> More -> set Server URL, usually `https://fiet.cc`, and the ingest token.
+3. Keep backend on `Claude Code` for `/api/app/chat`, or choose `Custom API` and enter a full endpoint URL.
+4. Use Chat for conversation, Stats for backend status, Hub for markers/images/voice stubs.
+5. For readalong, enable overlay/accessibility permissions, start the bubble, then use selected text or the floating action.
+
+## Build
+
+Preferred path: build through GitHub Actions or a local Android toolchain with Gradle wrapper/Gradle installed.
+
+Manual local build needs:
 - JDK 17
 - Android SDK（`sdkmanager "platforms;android-34" "build-tools;34.0.0"`）
 - `./gradlew assembleDebug` → `app/build/outputs/apk/debug/app-debug.apk`
 
-## Capture 字段
+## Capture Body
 
 POST body:
 ```json
@@ -91,8 +110,8 @@ Content-Type: application/json
 }
 ```
 
-自定义 API URL 由 App 直接 POST，同样发送 `text`、`source`、`session_id`，并接受 `reply` 或 `text` 字段作为回复。
+Custom API URL is called directly by the app. It receives `text`, `source`, and `session_id`, and the app accepts either `reply` or `text` in the JSON response.
 
-## 图标
+## Icon
 
-Placeholder adaptive-icon（深色背景 + 暖色余烬火光）。
+The app icon and avatar use the user-provided `avatar_ai.png` peach spark. Adaptive foreground assets are padded for Android's safe zone; legacy launcher PNGs are generated at density-correct sizes.

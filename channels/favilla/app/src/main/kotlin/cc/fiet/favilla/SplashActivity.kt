@@ -29,11 +29,13 @@ class SplashActivity : AppCompatActivity() {
             .start()
 
         lifecycleScope.launch {
-            if (ingestToken.isNotBlank()) {
-                withTimeoutOrNull(900) {
-                    val splash = CaptureClient.appSplash(serverUrl, ingestToken)
-                    if (splash.ok && splash.line.isNotBlank()) {
-                        line.text = splash.line
+            runCatching {
+                if (ingestToken.isNotBlank()) {
+                    withTimeoutOrNull(900) {
+                        val splash = CaptureClient.appSplash(serverUrl, ingestToken)
+                        if (splash.ok && splash.line.isNotBlank()) {
+                            line.text = splash.line
+                        }
                     }
                 }
             }

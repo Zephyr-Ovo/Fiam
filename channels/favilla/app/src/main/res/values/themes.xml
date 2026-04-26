@@ -91,7 +91,7 @@
         <item name="android:textSize">@dimen/text_display</item>
         <item name="android:fontFamily">@font/anthropic_serif_italic</item>
         <item name="fontFamily">@font/anthropic_serif_italic</item>
-        <item name="android:letterSpacing">-0.02</item>
+        <item name="android:letterSpacing">0</item>
     </style>
 
     <style name="TextAppearance.Favilla.Title" parent="TextAppearance.Material3.TitleLarge">
@@ -99,7 +99,7 @@
         <item name="android:textSize">@dimen/text_title</item>
         <item name="android:fontFamily">@font/anthropic_serif_italic</item>
         <item name="fontFamily">@font/anthropic_serif_italic</item>
-        <item name="android:letterSpacing">-0.01</item>
+        <item name="android:letterSpacing">0</item>
     </style>
 
     <style name="TextAppearance.Favilla.Body" parent="TextAppearance.Material3.BodyMedium">
@@ -138,6 +138,6 @@
         <item name="android:textColor">@color/ink</item>
         <item name="android:textSize">@dimen/text_metric</item>
         <item name="android:fontFamily">serif</item>
-        <item name="android:letterSpacing">-0.02</item>
+        <item name="android:letterSpacing">0</item>
     </style>
 </resources>

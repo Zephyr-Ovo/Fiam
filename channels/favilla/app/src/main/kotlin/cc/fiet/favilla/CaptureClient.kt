@@ -17,6 +17,13 @@ data class ChatResult(
 )
 
 object CaptureClient {
+    private const val USER_AGENT = "favilla/0.3.3 (Android)"
+
+    private fun endpoint(serverUrl: String, path: String): URL =
+        URL(serverUrl.trim().trimEnd('/') + path)
+
+    private fun errorMessage(e: Exception): String = e.message ?: e.javaClass.simpleName
+
     suspend fun send(
         serverUrl: String,
         token: String,
@@ -40,15 +47,18 @@ object CaptureClient {
             if (!phase.isNullOrBlank()) put("phase", phase)
         }.toString().toByteArray(Charsets.UTF_8)
 
-        val endpoint = URL(serverUrl.trimEnd('/') + "/api/capture")
-        val conn = (endpoint.openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
-            connectTimeout = 10_000
-            readTimeout = 15_000
-            doOutput = true
-            setRequestProperty("Content-Type", "application/json")
-            setRequestProperty("X-Fiam-Token", token)
-            setRequestProperty("User-Agent", "favilla/0.2 (Android)")
+        val conn = try {
+            (endpoint(serverUrl, "/api/capture").openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 10_000
+                readTimeout = 15_000
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+                setRequestProperty("X-Fiam-Token", token)
+                setRequestProperty("User-Agent", USER_AGENT)
+            }
+        } catch (e: Exception) {
+            return@withContext CaptureResult(false, false, null, errorMessage(e))
         }
         try {
             conn.outputStream.use { it.write(body) }
@@ -67,20 +77,23 @@ object CaptureClient {
                 CaptureResult(false, false, null, "HTTP $code: $resp")
             }
         } catch (e: Exception) {
-            CaptureResult(false, false, null, e.message ?: e.javaClass.simpleName)
+            CaptureResult(false, false, null, errorMessage(e))
         } finally {
             conn.disconnect()
         }
     }
 
     suspend fun appSplash(serverUrl: String, token: String): SplashResult = withContext(Dispatchers.IO) {
-        val endpoint = URL(serverUrl.trimEnd('/') + "/api/app/splash")
-        val conn = (endpoint.openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            connectTimeout = 800
-            readTimeout = 900
-            setRequestProperty("X-Fiam-Token", token)
-            setRequestProperty("User-Agent", "favilla/0.3 (Android)")
+        val conn = try {
+            (endpoint(serverUrl, "/api/app/splash").openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 800
+                readTimeout = 900
+                setRequestProperty("X-Fiam-Token", token)
+                setRequestProperty("User-Agent", USER_AGENT)
+            }
+        } catch (e: Exception) {
+            return@withContext SplashResult(false, "", errorMessage(e))
         }
         try {
             val code = conn.responseCode
@@ -93,20 +106,23 @@ object CaptureClient {
                 SplashResult(false, "", "HTTP $code: $resp")
             }
         } catch (e: Exception) {
-            SplashResult(false, "", e.message ?: e.javaClass.simpleName)
+            SplashResult(false, "", errorMessage(e))
         } finally {
             conn.disconnect()
         }
     }
 
     suspend fun appStatus(serverUrl: String, token: String): AppStatusResult = withContext(Dispatchers.IO) {
-        val endpoint = URL(serverUrl.trimEnd('/') + "/api/app/status")
-        val conn = (endpoint.openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            connectTimeout = 10_000
-            readTimeout = 15_000
-            setRequestProperty("X-Fiam-Token", token)
-            setRequestProperty("User-Agent", "favilla/0.1 (Android)")
+        val conn = try {
+            (endpoint(serverUrl, "/api/app/status").openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 10_000
+                readTimeout = 15_000
+                setRequestProperty("X-Fiam-Token", token)
+                setRequestProperty("User-Agent", USER_AGENT)
+            }
+        } catch (e: Exception) {
+            return@withContext AppStatusResult(false, "", errorMessage(e))
         }
         try {
             val code = conn.responseCode
@@ -127,7 +143,7 @@ object CaptureClient {
                 AppStatusResult(false, "", "HTTP $code: $resp")
             }
         } catch (e: Exception) {
-            AppStatusResult(false, "", e.message ?: e.javaClass.simpleName)
+            AppStatusResult(false, "", errorMessage(e))
         } finally {
             conn.disconnect()
         }
@@ -146,7 +162,11 @@ object CaptureClient {
             put("source", source)
             put("session_id", sessionId)
         }
-        postChat(URL(serverUrl.trimEnd('/') + "/api/app/chat"), token, body)
+        try {
+            postChat(endpoint(serverUrl, "/api/app/chat"), token, body)
+        } catch (e: Exception) {
+            ChatResult(false, "", null, errorMessage(e))
+        }
     }
 
     suspend fun chatCustom(
@@ -162,7 +182,11 @@ object CaptureClient {
             put("source", source)
             put("session_id", sessionId)
         }
-        postChat(URL(endpointUrl.trim()), token, body)
+        try {
+            postChat(URL(endpointUrl.trim()), token, body)
+        } catch (e: Exception) {
+            ChatResult(false, "", null, errorMessage(e))
+        }
     }
 
     private fun postChat(endpoint: URL, token: String, body: JSONObject): ChatResult {
@@ -173,7 +197,7 @@ object CaptureClient {
             doOutput = true
             setRequestProperty("Content-Type", "application/json")
             if (token.isNotBlank()) setRequestProperty("X-Fiam-Token", token)
-            setRequestProperty("User-Agent", "favilla/0.1 (Android)")
+            setRequestProperty("User-Agent", USER_AGENT)
         }
         return try {
             conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
@@ -192,7 +216,7 @@ object CaptureClient {
                 ChatResult(false, "", null, "HTTP $code: $resp")
             }
         } catch (e: Exception) {
-            ChatResult(false, "", null, e.message ?: e.javaClass.simpleName)
+            ChatResult(false, "", null, errorMessage(e))
         } finally {
             conn.disconnect()
         }
