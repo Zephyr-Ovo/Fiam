@@ -33,6 +33,12 @@ jobs:
         with:
           gradle-version: '8.7'
 
+      - name: Cache Android debug keystore
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: favilla-debug-keystore-v1
+
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon --stacktrace
 
