@@ -46,7 +46,10 @@ class ChatFragment : Fragment() {
         subtitle = view.findViewById(R.id.tvHeaderSubtitle)
         emptyView = view.findViewById(R.id.empty)
 
-        adapter = ChatAdapter(onRecallToggle = { vm.toggleRecall(it) })
+        adapter = ChatAdapter(
+            onRecallToggle = { vm.toggleRecall(it) },
+            onThoughtsToggle = { vm.toggleThoughts(it) },
+        )
         rv?.layoutManager = LinearLayoutManager(requireContext()).apply { stackFromEnd = true }
         rv?.adapter = adapter
 
@@ -128,7 +131,12 @@ class ChatFragment : Fragment() {
             if (result.ok) {
                 result.recall?.let { vm.appendRecall(it) }
                 val reply = result.reply.ifBlank { "(no text returned)" }
-                vm.appendAssistant(reply)
+                vm.appendAssistant(
+                    text = reply,
+                    thoughts = result.thoughts,
+                    cotLocked = result.cotLocked,
+                    cotIntent = result.cotIntent,
+                )
                 if (!visible) postReplyNotification(reply)
             } else {
                 vm.appendSystem("send failed: ${result.error ?: "unknown"}")

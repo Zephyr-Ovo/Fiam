@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import sys
 import threading
 import time
@@ -698,6 +699,41 @@ def _api_app_chat(payload: dict) -> dict:
     return _run_cc_app_chat(text=text, source=source)
 
 
+# CoT visibility: AI wraps the part it agrees to reveal in <<COT:show>>...<<COT:end>>.
+# <<COT:hide>> is a bare marker meaning "I deliberately won't reveal anything this turn."
+# All COT markers are stripped from the user-facing reply before it leaves the server.
+_COT_SHOW_RE = re.compile(r"<<COT:show>>\s*(.*?)\s*<<COT:end>>", re.DOTALL | re.IGNORECASE)
+_COT_HIDE_RE = re.compile(r"<<COT:hide>>", re.IGNORECASE)
+_COT_DEFAULT_VISIBILITY = "hide"  # "hide" | "show"; future: read from config
+
+
+def _parse_cot(reply: str) -> tuple[str, list[dict], str]:
+    """Strip <<COT:*>> markers from reply.
+
+    Returns (cleaned_reply, thoughts, intent).
+    - thoughts: list of {"text": str, "locked": False} from <<COT:show>>...<<COT:end>> blocks
+    - intent: "show" if any show block; "hide" if a bare <<COT:hide>> was present;
+              otherwise "default" (client should follow server default visibility).
+    """
+    if not reply:
+        return "", [], "default"
+    thoughts: list[dict] = []
+    for match in _COT_SHOW_RE.finditer(reply):
+        body = match.group(1).strip()
+        if body:
+            thoughts.append({"text": body, "locked": False})
+    cleaned = _COT_SHOW_RE.sub("", reply)
+    has_hide = bool(_COT_HIDE_RE.search(cleaned))
+    cleaned = _COT_HIDE_RE.sub("", cleaned).strip()
+    if thoughts:
+        intent = "show"
+    elif has_hide:
+        intent = "hide"
+    else:
+        intent = "default"
+    return cleaned, thoughts, intent
+
+
 def _run_cc_app_chat(*, text: str, source: str) -> dict:
     import subprocess
 
@@ -748,14 +784,19 @@ def _run_cc_app_chat(*, text: str, source: str) -> dict:
         _save_app_active_session(session_id)
 
     reply = str(data.get("result") or "").strip()
+    cleaned_reply, thoughts, cot_intent = _parse_cot(reply)
+    cot_locked = (cot_intent == "hide") or (cot_intent == "default" and _COT_DEFAULT_VISIBILITY == "hide")
     return {
         "ok": True,
         "backend": "cc",
-        "reply": reply,
+        "reply": cleaned_reply,
         "recall": pending_recall,
         "session_id": session_id,
         "subtype": data.get("subtype"),
         "cost_usd": data.get("total_cost_usd", 0),
+        "thoughts": thoughts,
+        "cot_intent": cot_intent,
+        "cot_locked": cot_locked,
     }
 
 
@@ -1044,7 +1085,7 @@ def _viewer_token_ok(handler) -> bool:
     import os
     import hmac
     forwarded_user = handler.headers.get("X-Forwarded-User", "").lower()
-    if forwarded_user in {"iris", "ai", "fiet"}:
+    if forwarded_user in {"Zephyr", "ai", "fiet"}:
         return True
     expected = os.environ.get("FIAM_VIEW_TOKEN", "")
     if not expected:
@@ -1121,7 +1162,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             elif path == "/api/whoami":
                 # Determine role from Caddy-forwarded header (basic-auth user)
                 user = self.headers.get("X-Forwarded-User", "anon").lower()
-                role = user if user in ("iris", "ai", "fiet") else "anon"
+                role = user if user in ("Zephyr", "ai", "fiet") else "anon"
                 self._serve_json({"role": role})
             elif path == "/api/health":
                 self._serve_json(_api_health())

@@ -13,6 +13,9 @@ data class ChatResult(
     val ok: Boolean,
     val reply: String,
     val recall: String?,
+    val thoughts: List<String> = emptyList(),
+    val cotLocked: Boolean = false,
+    val cotIntent: String = "default",
     val error: String?,
 )
 
@@ -165,7 +168,7 @@ object CaptureClient {
         try {
             postChat(endpoint(serverUrl, "/api/app/chat"), token, body)
         } catch (e: Exception) {
-            ChatResult(false, "", null, errorMessage(e))
+            ChatResult(false, "", null, error = errorMessage(e))
         }
     }
 
@@ -176,7 +179,7 @@ object CaptureClient {
         source: String,
         sessionId: String,
     ): ChatResult = withContext(Dispatchers.IO) {
-        if (endpointUrl.isBlank()) return@withContext ChatResult(false, "", null, "Custom API URL is empty")
+        if (endpointUrl.isBlank()) return@withContext ChatResult(false, "", null, error = "Custom API URL is empty")
         val body = JSONObject().apply {
             put("text", text)
             put("source", source)
@@ -185,7 +188,7 @@ object CaptureClient {
         try {
             postChat(URL(endpointUrl.trim()), token, body)
         } catch (e: Exception) {
-            ChatResult(false, "", null, errorMessage(e))
+            ChatResult(false, "", null, error = errorMessage(e))
         }
     }
 
@@ -206,17 +209,29 @@ object CaptureClient {
             val resp = stream?.bufferedReader()?.use { it.readText() } ?: ""
             if (code in 200..299) {
                 val json = JSONObject(resp)
+                val thoughts = mutableListOf<String>()
+                val arr = json.optJSONArray("thoughts")
+                if (arr != null) {
+                    for (i in 0 until arr.length()) {
+                        val obj = arr.optJSONObject(i) ?: continue
+                        val txt = obj.optString("text", "").trim()
+                        if (txt.isNotEmpty()) thoughts.add(txt)
+                    }
+                }
                 ChatResult(
                     ok = json.optBoolean("ok", true),
                     reply = json.optString("reply", json.optString("text", "")),
                     recall = json.optString("recall", "").takeIf { it.isNotBlank() },
+                    thoughts = thoughts,
+                    cotLocked = json.optBoolean("cot_locked", false),
+                    cotIntent = json.optString("cot_intent", "default"),
                     error = null,
                 )
             } else {
-                ChatResult(false, "", null, "HTTP $code: $resp")
+                ChatResult(false, "", null, error = "HTTP $code: $resp")
             }
         } catch (e: Exception) {
-            ChatResult(false, "", null, errorMessage(e))
+            ChatResult(false, "", null, error = errorMessage(e))
         } finally {
             conn.disconnect()
         }

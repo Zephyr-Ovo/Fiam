@@ -10,7 +10,14 @@ sealed class ChatMessage {
     abstract val id: String
 
     data class User(override val id: String, val text: String) : ChatMessage()
-    data class Assistant(override val id: String, val text: String) : ChatMessage()
+    data class Assistant(
+        override val id: String,
+        val text: String,
+        val thoughts: List<String> = emptyList(),
+        val cotLocked: Boolean = false,
+        val cotIntent: String = "default",
+        val thoughtsExpanded: Boolean = false,
+    ) : ChatMessage()
     data class Recall(override val id: String, val text: String, val collapsed: Boolean = false) : ChatMessage()
     data class System(override val id: String, val text: String) : ChatMessage()
     data class Typing(override val id: String = "typing") : ChatMessage()
@@ -33,9 +40,26 @@ class ChatViewModel : ViewModel() {
         return id
     }
 
-    fun appendAssistant(text: String) {
+    fun appendAssistant(
+        text: String,
+        thoughts: List<String> = emptyList(),
+        cotLocked: Boolean = false,
+        cotIntent: String = "default",
+    ) {
         val id = UUID.randomUUID().toString()
-        _messages.value = _messages.value + ChatMessage.Assistant(id, text)
+        _messages.value = _messages.value + ChatMessage.Assistant(
+            id = id,
+            text = text,
+            thoughts = thoughts,
+            cotLocked = cotLocked,
+            cotIntent = cotIntent,
+        )
+    }
+
+    fun toggleThoughts(id: String) {
+        _messages.value = _messages.value.map {
+            if (it is ChatMessage.Assistant && it.id == id) it.copy(thoughtsExpanded = !it.thoughtsExpanded) else it
+        }
     }
 
     fun appendRecall(text: String) {

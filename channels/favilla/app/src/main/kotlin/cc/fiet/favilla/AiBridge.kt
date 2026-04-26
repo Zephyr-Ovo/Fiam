@@ -10,7 +10,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
 /**
- * Phone-side toggle: signals "this device is currently reachable by Fiet via the
+ * Phone-side toggle: signals "this device is currently reachable by Claude via the
  * desktop ADB bridge." The actual driving happens off-device (scrcpy/adb on the
  * desktop). This object only persists state and announces it to the server so
  * the desktop side can react.

@@ -63,8 +63,7 @@ For realtime screen updates, keep the device protocol tiny: short HTTP polling n
 ## Architecture
 
 ```
-Fiet response ──[→xiao:screen]──► daemon/conductor ──MQTT──► dashboard queue
-                                                                   │
+Claude response ──[→xiao:screen]──► daemon/conductor ──MQTT──► dashboard queue                                                                   │
 Limen (XIAO) ◄────────────── WiFi GET /api/wearable/reply ◄────────┘
 ```
 

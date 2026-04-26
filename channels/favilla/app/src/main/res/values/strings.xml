@@ -13,7 +13,7 @@
     <string name="nav_more">More</string>
 
     <!-- Chat -->
-    <string name="chat_title">Assistant</string>
+    <string name="chat_title">Claude</string>
     <string name="chat_subtitle_cc">via Claude Code</string>
     <string name="chat_subtitle_api">via custom API</string>
     <string name="chat_input_hint">Message…</string>
@@ -94,9 +94,9 @@
 
     <!-- Notifications -->
     <string name="notif_channel_name">Favilla bubble</string>
-    <string name="notif_channel_replies">Assistant replies</string>
+    <string name="notif_channel_replies">Claude replies</string>
     <string name="notif_running">Favilla is watching. Tap crow → capture selection.</string>
-    <string name="notif_reply_title">Assistant</string>
+    <string name="notif_reply_title">Claude</string>
 
     <!-- Accessibility / capture -->
     <string name="usage_hint">1) Grant overlay. 2) Enable accessibility. 3) Start readalong or bubble. Tap the crow on selected text.</string>

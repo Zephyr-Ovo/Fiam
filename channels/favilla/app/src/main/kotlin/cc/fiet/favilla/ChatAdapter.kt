@@ -10,6 +10,7 @@ import androidx.recyclerview.widget.RecyclerView
 
 class ChatAdapter(
     private val onRecallToggle: (String) -> Unit,
+    private val onThoughtsToggle: (String) -> Unit = {},
 ) : ListAdapter<ChatMessage, RecyclerView.ViewHolder>(DIFF) {
 
     override fun getItemViewType(position: Int): Int = when (getItem(position)) {
@@ -24,7 +25,7 @@ class ChatAdapter(
         val inflater = LayoutInflater.from(parent.context)
         return when (viewType) {
             TYPE_USER -> UserVH(inflater.inflate(R.layout.item_chat_user, parent, false))
-            TYPE_ASSISTANT -> AssistantVH(inflater.inflate(R.layout.item_chat_assistant, parent, false))
+            TYPE_ASSISTANT -> AssistantVH(inflater.inflate(R.layout.item_chat_assistant, parent, false), onThoughtsToggle)
             TYPE_RECALL -> RecallVH(inflater.inflate(R.layout.item_chat_recall, parent, false), onRecallToggle)
             TYPE_SYSTEM -> SystemVH(inflater.inflate(R.layout.item_chat_system, parent, false))
             TYPE_TYPING -> TypingVH(inflater.inflate(R.layout.item_chat_typing, parent, false))
@@ -47,9 +48,35 @@ class ChatAdapter(
         fun bind(m: ChatMessage.User) { tv.text = m.text }
     }
 
-    class AssistantVH(v: View) : RecyclerView.ViewHolder(v) {
+    class AssistantVH(v: View, private val onToggle: (String) -> Unit) : RecyclerView.ViewHolder(v) {
         private val tv: TextView = v.findViewById(R.id.tvText)
-        fun bind(m: ChatMessage.Assistant) { tv.text = m.text }
+        private val cotToggle: TextView = v.findViewById(R.id.tvCotToggle)
+        private val tvThoughts: TextView = v.findViewById(R.id.tvThoughts)
+        fun bind(m: ChatMessage.Assistant) {
+            tv.text = m.text
+            val hasThoughts = m.thoughts.isNotEmpty()
+            val locked = m.cotLocked && !hasThoughts
+            when {
+                hasThoughts -> {
+                    cotToggle.visibility = View.VISIBLE
+                    cotToggle.text = if (m.thoughtsExpanded) "\uD83D\uDCAD hide thinking" else "\uD83D\uDCAD show thinking"
+                    cotToggle.setOnClickListener { onToggle(m.id) }
+                    tvThoughts.visibility = if (m.thoughtsExpanded) View.VISIBLE else View.GONE
+                    tvThoughts.text = m.thoughts.joinToString("\n\n")
+                }
+                locked -> {
+                    cotToggle.visibility = View.VISIBLE
+                    cotToggle.text = "\uD83D\uDD12 thinking withheld this turn"
+                    cotToggle.setOnClickListener(null)
+                    tvThoughts.visibility = View.GONE
+                }
+                else -> {
+                    cotToggle.visibility = View.GONE
+                    tvThoughts.visibility = View.GONE
+                    cotToggle.setOnClickListener(null)
+                }
+            }
+        }
     }
 
     class RecallVH(v: View, private val onToggle: (String) -> Unit) : RecyclerView.ViewHolder(v) {
