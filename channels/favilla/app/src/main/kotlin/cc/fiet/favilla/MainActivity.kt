@@ -1,12 +1,10 @@
 package cc.fiet.favilla
 
-import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
 import android.view.View
-import android.view.accessibility.AccessibilityManager
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
@@ -131,12 +129,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun isA11yEnabled(): Boolean {
-        val am = getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
         val want = "$packageName/${FavillaAccessibilityService::class.java.name}"
         val enabled = Settings.Secure.getString(
             contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
         ).orEmpty()
-        return am.isEnabled && enabled.split(':').any { it.equals(want, ignoreCase = true) }
+        return enabled.split(':').any { it.equals(want, ignoreCase = true) }
     }
 
     private fun sendInteractionPhase(phase: String, text: String, sessionIdOverride: String? = null) {
