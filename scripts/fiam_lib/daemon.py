@@ -445,13 +445,15 @@ def cmd_start(args: argparse.Namespace) -> None:
     # Graceful shutdown
     running = True
     shutdown_requested = False
+    process_pending_on_shutdown = False
 
     def _shutdown(sig, frame):
-        nonlocal running, shutdown_requested
+        nonlocal running, shutdown_requested, process_pending_on_shutdown
         if shutdown_requested:
             # Second Ctrl+C = force exit
             sys.exit(1)
         shutdown_requested = True
+        process_pending_on_shutdown = sig != signal.SIGTERM
         running = False
 
     signal.signal(signal.SIGINT, _shutdown)
@@ -986,7 +988,7 @@ def cmd_start(args: argparse.Namespace) -> None:
         _write_daemon_state()
 
     # ── Graceful shutdown: process any pending content before exit ──
-    if shutdown_requested and active:
+    if shutdown_requested and process_pending_on_shutdown and active:
         _console.print()
         _console.print(f"  [bold #f7a8d0]⟳[/]  wrapping up...")
         _process_pending()
@@ -1028,7 +1030,7 @@ def cmd_stop(args: argparse.Namespace) -> None:
             subprocess.run(["taskkill", "/F", "/PID", str(pid)],
                            capture_output=True, check=False)
     else:
-        os.kill(pid, signal.SIGTERM)
+        os.kill(pid, signal.SIGINT)
 
     # Wait for graceful exit (up to 120s for model inference)
     for _ in range(120):
