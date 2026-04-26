@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Claude-app inspired warm palette -->
+    <color name="paper">#FAF9F5</color>
+    <color name="paper_dim">#F4F2EC</color>
+    <color name="paper_card">#F0EEE6</color>
+    <color name="paper_divider">#E5E3DA</color>
+
+    <color name="ink">#1F1E1B</color>
+    <color name="ink_muted">#6B6862</color>
+    <color name="ink_faint">#9A968F</color>
+
+    <color name="peach">#D97757</color>
+    <color name="peach_soft">#E8A98E</color>
+    <color name="peach_wash">#F8E6DC</color>
+
+    <color name="sage">#7A9E8E</color>
+    <color name="amber">#C58E3F</color>
+    <color name="rose">#B8585A</color>
+
+    <!-- Bubble fills -->
+    <color name="bubble_user">#D97757</color>
+    <color name="bubble_user_text">#FFFFFF</color>
+    <color name="bubble_assistant">#FFFFFF</color>
+    <color name="bubble_assistant_text">#1F1E1B</color>
+    <color name="recall_card">#F0EEE6</color>
+    <color name="recall_accent">#7A9E8E</color>
+
+    <color name="status_bar">#FAF9F5</color>
+    <color name="nav_bar">#F4F2EC</color>
+</resources>

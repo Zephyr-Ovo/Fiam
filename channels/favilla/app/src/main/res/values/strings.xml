@@ -3,22 +3,92 @@
     <string name="app_name">Favilla</string>
     <string name="capture_label">🐦‍⬛</string>
     <string name="tagline">a spark → fiam</string>
-    <string name="usage_hint">1) Grant "display over other apps" permission. 2) Enable the Favilla accessibility service (silent, no audio). 3) Start readalong or start the bubble. Then: select text in any app → tap the crow → a compose dialog shows the quote and an input box. Double-tap the bubble to dismiss it.</string>
-    <string name="btn_start_bubble">Start bubble</string>
-    <string name="btn_stop_bubble">Stop bubble</string>
-    <string name="btn_start_readalong">Start readalong</string>
-    <string name="btn_end_readalong">End readalong</string>
-    <string name="need_overlay_perm">Grant "Display over other apps" for Favilla first.</string>
+
+    <!-- Bottom nav -->
+    <string name="nav_chat">Chat</string>
+    <string name="nav_hub">Hub</string>
+    <string name="nav_stats">Stats</string>
+    <string name="nav_more">More</string>
+
+    <!-- Chat -->
+    <string name="chat_title">Fiet</string>
+    <string name="chat_subtitle_cc">via Claude Code</string>
+    <string name="chat_subtitle_api">via custom API</string>
+    <string name="chat_input_hint">Message Fiet…</string>
+    <string name="chat_send">Send</string>
+    <string name="chat_attach">Attach</string>
+    <string name="chat_mic">Voice</string>
+    <string name="chat_recall_title">Memory recalled</string>
+    <string name="chat_thinking">thinking…</string>
+    <string name="chat_empty_title">Start a conversation</string>
+    <string name="chat_empty_subtitle">Ask Fiet anything, or share something to remember.</string>
+    <string name="chat_new">New chat</string>
+
+    <!-- Hub -->
+    <string name="hub_title">Hub</string>
+    <string name="hub_section_stickers">Stickers</string>
+    <string name="hub_section_images">Images</string>
+    <string name="hub_section_voice">Voice note</string>
+    <string name="hub_section_ai">AI control</string>
+    <string name="hub_voice_hint">Hold to record, release to send.</string>
+    <string name="hub_ai_hint">Let Fiet drive the phone via the desktop ADB bridge.</string>
+    <string name="hub_ai_toggle">Hand the phone to Fiet</string>
+    <string name="hub_no_stickers">No stickers yet. Drop PNG files into assets/stickers/.</string>
+    <string name="hub_no_images">No images yet. Pick from gallery to send.</string>
+    <string name="hub_pick_image">Pick from gallery</string>
+
+    <!-- Stats -->
+    <string name="stats_title">Stats</string>
+    <string name="stats_refresh">Refresh</string>
+    <string name="stats_loading">loading…</string>
+    <string name="stats_metric_flow">flow beats</string>
+    <string name="stats_metric_thinking">thinking</string>
+    <string name="stats_metric_interaction">interaction</string>
+    <string name="stats_metric_events">events</string>
+    <string name="stats_metric_embeddings">embeddings</string>
+    <string name="stats_daemon">daemon</string>
+
+    <!-- More / settings -->
+    <string name="more_title">Settings</string>
+    <string name="more_section_backend">Backend</string>
+    <string name="more_section_server">Server</string>
+    <string name="more_section_perm">Permissions</string>
+    <string name="more_section_capture">Capture &amp; readalong</string>
+    <string name="more_save">Save</string>
+    <string name="more_backend_cc">Claude Code</string>
+    <string name="more_backend_api">Custom API</string>
+    <string name="more_url">Server URL</string>
+    <string name="more_token">Ingest token</string>
+    <string name="more_source">Source tag</string>
+    <string name="more_custom_url">Custom API URL</string>
+    <string name="more_open_overlay">Display over apps</string>
+    <string name="more_open_a11y">Accessibility</string>
+    <string name="more_open_camera">Camera</string>
+    <string name="more_open_mic">Microphone</string>
+    <string name="more_start_bubble">Start bubble</string>
+    <string name="more_stop_bubble">Stop bubble</string>
+    <string name="more_start_readalong">Start readalong</string>
+    <string name="more_end_readalong">End readalong</string>
+
+    <!-- Notifications -->
     <string name="notif_channel_name">Favilla bubble</string>
+    <string name="notif_channel_replies">Fiet replies</string>
     <string name="notif_running">Favilla is watching. Tap crow → capture selection.</string>
+    <string name="notif_reply_title">Fiet</string>
+
+    <!-- Accessibility / capture -->
+    <string name="usage_hint">1) Grant overlay. 2) Enable accessibility. 3) Start readalong or bubble. Tap the crow on selected text.</string>
+    <string name="need_overlay_perm">Grant "Display over other apps" first.</string>
     <string name="a11y_description">Reads the text you have selected in another app when you tap the Favilla bubble. No audio, no events subscribed, no background reads.</string>
     <string name="a11y_summary">On-demand text selection reader for the floating bubble.</string>
-    <string name="btn_open_a11y">Open Accessibility settings</string>
-    <string name="btn_open_overlay">Grant floating-window permission</string>
-    <string name="status_overlay_ok">overlay permission: OK</string>
-    <string name="status_overlay_missing">overlay permission: missing</string>
-    <string name="status_a11y_ok">accessibility service: connected</string>
-    <string name="status_a11y_missing">accessibility service: not enabled</string>
+    <string name="status_overlay_ok">overlay: granted</string>
+    <string name="status_overlay_missing">overlay: not granted</string>
+    <string name="status_a11y_ok">accessibility: connected</string>
+    <string name="status_a11y_missing">accessibility: not enabled</string>
+    <string name="status_camera_ok">camera: granted</string>
+    <string name="status_camera_missing">camera: not granted</string>
+    <string name="status_mic_ok">microphone: granted</string>
+    <string name="status_mic_missing">microphone: not granted</string>
     <string name="dialog_input_title">Send to fiam</string>
     <string name="dialog_input_hint">your note (optional)</string>
     <string name="dialog_input_send">Send</string>
