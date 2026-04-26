@@ -82,7 +82,7 @@ export interface PoolEventDetail {
 }
 
 export interface FlowPayload {
-	beats: { t: string; text: string; source: string; user: string; ai: string }[];
+	beats: { t: string; text: string; source: string; user: string; ai: string; meta?: Record<string, unknown> }[];
 	offset: number;
 	total: number;
 }

@@ -28,6 +28,16 @@
 		}
 	}
 
+	function isThinking(beat: FlowPayload['beats'][number]): boolean {
+		return beat.meta?.kind === 'thinking';
+	}
+
+	function thinkingTitle(text: string): string {
+		const idx = text.indexOf('我想：');
+		const body = idx >= 0 ? text.slice(0, idx + 3) : 'thinking';
+		return body.length > 80 ? body.slice(0, 77) + '…' : body;
+	}
+
 	async function load() {
 		try {
 			const r = await api.flow(0, 200);
@@ -90,9 +100,20 @@
 					>
 						{beat.source}
 					</span>
-					<span class="text-[var(--color-text)] break-all">
-						{beat.text.length > 300 ? beat.text.slice(0, 297) + '…' : beat.text}
-					</span>
+					{#if isThinking(beat)}
+						<details class="min-w-0 flex-1 text-[var(--color-text)]">
+							<summary class="cursor-pointer text-[var(--color-mauve)] break-all">
+								{thinkingTitle(beat.text)}
+							</summary>
+							<div class="mt-1 whitespace-pre-wrap break-all text-[var(--color-subtext1)]">
+								{beat.text}
+							</div>
+						</details>
+					{:else}
+						<span class="text-[var(--color-text)] break-all">
+							{beat.text.length > 300 ? beat.text.slice(0, 297) + '…' : beat.text}
+						</span>
+					{/if}
 				</div>
 			{/each}
 			{#if beats.length === 0}
