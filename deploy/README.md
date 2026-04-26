@@ -54,6 +54,7 @@ caddy hash-password
 # 6. Install the Caddyfile
 sudo cp ~/fiam-code/deploy/Caddyfile.example /etc/caddy/Caddyfile
 sudo nano /etc/caddy/Caddyfile   # fill in 3 password hashes
+sudo setfacl -m u:caddy:--x /home/fiet   # allow Caddy to traverse to dashboard/build
 sudo systemctl reload caddy
 
 # 7. Start the dashboard backend under systemd
