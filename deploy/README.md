@@ -114,5 +114,6 @@ sudo systemctl restart fiam-dashboard   # only if backend changed
 ## Access
 
 - https://fiet.cc — Cloudflare TLS, Caddy basic auth
+- `/api/capture` bypasses Caddy basic auth and is protected by `FIAM_INGEST_TOKEN`
 - backend decides role from `X-Forwarded-User` (set by Caddy from auth user id)
 - roles: `iris` / `ai` / `fiet` (everyone else → `anon`, blocked by Caddy)
