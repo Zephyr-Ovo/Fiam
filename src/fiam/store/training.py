@@ -3,7 +3,7 @@ Silent training data collector for future personalized retrieval model.
 
 Collects two types of signals into store/training.jsonl:
 
-1. **Explicit cohort feedback** — from `fiam feedback` TUI.
+1. **Explicit cohort feedback** — from future dashboard feedback controls.
    Instead of 1-to-1 ratings, we record the whole "cohort" of events presented
    to the user at once, plus which ones they positively or negatively voted on.
    Format: { ts, type="explicit_cohort", trigger_context, candidates: [{event_id, label, features...}] }

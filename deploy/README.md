@@ -53,6 +53,43 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now fiam-dashboard
 ```
 
+## MQTT bus (Mosquitto) — replaces channel polling
+
+The daemon, dashboard, and channel bridges talk over a local Mosquitto
+broker bound to `127.0.0.1:1883`. No external exposure, no auth.
+
+```bash
+# Install Mosquitto
+sudo apt-get install -y mosquitto mosquitto-clients
+
+# Drop in the fiam config (loopback + persistence)
+sudo cp ~/fiam-code/deploy/mosquitto-fiam.conf /etc/mosquitto/conf.d/fiam.conf
+sudo systemctl restart mosquitto
+
+# Verify the bus is up
+mosquitto_sub -h 127.0.0.1 -t 'fiam/#' -v &
+mosquitto_pub -h 127.0.0.1 -t 'fiam/receive/test' -m '{"text":"hi","source":"test"}'
+
+# Install the channel bridges
+sudo cp ~/fiam-code/deploy/fiam-bridge-tg.service /etc/systemd/system/
+sudo cp ~/fiam-code/deploy/fiam-bridge-email.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now fiam-bridge-tg fiam-bridge-email
+
+# (Re)start the daemon — it now subscribes to fiam/receive/+ instead of polling
+~/fiam-code/.venv/bin/fiam restart   # or however you start it
+```
+
+### Topic layout
+
+| Topic                       | Direction | Payload (JSON)                                    |
+|-----------------------------|-----------|----------------------------------------------------|
+| `fiam/receive/<source>`     | inbound   | `{text, source, from_name, t, ...meta}`           |
+| `fiam/dispatch/<target>`    | outbound  | `{text, recipient}`                               |
+
+Sources currently in use: `tg`, `email`, `favilla`.
+Targets currently in use: `tg`, `email`.
+
 ## Update deployment
 
 ```bash

@@ -42,6 +42,7 @@ ENV/
 # fiam runtime
 /store/
 /logs/
+/training_data/
 self/
 *.toml.bak
 *.log

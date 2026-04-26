@@ -29,9 +29,24 @@ half_life_base = 14.0
 [daemon]
 idle_timeout_minutes = 30    # post-session triggers after this many idle minutes
 poll_interval_seconds = 30
+tg_poll_interval = 60        # seconds between TG inbox polls
+email_poll_interval = 600    # seconds between email inbox polls
 daily_budget_usd = 5.0       # 0 = unlimited; daily CC spend cap for auto-wakes
 cc_model = ""                # CC model alias: "opus", "sonnet", or full name; empty = CC default
 cc_disallowed_tools = ""     # comma-separated CC tools to disable (e.g. "WebFetch,NotebookEdit")
+
+[conductor]
+memory_mode = "manual"       # "manual" = flow+vectors+human labels; "auto" = drift+gorge+Pool+DS edges
+gorge_max_beat = 30
+gorge_min_depth = 0.01
+gorge_stream_confirm = 2
+drift_threshold = 0.65
+recall_top_k = 3
+
+[mqtt]
+host = "127.0.0.1"
+port = 1883
+keepalive = 60
 
 [features]
 git_enabled = true

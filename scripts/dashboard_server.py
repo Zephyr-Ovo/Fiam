@@ -29,6 +29,7 @@ _LOGS = _ROOT / "logs"
 _CONFIG = None
 _POOL = None        # Pool instance (lazy)
 _EMBEDDER = None    # Embedder instance (lazy)
+_BUS = None         # Bus instance (lazy, for /api/capture publishing)
 _COMPUTE_LOCK = threading.Lock()  # gate concurrent mutations
 
 # Fix sys.path: add src/, remove scripts/ (fiam.py shadows fiam package)
@@ -66,6 +67,26 @@ def _get_embedder():
         return _EMBEDDER
     except Exception as exc:
         logger.warning("embedder init failed (re-embed disabled): %s", exc)
+        return None
+
+
+def _get_bus():
+    """Lazy-init MQTT bus client. Returns None if broker unreachable."""
+    global _BUS
+    if _BUS is not None:
+        return _BUS
+    if not _CONFIG:
+        return None
+    try:
+        from fiam.bus import Bus
+        _BUS = Bus(client_id="fiam-dashboard")
+        _BUS.connect(_CONFIG.mqtt_host, _CONFIG.mqtt_port, _CONFIG.mqtt_keepalive)
+        _BUS.loop_start()
+        logger.info("bus connected to %s:%d", _CONFIG.mqtt_host, _CONFIG.mqtt_port)
+        return _BUS
+    except Exception as exc:
+        logger.warning("bus init failed (capture disabled): %s", exc)
+        _BUS = None
         return None
 
 
@@ -112,12 +133,15 @@ def _api_status() -> dict:
     last_processed = None
     home = str(_CONFIG.home_path) if _CONFIG else ""
     if _CONFIG:
-        ev_dir = _CONFIG.events_dir
-        if ev_dir.is_dir():
-            events = len(list(ev_dir.glob("*.md")))
-        emb_dir = _CONFIG.embeddings_dir
-        if emb_dir.is_dir():
-            embeddings = len(list(emb_dir.glob("*.npy")))
+        if _POOL:
+            events = _POOL.event_count
+        feature_vectors = _CONFIG.feature_dir / "flow_vectors.npy"
+        if feature_vectors.exists():
+            try:
+                import numpy as np
+                embeddings = int(np.load(feature_vectors, mmap_mode="r").shape[0])
+            except Exception:
+                embeddings = 0
         cursor = _CONFIG.store_dir / "cursor.json"
         if cursor.exists():
             try:
@@ -318,47 +342,139 @@ def _api_state() -> dict | None:
     return {"mood": mood, "tension": tension, "reflection": reflection, "updated_at": updated_at}
 
 
-def _api_capture(payload: dict) -> dict:
-    """Ingest a mobile/quick-capture event via Pool.
+def _api_config() -> dict:
+    """Runtime/editable dashboard config."""
+    if not _CONFIG:
+        return {"memory_mode": "manual", "annotation": {"processed_until": 0}}
+    return {
+        "memory_mode": _CONFIG.memory_mode,
+        "annotation": _annotation_state(),
+    }
 
-    Expected payload keys: text (required), source (optional), url (optional),
-    tags (optional list). Creates a Pool event with embedding + edges.
+
+def _api_plugins() -> dict:
+    """Return registered functional plugins."""
+    if not _CONFIG:
+        return {"plugins": []}
+    from fiam.plugins import load_plugins
+    return {
+        "plugins": [
+            {
+                "id": plugin.id,
+                "name": plugin.name,
+                "enabled": plugin.enabled,
+                "status": plugin.status,
+                "kind": plugin.kind,
+                "description": plugin.description,
+                "transports": list(plugin.transports),
+                "capabilities": list(plugin.capabilities),
+                "receive_sources": list(plugin.receive_sources),
+                "dispatch_targets": list(plugin.dispatch_targets),
+                "entrypoint": plugin.entrypoint,
+                "auth": plugin.auth,
+                "latency": plugin.latency,
+                "env": list(plugin.env),
+                "replaces": list(plugin.replaces),
+                "notes": list(plugin.notes),
+            }
+            for plugin in load_plugins(_CONFIG)
+        ]
+    }
+
+
+def _update_memory_mode(payload: dict) -> dict:
+    """Persist conductor.memory_mode in fiam.toml."""
+    if not _CONFIG:
+        raise RuntimeError("config not loaded")
+    mode = str(payload.get("memory_mode", "")).strip().lower()
+    if mode not in ("manual", "auto"):
+        raise ValueError("memory_mode must be manual or auto")
+
+    path = _CONFIG.toml_path
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    lines = text.splitlines()
+    out: list[str] = []
+    in_conductor = False
+    saw_conductor = False
+    wrote_mode = False
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            if in_conductor and not wrote_mode:
+                out.append(f'memory_mode = "{mode}"')
+                wrote_mode = True
+            in_conductor = stripped == "[conductor]"
+            saw_conductor = saw_conductor or in_conductor
+            out.append(line)
+            continue
+        if in_conductor and stripped.startswith("memory_mode"):
+            out.append(f'memory_mode = "{mode}"')
+            wrote_mode = True
+        else:
+            out.append(line)
+
+    if not saw_conductor:
+        if out and out[-1].strip():
+            out.append("")
+        out.extend(["[conductor]", f'memory_mode = "{mode}"'])
+    elif in_conductor and not wrote_mode:
+        out.append(f'memory_mode = "{mode}"')
+
+    path.write_text("\n".join(out) + "\n", encoding="utf-8")
+    _CONFIG.memory_mode = mode
+    return {"ok": True, "memory_mode": mode}
+
+
+def _update_plugin(payload: dict) -> dict:
+    """Enable or disable one plugin manifest."""
+    if not _CONFIG:
+        raise RuntimeError("config not loaded")
+    plugin_id = str(payload.get("id", "")).strip()
+    if not plugin_id:
+        raise ValueError("missing plugin id")
+    enabled = bool(payload.get("enabled"))
+    from fiam.plugins import set_plugin_enabled
+    plugin = set_plugin_enabled(_CONFIG, plugin_id, enabled)
+    return {"ok": True, "id": plugin.id, "enabled": plugin.enabled}
+
+
+def _api_capture(payload: dict) -> dict:
+    """Forward a mobile/quick-capture event to the MQTT bus.
+
+    The daemon subscribes to ``fiam/receive/favilla`` and handles
+    ingestion (embed + gorge + pool) through the unified Conductor.
+    Dashboard no longer touches Pool directly — it's a pure HTTP→MQTT
+    bridge for clients that can't speak MQTT (e.g. the Android app).
+
+    Expected payload keys: text (required), source (optional),
+    url (optional), tags (optional list).
     """
-    if not _POOL or not _CONFIG:
-        raise RuntimeError("pool/config not loaded")
+    if not _CONFIG:
+        raise RuntimeError("config not loaded")
     text = (payload.get("text") or "").strip()
     if not text:
         raise ValueError("missing text")
-    source = (payload.get("source") or "mobile").strip()
+    source = (payload.get("source") or "favilla").strip()
     url = (payload.get("url") or "").strip()
+    from fiam.plugins import is_receive_enabled
+    if not is_receive_enabled(_CONFIG, "favilla"):
+        raise RuntimeError("favilla plugin disabled")
 
-    body = f"[capture:{source}]\n{text}\n"
-    if url:
-        body += f"\n(source: {url})\n"
-
-    now = datetime.now(timezone.utc)
-    ev_id = _POOL.new_event_id()
-
-    # Embed
-    embedder = _get_embedder()
-    if embedder:
-        import numpy as np
-        with _COMPUTE_LOCK:
-            vec = embedder.embed(text)
-            _POOL.ingest_event(ev_id, now, body, vec)
-            # Generate edges
-            try:
-                from fiam.retriever.graph_builder import build_edges
-                build_edges(_POOL, [ev_id], _CONFIG)
-            except Exception as e:
-                import logging
-                logging.getLogger(__name__).error("capture edge build: %s", e)
-    else:
-        # No embedder — store without fingerprint
-        import numpy as np
-        _POOL.ingest_event(ev_id, now, body, np.zeros(_POOL.dim, dtype=np.float32))
-
-    return {"ok": True, "id": ev_id}
+    bus = _get_bus()
+    if bus is None:
+        raise RuntimeError("MQTT bus unavailable")
+    ok = bus.publish_receive("favilla", {
+        "text": text,
+        "source": "favilla",
+        "from_name": source,
+        "url": url,
+        "tags": payload.get("tags") or [],
+        "t": datetime.now(timezone.utc),
+    })
+    if not ok:
+        raise RuntimeError("publish rejected")
+    return {"ok": True, "queued": True}
 
 
 # ------------------------------------------------------------------
@@ -561,11 +677,82 @@ def _pool_delete_event(event_id: str) -> dict:
 _ANNOTATION_PROPOSAL: dict | None = None  # in-memory pending proposal
 
 
+def _annotation_state() -> dict:
+    if not _CONFIG:
+        return {"processed_until": 0}
+    path = _CONFIG.annotation_state_path
+    if not path.exists():
+        return {"processed_until": 0}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {"processed_until": 0}
+    return {"processed_until": int(data.get("processed_until", 0))}
+
+
+def _save_annotation_state(processed_until: int) -> None:
+    if not _CONFIG:
+        return
+    path = _CONFIG.annotation_state_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"processed_until": int(processed_until)}, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _safe_event_id(raw: str, fallback: str, reserved: set[str] | None = None) -> str:
+    import re
+    reserved = reserved or set()
+    name = re.sub(r"[^0-9A-Za-z_\u4e00-\u9fff]+", "_", str(raw or "").strip())
+    name = re.sub(r"_+", "_", name).strip("_")
+    if not name:
+        name = fallback
+    if len(name) > 60:
+        name = name[:60].rstrip("_")
+    if name not in reserved and (_POOL is None or _POOL.get_event(name) is None):
+        return name
+    base = name
+    i = 2
+    while (_POOL and _POOL.get_event(f"{base}_{i}") is not None) or f"{base}_{i}" in reserved:
+        i += 1
+    return f"{base}_{i}"
+
+
+def _beat_vectors_from_store(beats: list[dict]) -> list:
+    if not _CONFIG:
+        return []
+    try:
+        from fiam.store.beat import Beat
+        from fiam.store.features import FeatureStore
+        store = FeatureStore(_CONFIG.feature_dir, dim=_CONFIG.embedding_dim)
+        vectors = []
+        for raw in beats:
+            try:
+                vectors.append(store.get_beat_vector(Beat.from_dict(raw)))
+            except Exception:
+                vectors.append(None)
+        return vectors
+    except Exception:
+        return []
+
+
+def _parse_beat_time(raw: str):
+    from datetime import datetime as _dt, timezone as _tz
+    try:
+        dt = _dt.fromisoformat(str(raw).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=_tz.utc)
+        return dt
+    except (TypeError, ValueError):
+        return _dt.now(_tz.utc)
+
+
 def _annotate_request(payload: dict) -> dict:
-    """Trigger DS annotation on recent flow beats.
+    """Load unprocessed flow beats for manual annotation.
 
     payload: {"offset"?: int, "limit"?: int} — defaults to last 100 beats.
-    Returns: {"beats": [...], "cuts": [0,1,0,...], "edges": [], ...}
+    Returns: {"beats": [...], "cuts": [...], "drift_cuts": [...], ...}
     """
     global _ANNOTATION_PROPOSAL
     if not _CONFIG:
@@ -577,8 +764,10 @@ def _annotate_request(payload: dict) -> dict:
 
     lines = flow_path.read_text(encoding="utf-8").splitlines()
     total = len(lines)
-    limit = int(payload.get("limit", 100))
-    offset = int(payload.get("offset", max(0, total - limit)))
+    state = _annotation_state()
+    limit = max(1, int(payload.get("limit", 100)))
+    requested_offset = int(payload.get("offset", state["processed_until"]))
+    offset = max(requested_offset, state["processed_until"])
     end = min(offset + limit, total)
 
     beats: list[dict] = []
@@ -594,15 +783,18 @@ def _annotate_request(payload: dict) -> dict:
     if not beats:
         raise ValueError("no beats to annotate")
 
-    from fiam.annotator import propose_cuts
-    cuts = propose_cuts(beats, _CONFIG)  # list[int], len = N-1
+    cuts = [0] * max(0, len(beats) - 1)
+    drift_cuts = [0] * max(0, len(beats) - 1)
 
     _ANNOTATION_PROPOSAL = {
         "beats": beats,
         "cuts": cuts,
+        "drift_cuts": drift_cuts,
         "edges": [],
+        "names": {},
         "flow_offset": offset,
         "flow_end": end,
+        "processed_until": state["processed_until"],
         "status": "cuts_proposed",
     }
     return _ANNOTATION_PROPOSAL
@@ -616,8 +808,9 @@ def _annotate_edges(payload: dict) -> dict:
     if not _ANNOTATION_PROPOSAL:
         raise ValueError("no active proposal — run /annotate/request first")
 
-    # Accept human-corrected cuts
+    # Accept human-corrected cuts; this is the first point where DS is called.
     cuts = payload.get("cuts", _ANNOTATION_PROPOSAL.get("cuts", []))
+    drift_cuts = payload.get("drift_cuts", _ANNOTATION_PROPOSAL.get("drift_cuts", []))
     beats = _ANNOTATION_PROPOSAL["beats"]
 
     from fiam.annotator import cuts_to_segments, propose_edges
@@ -634,11 +827,12 @@ def _annotate_edges(payload: dict) -> dict:
             "body": "\n".join(body_lines),
         })
 
-    # Existing events from pool
+    # Existing events from pool. During data collection DS is allowed to read
+    # the current graph context; candidate pruning can be trained later.
     existing_events: list[dict] = []
     if _POOL:
         pool_events = _POOL.load_events()
-        for ev in pool_events[:50]:
+        for ev in pool_events:
             body = _POOL.read_body(ev.id)
             existing_events.append({
                 "id": ev.id,
@@ -649,7 +843,9 @@ def _annotate_edges(payload: dict) -> dict:
     result = propose_edges(new_events, existing_events, _CONFIG)
 
     _ANNOTATION_PROPOSAL["cuts"] = cuts
+    _ANNOTATION_PROPOSAL["drift_cuts"] = drift_cuts
     _ANNOTATION_PROPOSAL["edges"] = result["edges"]
+    _ANNOTATION_PROPOSAL["names"] = result.get("names", {})
     _ANNOTATION_PROPOSAL["status"] = "edges_proposed"
     return _ANNOTATION_PROPOSAL
 
@@ -664,91 +860,130 @@ def _annotate_confirm(payload: dict) -> dict:
 
     beats = _ANNOTATION_PROPOSAL["beats"]
     cuts = payload.get("cuts", _ANNOTATION_PROPOSAL.get("cuts", []))
+    drift_cuts = payload.get("drift_cuts", _ANNOTATION_PROPOSAL.get("drift_cuts", []))
     edges = payload.get("edges", _ANNOTATION_PROPOSAL.get("edges", []))
+    names = _ANNOTATION_PROPOSAL.get("names", {})
 
     import numpy as np
-    from datetime import datetime as _dt, timezone as _tz
     from fiam.store.pool import Pool, Event
     from fiam.annotator import save_training_data, cuts_to_segments
 
-    # 1. Compute beat embeddings for training data
-    beat_vectors: list | None = None
+    # 1. Load frozen beat vectors. If this batch predates the feature store,
+    # fall back to embedding once so the annotation still produces training data.
+    beat_vectors: list | None = _beat_vectors_from_store(beats)
     with _COMPUTE_LOCK:
-        embedder = _get_embedder()
-        if embedder:
+        if not beat_vectors or not any(v is not None for v in beat_vectors):
+            embedder = _get_embedder()
             vecs = []
-            for b in beats:
-                text = b.get("text", "").strip()
-                if text:
-                    try:
-                        vecs.append(embedder.embed(text))
-                    except Exception:
+            if embedder:
+                for b in beats:
+                    text = b.get("text", "").strip()
+                    if text:
+                        try:
+                            vecs.append(embedder.embed(text))
+                        except Exception:
+                            vecs.append(None)
+                    else:
                         vecs.append(None)
-                else:
-                    vecs.append(None)
             beat_vectors = vecs
 
-    # 2. Save training data (text + vectors + cuts)
+    # 2. Decide final event ids before saving labels/edges.
+    segments = cuts_to_segments(beats, cuts)
+    seg_to_event_id: dict[str, str] = {}
+    reserved_ids: set[str] = set()
+    for i, _seg in enumerate(segments):
+        seg_id = f"seg_{i}"
+        fallback = f"ann_{_ANNOTATION_PROPOSAL['flow_offset']}_{i}"
+        event_id = _safe_event_id(names.get(seg_id, ""), fallback, reserved_ids)
+        reserved_ids.add(event_id)
+        seg_to_event_id[seg_id] = event_id
+
+    normalized_edges = []
+    for e in edges:
+        normalized = dict(e)
+        normalized["src"] = seg_to_event_id.get(str(e.get("src", "")), e.get("src"))
+        normalized["dst"] = seg_to_event_id.get(str(e.get("dst", "")), e.get("dst"))
+        normalized_edges.append(normalized)
+
+    # 3. Save training data (text + vectors + event/drift cuts)
     training_dir = _ROOT / "training_data"
     stats = save_training_data(
-        beats, cuts, edges, training_dir,
+        beats, cuts, normalized_edges, training_dir,
         beat_vectors=beat_vectors,
+        drift_cuts=drift_cuts,
     )
 
-    # 3. Create events in pool from confirmed segments
-    segments = cuts_to_segments(beats, cuts)
+    # 4. Create events in pool from confirmed segments
     created_events: list[str] = []
+    created_event_times: dict[str, tuple] = {}
 
     with _COMPUTE_LOCK:
-        embedder = _get_embedder()
         for i, seg in enumerate(segments):
             start, end = seg["start"], seg["end"]
             body_lines = [b.get("text", "") for b in beats[start:end + 1]]
             body = "\n".join(body_lines)
-            ev_time = beats[start].get("t", "")
+            event_id = seg_to_event_id[f"seg_{i}"]
 
-            # Segment fingerprint = mean of beat vectors
+            t_start = _parse_beat_time(beats[start].get("t", ""))
+            t_end = _parse_beat_time(beats[end].get("t", ""))
+
             seg_vecs = []
             if beat_vectors:
                 for idx in range(start, end + 1):
                     if beat_vectors[idx] is not None:
                         seg_vecs.append(beat_vectors[idx])
             fingerprint = np.mean(seg_vecs, axis=0).astype(np.float32) if seg_vecs else None
-
-            event_id = f"ann_{_ANNOTATION_PROPOSAL['flow_offset']}_{i}"
-            try:
-                t = _dt.fromisoformat(ev_time) if ev_time else _dt.now(_tz.utc)
-            except (ValueError, TypeError):
-                t = _dt.now(_tz.utc)
+            if fingerprint is not None:
+                norm = np.linalg.norm(fingerprint)
+                if norm > 1e-9:
+                    fingerprint = (fingerprint / norm).astype(np.float32)
 
             _POOL.write_body(event_id, body)
             fp_idx = -1
             if fingerprint is not None:
                 fp_idx = _POOL.append_fingerprint(fingerprint)
 
-            ev = Event(id=event_id, t=t, access_count=0, fingerprint_idx=fp_idx)
+            ev = Event(id=event_id, t=t_start, access_count=0, fingerprint_idx=fp_idx)
             _POOL.append_event(ev)
             created_events.append(event_id)
+            created_event_times[event_id] = (t_start, t_end)
 
         _POOL.rebuild_cosine()
 
-        # 4. Create edges
+        # 5. Create weak temporal edges first; DS edges override same pair.
+        edge_map: dict[tuple[str, str], tuple[str, float]] = {}
+        for a, b in zip(created_events, created_events[1:]):
+            _a_start, a_end = created_event_times[a]
+            b_start, _b_end = created_event_times[b]
+            gap = max(0.0, (b_start - a_end).total_seconds())
+            if gap <= 1800:
+                weight = max(0.05, 0.2 * (1.0 - gap / 1800.0))
+                edge_map[(a, b)] = ("temporal", weight)
+
+        for e in normalized_edges:
+            src = str(e.get("src", ""))
+            dst = str(e.get("dst", ""))
+            if not src or not dst or src == dst:
+                continue
+            edge_map[(src, dst)] = (str(e.get("type", "semantic")), float(e.get("weight", 0.5)))
+
         created_edges = 0
-        for e in edges:
+        for (src, dst), (kind, weight) in edge_map.items():
             try:
-                src_ev = _POOL.get_event(e["src"])
-                dst_ev = _POOL.get_event(e["dst"])
+                src_ev = _POOL.get_event(src)
+                dst_ev = _POOL.get_event(dst)
                 if src_ev and dst_ev and src_ev.fingerprint_idx >= 0 and dst_ev.fingerprint_idx >= 0:
                     _POOL.add_edge(
                         src_ev.fingerprint_idx,
                         dst_ev.fingerprint_idx,
-                        Pool.edge_type_id(e.get("type", "semantic")),
-                        float(e.get("weight", 0.5)),
+                        Pool.edge_type_id(kind),
+                        weight,
                     )
                     created_edges += 1
             except Exception as exc:
                 logger.warning("edge creation failed: %s", exc)
 
+    _save_annotation_state(int(_ANNOTATION_PROPOSAL.get("flow_end", 0)))
     _ANNOTATION_PROPOSAL = None
 
     return {
@@ -896,6 +1131,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 self._serve_json({"role": role})
             elif path == "/api/health":
                 self._serve_json(_api_health())
+            elif path == "/api/config":
+                self._serve_json(_api_config())
+            elif path == "/api/plugins":
+                self._serve_json(_api_plugins())
             elif path == "/api/pool/edge-types":
                 from fiam.store.pool import Pool
                 self._serve_json({"types": list(Pool.EDGE_TYPE_NAMES.values())})
@@ -947,8 +1186,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         pool_write_paths = {"/api/pool/edge", "/api/pool/edge/delete"}
         pool_write_prefixes = ("/api/pool/event/",)
         annotate_paths = {"/api/annotate/request", "/api/annotate/edges", "/api/annotate/confirm"}
+        config_paths = {"/api/config/memory-mode", "/api/config/plugin"}
         is_pool_write = path in pool_write_paths or any(path.startswith(p) for p in pool_write_prefixes)
         is_annotate = path in annotate_paths
+        is_config_write = path in config_paths
 
         if path == "/api/capture":
             if not _ingest_token_ok(self):
@@ -1052,6 +1293,39 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return
             except Exception as e:
                 logger.exception("annotate error")
+                self._serve_json({"error": str(e)}, status=500)
+                return
+            self._serve_json(result)
+            return
+
+        if is_config_write:
+            if not _viewer_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = 0
+            payload = {}
+            if length > 0:
+                try:
+                    body = self.rfile.read(length).decode("utf-8")
+                    payload = json.loads(body)
+                except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                    self._serve_json({"error": f"bad json: {e}"}, status=400)
+                    return
+            try:
+                if path == "/api/config/memory-mode":
+                    result = _update_memory_mode(payload)
+                elif path == "/api/config/plugin":
+                    result = _update_plugin(payload)
+                else:
+                    self.send_error(404)
+                    return
+            except ValueError as e:
+                self._serve_json({"error": str(e)}, status=400)
+                return
+            except Exception as e:
                 self._serve_json({"error": str(e)}, status=500)
                 return
             self._serve_json(result)

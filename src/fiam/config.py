@@ -3,7 +3,7 @@ Central configuration for fiam.
 
 All paths derive from two roots:
   - home_path  — AI's home directory (human-readable .md only)
-  - code_path  — infrastructure (events, embeddings, code, logs)
+    - code_path  — infrastructure (pool, features, code, logs)
 
 Naming convention: home_path is the AI's territory.
   code_path is the "basement" — machine data, never visited manually.
@@ -129,6 +129,7 @@ class FiamConfig:
     gorge_stream_confirm: int = 2             # beats after candidate before confirming cut
     drift_threshold: float = 0.65             # cosine below this triggers recall refresh
     recall_top_k: int = 3                     # max events returned by recall retrieval
+    memory_mode: str = "manual"               # "manual" = flow+vectors only; "auto" = gorge+recall+edges
 
     # ------------------------------------------------------------------
     # Narrative synthesis
@@ -162,6 +163,15 @@ class FiamConfig:
     # ------------------------------------------------------------------
     idle_timeout_minutes: int = 30      # minutes of no JSONL activity → trigger processing
     poll_interval_seconds: int = 30     # how often to check JSONL mtime
+    tg_poll_interval: int = 60          # seconds between TG inbox polls (used by bridge_tg)
+    email_poll_interval: int = 600      # seconds between email inbox polls (used by bridge_email)
+
+    # ------------------------------------------------------------------
+    # MQTT bus (Mosquitto)
+    # ------------------------------------------------------------------
+    mqtt_host: str = "127.0.0.1"        # broker host (loopback by default — internal only)
+    mqtt_port: int = 1883               # broker port
+    mqtt_keepalive: int = 60            # seconds
 
     # ------------------------------------------------------------------
     # Communication (outbox dispatch)
@@ -212,24 +222,6 @@ class FiamConfig:
     def store_dir(self) -> Path:
         return self.code_path / "store"
 
-    # --- Legacy store paths (pre-pool, still used during migration) ---
-
-    @property
-    def events_dir(self) -> Path:
-        return self.store_dir / "events"
-
-    @property
-    def embeddings_dir(self) -> Path:
-        return self.store_dir / "embeddings"
-
-    @property
-    def graph_jsonl_path(self) -> Path:
-        return self.store_dir / "graph.jsonl"
-
-    @property
-    def narrative_cache_path(self) -> Path:
-        return self.store_dir / "narrative_cache.json"
-
     # --- Pool (v2 unified storage) ---
 
     @property
@@ -244,8 +236,23 @@ class FiamConfig:
         return self.store_dir / "flow.jsonl"
 
     @property
+    def feature_dir(self) -> Path:
+        """Frozen beat-level embedding features for annotation/training."""
+        return self.store_dir / "features"
+
+    @property
+    def annotation_state_path(self) -> Path:
+        """Manual annotation progress; processed flow ranges are locked."""
+        return self.store_dir / "annotation_state.json"
+
+    @property
     def logs_dir(self) -> Path:
         return self.code_path / "logs"
+
+    @property
+    def plugins_dir(self) -> Path:
+        """Functional integration manifests, one directory per optional plugin."""
+        return self.code_path / "plugins"
 
     # ------------------------------------------------------------------
     # Derived paths — home side (AI's home, human-readable only)
@@ -299,11 +306,6 @@ class FiamConfig:
         return self.home_path / "inbox"
 
     @property
-    def inbox_jsonl_path(self) -> Path:
-        """DEPRECATED: inbox.jsonl eliminated in S16. Use pending_external_path."""
-        return self.home_path / "inbox.jsonl"
-
-    @property
     def pending_external_path(self) -> Path:
         """Pre-formatted external messages waiting for CC delivery (Conductor-prepared)."""
         return self.home_path / "pending_external.txt"
@@ -312,6 +314,14 @@ class FiamConfig:
     def active_session_path(self) -> Path:
         """Tracks the current CC session ID for resume-based messaging."""
         return self.self_dir / "active_session.json"
+
+    @property
+    def sleep_state_path(self) -> Path:
+        """AI-declared sleep state: {sleeping_until, reason, since}.
+
+        sleeping_until is ISO datetime or "open" (sleep until next external event).
+        """
+        return self.self_dir / "sleep_state.json"
 
     @property
     def daily_summary_path(self) -> Path:
@@ -339,11 +349,11 @@ class FiamConfig:
         """Create all required directories if they don't exist."""
         for d in (
             # Code side
-            self.events_dir,
-            self.embeddings_dir,
             self.logs_dir,
+            self.plugins_dir,
             # Pool (v2)
             self.pool_dir / "events",
+            self.feature_dir,
             # Home side
             self.self_dir,
             self.journal_dir,
@@ -365,7 +375,6 @@ class FiamConfig:
 
     def to_toml(self, path: Path | None = None) -> None:
         """Serialize user-configurable fields to a TOML file."""
-        # Build home_paths TOML array
         paths_list = ", ".join(f'"{p.as_posix()}"' for p in self.home_paths)
         lines = [
             f'home_path = "{self.home_path.as_posix()}"',
@@ -382,6 +391,7 @@ class FiamConfig:
             "",
             "[retrieval]",
             f"top_k = {self.top_k}",
+            f"min_score = {self.min_score}",
             f"semantic_weight = {self.semantic_weight}",
             f"recency_weight = {self.recency_weight}",
             f"temporal_link_weight = {self.temporal_link_weight}",
@@ -402,6 +412,21 @@ class FiamConfig:
             "[daemon]",
             f"idle_timeout_minutes = {self.idle_timeout_minutes}",
             f"poll_interval_seconds = {self.poll_interval_seconds}",
+            f"tg_poll_interval = {self.tg_poll_interval}",
+            f"email_poll_interval = {self.email_poll_interval}",
+            "",
+            "[conductor]",
+            f'memory_mode = "{self.memory_mode}"',
+            f"gorge_max_beat = {self.gorge_max_beat}",
+            f"gorge_min_depth = {self.gorge_min_depth}",
+            f"gorge_stream_confirm = {self.gorge_stream_confirm}",
+            f"drift_threshold = {self.drift_threshold}",
+            f"recall_top_k = {self.recall_top_k}",
+            "",
+            "[mqtt]",
+            f'host = "{self.mqtt_host}"',
+            f"port = {self.mqtt_port}",
+            f"keepalive = {self.mqtt_keepalive}",
             "",
             "[features]",
             f"git_enabled = {str(self.git_enabled).lower()}",
@@ -440,6 +465,7 @@ class FiamConfig:
         comm = raw.get("communication", raw.get("comms", {}))
         graph = raw.get("graph", {})
         conductor_cfg = raw.get("conductor", {})
+        mqtt_cfg = raw.get("mqtt", {})
 
         return cls(
             home_path=home_path,
@@ -457,6 +483,7 @@ class FiamConfig:
             embedding_remote_url=models.get("embedding_remote_url", ""),
             # Retrieval
             top_k=retrieval.get("top_k", cls.top_k),
+            min_score=retrieval.get("min_score", cls.min_score),
             semantic_weight=retrieval.get("semantic_weight", cls.semantic_weight),
             recency_weight=retrieval.get("recency_weight", cls.recency_weight),
             temporal_link_weight=retrieval.get("temporal_link_weight", cls.temporal_link_weight),
@@ -483,6 +510,7 @@ class FiamConfig:
             gorge_stream_confirm=conductor_cfg.get("gorge_stream_confirm", cls.gorge_stream_confirm),
             drift_threshold=conductor_cfg.get("drift_threshold", cls.drift_threshold),
             recall_top_k=conductor_cfg.get("recall_top_k", cls.recall_top_k),
+            memory_mode=conductor_cfg.get("memory_mode", cls.memory_mode),
             # Narrative
             narrative_llm_enabled=narrative.get("llm_enabled", cls.narrative_llm_enabled),
             narrative_llm_provider=narrative.get("llm_provider", cls.narrative_llm_provider),
@@ -490,11 +518,17 @@ class FiamConfig:
             narrative_llm_base_url=narrative.get("llm_base_url", cls.narrative_llm_base_url),
             narrative_llm_api_key_env=narrative.get("llm_api_key_env", cls.narrative_llm_api_key_env),
             # Daemon
+            tg_poll_interval=daemon.get("tg_poll_interval", cls.tg_poll_interval),
+            email_poll_interval=daemon.get("email_poll_interval", cls.email_poll_interval),
             idle_timeout_minutes=daemon.get("idle_timeout_minutes", cls.idle_timeout_minutes),
             poll_interval_seconds=daemon.get("poll_interval_seconds", cls.poll_interval_seconds),
             daily_budget_usd=daemon.get("daily_budget_usd", cls.daily_budget_usd),
             cc_model=daemon.get("cc_model", cls.cc_model),
             cc_disallowed_tools=daemon.get("cc_disallowed_tools", cls.cc_disallowed_tools),
+            # MQTT
+            mqtt_host=mqtt_cfg.get("host", cls.mqtt_host),
+            mqtt_port=mqtt_cfg.get("port", cls.mqtt_port),
+            mqtt_keepalive=mqtt_cfg.get("keepalive", cls.mqtt_keepalive),
             # Features
             git_enabled=features.get("git_enabled", cls.git_enabled),
             # Graph edge typing

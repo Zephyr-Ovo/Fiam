@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fiam_lib.core import _project_root, _toml_path, _build_config, _pid_path, _is_daemon_running
@@ -28,8 +29,8 @@ from fiam_lib.jsonl import (
     _load_cursor,
     _save_cursor,
 )
-from fiam_lib.postman import sweep_outbox, fetch_inbox, fetch_tg_inbox
-from fiam_lib.scheduler import extract_wake_tags, append_to_schedule, load_due
+from fiam_lib.postman import sweep_outbox
+from fiam_lib.scheduler import extract_wake_tags, extract_sleep_tag, append_to_schedule, load_due
 from fiam_lib.cost import log_cost, check_budget
 from fiam_lib.ui import _console, _flow, _ANIM_IDLE, _ANIM_ACTIVE, _animated_sleep
 
@@ -92,6 +93,65 @@ def _retire_session(config, reason: str = "error") -> None:
     config.active_session_path.unlink(missing_ok=True)
 
 
+# ------------------------------------------------------------------
+# Sleep state: AI-declared rest period
+# ------------------------------------------------------------------
+
+def _load_sleep_state(config) -> dict | None:
+    """Load self/sleep_state.json → {sleeping_until, reason, since} or None.
+
+    sleeping_until: ISO datetime str OR literal "open".
+    """
+    path = config.sleep_state_path
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _save_sleep_state(config, sleeping_until: str, reason: str) -> None:
+    """Persist sleep_state.json."""
+    path = config.sleep_state_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "sleeping_until": sleeping_until,
+        "reason": reason,
+        "since": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _clear_sleep_state(config) -> None:
+    config.sleep_state_path.unlink(missing_ok=True)
+
+
+def _is_sleeping(config) -> tuple[bool, str | None]:
+    """Returns (is_sleeping, sleeping_until_iso_or_open).
+
+    Auto-clears expired explicit sleep states.
+    """
+    state = _load_sleep_state(config)
+    if not state:
+        return False, None
+    until = state.get("sleeping_until", "")
+    if until == "open":
+        return True, "open"
+    try:
+        dt = datetime.fromisoformat(until)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) >= dt:
+            _clear_sleep_state(config)
+            return False, None
+        return True, until
+    except (ValueError, TypeError):
+        # Malformed — drop it
+        _clear_sleep_state(config)
+        return False, None
+
+
 def _is_interactive(config) -> bool:
     """Check if a human is interactively using the CC session."""
     lock = config.interactive_lock_path
@@ -122,12 +182,12 @@ def _is_interactive(config) -> bool:
         return False
 
 
-def _wake_session(config, message: str, tag: str = "tg") -> bool:
+def _wake_session(config, message: str, tag: str = "tg", conductor=None) -> bool:
     """Send a message to Fiet via `claude -p --resume <id>`.
 
     If no active session exists, creates a new session and saves its ID.
     Returns True if the message was sent successfully.
-    Also extracts outbound markers from the response and writes to outbox.
+    Dispatches outbound markers from the response via conductor.dispatch().
     """
     session = _load_active_session(config)
     resuming = session is not None
@@ -198,17 +258,27 @@ def _wake_session(config, message: str, tag: str = "tg") -> bool:
                 _console.print(f"  [dim]└ new session {new_sid[:8]}[/dim]")
                 _plog.info("new session created: %s", new_sid)
 
-        # Extract outbound markers from response
+        # Extract outbound markers from response → dispatch via conductor
         if data:
             response_text = data.get("result", "")
             if response_text:
-                _extract_outbound_markers(config, response_text)
+                _extract_and_dispatch(config, response_text, conductor)
                 # Extract WAKE tags for scheduler
                 wake_tags = extract_wake_tags(response_text)
                 if wake_tags:
                     n = append_to_schedule(wake_tags, config)
                     _plog.info("scheduler  +%d wake(s) queued", n)
                     _console.print(f"  [dim]└ scheduler +{n} wake(s)[/dim]")
+                # Extract SLEEP tag → persist + retire session
+                sleep_tag = extract_sleep_tag(response_text)
+                if sleep_tag:
+                    _save_sleep_state(config, sleep_tag["sleeping_until"], sleep_tag["reason"])
+                    _retire_session(config, reason="sleep")
+                    until_label = sleep_tag["sleeping_until"]
+                    if until_label != "open":
+                        until_label = until_label[:16].replace("T", " ")
+                    _plog.info("AI sleep  until=%s reason=%s", until_label, sleep_tag["reason"])
+                    _console.print(f"  [dim]└ 💤 sleep until {until_label}[/dim]")
 
         return True
     except subprocess.TimeoutExpired:
@@ -219,38 +289,31 @@ def _wake_session(config, message: str, tag: str = "tg") -> bool:
         return False
 
 
-# Regex for outbound message markers: [→tg:Name] or [→email:Name]
-_OUTBOUND_RE = re.compile(
-    r"\[→(tg|telegram|email):([^\]]+)\]\s*(.+?)(?=\[→(?:tg|telegram|email):|$)",
-    re.DOTALL,
-)
+def _extract_and_dispatch(config, text: str, conductor) -> int:
+    """Extract [→channel:recipient] markers and dispatch via Conductor.
 
-
-def _extract_outbound_markers(config, text: str) -> int:
-    """Extract [→channel:recipient] markers from text and write to outbox/.
-
-    Returns count of outbox files written.
+    Returns count of dispatched messages.
     """
-    outbox = config.outbox_dir
-    outbox.mkdir(parents=True, exist_ok=True)
-    count = 0
+    from fiam.markers import parse_outbound_markers
+    from fiam.plugins import resolve_dispatch_target
 
-    for match in _OUTBOUND_RE.finditer(text):
-        channel, recipient, body = match.group(1), match.group(2), match.group(3).strip()
-        if not body:
+    count = 0
+    for marker in parse_outbound_markers(text):
+        target = resolve_dispatch_target(config, marker.channel)
+        if target is None:
+            _plog.info("dispatch skipped disabled plugin channel=%s", marker.channel)
             continue
-        via = "telegram" if channel in ("tg", "telegram") else "email"
-        ts = time.strftime("%m%d_%H%M%S")
-        fname = f"auto_{ts}_{count:02d}.md"
-        content = (
-            f"---\nto: {recipient.strip()}\nvia: {via}\n"
-            f"priority: normal\n---\n\n{body}\n"
-        )
-        (outbox / fname).write_text(content, encoding="utf-8")
-        count += 1
+        if conductor is not None:
+            try:
+                conductor.dispatch(target, marker.recipient, marker.body)
+                count += 1
+            except Exception as e:
+                _plog.error("dispatch failed: %s", e)
+        else:
+            _plog.warning("no conductor for dispatch, skipping")
 
     if count:
-        _console.print(f"  [dim]└ outbox +{count}[/dim]")
+        _console.print(f"  [dim]└ dispatched {count}[/dim]")
     return count
 
 
@@ -311,21 +374,135 @@ def cmd_start(args: argparse.Namespace) -> None:
 
     # Initial imports for new architecture
     from fiam.retriever.embedder import Embedder
+    from fiam.retriever.spread import retrieve
+    from fiam.store.features import FeatureStore
     from fiam.store.pool import Pool
     from fiam.conductor import Conductor
+    from fiam.bus import Bus, RECEIVE_ALL
     import numpy as np
+    import queue as _queue
 
-    # ── Conductor: new architecture routing layer ──
+    # ── MQTT bus: replaces all channel polling ──
+    _bus = Bus(client_id="fiam-daemon")
+    _inbox_q: _queue.Queue = _queue.Queue()
+
+    def _on_receive(source: str, payload: dict) -> None:
+        """Bus thread → main loop queue. Convert MQTT payload to msg dict."""
+        text = (payload.get("text") or "").strip()
+        if not text:
+            return
+        source_name = str(payload.get("source") or source)
+        try:
+            from fiam.plugins import is_receive_enabled
+            if not is_receive_enabled(config, source_name):
+                _plog.info("receive skipped disabled plugin source=%s", source_name)
+                return
+        except Exception:
+            pass
+        t_raw = payload.get("t")
+        t_val: datetime | None = None
+        if isinstance(t_raw, str):
+            try:
+                t_val = datetime.fromisoformat(t_raw)
+            except ValueError:
+                t_val = None
+        elif isinstance(t_raw, datetime):
+            t_val = t_raw
+        meta = {
+            key: value for key, value in payload.items()
+            if key not in {"text", "source", "t"} and value not in (None, "", [])
+        }
+        _inbox_q.put({
+            "source": source_name,
+            "from_name": payload.get("from_name", ""),
+            "text": text,
+            "t": t_val or datetime.now(timezone.utc),
+            "meta": meta,
+        })
+
+    _bus.subscribe(RECEIVE_ALL, _on_receive)
+    try:
+        _bus.connect(config.mqtt_host, config.mqtt_port, config.mqtt_keepalive)
+        _bus.loop_start()
+        _plog.info("bus connected to %s:%d", config.mqtt_host, config.mqtt_port)
+    except Exception as e:
+        _plog.error("bus connect failed: %s — running without MQTT", e)
+        _console.print(f"  [yellow]MQTT broker unreachable ({e}); inbound channels disabled[/]")
+
+    # ── Pool + Embedder ──
     _pool = Pool(config.pool_dir, dim=config.embedding_dim)
+    _feature_store = FeatureStore(config.feature_dir, dim=config.embedding_dim)
     _conductor_embedder = Embedder(config)
     event_count = _pool.event_count
+
+    # ── Recall: daemon owns this (recall never enters flow) ──
+    _recall_path = config.background_path
+    _recall_dirty_path = _recall_path.parent / ".recall_dirty" if _recall_path else None
+    _recall_top_k = 3
+
+    def _refresh_recall(query_vec) -> None:
+        """Run spreading activation and write recall.md + .recall_dirty marker."""
+        results = retrieve(
+            query_vec,
+            _pool,
+            shield_after=datetime.now(timezone.utc).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            ),
+            top_k=_recall_top_k,
+        )
+        if not results:
+            return
+
+        now = datetime.now(timezone.utc)
+        lines = [f"<!-- recall | {now.strftime('%Y-%m-%dT%H:%M:%SZ')} -->", ""]
+
+        for event_id, activation in results:
+            ev = _pool.get_event(event_id)
+            if ev is None:
+                continue
+            body = _pool.read_body(event_id)
+            fragment = body.strip()[:200]
+            if len(body.strip()) > 200:
+                fragment += "..."
+
+            age = now - ev.t
+            if age.days > 30:
+                hint = f"{age.days // 30}个月前"
+            elif age.days > 0:
+                hint = f"{age.days}天前"
+            elif age.seconds > 3600:
+                hint = f"{age.seconds // 3600}小时前"
+            else:
+                hint = "刚才"
+
+            lines.append(f"- ({hint}) {fragment}")
+            ev.access_count += 1
+
+        _pool.save_events()
+
+        content = "\n".join(lines) + "\n"
+        _recall_path.parent.mkdir(parents=True, exist_ok=True)
+        _recall_path.write_text(content, encoding="utf-8")
+        # Touch dirty marker so hook knows there's fresh recall
+        if _recall_dirty_path:
+            _recall_dirty_path.touch()
+
+        _plog.info("recall refreshed (%d fragments)", len(results))
+
+    # ── Conductor: stateless hub, drift → _refresh_recall callback ──
     _conductor = Conductor(
         pool=_pool,
         embedder=_conductor_embedder,
         config=config,
         flow_path=config.flow_path,
-        recall_path=config.background_path,
-        drift_threshold=0.65,
+        drift_threshold=config.drift_threshold,
+        gorge_max_beat=config.gorge_max_beat,
+        gorge_min_depth=config.gorge_min_depth,
+        gorge_stream_confirm=config.gorge_stream_confirm,
+        on_drift=_refresh_recall,
+        bus=_bus,
+        memory_mode=config.memory_mode,
+        feature_store=_feature_store,
     )
 
     _console.print()
@@ -345,32 +522,26 @@ def cmd_start(args: argparse.Namespace) -> None:
     idle_timeout = config.idle_timeout_minutes * 60
     poll_interval = config.poll_interval_seconds
 
-    # Live recall: conductor handles drift detection and recall internally
-    recall_min_chars = 40                       # skip trivial messages
+    # Live recall: conductor fires on_drift → _refresh_recall (above)
     # Regex to strip daemon wake signal tags from user text
     _wake_tag_re = re.compile(r"\[wake:[^\]]*\]\s*")
 
-    def _refresh_recall_for_task(context: str) -> None:
-        """Refresh recall.md based on task context before a wake.
-
-        Uses conductor's embedder + spreading activation retrieval.
-        """
-        if len(context) < recall_min_chars:
-            return
-        try:
-            vec = _conductor_embedder.embed(context)
-            _conductor._refresh_recall(vec)
-            _plog.info("task recall (spread)  context=%s", context[:60])
-        except Exception as e:
-            _plog.error("task recall error: %s", e, exc_info=True)
-
     def _write_pending_external(config, msgs: list[dict]) -> None:
         """Append pre-formatted external messages for inject.sh hook delivery."""
-        labels = [(f"{m['source']}:{m['from_name']}", m["text"]) for m in msgs]
-        formatted = Conductor.format_user_message(labels)
+        parts = []
+        for m in msgs:
+            parts.append(f"[{m['source']}:{m['from_name']}] {m['text']}")
+        formatted = "\n\n".join(parts)
         path = config.pending_external_path
         with open(path, "a", encoding="utf-8") as f:
             f.write(formatted + "\n")
+
+    def _format_user_message(msgs: list[dict]) -> str:
+        """Format external messages for `claude -p` user field."""
+        parts = []
+        for m in msgs:
+            parts.append(f"[{m['source']}:{m['from_name']}] {m['text']}")
+        return "\n\n".join(parts)
 
     # ------------------------------------------------------------------
     # Beat ingestion via Conductor
@@ -400,7 +571,7 @@ def cmd_start(args: argparse.Namespace) -> None:
             if jf_mtime < entry["mtime"]:
                 entry["byte_offset"] = 0
 
-            results, new_offset = _conductor.ingest_cc_output(jf, entry["byte_offset"])
+            results, new_offset = _conductor.receive_cc(jf, entry["byte_offset"])
             n_beats = len(results)
             n_events = sum(1 for r in results if r is not None)
             if n_beats:
@@ -480,8 +651,6 @@ def cmd_start(args: argparse.Namespace) -> None:
         except Exception:
             pass  # non-critical
 
-    last_inbox_check: float = 0.0
-    inbox_interval = 60  # check TG + email every 60s
     last_replay_check: float = 0.0
     replay_interval = 30 * 60  # memory replay every 30 minutes when idle
 
@@ -498,81 +667,100 @@ def cmd_start(args: argparse.Namespace) -> None:
         # Write daemon state for debug dashboard (every poll cycle)
         _write_daemon_state()
 
-        # ── Inbound channels: TG + email polling ──
-        now_ts = time.time()
-        if now_ts - last_inbox_check > inbox_interval:
-            last_inbox_check = now_ts
+        # ── Inbound channels: drain MQTT queue (no polling here) ──
+        # Bridges (bridge_tg, bridge_email, dashboard /api/capture, ...) push
+        # messages onto fiam/receive/+; the bus thread enqueues them.
+        all_msgs: list[dict] = []
+        while True:
             try:
-                msgs_tg = fetch_tg_inbox(config)
-                msgs_email = fetch_inbox(config)
-                n_tg, n_email = len(msgs_tg), len(msgs_email)
-                _plog.debug("poll  tg=%d email=%d", n_tg, n_email)
-                if n_tg or n_email:
-                    ts = time.strftime("%H:%M")
-                    _console.print(f"  [dim]└[{ts}][/dim] [bold #7eb8f7]✉[/]  inbox +{n_tg + n_email}")
-                    _plog.info("inbox  tg=+%d email=+%d", n_tg, n_email)
-                    _log_action("inbox", f"tg={n_tg} email={n_email}")
+                all_msgs.append(_inbox_q.get_nowait())
+            except _queue.Empty:
+                break
+        if all_msgs:
+            # Sort by msg timestamp so flow.jsonl reflects real-world order
+            all_msgs.sort(key=lambda m: m.get("t") or datetime.min.replace(tzinfo=timezone.utc))
+            n_tg = sum(1 for m in all_msgs if m["source"] == "tg")
+            n_email = sum(1 for m in all_msgs if m["source"] == "email")
+            n_other = len(all_msgs) - n_tg - n_email
+            try:
+                ts = time.strftime("%H:%M")
+                _console.print(
+                    f"  [dim]└[{ts}][/dim] [bold #7eb8f7]✉[/]  bus +{len(all_msgs)} "
+                    f"(tg={n_tg} email={n_email} other={n_other})"
+                )
+                _plog.info("bus  total=+%d tg=+%d email=+%d other=+%d",
+                           len(all_msgs), n_tg, n_email, n_other)
+                _log_action("bus", f"+{len(all_msgs)}")
 
-                    all_msgs = msgs_tg + msgs_email
+                # All messages → Conductor → flow.jsonl + frozen vectors.
+                # In auto mode it also runs drift/gorge; in manual mode it stops there.
+                for msg in all_msgs:
+                    try:
+                        _conductor.receive(
+                            msg["text"],
+                            msg["source"],
+                            t=msg.get("t"),
+                            meta=msg.get("meta") or {},
+                        )
+                    except Exception as e:
+                        _plog.error("conductor.receive failed: %s", e)
 
-                    # Ingest ALL messages into Conductor → flow.jsonl + embed + gorge
-                    for msg in all_msgs:
-                        try:
-                            _conductor.ingest_external(msg["text"], msg["source"])
-                        except Exception as e:
-                            _plog.error("ingest_external failed: %s", e)
+                # Daemon decides CC delivery: sleep > comm_state > interactive > budget
+                sleeping, sleep_until = _is_sleeping(config)
+                comm_state = _load_comm_state(config)
+                _plog.debug("sleeping=%s comm_state=%s", sleeping, comm_state)
 
-                    # Check comm state for CC delivery
-                    comm_state = _load_comm_state(config)
-                    _plog.debug("comm_state=%s", comm_state)
-
-                    if comm_state == "block":
-                        _plog.info("comm_state=block — recorded in flow, no CC delivery")
-                        _console.print(f"  [dim]comm: block — recorded, no delivery[/dim]")
-                    elif comm_state == "mute":
-                        _plog.info("comm_state=mute — recorded + queued, wake deferred")
-                        _console.print(f"  [dim]comm: mute — queued for later[/dim]")
-                        _write_pending_external(config, all_msgs)
-                    else:
-                        # notify (default) — deliver to CC
-                        interactive = _is_interactive(config)
-                        _plog.debug("interactive=%s", interactive)
-                        if not interactive:
-                            # Budget check before wake
-                            budget_ok, budget_reason = check_budget(config)
-                            if not budget_ok:
-                                _plog.warning("budget exceeded — queuing messages: %s", budget_reason)
-                                _console.print(f"  [yellow]budget: {budget_reason}[/]")
-                                _write_pending_external(config, all_msgs)
-                            else:
-                                # Refresh recall based on message content
-                                _refresh_recall_for_task("\n".join(m["text"][:200] for m in all_msgs))
-                                # Format user field with actual messages
-                                labels = [(f"{m['source']}:{m['from_name']}", m["text"]) for m in all_msgs]
-                                user_msg = Conductor.format_user_message(labels)
-                                tag = "tg" if n_tg and not n_email else ("email" if n_email and not n_tg else "inbox")
-                                _plog.info("wake attempt  tag=%s msgs=%d", tag, len(all_msgs))
-                                ok = _wake_session(config, user_msg, tag=tag)
-                                if ok:
-                                    ts2 = time.strftime("%H:%M")
-                                    _console.print(f"  [dim]└[{ts2}][/dim] [bold #a8f0e8]↗[/]  wake sent")
-                                    _plog.info("wake OK")
-                                else:
-                                    _plog.warning("wake FAILED, retrying...")
-                                    ok2 = _wake_session(config, user_msg, tag=tag)
-                                    if not ok2:
-                                        _console.print(f"  [yellow]wake failed twice — messages queued[/]")
-                                        _plog.error("wake FAILED x2 — messages queued in pending")
-                                        _write_pending_external(config, all_msgs)
-                                        session = _load_active_session(config)
-                                        if session:
-                                            _retire_session(config, reason="wake_failed")
-                        else:
-                            _console.print(f"  [dim]interactive — messages queued for hook[/dim]")
-                            _plog.info("interactive — queuing for hook delivery")
+                if sleeping and sleep_until != "open":
+                    # Explicit sleep: queue, don't wake
+                    _plog.info("AI sleeping until %s — queuing inbox", sleep_until)
+                    _console.print(f"  [dim]💤 sleeping — queued for next wake[/dim]")
+                    _write_pending_external(config, all_msgs)
+                elif comm_state == "block":
+                    _plog.info("comm_state=block — in flow, delivery discarded")
+                    _console.print(f"  [dim]comm: block — recorded, no delivery[/dim]")
+                elif comm_state == "mute":
+                    _plog.info("comm_state=mute — in flow, no wake")
+                    _console.print(f"  [dim]comm: mute — queued for later[/dim]")
+                    _write_pending_external(config, all_msgs)
+                else:
+                    # Open sleep is auto-cleared by external arrival
+                    if sleeping and sleep_until == "open":
+                        _plog.info("AI open-sleep — external msg auto-wakes")
+                        _clear_sleep_state(config)
+                    # notify (default) — deliver to CC
+                    interactive = _is_interactive(config)
+                    _plog.debug("interactive=%s", interactive)
+                    if not interactive:
+                        budget_ok, budget_reason = check_budget(config)
+                        if not budget_ok:
+                            _plog.warning("budget exceeded — queuing: %s", budget_reason)
+                            _console.print(f"  [yellow]budget: {budget_reason}[/]")
                             _write_pending_external(config, all_msgs)
+                        else:
+                            user_msg = _format_user_message(all_msgs)
+                            tag = "tg" if n_tg and not n_email else ("email" if n_email and not n_tg else "inbox")
+                            _plog.info("wake attempt  tag=%s msgs=%d", tag, len(all_msgs))
+                            ok = _wake_session(config, user_msg, tag=tag, conductor=_conductor)
+                            if ok:
+                                ts2 = time.strftime("%H:%M")
+                                _console.print(f"  [dim]└[{ts2}][/dim] [bold #a8f0e8]↗[/]  wake sent")
+                                _plog.info("wake OK")
+                            else:
+                                _plog.warning("wake FAILED, retrying...")
+                                ok2 = _wake_session(config, user_msg, tag=tag, conductor=_conductor)
+                                if not ok2:
+                                    _console.print(f"  [yellow]wake failed twice — messages queued[/]")
+                                    _plog.error("wake FAILED x2 — messages queued in pending")
+                                    _write_pending_external(config, all_msgs)
+                                    session = _load_active_session(config)
+                                    if session:
+                                        _retire_session(config, reason="wake_failed")
+                    else:
+                        _console.print(f"  [dim]interactive — messages queued for hook[/dim]")
+                        _plog.info("interactive — queuing for hook delivery")
+                        _write_pending_external(config, all_msgs)
             except Exception as e:
-                _plog.error("inbox error: %s", e, exc_info=True)
+                _plog.error("inbox handling error: %s", e, exc_info=True)
                 if config.debug_mode:
                     print(f"  [inbox] Error: {e}", file=sys.stderr)
 
@@ -591,7 +779,6 @@ def cmd_start(args: argparse.Namespace) -> None:
                 and (time.time() - last_activity) > 30 * 60):
             last_replay_check = time.time()
             try:
-                from datetime import datetime, timezone
                 events = _pool.load_events()
                 if events:
                     # Simple replay: bump access_count on least-accessed events
@@ -630,8 +817,19 @@ def cmd_start(args: argparse.Namespace) -> None:
                     continue
 
                 _console.print(f"  [bold #e8c8ff]⏰[/] scheduled: {reason}")
-                _refresh_recall_for_task(reason)
-                ok = _wake_session(config, f"[scheduled:{wake_type}] {reason}", tag="sched")
+                # Sleep gate: if AI is sleeping past this wake's time, skip.
+                # (mark_fired so it doesn't loop; AI's own sleep takes precedence)
+                sleeping, sleep_until = _is_sleeping(config)
+                if sleeping:
+                    if sleep_until == "open":
+                        _plog.info("AI open-sleep — scheduled wake clears it")
+                        _clear_sleep_state(config)
+                    else:
+                        _plog.info("AI sleeping until %s — skipping scheduled wake", sleep_until)
+                        _console.print(f"  [dim]💤 still sleeping — wake skipped[/dim]")
+                        mark_fired(entry, config, success=True)
+                        continue
+                ok = _wake_session(config, f"[scheduled:{wake_type}] {reason}", tag="sched", conductor=_conductor)
                 mark_fired(entry, config, success=ok)
                 if ok:
                     _plog.info("scheduler wake OK")
@@ -676,8 +874,13 @@ def cmd_start(args: argparse.Namespace) -> None:
         if active and (time.time() - last_activity) > idle_timeout:
             ts = time.strftime("%H:%M")
             _console.print(f"  [dim]└[{ts}][/dim] [bold #f7a8d0]⟳[/]  processing...")
-            _plog.info("idle timeout → processing")
+            _plog.info("idle timeout → processing + auto-retire")
             _process_pending()
+            # Auto-retire: long inactivity = AI naturally drifted to sleep without
+            # declaring it. Next message starts a fresh session.
+            if _load_active_session(config):
+                _retire_session(config, reason="idle")
+                _plog.info("session auto-retired (idle)")
 
         _write_daemon_state()
 
@@ -686,6 +889,12 @@ def cmd_start(args: argparse.Namespace) -> None:
         _console.print()
         _console.print(f"  [bold #f7a8d0]⟳[/]  wrapping up...")
         _process_pending()
+
+    # Stop bus loop (drains queued QoS 1 messages)
+    try:
+        _bus.loop_stop()
+    except Exception:
+        pass
 
     # Cleanup
     pid_file.unlink(missing_ok=True)
@@ -751,18 +960,22 @@ def cmd_status(args: argparse.Namespace) -> None:
 
     if toml.exists():
         from fiam.config import FiamConfig
+        from fiam.store.pool import Pool
         config = FiamConfig.from_toml(toml, code_path)
         print(f"  home: {config.home_path}")
+        print(f"  memory mode: {config.memory_mode}")
 
-        events_dir = config.events_dir
-        if events_dir.is_dir():
-            count = len(list(events_dir.glob("*.md")))
-            print(f"  events: {count}")
+        pool = Pool(config.pool_dir, dim=config.embedding_dim)
+        print(f"  events: {pool.event_count}")
 
-        emb_dir = config.embeddings_dir
-        if emb_dir.is_dir():
-            count = len(list(emb_dir.glob("*.npy")))
-            print(f"  embeddings: {count}")
+        feature_vectors = config.feature_dir / "flow_vectors.npy"
+        if feature_vectors.exists():
+            try:
+                import numpy as np
+                count = int(np.load(feature_vectors, mmap_mode="r").shape[0])
+            except Exception:
+                count = 0
+            print(f"  beat vectors: {count}")
 
         cursor = _load_cursor(code_path)
         if cursor:

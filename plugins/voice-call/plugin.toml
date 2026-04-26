@@ -1,0 +1,18 @@
+id = "voice-call"
+name = "Voice call bridge"
+enabled = false
+status = "planned"
+kind = "channel"
+description = "Phone-call style voice ingress/egress; not implemented yet."
+transports = ["sip_or_telephony_api", "mqtt"]
+capabilities = ["call_user", "receive_voice", "dispatch_voice"]
+receive_sources = ["voice_call", "call"]
+dispatch_targets = ["voice_call", "call"]
+entrypoint = ""
+auth = "Provider-specific token plus explicit allowlist"
+latency = "provider dependent; call setup usually seconds"
+env = []
+replaces = []
+notes = [
+  "Keep separated from chat so consent, logging, and wake rules can be stricter."
+]

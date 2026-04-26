@@ -174,6 +174,5 @@ def cmd_init(args: argparse.Namespace) -> None:
     print(f"    cd {home_path} && claude   # start Claude Code from home")
     print(f"    fiam start                 # start daemon (separate terminal)")
     print()
-    print("  First time? Import existing CC history:")
-    print(f"    fiam scan                  # one-time full history scan")
+    print("  First time? Open the dashboard annotate page after some flow has accumulated.")
     print()

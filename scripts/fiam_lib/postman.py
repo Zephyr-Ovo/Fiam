@@ -22,6 +22,7 @@ import json
 import os
 import imaplib
 import email as email_mod
+from email.utils import parsedate_to_datetime
 import re
 import shutil
 import smtplib
@@ -35,7 +36,7 @@ from pathlib import Path
 import frontmatter
 
 from fiam.config import FiamConfig
-from fiam_lib.scheduler import WAKE_RE, extract_wake_tags, append_to_schedule
+from fiam_lib.scheduler import WAKE_RE, SLEEP_RE, extract_wake_tags, append_to_schedule
 
 
 # ------------------------------------------------------------------
@@ -281,8 +282,11 @@ def dispatch_file(path: Path, config: FiamConfig) -> bool:
         n = append_to_schedule(wake_tags, config)
         print(f"[postman] scheduler +{n} wake(s) from {path.name}")
     body = WAKE_RE.sub("", body).strip()
+    # Strip stray <<SLEEP:...>> from outbox bodies (it's a daemon meta-marker,
+    # not user-facing text — leaving it in TG/email would leak internals).
+    body = SLEEP_RE.sub("", body).strip()
     if not body:
-        return True  # Only had WAKE tags, nothing to send
+        return True  # Only had WAKE/SLEEP tags, nothing to send
 
     if via == "telegram":
         token = os.environ.get(config.tg_bot_token_env, "")
@@ -346,24 +350,6 @@ def sweep_outbox(config: FiamConfig) -> int:
 
 
 # ------------------------------------------------------------------
-# Daemon mode — run as background watcher
-# ------------------------------------------------------------------
-
-def run_postman_loop(config: FiamConfig, poll_seconds: int = 15) -> None:
-    """Poll outbox/ every N seconds and dispatch new files."""
-    print(f"[postman] Watching {config.outbox_dir} (poll={poll_seconds}s)")
-    while True:
-        try:
-            sweep_outbox(config)
-        except KeyboardInterrupt:
-            print("[postman] Stopped.")
-            break
-        except Exception as e:
-            print(f"[postman] Error: {e}")
-        time.sleep(poll_seconds)
-
-
-# ------------------------------------------------------------------
 # IMAP inbox fetch — pull new emails into home/inbox/
 # ------------------------------------------------------------------
 
@@ -401,7 +387,7 @@ def fetch_inbox(
         msg_ids = data[0].split()[-max_fetch:]  # latest N
         messages = []
 
-        for mid in msg_ids:
+        for idx, mid in enumerate(msg_ids):
             status, msg_data = conn.fetch(mid, "(RFC822)")
             if status != "OK":
                 continue
@@ -433,7 +419,7 @@ def fetch_inbox(
 
             # Write as Markdown
             ts = datetime.now().strftime("%m%d_%H%M%S")
-            fname = f"email_{ts}_{count:02d}.md"
+            fname = f"email_{ts}_{idx:02d}.md"
             md = (
                 f"---\n"
                 f"from: {sender}\n"
@@ -444,7 +430,11 @@ def fetch_inbox(
                 f"{body.strip()}\n"
             )
             (inbox_dir / fname).write_text(md, encoding="utf-8")
-            messages.append({"from_name": sender, "source": "email", "text": body.strip()})
+            try:
+                t_msg = parsedate_to_datetime(date_str) if date_str else datetime.now()
+            except (TypeError, ValueError):
+                t_msg = datetime.now()
+            messages.append({"from_name": sender, "source": "email", "text": body.strip(), "t": t_msg})
 
         conn.logout()
         if messages:
@@ -497,7 +487,7 @@ def fetch_tg_inbox(config: FiamConfig, timeout: int = 0) -> list[dict]:
     inbox_dir.mkdir(parents=True, exist_ok=True)
     messages = []
 
-    for update in data["result"]:
+    for idx, update in enumerate(data["result"]):
         _tg_update_offset = update["update_id"] + 1
 
         msg = update.get("message")
@@ -533,10 +523,11 @@ def fetch_tg_inbox(config: FiamConfig, timeout: int = 0) -> list[dict]:
         sender = msg.get("from", {})
         from_name = sender.get("username") or sender.get("first_name", "unknown")
         msg_id = msg.get("message_id", 0)
-        msg_date = datetime.fromtimestamp(msg.get("date", 0)).strftime("%m-%d %H:%M")
+        msg_ts = msg.get("date", 0) or time.time()
+        msg_date = datetime.fromtimestamp(msg_ts).strftime("%m-%d %H:%M")
 
         ts = datetime.now().strftime("%m%d_%H%M%S")
-        fname = f"tg_{ts}_{count:02d}.md"
+        fname = f"tg_{ts}_{idx:02d}.md"
         md = (
             f"---\n"
             f"from: {from_name}\n"
@@ -547,7 +538,12 @@ def fetch_tg_inbox(config: FiamConfig, timeout: int = 0) -> list[dict]:
             f"{text.strip()}\n"
         )
         (inbox_dir / fname).write_text(md, encoding="utf-8")
-        messages.append({"from_name": from_name, "source": "tg", "text": text.strip()})
+        messages.append({
+            "from_name": from_name,
+            "source": "tg",
+            "text": text.strip(),
+            "t": datetime.fromtimestamp(msg_ts),
+        })
 
     if messages:
         print(f"[postman] Fetched {len(messages)} TG message(s) → {inbox_dir}")

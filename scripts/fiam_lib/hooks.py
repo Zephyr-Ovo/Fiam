@@ -24,6 +24,7 @@ _INJECT_PS1_TEMPLATE = r'''# fiam hook: UserPromptSubmit -> inject self + recall
 $homeDir = $env:CLAUDE_PROJECT_DIR
 $selfDir = Join-Path $homeDir "self"
 $recallFile = Join-Path $homeDir "recall.md"
+$recallDirty = Join-Path $homeDir ".recall_dirty"
 $pendingFile = Join-Path $homeDir "pending_external.txt"
 $pendingProcessing = Join-Path $homeDir "pending_external.processing"
 
@@ -44,8 +45,8 @@ if (Test-Path $selfDir) {
     }
 }
 
-# ── 2. Recall ──
-if (Test-Path $recallFile) {
+# ── 2. Recall (only if .recall_dirty marker exists) ──
+if ((Test-Path $recallDirty) -and (Test-Path $recallFile)) {
     $content = Get-Content $recallFile -Raw -ErrorAction SilentlyContinue
     if ($content -and $content.Trim().Length -gt 0) {
         $clean = $content -replace '<!--.*?-->', '' | ForEach-Object { $_.Trim() }
@@ -53,6 +54,7 @@ if (Test-Path $recallFile) {
             $parts += "[recall]`n$clean"
         }
     }
+    Remove-Item $recallDirty -Force -ErrorAction SilentlyContinue
 }
 
 # ── 3. External messages ──
@@ -94,6 +96,7 @@ _INJECT_SH_TEMPLATE = r'''#!/bin/bash
 HOME_DIR="$CLAUDE_PROJECT_DIR"
 SELF_DIR="$HOME_DIR/self"
 RECALL_FILE="$HOME_DIR/recall.md"
+RECALL_DIRTY="$HOME_DIR/.recall_dirty"
 PENDING_FILE="$HOME_DIR/pending_external.txt"
 PENDING_PROCESSING="$HOME_DIR/pending_external.processing"
 
@@ -119,8 +122,8 @@ if [ -d "$SELF_DIR" ]; then
     fi
 fi
 
-# ── 2. Recall ──
-if [ -f "$RECALL_FILE" ] && [ -s "$RECALL_FILE" ]; then
+# ── 2. Recall (only if .recall_dirty marker exists) ──
+if [ -f "$RECALL_DIRTY" ] && [ -f "$RECALL_FILE" ] && [ -s "$RECALL_FILE" ]; then
     RECALL=$(sed 's/<!--.*-->//g' "$RECALL_FILE" | tr -s '\n' | sed '/^$/d')
     if [ -n "$RECALL" ]; then
         if [ -n "$PARTS" ]; then
@@ -128,6 +131,7 @@ if [ -f "$RECALL_FILE" ] && [ -s "$RECALL_FILE" ]; then
         fi
         PARTS="${PARTS}[recall]\n${RECALL}"
     fi
+    rm -f "$RECALL_DIRTY"
 fi
 
 # ── 3. External messages (Conductor-prepared, pre-formatted) ──

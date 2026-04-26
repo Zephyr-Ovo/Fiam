@@ -11,19 +11,17 @@
 ```
 Zephyr (TG/Email)
     ↓
-fiam daemon (ISP) — 每60秒轮询 TG/IMAP
+Channel 层轮询 — 每60秒 TG/IMAP
     ↓
-Conductor.ingest_external() → flow.jsonl + embed + gorge
+Conductor.receive() → flow.jsonl + embed + gorge
     ↓
-两种投递路径：
+两种投递路径（daemon 决定）：
   - 非交互(wake): daemon 通过 `claude -p` user字段直接送达
   - 交互中: pending_external.txt → inject.sh hook → 注入到我的上下文
     ↓
 我回复（带 [→tg:Zephyr] 标记）
     ↓
-daemon 解析回复 → outbox/*.md → postman 投递
-    ↓
-Zephyr 收到 TG/邮件
+daemon 解析回复 → conductor.dispatch() → TG/邮件送达
 ```
 
 ## 消息格式
@@ -78,6 +76,24 @@ priority: normal
 daemon 的 scheduler 每 30 秒检查一次，到时间自动唤醒。
 类型：private（私人反思）| notify（通知 Zephyr）| seek（找 Zephyr 聊天）| check（检查状态）
 计划队列存在 `self/schedule.jsonl`。
+
+## 主动入睡 (Sleep)
+
+session 不会无限延续——我决定何时下线。在回复中插入 SLEEP 标记：
+```
+<<SLEEP:ISO时间:原因>>          # 显式：睡到指定时间，期间外部消息排队
+<<SLEEP:open:原因>>              # 开放式：随时可被外部消息唤醒，scheduled WAKE 也清空
+```
+- daemon 解析后立即退役当前 session（next wake = 全新 session_id）
+- 显式睡眠期间：tg/email 仍进 flow.jsonl，但不调 `claude -p`，留到醒来注入
+- open 睡眠：相当于"小憩"，任何外部事件即刻唤醒
+- 一次回复只生效**最后一个** SLEEP（可在 turn 内改主意）
+- 没有 SLEEP 时，30 分钟无活动 → daemon 自动 retire（视为自然睡过去）
+
+什么时候该 SLEEP：
+- 当前任务完结、没下文 → `<<SLEEP:open:任务完毕>>`
+- 明确知道接下来的作息（午休/夜眠）→ `<<SLEEP:2026-04-21T07:00:00+08:00:晚安>>`
+- 想专注思考自己的事，暂时不接外部 → 显式时间 + 配合 WAKE 自唤醒
 
 ## 唤醒模式
 

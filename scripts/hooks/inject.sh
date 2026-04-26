@@ -9,6 +9,7 @@
 HOME_DIR="$CLAUDE_PROJECT_DIR"
 SELF_DIR="$HOME_DIR/self"
 RECALL_FILE="$HOME_DIR/recall.md"
+RECALL_DIRTY="$HOME_DIR/.recall_dirty"
 PENDING_FILE="$HOME_DIR/pending_external.txt"
 PENDING_PROCESSING="$HOME_DIR/pending_external.processing"
 
@@ -34,8 +35,8 @@ if [ -d "$SELF_DIR" ]; then
     fi
 fi
 
-# ── 2. Recall ──
-if [ -f "$RECALL_FILE" ] && [ -s "$RECALL_FILE" ]; then
+# ── 2. Recall (only if .recall_dirty marker exists) ──
+if [ -f "$RECALL_DIRTY" ] && [ -f "$RECALL_FILE" ] && [ -s "$RECALL_FILE" ]; then
     RECALL=$(sed 's/<!--.*-->//g' "$RECALL_FILE" | tr -s '\n' | sed '/^$/d')
     if [ -n "$RECALL" ]; then
         if [ -n "$PARTS" ]; then
@@ -43,6 +44,7 @@ if [ -f "$RECALL_FILE" ] && [ -s "$RECALL_FILE" ]; then
         fi
         PARTS="${PARTS}[recall]\n${RECALL}"
     fi
+    rm -f "$RECALL_DIRTY"
 fi
 
 # ── 3. External messages (Conductor-prepared, pre-formatted) ──

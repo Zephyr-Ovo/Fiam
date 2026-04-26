@@ -1,0 +1,18 @@
+id = "xiao"
+name = "XIAO / Limen peripheral"
+enabled = false
+status = "planned_hardware"
+kind = "device"
+description = "Independent ESP32/XIAO physical peripheral for sensing or tiny interactions."
+transports = ["mqtt", "wifi"]
+capabilities = ["device_sensor", "device_signal", "ambient_capture"]
+receive_sources = ["xiao", "limen"]
+dispatch_targets = ["xiao", "limen"]
+entrypoint = "channels/limen"
+auth = "tailnet/local broker only; add per-device token before public exposure"
+latency = "direct MQTT is milliseconds on LAN/tailnet; sleep/wake power modes may add seconds"
+env = []
+replaces = []
+notes = [
+  "Existing code lives under channels/limen; manifest uses xiao as the user-facing plugin id."
+]

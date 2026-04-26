@@ -10,15 +10,15 @@ flow.jsonl is append-only, one JSON object per line.
 from __future__ import annotations
 
 import json
-import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator, Literal
+from typing import Any, Literal
 
-# Valid beat sources
-BeatSource = Literal["cc", "action", "tg", "email", "favilla", "schedule"]
-BEAT_SOURCES: set[str] = {"cc", "action", "tg", "email", "favilla", "schedule"}
+# Beat sources are open-ended because plugin manifests can add receive sources
+# without changing the core flow schema. Keep the common names here for docs/UI.
+BeatSource = str
+KNOWN_BEAT_SOURCES: set[str] = {"cc", "action", "dispatch", "tg", "email", "favilla", "schedule"}
 
 # Status enums
 UserStatus = Literal["tg", "cc", "away", "together"]
@@ -34,19 +34,23 @@ class Beat:
     source: BeatSource    # origin channel
     user: UserStatus      # user status at the time of this beat
     ai: AiStatus          # AI status at the time of this beat
+    meta: dict[str, Any] = field(default_factory=dict)  # route/sender/url metadata, not embedded
 
     # ------------------------------------------------------------------
     # Serialisation
     # ------------------------------------------------------------------
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data = {
             "t": self.t.isoformat(),
             "text": self.text,
             "source": self.source,
             "user": self.user,
             "ai": self.ai,
         }
+        if self.meta:
+            data["meta"] = self.meta
+        return data
 
     def to_json(self) -> str:
         """Single-line JSON suitable for appending to flow.jsonl."""
@@ -63,6 +67,7 @@ class Beat:
             source=d["source"],
             user=d.get("user", "away"),
             ai=d.get("ai", "online"),
+            meta=dict(d.get("meta") or {}),
         )
 
 

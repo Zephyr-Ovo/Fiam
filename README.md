@@ -1,17 +1,16 @@
 # fiam — Fluid Injected Affective Memory
 
-Long-term memory system for AI agents. Runs alongside Claude Code — watches conversation sessions, segments events in real-time, builds a memory graph with typed edges, and injects relevant memories via spreading activation. So the AI actually remembers.
+Long-term memory system for AI agents. Runs alongside Claude Code, records every information beat into an append-only flow, freezes bge-m3 vectors for training, and builds a typed memory graph through manual or automatic segmentation.
 
-## Architecture (v2 — Session 14)
+## Architecture (v2 — manual-first data collection)
 
 ```
 Claude Code session
        │
-       ├── JSONL log ──► Conductor ── Gorge (TextTiling) ──► Pool (events)
-       │                     │                                    │
-       │                     ├── drift detect ──► recall hook     ├── fingerprints.npy
-       │                     ├── beat → flow.jsonl                ├── cosine.npy
-       │                     └── embed (bge-m3)                   └── edges (PyG)
+  ├── JSONL log ──► Conductor ──► flow.jsonl + frozen beat vectors
+  │                     │
+  │                     ├── manual mode: dashboard cuts + DeepSeek edges
+  │                     └── auto mode: drift + Gorge + Pool + recall
        │
        └── Hooks ◄──── inject recall as additionalContext
                  ├──── dispatch outbound messages (TG/email)
@@ -20,17 +19,19 @@ Claude Code session
 
 ### Core concepts
 
-- **Beat** — atomic information unit in `flow.jsonl`. `{t, text, source, user_status, ai_status}`
-- **Conductor** — info flow hub: beat ingestion → embed → Gorge segmentation → Pool storage → recall
-- **Gorge** — TextTiling depth segmentation with peak-valley confirmation. Cuts beat stream into events in real-time
+- **Beat** — atomic information unit in `flow.jsonl`. `{t, text, source, user_status, ai_status, meta?}`; embeddings and cuts use `text` only, while sender/url/route metadata lives in `meta`.
+- **Conductor** — info flow hub: beat ingestion → flow persistence → frozen vector persistence → optional auto memory pipeline
+- **FeatureStore** — frozen beat-level bge-m3 vectors in `store/features/`, keyed by beat hash for annotation/training
+- **Gorge** — TextTiling depth segmentation with peak-valley confirmation. Used only in `memory_mode = "auto"`
 - **Pool** — unified 5-layer storage (replaces old scattered store/)
 - **Spreading activation** — graph-based recall: seed → edge propagation → probabilistic selection (not top-k)
+- **Annotator** — dashboard workflow: human marks event/drift cuts, then DeepSeek proposes event names and graph edges for confirmation
 
 ### Pool storage layers
 
 | Layer | Format | Content |
 |-------|--------|---------|
-| Content | `events/<id>.md` | Event body text |
+| Content | `pool/events/<id>.md` | Event body text |
 | Metadata | `events.jsonl` | `{id, t, access_count, fingerprint_idx}` |
 | Fingerprints | `fingerprints.npy` | N × 1024 matrix (bge-m3) |
 | Cosine | `cosine.npy` | N × N pairwise similarity |
@@ -40,10 +41,16 @@ Claude Code session
 
 `cc` (dialogue) · `action` (tool use) · `tg` · `email` · `favilla` (mobile) · `schedule`
 
+### Functional plugins
+
+Optional integrations are registered by `plugins/<id>/plugin.toml`. Infrastructure such as dashboard, git diff, flow, Pool, and recall is not treated as a plugin. Inbound messages go through `fiam/receive/<source>`; outbound AI markers such as `[→tg:Iris] ...` are resolved through enabled plugin `dispatch_targets` and published to `fiam/dispatch/<target>`. See [docs/plugin_protocol.md](docs/plugin_protocol.md).
+
 ## Features
 
-- **Real-time segment切分** — Gorge watches beat embedding stream, fires event cuts with TextTiling depth + confirm
-- **Drift detection** — adjacent beat cosine below threshold → recall hook fires
+- **Manual-first annotation** — console marks event and drift cuts; processed flow ranges are locked in `store/annotation_state.json`
+- **Frozen feature capture** — every ingested beat can be saved once into `store/features/flow_vectors.npy`
+- **Real-time segmentation** — optional auto mode where Gorge watches beat embeddings and fires event cuts
+- **Drift detection** — auto mode only: adjacent beat cosine below threshold → recall hook fires
 - **Graph spreading activation** — seed from sliding vector, propagate along edges, weight multiplication, probabilistic fire
 - **Multi-channel** — Telegram, email, Favilla (Android share intent), ActivityWatch
 - **Web console** — SvelteKit 5 dashboard (Catppuccin dark), 3D force-directed graph with edge editing, event CRUD, flow viewer
@@ -69,7 +76,9 @@ For remote embedding (recommended): deploy `serve_embeddings.py` on a GPU server
 ```
 src/fiam/
   config.py                # FiamConfig + fiam.toml parsing
-  conductor.py          ★  # Beat ingestion → embed → gorge → pool → recall
+  conductor.py          ★  # Beat ingestion → flow + frozen vectors; optional auto gorge/pool/recall
+  plugins.py            ★  # plugin.toml registry + enable/disable helpers
+  markers.py            ★  # generic [→target:recipient] marker parser
   gorge.py              ★  # TextTiling depth segmentation (batch + streaming)
   store/
     beat.py             ★  # Beat dataclass + flow.jsonl I/O
@@ -79,16 +88,14 @@ src/fiam/
     embedder.py            # Multi-profile embedder (local/remote)
   adapter/
     claude_code.py         # CC JSONL → Turn/Beat parsing
-  pipeline.py              # Pre/post session orchestration
-  classifier/              # Text intensity heuristic
-  extractor/               # Event extraction (legacy TextTiling)
 
 scripts/
-  fiam.py                  # CLI: init, start, stop, scan, status
-  dashboard_server.py      # Web console backend (Pool + legacy dual API)
+  fiam.py                  # CLI: init, start, stop, status, clean, find-sessions
+  dashboard_server.py      # Web console backend (Pool + annotation API)
   fiam_lib/
-    daemon.py              # Main loop: poll, session management
-    postman.py             # TG/email dispatch + inbox polling
+    daemon.py              # Main event loop + CC session management
+    maintenance.py         # clean + find-sessions
+    postman.py             # TG/email protocol helpers
     scheduler.py           # Scheduled tasks (wake cycles)
 
 dashboard/                 # SvelteKit 5 + Svelte runes + Tailwind 4
@@ -107,6 +114,9 @@ channels/
   tg/stickers/             # TG sticker index
   favilla/                 # Android text capture app
   limen/                   # ESP32 wearable device
+
+plugins/                   # optional functional integration manifests
+  tg/ email/ favilla/ xiao/ app/ voice-call/ device-control/ ring/ mcp/
 ```
 
 ## Commands
@@ -114,10 +124,14 @@ channels/
 | Command | Description |
 |---------|-------------|
 | `fiam init` | Interactive setup — creates `fiam.toml` |
-| `fiam start` | Start daemon (monitors sessions, polls channels) |
+| `fiam start` | Start daemon (monitors sessions, subscribes MQTT ingress) |
 | `fiam stop` | Graceful shutdown |
-| `fiam scan` | One-time import of CC session history |
 | `fiam status` | Show store counts + daemon state |
+| `fiam clean` | Reset generated store data |
+| `fiam find-sessions` | Debug Claude Code JSONL session paths |
+| `fiam plugin list` | List functional plugin manifests |
+| `fiam plugin show <id>` | Show one plugin's topics, capabilities, auth, and latency notes |
+| `fiam plugin enable/disable <id>` | Toggle plugin receive/dispatch routing |
 
 ## Configuration
 
@@ -128,7 +142,8 @@ Key settings:
 - `embedding_dim`: 1024 (bge-m3 default)
 - `idle_timeout_minutes`: inactivity before post-session processing
 - `tg_chat_id` / `email_*`: multi-channel settings
-- `[conductor]` section: gorge window, confirm count, drift threshold
+- `[conductor]` section: `memory_mode` (`manual` / `auto`), gorge window, confirm count, drift threshold
+- `[graph]` section: DeepSeek-compatible edge model and API key env (`FIAM_GRAPH_API_KEY` by default)
 
 ## License
 

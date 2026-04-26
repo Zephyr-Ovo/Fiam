@@ -87,6 +87,30 @@ export interface FlowPayload {
 	total: number;
 }
 
+export interface RuntimeConfig {
+	memory_mode: 'manual' | 'auto';
+	annotation: { processed_until: number };
+}
+
+export interface PluginManifest {
+	id: string;
+	name: string;
+	enabled: boolean;
+	status: string;
+	kind: string;
+	description: string;
+	transports: string[];
+	capabilities: string[];
+	receive_sources: string[];
+	dispatch_targets: string[];
+	entrypoint: string;
+	auth: string;
+	latency: string;
+	env: string[];
+	replaces: string[];
+	notes: string[];
+}
+
 export interface AnnotateEdge {
 	src: string;
 	dst: string;
@@ -97,11 +121,14 @@ export interface AnnotateEdge {
 
 export interface AnnotateProposal {
 	status: 'none' | 'cuts_proposed' | 'edges_proposed';
-	beats?: FlowPayload['beats'][];
+	beats?: FlowPayload['beats'];
 	cuts?: number[];
+	drift_cuts?: number[];
+	names?: Record<string, string>;
 	edges?: AnnotateEdge[];
 	flow_offset?: number;
 	flow_end?: number;
+	processed_until?: number;
 }
 
 export interface AnnotateConfirmResult {
@@ -118,6 +145,12 @@ export const api = {
 	event: (id: string) => j<EventDetail>(`/event/${encodeURIComponent(id)}`),
 	schedule: () => j<ScheduleRow[]>('/schedule'),
 	state: () => j<StateSnapshot>('/state'),
+	config: () => j<RuntimeConfig>('/config'),
+	setMemoryMode: (memory_mode: 'manual' | 'auto') =>
+		mutate<{ ok: boolean; memory_mode: 'manual' | 'auto' }>('POST', '/config/memory-mode', { memory_mode }),
+	plugins: () => j<{ plugins: PluginManifest[] }>('/plugins'),
+	setPluginEnabled: (id: string, enabled: boolean) =>
+		mutate<{ ok: boolean; id: string; enabled: boolean }>('POST', '/config/plugin', { id, enabled }),
 	graph: () => j<GraphPayload>('/graph'),
 	pipeline: () => j<{ lines: string[] }>('/pipeline'),
 	whoami: () => j<{ role: 'iris' | 'ai' | 'fiet' | 'anon' }>('/whoami'),
@@ -144,8 +177,8 @@ export const api = {
 	annotateProposal: () => j<AnnotateProposal>('/annotate/proposal'),
 	annotateRequest: (offset?: number, limit?: number) =>
 		mutate<AnnotateProposal>('POST', '/annotate/request', { offset, limit }),
-	annotateEdges: (cuts?: number[]) =>
-		mutate<AnnotateProposal>('POST', '/annotate/edges', { cuts }),
-	annotateConfirm: (cuts: number[], edges: AnnotateEdge[]) =>
-		mutate<AnnotateConfirmResult>('POST', '/annotate/confirm', { cuts, edges })
+	annotateEdges: (cuts?: number[], drift_cuts?: number[]) =>
+		mutate<AnnotateProposal>('POST', '/annotate/edges', { cuts, drift_cuts }),
+	annotateConfirm: (cuts: number[], drift_cuts: number[], edges: AnnotateEdge[]) =>
+		mutate<AnnotateConfirmResult>('POST', '/annotate/confirm', { cuts, drift_cuts, edges })
 };

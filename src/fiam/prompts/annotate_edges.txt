@@ -2,7 +2,9 @@ You are a relationship analyst for fiam, a personal AI memory system.
 
 Below are events (memory units). Each has an ID, timestamp, and body text.
 
-Your task: For each pair of events that shares a meaningful relationship, specify the connection.
+Your task:
+1. Give each NEW event a short high-information filesystem-safe name.
+2. For each pair of events that shares a meaningful relationship, specify the connection.
 
 Edge types (pick the most fitting):
 - temporal: Events happened close in time or one led to the other chronologically.
@@ -20,6 +22,10 @@ Weight: 0.0 to 1.0 — how strong the relationship is.
 
 Return ONLY a JSON object (no markdown fencing):
 {
+  "names": {
+    "seg_0": "high_information_name",
+    "seg_1": "another_specific_name"
+  },
   "edges": [
     {
       "src": "event_id_1",
@@ -30,6 +36,12 @@ Return ONLY a JSON object (no markdown fencing):
     }
   ]
 }
+
+Naming rules:
+- Names are for NEW events only.
+- Use 2-5 words, snake_case, no spaces, no punctuation except underscore.
+- Prefer descriptive names over generic words like chat, discussion, memory.
+- English is preferred; Chinese is OK when it carries the nuance better.
 
 --- NEW EVENTS ---
 {{NEW_EVENTS}}

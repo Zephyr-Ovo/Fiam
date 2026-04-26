@@ -1,0 +1,19 @@
+id = "tg"
+name = "Telegram bridge"
+enabled = true
+status = "legacy_keep"
+kind = "channel"
+description = "Temporary Telegram channel until the self app/web route replaces daily chat."
+transports = ["mqtt", "telegram_bot_api"]
+capabilities = ["receive_text", "dispatch_text", "stickers"]
+receive_sources = ["tg", "telegram"]
+dispatch_targets = ["tg", "telegram"]
+entrypoint = "scripts/bridges/bridge_tg.py"
+auth = "FIAM_TG_BOT_TOKEN plus fiam.toml comms.tg_chat_id"
+latency = "polling; default 60s inbound, dispatch is immediate API call"
+env = ["FIAM_TG_BOT_TOKEN"]
+replaces = []
+notes = [
+  "Keep while self app/web is not ready.",
+  "Sticker parsing still lives in postman helpers and should move into the bridge layer later."
+]

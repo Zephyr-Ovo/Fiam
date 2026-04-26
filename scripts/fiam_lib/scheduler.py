@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -36,6 +35,40 @@ WAKE_RE = re.compile(
     r">>",
     re.IGNORECASE,
 )
+
+# Regex for <<SLEEP:UNTIL:REASON>>
+#   UNTIL: ISO datetime, or literal "open" (= sleep until external event)
+SLEEP_RE = re.compile(
+    r"<<SLEEP:"
+    r"(?P<until>open|[^:]+?)"
+    r":(?P<reason>[^>]+)"
+    r">>",
+    re.IGNORECASE,
+)
+
+
+def extract_sleep_tag(text: str) -> dict | None:
+    """Extract the LAST <<SLEEP:until:reason>> tag from AI text.
+
+    Returns {sleeping_until, reason} where sleeping_until is ISO str or "open".
+    Last-wins so AI can revise during a turn.
+    """
+    last = None
+    for m in SLEEP_RE.finditer(text):
+        until_raw = m.group("until").strip()
+        reason = m.group("reason").strip()
+        if until_raw.lower() == "open":
+            until = "open"
+        else:
+            try:
+                dt = datetime.fromisoformat(until_raw)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                until = dt.isoformat()
+            except ValueError:
+                continue
+        last = {"sleeping_until": until, "reason": reason}
+    return last
 
 
 # ------------------------------------------------------------------
@@ -338,69 +371,8 @@ def queue_summary(config: FiamConfig) -> str:
 
 
 # ------------------------------------------------------------------
-# Trigger logic
+# Schedule maintenance
 # ------------------------------------------------------------------
-
-def _trigger_session(entry: dict, config: FiamConfig) -> bool:
-    """Launch a CC session with the scheduled note as context.
-
-    Returns True on successful launch, False on failure (retry candidate).
-    """
-    reason = entry.get("reason", "scheduled wake")
-    wake_type = entry.get("type", "private")
-
-    # Write the wake note to a temp file that the hook will pick up
-    note_path = config.home_path / ".wake_note"
-
-    type_labels = {
-        "private": "私人任务（静默，不推送用户）",
-        "notify": "通知任务（完成后推送用户）",
-        "seek": "寻找用户（尝试联系）",
-        "check": "环境检查（静默观察）",
-    }
-
-    note_path.write_text(
-        f"[自主调度唤醒] {reason}\n"
-        f"类型: {type_labels.get(wake_type, wake_type)}\n"
-        f"计划时间: {entry.get('wake_at', '?')}\n"
-        f"\n"
-        f"{'这是你自己的时间，产出写入 journal/ 或 self/，不推送用户。' if wake_type == 'private' else ''}"
-        f"{'完成后将结果推送给用户（TG/email）。' if wake_type == 'notify' else ''}"
-        f"{'你想找 Zephyr。先发 TG，如果无回复可以 SSH 到 Local 查 AW 了解情况。' if wake_type == 'seek' else ''}"
-        f"{'静默检查环境状态：inbox、AW、tunnel、schedule。不推送不打扰。' if wake_type == 'check' else ''}"
-        ,
-        encoding="utf-8",
-    )
-
-    # Build type-appropriate prompt
-    prompts = {
-        "private": f"你之前安排了这次私人活动: {reason}。这是你自己的时间，不需要通知任何人。",
-        "notify":  f"你之前安排了这次任务: {reason}。完成后把结果发送给 Zephyr。",
-        "seek":    f"你之前安排了找 Zephyr: {reason}。先尝试 TG 联系，必要时 SSH 到 Local 查看。",
-        "check":   f"你安排了一次环境检查: {reason}。静默查看状态，不打扰用户。",
-    }
-    prompt = prompts.get(wake_type, f"你之前安排了这次活动: {reason}。")
-
-    try:
-        result = subprocess.run(
-            ["claude", "-p", prompt, "--no-input"],
-            cwd=str(config.home_path),
-            timeout=300,  # 5 minute max per scheduled session
-        )
-        ok = result.returncode == 0
-    except FileNotFoundError:
-        print("[scheduler] claude command not found")
-        ok = False
-    except subprocess.TimeoutExpired:
-        print("[scheduler] Session timed out (5min)")
-        ok = False
-    except Exception as e:  # pragma: no cover - defensive
-        print(f"[scheduler] Session failed: {e}")
-        ok = False
-    finally:
-        note_path.unlink(missing_ok=True)
-    return ok
-
 
 def _rewrite_schedule(config: FiamConfig) -> None:
     """Atomically compact schedule.jsonl (drop only fired/expired entries).
@@ -411,35 +383,3 @@ def _rewrite_schedule(config: FiamConfig) -> None:
     pending = load_pending(config)
     _atomic_write_jsonl(config.schedule_path, pending)
 
-
-# ------------------------------------------------------------------
-# Daemon loop
-# ------------------------------------------------------------------
-
-def run_scheduler_loop(config: FiamConfig, poll_seconds: int = 30) -> None:
-    """Poll schedule.jsonl and trigger sessions when wake times arrive."""
-    print(f"[scheduler] Watching {config.schedule_path} (poll={poll_seconds}s)")
-    while True:
-        try:
-            # Archive stale entries (missed / max-attempts) before firing.
-            missed, failed = archive_stale(config)
-            if missed or failed:
-                print(f"[scheduler] archived {missed} missed, {failed} failed")
-
-            due = load_due(config)
-            for entry in due:
-                reason = entry.get("reason", "?")
-                print(f"[scheduler] ⏰ Triggering: {reason}")
-                ok = _trigger_session(entry, config)
-                mark_fired(entry, config, success=ok)
-                if not ok:
-                    attempts = int(entry.get("attempts", 0)) + 1
-                    print(f"[scheduler] wake failed, retry {attempts}/{MAX_ATTEMPTS}")
-
-        except KeyboardInterrupt:
-            print("[scheduler] Stopped.")
-            break
-        except Exception as e:
-            print(f"[scheduler] Error: {e}")
-
-        time.sleep(poll_seconds)

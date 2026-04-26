@@ -20,7 +20,7 @@ Handles:
       [recall] sections are EXCLUDED from events (anti-recursion)
       [external] sections are preserved as inbox_context on the parent turn
   - (v2) tool_use blocks → action beats
-  - (v2) routing markers [→tg:Name] / [→email:Name] → routed beats
+    - (v2) routing markers [→target:Name] → routed beats
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from fiam.store.beat import Beat, UserStatus, AiStatus
+    from fiam.markers import OutboundMarker
 
 # XML tags injected by Claude Code infrastructure (Agent Teams, hooks, etc.)
 # These look like user messages but are system-generated — must be filtered.
@@ -54,12 +55,6 @@ _RECALL_SECTION_RE = re.compile(
     r"\[recall\]\s*\n(.*?)(?=\[external\]|\Z)",
     re.DOTALL,
 )
-
-# Routing markers: AI writes [→tg:Name] or [→email:Name] to route outbound messages
-_ROUTE_MARKER_RE = re.compile(
-    r"\[→(tg|email):([^\]]*)\]",
-)
-
 
 def _is_system_message(text: str) -> bool:
     """Return True if *text* is a system-injected user turn, not a real human message."""
@@ -235,7 +230,7 @@ class ClaudeCodeAdapter:
 
         Unlike parse_incremental (which produces turn dicts), this method:
         - Includes tool_use blocks as action beats
-        - Splits routing markers [→tg:Name] / [→email:Name] into separate beats
+        - Splits routing markers [→target:Name] into separate beats
         - Skips recall/inbox attachments (recall doesn't enter flow; inbox replaced by direct flow)
         - Produces Beat objects ready for flow.jsonl
 
@@ -358,11 +353,15 @@ class ClaudeCodeAdapter:
                     user=user_status, ai=ai_status,
                 )))
 
-            # Routed messages → separate beats per destination
-            for route_source, route_text in routed:
+            # Routed messages → dispatch beats. Target/recipient are metadata;
+            # text stays clean for embedding and manual cut annotation.
+            for marker in routed:
                 entries.append((asst_order[mid], Beat(
-                    t=t, text=route_text, source=route_source,
+                    t=t,
+                    text=marker.body,
+                    source="dispatch",
                     user=user_status, ai=ai_status,
+                    meta={"target": marker.channel, "recipient": marker.recipient},
                 )))
 
             # Remaining CC dialogue text (after stripping routed parts)
@@ -411,45 +410,25 @@ def _tool_brief(name: str, inp: dict) -> str:
     return f"[{name}]"
 
 
-def _extract_routed(text: str) -> tuple[list[tuple[str, str]], str]:
+def _extract_routed(text: str) -> tuple[list["OutboundMarker"], str]:
     """Extract routing markers from assistant text.
 
     Returns (routed_parts, remaining_text).
-    routed_parts: list of (source, text_after_marker) tuples.
+    routed_parts: list of OutboundMarker values.
 
-    Routing markers: [→tg:Name] or [→email:Name]
-    Text between the marker and the next marker (or end) is the routed message.
+    Routing markers are parsed by fiam.markers, so plugin dispatch aliases work
+    here too. Text outside markers remains normal CC dialogue.
     """
-    matches = list(_ROUTE_MARKER_RE.finditer(text))
-    if not matches:
+    from fiam.markers import parse_outbound_markers
+
+    markers = parse_outbound_markers(text)
+    if not markers:
         return [], text
 
-    routed: list[tuple[str, str]] = []
-    remaining_parts: list[str] = []
-
-    prev_end = 0
-    for i, m in enumerate(matches):
-        # Text before this marker = unrouted
-        before = text[prev_end:m.start()].strip()
-        if before:
-            remaining_parts.append(before)
-
-        route_type = m.group(1)  # "tg" or "email"
-        # recipient = m.group(2)  # e.g. "Zephyr" — stored in text for context
-
-        # Routed text: from after marker to next marker or end
-        if i + 1 < len(matches):
-            routed_text = text[m.end():matches[i + 1].start()].strip()
-        else:
-            routed_text = text[m.end():].strip()
-
-        if routed_text:
-            routed.append((route_type, f"[→{route_type}:{m.group(2)}] {routed_text}"))
-        prev_end = matches[-1].end() if i == len(matches) - 1 else matches[i + 1].start()
-
-    # Any text after the last routed segment
-    trailing = text[matches[-1].end():].strip()
-    # trailing is already captured in the last routed message
-
-    remaining = "\n".join(remaining_parts).strip()
-    return routed, remaining
+    remaining = re.sub(
+        r"\[→[A-Za-z0-9_-]+:[^\]\n]+\]\s*.*?(?=(?:\n\s*)?\[→[A-Za-z0-9_-]+:[^\]\n]+\]|\Z)",
+        "",
+        text,
+        flags=re.DOTALL,
+    ).strip()
+    return markers, remaining

@@ -1,15 +1,15 @@
-"""Conductor — information flow orchestrator.
+"""Conductor — stateless information hub.
 
-Central routing layer between input sources, processing, and storage.
-Replaces the ad-hoc injection/recall/segmentation logic scattered in daemon.
+Every message enters through ``receive()`` / ``receive_cc()``, gets
+written to flow.jsonl, embedded, segmented by Gorge, and stored in Pool.
+Outbound messages leave via ``dispatch()``.
 
-Responsibilities:
-  - Beat ingestion: external messages → flow.jsonl + StreamGorge
-  - CC output decomposition: JSONL → beats → ingest
-  - Gorge integration: StreamGorge cuts → Pool.ingest_event()
-  - Recall trigger: drift detection → retrieve → write recall.md
-  - Injection preparation: format user field + additionalContext for `claude -p`
-  - Status management: user_status + ai_status pair
+Conductor has **no heartbeat and no scheduling**.  It is driven entirely
+by external callers (daemon, channels, dashboard).
+
+Recall is the one exception that does NOT flow through Conductor.
+Drift detection fires an ``on_drift`` callback so the owner (daemon)
+can run retrieval and write recall.md independently.
 """
 
 from __future__ import annotations
@@ -17,14 +17,14 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 import numpy as np
 
 from fiam.config import FiamConfig
 from fiam.gorge import StreamGorge, detect_drift
-from fiam.retriever.spread import retrieve
 from fiam.store.beat import Beat, append_beat
+from fiam.store.features import FeatureStore
 from fiam.store.pool import Pool
 
 if TYPE_CHECKING:
@@ -35,7 +35,18 @@ logger = logging.getLogger(__name__)
 
 
 class Conductor:
-    """Orchestrates beat flow: ingest → embed → segment → store → recall."""
+    """Stateless information hub: receive → flow + embed + segment + store.
+
+    Two entry points:
+      - ``receive()``    — external messages (TG, email, favilla, ...)
+      - ``receive_cc()`` — Claude Code JSONL delta
+
+    One exit:
+      - ``dispatch()``   — send outbound message via the right channel
+
+    Drift detection fires ``on_drift(query_vec)`` so the caller can
+    handle recall independently (recall never enters flow).
+    """
 
     def __init__(
         self,
@@ -43,32 +54,38 @@ class Conductor:
         embedder: "Embedder",
         config: FiamConfig,
         flow_path: Path | None,
-        recall_path: Path | None,
         *,
         user_status: "UserStatus" = "away",
         ai_status: "AiStatus" = "online",
         drift_threshold: float = 0.65,
         gorge_max_beat: int = 30,
         gorge_min_depth: float = 0.01,
-        recall_top_k: int = 3,
+        gorge_stream_confirm: int = 2,
+        on_drift: Callable[[np.ndarray], None] | None = None,
+        bus: object | None = None,
+        memory_mode: str | None = None,
+        feature_store: FeatureStore | None = None,
     ) -> None:
         self.pool = pool
         self.embedder = embedder
         self.config = config
         self.flow_path = flow_path
-        self.recall_path = recall_path
+        self.bus = bus  # fiam.bus.Bus | None — optional, for dispatch publishing
+        self.feature_store = feature_store
+        self.memory_mode = (memory_mode or getattr(config, "memory_mode", "auto")).lower()
 
         self.user_status: UserStatus = user_status
         self.ai_status: AiStatus = ai_status
 
         self._drift_threshold = drift_threshold
-        self._recall_top_k = recall_top_k
         self._last_vec: np.ndarray | None = None
+        self._on_drift = on_drift
 
         # StreamGorge for real-time segmentation
         self._gorge = StreamGorge(
             max_beat=gorge_max_beat,
             min_depth=gorge_min_depth,
+            stream_confirm=gorge_stream_confirm,
         )
 
         # Beat buffer (parallel to gorge's embedding buffer)
@@ -90,10 +107,10 @@ class Conductor:
             self.ai_status = ai
 
     # ==================================================================
-    # Beat ingestion
+    # Receive: the unified entry point
     # ==================================================================
 
-    def ingest_beat(self, beat: Beat) -> str | None:
+    def _ingest_beat(self, beat: Beat) -> str | None:
         """Process one beat: write to flow.jsonl, embed, feed gorge.
 
         Returns event_id if gorge cuts a segment, else None.
@@ -107,15 +124,30 @@ class Conductor:
             vec = self.embedder.embed(beat.text)
         except Exception:
             logger.error("embed failed for beat at %s, skipping gorge", beat.t.isoformat())
-            # Beat is in flow.jsonl but not in gorge/beat_buf.
-            # This is acceptable: flow.jsonl is the source of truth;
-            # gorge operates on what it can embed.
             return None
 
-        # 3. Drift detection → recall refresh
-        if self._last_vec is not None and beat.source not in ("action",) and self.recall_path is not None:
+        if self.feature_store is not None:
+            try:
+                self.feature_store.append_beat_vector(
+                    beat,
+                    vec,
+                    model_id=getattr(self.config, "embedding_model", ""),
+                )
+            except Exception:
+                logger.error("feature_store append failed", exc_info=True)
+
+        if self.memory_mode == "manual":
+            return None
+
+        # 3. Drift detection → fire callback (recall is caller's responsibility)
+        if (self._last_vec is not None
+                and beat.source not in ("action",)
+                and self._on_drift is not None):
             if detect_drift(self._last_vec, vec, self._drift_threshold):
-                self._refresh_recall(vec)
+                try:
+                    self._on_drift(vec)
+                except Exception:
+                    logger.error("on_drift callback failed", exc_info=True)
         self._last_vec = vec
 
         # 4. Feed gorge + track beat
@@ -126,13 +158,14 @@ class Conductor:
 
         return None
 
-    def ingest_external(
+    def receive(
         self,
         text: str,
         source: "BeatSource",
         t: datetime | None = None,
+        meta: dict | None = None,
     ) -> str | None:
-        """Convenience: create a beat from an external message and ingest it."""
+        """Receive an external message: create beat, process, return event_id or None."""
         if t is None:
             t = datetime.now(timezone.utc)
         beat = Beat(
@@ -141,15 +174,16 @@ class Conductor:
             source=source,
             user=self.user_status,
             ai=self.ai_status,
+            meta=meta or {},
         )
-        return self.ingest_beat(beat)
+        return self._ingest_beat(beat)
 
-    def ingest_cc_output(
+    def receive_cc(
         self,
         jsonl_path: Path,
         byte_offset: int = 0,
     ) -> tuple[list[str | None], int]:
-        """Parse CC JSONL → beats → ingest each.
+        """Parse CC JSONL → beats → process each.
 
         Returns (list of event_ids_or_None per beat, new_byte_offset).
         """
@@ -163,7 +197,7 @@ class Conductor:
         )
         results = []
         for beat in beats:
-            eid = self.ingest_beat(beat)
+            eid = self._ingest_beat(beat)
             results.append(eid)
         return results, new_offset
 
@@ -182,6 +216,9 @@ class Conductor:
 
         # Event fingerprint = mean of constituent beat embeddings
         fp = np.mean(consumed_vecs, axis=0).astype(np.float32)
+        norm = np.linalg.norm(fp)
+        if norm > 1e-9:
+            fp = (fp / norm).astype(np.float32)
 
         # Timestamp = first beat's time
         t = consumed_beats[0].t if consumed_beats else datetime.now(timezone.utc)
@@ -214,6 +251,9 @@ class Conductor:
         fp = np.mean(vecs, axis=0).astype(np.float32) if vecs else np.zeros(
             self.pool.dim, dtype=np.float32
         )
+        norm = np.linalg.norm(fp)
+        if norm > 1e-9:
+            fp = (fp / norm).astype(np.float32)
         t = beats[0].t
 
         event_id = self.pool.new_event_id()
@@ -229,6 +269,8 @@ class Conductor:
         """Run graph_builder after new events are created."""
         if self.config is None:
             return  # test environment — skip edge generation
+        if self.memory_mode == "manual":
+            return
         try:
             from fiam.retriever.graph_builder import build_edges
             summary = build_edges(self.pool, event_ids, self.config)
@@ -237,91 +279,31 @@ class Conductor:
             logger.error("post_ingest graph_builder failed for %s", event_ids, exc_info=True)
 
     # ==================================================================
-    # Recall
+    # Dispatch: outbound messages
     # ==================================================================
 
-    def _refresh_recall(self, query_vec: np.ndarray) -> None:
-        """Run spreading activation retrieval and write recall.md."""
-        results = retrieve(
-            query_vec,
-            self.pool,
-            shield_after=datetime.now(timezone.utc).replace(
-                hour=0, minute=0, second=0, microsecond=0
-            ),
-            top_k=self._recall_top_k,
-        )
-        if not results:
-            return
+    def dispatch(self, channel: str, recipient: str, text: str) -> bool:
+        """Send outbound message via MQTT to the appropriate channel bridge.
 
-        now = datetime.now(timezone.utc)
-        lines = [f"<!-- recall | {now.strftime('%Y-%m-%dT%H:%M:%SZ')} -->", ""]
+        Publishes to ``fiam/dispatch/<target>``. The target bridge process
+        (bridge_tg, bridge_email, ...) subscribes and performs the actual
+        delivery. Conductor knows nothing about tokens, SMTP, or APIs.
 
-        events = self.pool.load_events()
-        idx_to_event = {ev.fingerprint_idx: ev for ev in events}
-
-        for event_id, activation in results:
-            ev = self.pool.get_event(event_id)
-            if ev is None:
-                continue
-            body = self.pool.read_body(event_id)
-            fragment = body.strip()[:200]
-            if len(body.strip()) > 200:
-                fragment += "..."
-
-            age = now - ev.t
-            if age.days > 30:
-                hint = f"{age.days // 30}个月前"
-            elif age.days > 0:
-                hint = f"{age.days}天前"
-            elif age.seconds > 3600:
-                hint = f"{age.seconds // 3600}小时前"
-            else:
-                hint = "刚才"
-
-            lines.append(f"- ({hint}) {fragment}")
-
-            # Bump access count
-            ev.access_count += 1
-
-        self.pool.save_events()
-
-        content = "\n".join(lines) + "\n"
-        self.recall_path.parent.mkdir(parents=True, exist_ok=True)
-        self.recall_path.write_text(content, encoding="utf-8")
-
-    # ==================================================================
-    # CC injection preparation
-    # ==================================================================
-
-    @staticmethod
-    def format_user_message(
-        messages: list[tuple[str, str]],
-    ) -> str:
-        """Format external messages for `claude -p` user field.
-
-        messages: list of (source_label, text) — e.g. [("tg:Zephyr", "hello")]
-        Returns a single string suitable for the -p argument.
+        Returns True if the publish was accepted by the bus.
         """
-        if not messages:
-            return ""
-        parts = []
-        for label, text in messages:
-            parts.append(f"[{label}] {text}")
-        return "\n\n".join(parts)
-
-    @staticmethod
-    def format_additional_context(
-        recall_text: str = "",
-        schedule_info: str = "",
-    ) -> str:
-        """Format internal info for hook additionalContext.
-
-        This is what inject.sh would output — but prepared by conductor
-        so the hook just echoes it.
-        """
-        sections: list[str] = []
-        if recall_text:
-            sections.append(f"[recall]\n{recall_text}")
-        if schedule_info:
-            sections.append(f"[schedule]\n{schedule_info}")
-        return "\n\n".join(sections)
+        from fiam.plugins import resolve_dispatch_target
+        target = resolve_dispatch_target(self.config, channel)
+        if target is None:
+            logger.info("dispatch skipped: plugin disabled (channel=%s)", channel)
+            return False
+        payload = {
+            "text": text,
+            "recipient": recipient,
+        }
+        if self.bus is None:
+            logger.error("dispatch: no bus configured (channel=%s)", target)
+            return False
+        ok = self.bus.publish_dispatch(target, payload)
+        if not ok:
+            logger.warning("dispatch: bus rejected payload (channel=%s)", target)
+        return ok

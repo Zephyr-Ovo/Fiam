@@ -155,8 +155,11 @@ def propose_edges(
         existing_events: [{"id": str, "time": str, "body": str}]
         config: FiamConfig
 
-    Returns:
-        {"edges": [{"src": str, "dst": str, "type": str, "weight": float, "reason": str}]}
+        Returns:
+                {
+                    "names": {"seg_0": "high_information_name"},
+                    "edges": [{"src": str, "dst": str, "type": str, "weight": float, "reason": str}]
+                }
     """
     def _fmt(events: list[dict]) -> str:
         lines: list[str] = []
@@ -178,12 +181,16 @@ def propose_edges(
 
     result = _call_ds(prompt, config, max_tokens=8192)
 
+    names = result.get("names", {})
+    if not isinstance(names, dict):
+        names = {}
+
     edges = result.get("edges", [])
     for e in edges:
         e["weight"] = float(e.get("weight", 0.5))
         e.setdefault("reason", "")
 
-    return {"edges": edges}
+    return {"names": names, "edges": edges}
 
 
 # ------------------------------------------------------------------
@@ -198,13 +205,15 @@ def save_training_data(
     *,
     annotator: str = "ds+zephyr",
     beat_vectors: list | None = None,
+    drift_cuts: list[int] | None = None,
 ) -> dict:
     """Save confirmed annotations as training data.
 
-    Produces:
-      - beat_boundaries.jsonl: text-based boundary records
+        Produces:
+            - flow_cut_labels.jsonl: one record per beat gap with event/drift labels
+            - beat_boundaries.jsonl: text-based boundary records (compat)
       - event_similarities.jsonl: event pairs with weights
-      - batch_XXXX_vectors.npy + batch_XXXX_cuts.npy: for cut-head training
+            - batch_XXXX_vectors.npy + batch_XXXX_cuts.npy: two-column cut labels
     """
     training_dir.mkdir(parents=True, exist_ok=True)
     ts = _now_iso()
@@ -212,6 +221,11 @@ def save_training_data(
     saved_pairs = 0
 
     segments = cuts_to_segments(beats, cuts)
+    if drift_cuts is None:
+        drift_cuts = [0] * max(0, len(beats) - 1)
+    drift_cuts = [int(bool(c)) for c in drift_cuts[: max(0, len(beats) - 1)]]
+    if len(drift_cuts) < max(0, len(beats) - 1):
+        drift_cuts.extend([0] * (max(0, len(beats) - 1) - len(drift_cuts)))
 
     # --- Save vectors + cuts as npy for cut-head training ---
     if beat_vectors and any(v is not None for v in beat_vectors):
@@ -230,9 +244,25 @@ def save_training_data(
             for i, v in enumerate(beat_vectors):
                 if v is not None:
                     mat[i] = v
-            cuts_arr = np.array(cuts, dtype=np.int8)
+            cuts_arr = np.column_stack([
+                np.array(cuts, dtype=np.int8),
+                np.array(drift_cuts, dtype=np.int8),
+            ])
             np.save(training_dir / f"batch_{batch_idx:04d}_vectors.npy", mat)
             np.save(training_dir / f"batch_{batch_idx:04d}_cuts.npy", cuts_arr)
+
+    # --- Gap labels: event cut and drift cut are separate supervision targets ---
+    labels_path = training_dir / "flow_cut_labels.jsonl"
+    with open(labels_path, "a", encoding="utf-8") as f:
+        for i in range(max(0, len(beats) - 1)):
+            f.write(json.dumps({
+                "beat_before": beats[i],
+                "beat_after": beats[i + 1],
+                "event_cut": int(bool(cuts[i])) if i < len(cuts) else 0,
+                "drift_cut": int(bool(drift_cuts[i])) if i < len(drift_cuts) else 0,
+                "annotator": annotator,
+                "ts": ts,
+            }, ensure_ascii=False) + "\n")
 
     # --- Beat boundaries (text-based, for provenance) ---
     boundaries_path = training_dir / "beat_boundaries.jsonl"

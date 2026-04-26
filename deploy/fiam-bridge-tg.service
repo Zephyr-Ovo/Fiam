@@ -1,0 +1,24 @@
+[Unit]
+Description=fiam Telegram <-> MQTT bridge
+After=network.target mosquitto.service
+Wants=mosquitto.service
+
+[Service]
+Type=simple
+User=fiet
+Group=fiet
+WorkingDirectory=/home/fiet/fiam-code
+ExecStart=/home/fiet/fiam-code/.venv/bin/python /home/fiet/fiam-code/scripts/bridges/bridge_tg.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/fiet/fiet-home /home/fiet/fiam-code/logs
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
