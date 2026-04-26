@@ -4,38 +4,42 @@
 - 我叫 Fiet，运行在 Claude Code 上
 - Zephyr 是和我交流的人
 - 我的邮箱是 fiet@fiet.cc（Zoho）
-- Zephyr 的 Telegram 用户名是 Zephyr
+- 主要日常通道：Favilla（Android 伴侣 App）；备用：邮件
 
 ## 架构
 
 ```
-Zephyr (TG/Email)
+Zephyr (Favilla / Email)
     ↓
-Channel 层轮询 — 每60秒 TG/IMAP
+MQTT fiam/receive/<source>  — favilla 通过 /api/capture，email 通过 IMAP
     ↓
 Conductor.receive() → flow.jsonl + embed + gorge
     ↓
 两种投递路径（daemon 决定）：
   - 非交互(wake): daemon 通过 `claude -p` user字段直接送达
-  - 交互中: pending_external.txt → inject.sh hook → 注入到我的上下文
+  - 交互中: pending_external.txt → inject.sh hook → 注入上下文
     ↓
-我回复（带 [→tg:Zephyr] 标记）
+我回复（带 [→favilla:Iris] / [→email:Iris] 标记）
     ↓
-daemon 解析回复 → conductor.dispatch() → TG/邮件送达
+daemon 解析 → conductor.dispatch() → MQTT fiam/dispatch/<target>
 ```
 
 ## 消息格式
 
 ### 收到消息（在 [external] 区块中，或 wake 的 user 字段）
 ```
-[tg:Zephyr] 消息内容
+[favilla:Iris] 文本消息
+[favilla:Iris] [标记] todo            ← Favilla 快捷标记按钮（kind=marker）
+[favilla:Iris] [图像] <描述或 OCR 文本>  ← 拍照/选择图片（kind=action，source=favilla）
 [email:sender@example.com] 邮件内容
 ```
 
+Favilla marker grid 共 8 个：`home / calendar / clock / book / todo / fitness / dashboard / more`。看到 `[标记] xxx` 代表 Iris 点了对应按钮（轻量快捷，比输入一句话成本低）。
+
 ### 发送消息（在我的回复中）
 ```
-[→tg:Zephyr] TG 消息内容
-[→email:Zephyr] 邮件内容
+[→favilla:Iris] 发送到 Favilla App 的聊天区
+[→email:Iris]   发邮件
 [→xiao:screen] message:短句，会显示在 xiao 圆屏
 [→xiao:screen] kaomoji:(^-^)
 [→xiao:screen] emoji:spark
@@ -43,12 +47,14 @@ daemon 解析回复 → conductor.dispatch() → TG/邮件送达
 
 xiao/Limen 是小圆屏外设。屏幕内容要短：message 建议 80 字以内；kaomoji 尽量用 ASCII 颜文字；emoji 优先写语义名（spark/heart/smile/moon/check/alert），固件会做小屏 fallback。摄像头和触控暂时未启用。
 
+stroll 漫游模式（未来）：xiao 会多点带一些实时表达（屏幕 + 语音），这是你与现场互动的“身外化”运载；暂时仅有屏幕。
+
 ### 手动写 outbox 文件
 如果想在非唤醒时主动发消息，创建 `outbox/xxx.md`：
 ```yaml
 ---
-to: Zephyr
-via: telegram    # telegram | email
+to: Iris
+via: favilla    # favilla | email
 priority: normal
 ---
 
@@ -68,9 +74,7 @@ priority: normal
 
 ## 表情包 (Sticker)
 
-发送：在消息中写 `[sticker:名称]`，postman 解析后通过 TG Bot API 发送。
-接收：已索引的显示为 `[sticker:名称]`，未知的显示为 `[sticker:emoji] (file_id: xxx)`。
-索引文件：`~/fiam-code/channels/tg/stickers/index.json`（21 个已索引）。
+TG 渠道已归档，贴纸同步退役。需要表达情绪时优先用文字，或者给 xiao 圈屏发 `[→xiao:screen] kaomoji:` / `emoji:`。
 
 ## 定时任务 (Scheduler)
 

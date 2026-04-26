@@ -38,29 +38,19 @@
 	--color-err: var(--color-red);
 	--color-info: var(--color-blue);
 
-	--font-mono: 'JetBrains Mono', 'Consolas', ui-monospace, monospace;
+	--font-mono:
+		'Anthropic Mono', 'JetBrains Mono', 'Consolas', ui-monospace, monospace;
 }
 
-/* Anthropic-branded fonts — loaded from user's local installation only (no upload). */
-/* If the font isn't installed locally, browser falls through to the stack. */
-@font-face {
-	font-family: 'Anthropic Sans';
-	src:
-		local('Anthropic Sans Web Display Light'),
-		local('AnthropicSansWebDisplay-Light'),
-		local('Anthropic Sans Web Light'),
-		local('Anthropic Sans Light');
-	font-weight: 300;
-	font-style: normal;
-	font-display: swap;
-}
+/* Anthropic-branded fonts — bundled in /fonts (Latin only); CJK falls through to system stack. */
 @font-face {
 	font-family: 'Anthropic Sans';
 	src:
 		local('Anthropic Sans Web Display'),
 		local('AnthropicSansWebDisplay-Regular'),
 		local('Anthropic Sans Web'),
-		local('Anthropic Sans');
+		local('Anthropic Sans'),
+		url('/fonts/AnthropicSans-Regular.ttf') format('truetype');
 	font-weight: 400;
 	font-style: normal;
 	font-display: swap;
@@ -68,11 +58,12 @@
 @font-face {
 	font-family: 'Anthropic Serif';
 	src:
-		local('Anthropic Serif Web Display Light Italic'),
-		local('AnthropicSerifWebDisplay-LightItalic'),
-		local('Anthropic Serif Web Light Italic'),
-		local('Anthropic Serif Light Italic');
-	font-weight: 300;
+		local('Anthropic Serif Web Display Italic'),
+		local('AnthropicSerifWebDisplay-Italic'),
+		local('Anthropic Serif Web Italic'),
+		local('Anthropic Serif Italic'),
+		url('/fonts/AnthropicSerif-Italic.ttf') format('truetype');
+	font-weight: 400;
 	font-style: italic;
 	font-display: swap;
 }
@@ -82,7 +73,17 @@
 		local('Anthropic Serif Web Display'),
 		local('AnthropicSerifWebDisplay-Regular'),
 		local('Anthropic Serif Web'),
-		local('Anthropic Serif');
+		local('Anthropic Serif'),
+		url('/fonts/AnthropicSerif-Italic.ttf') format('truetype');
+	font-weight: 400;
+	font-style: normal;
+	font-display: swap;
+}
+@font-face {
+	font-family: 'Anthropic Mono';
+	src:
+		local('Anthropic Mono'),
+		url('/fonts/AnthropicMono-Regular.ttf') format('truetype');
 	font-weight: 400;
 	font-style: normal;
 	font-display: swap;

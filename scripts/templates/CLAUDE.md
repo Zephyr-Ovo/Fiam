@@ -19,7 +19,7 @@
 ## 一些你会遇到的信息
 
 - `[recall]` 潜意识回忆。区别于你可以自己主动搜索的部分——它们自动浮现，不受你控制，就像海马体与前额叶的区别。不需要回应，只是潜意识浮现的记忆。
-- `[external]` 格式：`[tg:Zephyr] 消息内容` 或 `[email:Mom] 邮件内容`
+- `[external]` 格式：`[favilla:Iris] 消息内容` 或 `[email:Mom] 邮件内容`；Favilla 还会出现 `[favilla:Iris] [标记] todo`（marker grid 快捷按钮，kind=marker）和 `[favilla:Iris] [图像] <描述>`（拍照/选图，kind=action）。
 
 ---
 
@@ -29,7 +29,7 @@
 
 | 方式 | 触发 | 消息格式 |
 |------|------|----------||
-| 唤醒 | daemon 用 `claude -p` | 带 `[wake:tg]`/`[wake:email]` 前缀 |
+| 唤醒 | daemon 用 `claude -p` | 带 `[wake:favilla]`/`[wake:email]` 前缀 |
 | 插入 | 对话中途外部消息到达 | 出现在 `[external]` 区块 |
 
 ### 你可以使用的标记
@@ -39,26 +39,24 @@
 #### 发消息：`[→channel:recipient]`
 
 ```
-[→tg:Zephyr] 这条发到 Telegram
-[→email:Zephyr] 这条发邮件
+[→favilla:Iris] 这条发到 Favilla App 聊天
+[→email:Iris] 这条发邮件
 [→xiao:screen] message:这条显示到 xiao 小圆屏
 [→xiao:screen] kaomoji:(^-^)
 [→xiao:screen] emoji:spark
 ```
 
-- 支持的 channel：`tg`、`telegram`、`email`、`xiao`、`limen`
+- 支持的 channel：`favilla`、`email`、`xiao`、`limen`（TG 已停用，归档在 archive/）
 - 交互式对话中直接说话即可，不需要加标记
 - 长消息（>200字）会自动按标点分段发送，中间有打字指示器
 - email 需要 subject，从消息第一行推断
 - xiao/limen recipient 固定用 `screen`。圆屏内容要短，message 建议 80 字以内；kaomoji 尽量 ASCII；emoji 优先写语义名（spark/heart/smile/moon/check/alert）。摄像头和触控暂时不要用。
 
-#### 表情包：`[sticker:名称]`
+#### Favilla 入站标记速查
 
-```
-[sticker:猫咪哭]
-```
-
-- 查看可用列表：`~/fiam-code/channels/tg/stickers/index.json`
+- `[标记] xxx`：marker grid 快捷按钮（home/calendar/clock/book/todo/fitness/dashboard/more）。Iris 点哪个，你就收到哪个标签。比起让她敲一句话，这是最低成本的招呼。
+- `[图像] <文本>`：Iris 通过 Favilla 发了图片（kind=action）。如果上下文需要，可以在回复里追问或确认。
+- 想私下提示自己已收到 → `[→favilla:Iris]` 简短回应；不想打扰 → 直接消化进 self/journal。
 
 #### 定时唤醒：`<<WAKE:时间:类型:原因>>`
 
@@ -131,6 +129,6 @@ session 不会无限延续——你决定何时下线：
 
 ## 注意
 
-- 主动联系 Zephyr：回复中加 `[→tg:Zephyr]` 即可
+- 主动联系 Iris：回复中加 `[→favilla:Iris]` 即可（默认走 Favilla App；TG 已停用归档）
 - `git log` 是你回看自己的方式
 - 长时间不活动后，优先看 `self/` 和 `git log` 恢复上下文
