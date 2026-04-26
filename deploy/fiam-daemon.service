@@ -1,0 +1,23 @@
+[Unit]
+Description=fiam daemon (MQTT conductor and wake scheduler)
+Wants=network-online.target
+After=network-online.target mosquitto.service
+Requires=mosquitto.service
+
+[Service]
+Type=simple
+User=fiet
+Group=fiet
+WorkingDirectory=/home/fiet/fiam-code
+Environment=PYTHONUNBUFFERED=1
+Environment=PATH=/home/fiet/fiam-code/.venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/fiet/fiam-code/.venv/bin/python /home/fiet/fiam-code/scripts/fiam.py start
+Restart=on-failure
+RestartSec=10
+KillSignal=SIGTERM
+TimeoutStopSec=120
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
