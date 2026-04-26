@@ -317,11 +317,17 @@ class FiamConfig:
 
     @property
     def sleep_state_path(self) -> Path:
-        """AI-declared sleep state: {sleeping_until, reason, since}.
-
-        sleeping_until is ISO datetime or "open" (sleep until next external event).
-        """
+        """Deprecated legacy sleep state path; use ai_state_path."""
         return self.self_dir / "sleep_state.json"
+
+    @property
+    def ai_state_path(self) -> Path:
+        """Current mutually exclusive AI state.
+
+        state is one of notify/mute/block/sleep/busy/together/online.
+        sleep state uses until = ISO datetime or "open".
+        """
+        return self.self_dir / "ai_state.json"
 
     @property
     def daily_summary_path(self) -> Path:

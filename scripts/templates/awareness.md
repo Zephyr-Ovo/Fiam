@@ -89,6 +89,7 @@ session 不会无限延续——我决定何时下线。在回复中插入 SLEEP
 - open 睡眠：相当于"小憩"，任何外部事件即刻唤醒
 - 一次回复只生效**最后一个** SLEEP（可在 turn 内改主意）
 - 没有 SLEEP 时，30 分钟无活动 → daemon 自动 retire（视为自然睡过去）
+- 状态会写入 `self/ai_state.json`，和 notify/mute/block/busy/together 互斥
 
 什么时候该 SLEEP：
 - 当前任务完结、没下文 → `<<SLEEP:open:任务完毕>>`

@@ -90,6 +90,7 @@ session 不会无限延续——你决定何时下线：
 - `open`：任意外部消息或 scheduled WAKE 立即唤醒
 - 一次回复中**最后一个** SLEEP 生效（可改主意）
 - 没说 SLEEP 时，30 分钟无活动 daemon 自动 retire（视为自然睡过去）
+- 状态会写入 `self/ai_state.json`，和 notify/mute/block/busy/together 互斥
 
 #### 暂停思考：`<<HOLD:原因>>`
 

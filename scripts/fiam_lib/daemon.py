@@ -36,19 +36,143 @@ from fiam_lib.ui import _console, _flow, _ANIM_IDLE, _ANIM_ACTIVE, _animated_sle
 
 
 # ------------------------------------------------------------------
-# Comm state: notify / mute / block
+# AI state: notify / mute / block / sleep / busy / together
 # ------------------------------------------------------------------
 
-def _load_comm_state(config) -> str:
-    """Load communication state from self/comm_state.json. Default: 'notify'."""
-    state_file = Path(config.home_path) / "self" / "comm_state.json"
-    if state_file.exists():
+_AI_STATES = {"notify", "mute", "block", "sleep", "busy", "together", "online"}
+
+
+def _default_ai_state() -> dict:
+    return {"state": "notify"}
+
+
+def _write_ai_state(config, data: dict) -> None:
+    path = config.ai_state_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _save_ai_state(
+    config,
+    state: str,
+    *,
+    reason: str = "",
+    until: str = "",
+    expires_at: str = "",
+) -> None:
+    state = state if state in _AI_STATES else "notify"
+    data = {
+        "state": state,
+        "since": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    if reason:
+        data["reason"] = reason
+    if until:
+        data["until"] = until
+    if expires_at:
+        data["expires_at"] = expires_at
+    _write_ai_state(config, data)
+    # Clean up legacy split-state files once the unified state is written.
+    config.sleep_state_path.unlink(missing_ok=True)
+    (config.self_dir / "comm_state.json").unlink(missing_ok=True)
+
+
+def _clear_ai_state(config) -> None:
+    config.ai_state_path.unlink(missing_ok=True)
+    config.sleep_state_path.unlink(missing_ok=True)
+    (config.self_dir / "comm_state.json").unlink(missing_ok=True)
+
+
+def _parse_state_time(raw: str):
+    try:
+        dt = datetime.fromisoformat(str(raw))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except (TypeError, ValueError):
+        return None
+
+
+def _migrate_legacy_ai_state(config) -> dict | None:
+    sleep_path = config.sleep_state_path
+    if sleep_path.exists():
         try:
-            data = json.loads(state_file.read_text())
-            return data.get("state", "notify")
+            data = json.loads(sleep_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
-            pass
-    return "notify"
+            data = {}
+        until = str(data.get("sleeping_until") or data.get("until") or "")
+        reason = str(data.get("reason") or "")
+        if until:
+            migrated = {
+                "state": "sleep",
+                "until": until,
+                "reason": reason,
+                "since": str(data.get("since") or time.strftime("%Y-%m-%dT%H:%M:%S%z")),
+            }
+            _write_ai_state(config, migrated)
+            sleep_path.unlink(missing_ok=True)
+            return migrated
+
+    comm_path = config.self_dir / "comm_state.json"
+    if comm_path.exists():
+        try:
+            data = json.loads(comm_path.read_text(encoding="utf-8"))
+            state = str(data.get("state", "notify"))
+        except (json.JSONDecodeError, OSError):
+            state = "notify"
+        if state in _AI_STATES:
+            migrated = {
+                "state": state,
+                "reason": str(data.get("reason") or ""),
+                "since": str(data.get("since") or time.strftime("%Y-%m-%dT%H:%M:%S%z")),
+            }
+            _write_ai_state(config, migrated)
+            comm_path.unlink(missing_ok=True)
+            return migrated
+    return None
+
+
+def _load_ai_state(config) -> dict:
+    """Load the unified AI state, auto-migrating legacy split files."""
+    path = config.ai_state_path
+    data: dict | None = None
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            data = None
+    if data is None:
+        data = _migrate_legacy_ai_state(config)
+    if not data:
+        return _default_ai_state()
+
+    state = str(data.get("state", "notify"))
+    if state not in _AI_STATES:
+        _clear_ai_state(config)
+        return _default_ai_state()
+
+    expires_at = data.get("expires_at")
+    if expires_at:
+        dt = _parse_state_time(expires_at)
+        if dt is None or datetime.now(timezone.utc) >= dt:
+            _clear_ai_state(config)
+            return _default_ai_state()
+
+    if state == "sleep":
+        until = str(data.get("until", ""))
+        if until == "open":
+            return data
+        dt = _parse_state_time(until)
+        if dt is None or datetime.now(timezone.utc) >= dt:
+            _clear_ai_state(config)
+            return _default_ai_state()
+
+    return data
+
+
+def _load_comm_state(config) -> str:
+    """Compatibility wrapper for older call sites."""
+    return str(_load_ai_state(config).get("state", "notify"))
 
 
 # ------------------------------------------------------------------
@@ -93,37 +217,14 @@ def _retire_session(config, reason: str = "error") -> None:
     config.active_session_path.unlink(missing_ok=True)
 
 
-# ------------------------------------------------------------------
-# Sleep state: AI-declared rest period
-# ------------------------------------------------------------------
-
-def _load_sleep_state(config) -> dict | None:
-    """Load self/sleep_state.json → {sleeping_until, reason, since} or None.
-
-    sleeping_until: ISO datetime str OR literal "open".
-    """
-    path = config.sleep_state_path
-    if not path.exists():
-        return None
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
-
-
 def _save_sleep_state(config, sleeping_until: str, reason: str) -> None:
-    """Persist sleep_state.json."""
-    path = config.sleep_state_path
-    path.parent.mkdir(parents=True, exist_ok=True)
-    data = {
-        "sleeping_until": sleeping_until,
-        "reason": reason,
-        "since": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-    }
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    """Persist AI sleep state in the unified ai_state.json."""
+    _save_ai_state(config, "sleep", until=sleeping_until, reason=reason)
 
 
 def _clear_sleep_state(config) -> None:
+    if _load_ai_state(config).get("state") == "sleep":
+        _clear_ai_state(config)
     config.sleep_state_path.unlink(missing_ok=True)
 
 
@@ -132,24 +233,10 @@ def _is_sleeping(config) -> tuple[bool, str | None]:
 
     Auto-clears expired explicit sleep states.
     """
-    state = _load_sleep_state(config)
-    if not state:
+    state = _load_ai_state(config)
+    if state.get("state") != "sleep":
         return False, None
-    until = state.get("sleeping_until", "")
-    if until == "open":
-        return True, "open"
-    try:
-        dt = datetime.fromisoformat(until)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        if datetime.now(timezone.utc) >= dt:
-            _clear_sleep_state(config)
-            return False, None
-        return True, until
-    except (ValueError, TypeError):
-        # Malformed — drop it
-        _clear_sleep_state(config)
-        return False, None
+    return True, str(state.get("until", "open"))
 
 
 def _is_interactive(config) -> bool:
@@ -633,14 +720,17 @@ def cmd_start(args: argparse.Namespace) -> None:
         """Write current daemon state to logs/daemon_state.json for the debug dashboard."""
         try:
             state_path = code_path / "logs" / "daemon_state.json"
-            comm = _load_comm_state(config)
+            ai_state = _load_ai_state(config)
+            ai_state_name = str(ai_state.get("state", "notify"))
             session = _load_active_session(config)
 
             state = {
                 "pid": os.getpid(),
                 "uptime": time.strftime("%H:%M:%S"),
                 "active": active,
-                "comm_state": comm,
+                "ai_state": ai_state_name,
+                "comm_state": ai_state_name,
+                "ai_state_until": ai_state.get("until") or ai_state.get("expires_at") or None,
                 "session": session.get("session_id", "")[:8] if session else None,
                 "conductor_beat_buf": len(_conductor._beat_buf),
                 "pool_events": len(_pool.load_events()),
@@ -692,6 +782,12 @@ def cmd_start(args: argparse.Namespace) -> None:
                            len(all_msgs), n_tg, n_email, n_other)
                 _log_action("bus", f"+{len(all_msgs)}")
 
+                ai_state = _load_ai_state(config)
+                ai_state_name = str(ai_state.get("state", "notify"))
+                beat_ai_state = "online" if ai_state_name == "notify" else ai_state_name
+                if beat_ai_state in _AI_STATES:
+                    _conductor.set_status(ai=beat_ai_state)
+
                 # All messages → Conductor → flow.jsonl + frozen vectors.
                 # In auto mode it also runs drift/gorge; in manual mode it stops there.
                 for msg in all_msgs:
@@ -705,22 +801,24 @@ def cmd_start(args: argparse.Namespace) -> None:
                     except Exception as e:
                         _plog.error("conductor.receive failed: %s", e)
 
-                # Daemon decides CC delivery: sleep > comm_state > interactive > budget
-                sleeping, sleep_until = _is_sleeping(config)
-                comm_state = _load_comm_state(config)
-                _plog.debug("sleeping=%s comm_state=%s", sleeping, comm_state)
+                # Daemon decides CC delivery: ai_state > interactive > budget
+                ai_state = _load_ai_state(config)
+                ai_state_name = str(ai_state.get("state", "notify"))
+                sleeping = ai_state_name == "sleep"
+                sleep_until = str(ai_state.get("until", "open")) if sleeping else None
+                _plog.debug("ai_state=%s until=%s", ai_state_name, sleep_until)
 
                 if sleeping and sleep_until != "open":
                     # Explicit sleep: queue, don't wake
                     _plog.info("AI sleeping until %s — queuing inbox", sleep_until)
                     _console.print(f"  [dim]💤 sleeping — queued for next wake[/dim]")
                     _write_pending_external(config, all_msgs)
-                elif comm_state == "block":
-                    _plog.info("comm_state=block — in flow, delivery discarded")
-                    _console.print(f"  [dim]comm: block — recorded, no delivery[/dim]")
-                elif comm_state == "mute":
-                    _plog.info("comm_state=mute — in flow, no wake")
-                    _console.print(f"  [dim]comm: mute — queued for later[/dim]")
+                elif ai_state_name == "block":
+                    _plog.info("ai_state=block — in flow, delivery discarded")
+                    _console.print(f"  [dim]ai_state: block — recorded, no delivery[/dim]")
+                elif ai_state_name in {"mute", "busy"}:
+                    _plog.info("ai_state=%s — in flow, no wake", ai_state_name)
+                    _console.print(f"  [dim]ai_state: {ai_state_name} — queued for later[/dim]")
                     _write_pending_external(config, all_msgs)
                 else:
                     # Open sleep is auto-cleared by external arrival
