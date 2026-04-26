@@ -1,37 +1,26 @@
-# fiet.cc Caddyfile — fiam dashboard
+# fiet.cc Caddyfile — fiam dashboard behind Cloudflare Tunnel
 #
 # Place at /etc/caddy/Caddyfile on the ISP host, then:
 #   sudo systemctl reload caddy
 #
-# Caddy will automatically obtain Let's Encrypt certificates.
+# Cloudflare terminates public TLS and cloudflared forwards to Caddy on localhost:80.
 # Prerequisites:
-#   1. DNS A record: fiet.cc → ISP public IP (and optionally *.fiet.cc)
-#   2. UFW allows 80/tcp and 443/tcp
-#   3. Basic auth password hash:
+#   1. cloudflared ingress routes fiet.cc and www.fiet.cc to http://localhost:80
+#   2. Basic auth password hash:
 #        caddy hash-password
 #      Paste the bcrypt hash into the blocks below.
 
 # ---------------------------------------------------------------------------
-# Global options
-# ---------------------------------------------------------------------------
-{
-	email your-email@example.com
-	# Uncomment for staging while testing:
-	# acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
-}
-
-# ---------------------------------------------------------------------------
 # fiet.cc — dashboard (three-user basic auth)
 # ---------------------------------------------------------------------------
-fiet.cc, www.fiet.cc {
+http://fiet.cc, http://www.fiet.cc {
 	encode gzip zstd
 
 	# IP allowlist (optional extra layer — set your known IPs below)
 	# @blocked not remote_ip 1.2.3.4 5.6.7.8
 	# respond @blocked 403
 
-	@protected not path /.well-known/acme-challenge/*
-	basic_auth @protected {
+	basic_auth * {
 		iris  $2a$14$REPLACE_WITH_HASH_FROM_caddy_hash_password
 		ai    $2a$14$REPLACE_WITH_HASH_FROM_caddy_hash_password
 		fiet  $2a$14$REPLACE_WITH_HASH_FROM_caddy_hash_password
