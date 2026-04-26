@@ -585,13 +585,15 @@ def _run_cc_app_chat(*, text: str, source: str) -> dict:
         detail = (result.stderr or result.stdout or "").strip()[:500]
         raise RuntimeError(f"bad claude json: {detail}") from exc
 
+    is_partial_success = data.get("subtype") == "error_max_turns"
+    is_error = bool(data.get("is_error")) or result.returncode != 0
+    if is_error and not is_partial_success:
+        detail = (data.get("error") or data.get("result") or result.stderr or result.stdout or "claude failed")
+        raise RuntimeError(str(detail).strip()[:500])
+
     session_id = str(data.get("session_id") or "").strip()
     if session_id:
         _save_app_active_session(session_id)
-
-    if result.returncode != 0 and data.get("subtype") != "error_max_turns":
-        detail = (data.get("error") or result.stderr or result.stdout or "claude failed")
-        raise RuntimeError(str(detail).strip()[:500])
 
     reply = str(data.get("result") or "").strip()
     return {
