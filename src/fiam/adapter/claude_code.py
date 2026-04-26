@@ -225,6 +225,8 @@ class ClaudeCodeAdapter:
         *,
         user_status: UserStatus = "cc",
         ai_status: AiStatus = "online",
+        user_name: str = "zephyr",
+        ai_name: str = "ai",
     ) -> tuple[list["Beat"], int]:
         """Parse JSONL into Beat objects for the narrative stream.
 
@@ -253,10 +255,13 @@ class ClaudeCodeAdapter:
         entries: list[tuple[int, Beat]] = []
         # Dedup assistant messages (CC emits partials then final)
         asst_text_by_id: dict[str, str] = {}
+        asst_thinking_by_id: dict[str, str] = {}
         asst_tools_by_id: dict[str, list[str]] = {}
         asst_ts_by_id: dict[str, str] = {}
         asst_order: dict[str, int] = {}
         order = 0
+        user_label = _speaker_label(user_name, "zephyr")
+        ai_label = _speaker_label(ai_name, "ai")
 
         pos = 0
         for raw_line in raw.split(b"\n"):
@@ -296,7 +301,7 @@ class ClaudeCodeAdapter:
                 if text and not _is_system_message(text):
                     entries.append((order, Beat(
                         t=_parse_ts(ts),
-                        text=text,
+                        text=_speaker_text(user_label, text),
                         source="cc",
                         user=user_status,
                         ai=ai_status,
@@ -312,6 +317,9 @@ class ClaudeCodeAdapter:
                 text_parts = [b.get("text", "").strip() for b in content
                               if isinstance(b, dict) and b.get("type") == "text"]
                 text = "\n".join(p for p in text_parts if p)
+                thinking_parts = [b.get("thinking", "").strip() for b in content
+                                  if isinstance(b, dict) and b.get("type") == "thinking"]
+                thinking = "\n".join(p for p in thinking_parts if p)
 
                 # Extract tool_use blocks
                 tool_descs: list[str] = []
@@ -327,9 +335,13 @@ class ClaudeCodeAdapter:
                 if msg_id in asst_text_by_id:
                     if text:
                         asst_text_by_id[msg_id] = text
+                    if thinking:
+                        prev = asst_thinking_by_id.get(msg_id, "")
+                        asst_thinking_by_id[msg_id] = (prev + "\n" + thinking).strip() if prev else thinking
                     asst_tools_by_id[msg_id].extend(tool_descs)
                 else:
                     asst_text_by_id[msg_id] = text
+                    asst_thinking_by_id[msg_id] = thinking
                     asst_tools_by_id[msg_id] = tool_descs
                     asst_ts_by_id[msg_id] = ts
                     asst_order[msg_id] = order
@@ -340,6 +352,7 @@ class ClaudeCodeAdapter:
             ts_str = asst_ts_by_id[mid]
             t = _parse_ts(ts_str)
             text = asst_text_by_id[mid]
+            thinking = asst_thinking_by_id.get(mid, "")
             tools = asst_tools_by_id[mid]
 
             # Split routing markers from assistant text
@@ -349,8 +362,20 @@ class ClaudeCodeAdapter:
             if tools:
                 tool_text = "; ".join(tools)
                 entries.append((asst_order[mid], Beat(
-                    t=t, text=tool_text, source="action",
+                    t=t, text=_speaker_text(ai_label, f"做了：{tool_text}"), source="action",
                     user=user_status, ai=ai_status,
+                )))
+
+            # Thinking blocks are part of AI activity, but remain structured in
+            # meta so UI can collapse/expand them separately from normal speech.
+            if thinking:
+                entries.append((asst_order[mid], Beat(
+                    t=t,
+                    text=_speaker_text(ai_label, f"我想：{thinking}"),
+                    source="cc",
+                    user=user_status,
+                    ai=ai_status,
+                    meta={"kind": "thinking"},
                 )))
 
             # Routed messages → dispatch beats. Target/recipient are metadata;
@@ -358,7 +383,7 @@ class ClaudeCodeAdapter:
             for marker in routed:
                 entries.append((asst_order[mid], Beat(
                     t=t,
-                    text=marker.body,
+                    text=_speaker_text(ai_label, f"对 {marker.recipient} 说：{marker.body}"),
                     source="dispatch",
                     user=user_status, ai=ai_status,
                     meta={"target": marker.channel, "recipient": marker.recipient},
@@ -367,7 +392,7 @@ class ClaudeCodeAdapter:
             # Remaining CC dialogue text (after stripping routed parts)
             if remaining.strip():
                 entries.append((asst_order[mid], Beat(
-                    t=t, text=remaining.strip(), source="cc",
+                    t=t, text=_speaker_text(ai_label, remaining.strip()), source="cc",
                     user=user_status, ai=ai_status,
                 )))
 
@@ -387,6 +412,17 @@ def _parse_ts(ts_str: str) -> datetime:
         except ValueError:
             pass
     return datetime.now(timezone.utc)
+
+
+def _speaker_label(name: str, fallback: str) -> str:
+    return (name or fallback).strip().lower() or fallback
+
+
+def _speaker_text(speaker: str, text: str) -> str:
+    clean = text.strip()
+    if clean.startswith(f"{speaker}:") or clean.startswith(f"{speaker}："):
+        return clean
+    return f"{speaker}：{clean}"
 
 
 def _tool_brief(name: str, inp: dict) -> str:

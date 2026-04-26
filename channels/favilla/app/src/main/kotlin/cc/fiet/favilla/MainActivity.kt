@@ -41,22 +41,43 @@ class MainActivity : AppCompatActivity() {
             ingestToken = b.etToken.text.toString()
             sourceTag = b.etSource.text.toString()
             b.btnTest.isEnabled = false
-            b.tvStatus.text = "sending test…"
+            b.tvStatus.text = "loading stats..."
             lifecycleScope.launch {
-                val r = CaptureClient.send(
+                val r = CaptureClient.appStatus(
                     serverUrl = serverUrl,
                     token = ingestToken,
-                    text = "favilla self-test " + System.currentTimeMillis(),
-                    source = sourceTag,
-                    tags = listOf("self-test"),
                 )
-                b.tvStatus.text = if (r.ok) {
-                    if (r.queued) "✓ queued" else "✓ ${r.id ?: "ok"}"
-                } else {
-                    "✗ ${r.error}"
-                }
+                b.tvStatus.text = if (r.ok) r.summary else "✗ ${r.error}"
                 b.btnTest.isEnabled = true
             }
+        }
+
+        b.btnStartReadalong.setOnClickListener {
+            serverUrl = b.etUrl.text.toString()
+            ingestToken = b.etToken.text.toString()
+            sourceTag = b.etSource.text.toString()
+            if (ingestToken.isBlank()) {
+                toast("Favilla: set token first")
+                return@setOnClickListener
+            }
+            if (!Settings.canDrawOverlays(this)) {
+                toast(getString(R.string.need_overlay_perm))
+                return@setOnClickListener
+            }
+            val sessionId = FloatingService.newSessionId()
+            FloatingService.start(this, sessionId)
+            sendInteractionPhase("start", "开始共读邀请", sessionId)
+            toast("readalong: started")
+        }
+
+        b.btnEndReadalong.setOnClickListener {
+            serverUrl = b.etUrl.text.toString()
+            ingestToken = b.etToken.text.toString()
+            sourceTag = b.etSource.text.toString()
+            val sessionId = FloatingService.sessionId
+            sendInteractionPhase("end", "结束共读", sessionId)
+            FloatingService.stop(this)
+            toast(if (sessionId == null) "readalong: stopped" else "readalong: ended")
         }
 
         b.btnOverlayPerm.setOnClickListener {
@@ -116,6 +137,28 @@ class MainActivity : AppCompatActivity() {
             contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
         ).orEmpty()
         return am.isEnabled && enabled.split(':').any { it.equals(want, ignoreCase = true) }
+    }
+
+    private fun sendInteractionPhase(phase: String, text: String, sessionIdOverride: String? = null) {
+        val token = ingestToken
+        if (token.isBlank()) {
+            toast("Favilla: set token first")
+            return
+        }
+        val sessionId = sessionIdOverride ?: FloatingService.sessionId ?: ("weread-" + System.currentTimeMillis())
+        lifecycleScope.launch {
+            CaptureClient.send(
+                serverUrl = serverUrl,
+                token = token,
+                text = text,
+                source = "$sourceTag:readalong",
+                tags = listOf("interaction", "weread", phase),
+                kind = "interaction",
+                interaction = "weread",
+                sessionId = sessionId,
+                phase = phase,
+            )
+        }
     }
 
     private fun toast(msg: String) =

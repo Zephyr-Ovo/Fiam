@@ -150,6 +150,12 @@ class Conductor:
                     logger.error("on_drift callback failed", exc_info=True)
         self._last_vec = vec
 
+        # Interaction windows (readalong, calls, games, phone chats) are
+        # time-sensitive activity streams. Keep drift detection, but do not
+        # let them create automatic memory-event cuts.
+        if self._no_event_cut(beat):
+            return None
+
         # 4. Feed gorge + track beat
         self._beat_buf.append(beat)
         cut = self._gorge.push(vec)
@@ -157,6 +163,15 @@ class Conductor:
             return self._flush_segment(cut)
 
         return None
+
+    @staticmethod
+    def _no_event_cut(beat: Beat) -> bool:
+        meta = beat.meta or {}
+        return bool(
+            meta.get("no_event_cut")
+            or meta.get("kind") == "interaction"
+            or meta.get("interaction")
+        )
 
     def receive(
         self,
@@ -168,15 +183,30 @@ class Conductor:
         """Receive an external message: create beat, process, return event_id or None."""
         if t is None:
             t = datetime.now(timezone.utc)
+        meta = meta or {}
         beat = Beat(
             t=t,
-            text=text,
+            text=self._format_external_text(text, source, meta),
             source=source,
             user=self.user_status,
             ai=self.ai_status,
-            meta=meta or {},
+            meta=meta,
         )
         return self._ingest_beat(beat)
+
+    def _format_external_text(self, text: str, source: str, meta: dict) -> str:
+        speaker = str(meta.get("speaker") or "").strip()
+        if not speaker:
+            if source in {"favilla", "app", "webapp"}:
+                speaker = (self.config.user_name or "zephyr").strip()
+            elif source in {"schedule", "limen", "xiao", "ring"}:
+                speaker = source
+            else:
+                speaker = str(meta.get("from_name") or source).strip()
+        clean = text.strip()
+        if clean.startswith(f"{speaker}:") or clean.startswith(f"{speaker}："):
+            return clean
+        return f"{speaker.lower()}：{clean}"
 
     def receive_cc(
         self,
@@ -194,6 +224,8 @@ class Conductor:
             jsonl_path, byte_offset,
             user_status=self.user_status,
             ai_status=self.ai_status,
+            user_name=getattr(self.config, "user_name", "") or "zephyr",
+            ai_name=getattr(self.config, "ai_name", "") or "ai",
         )
         results = []
         for beat in beats:

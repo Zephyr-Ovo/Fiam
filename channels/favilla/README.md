@@ -14,8 +14,9 @@
 
 1. 装 APK（见下）
 2. 打开 Favilla → 填 Server URL（`https://fiet.cc`）+ Ingest Token → Save
-3. Test 按钮确认握手 OK
+3. Stats 按钮确认 token 和服务状态 OK（不会写入 flow，也不会唤醒 AI）
 4. 以后在任何 app 里：长按文字 → 选 Send to fiam
+5. 共读时点 Start readalong，选中文本后点悬浮按钮；结束时点 End readalong
 
 ## 构建
 
@@ -34,8 +35,19 @@ POST body:
   "text": "required string",
   "source": "android",
   "tags": ["optional"],
-  "url": "optional"
+  "url": "optional",
+  "kind": "interaction",
+  "interaction": "weread",
+  "session_id": "optional",
+  "phase": "start|end|optional"
 }
+```
+
+Status check:
+
+```http
+GET /api/app/status
+X-Fiam-Token: <ingest token from server env>
 ```
 
 Headers:

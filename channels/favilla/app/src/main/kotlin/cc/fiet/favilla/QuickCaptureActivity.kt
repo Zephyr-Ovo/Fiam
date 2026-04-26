@@ -124,6 +124,9 @@ class QuickCaptureActivity : AppCompatActivity() {
                 text = text,
                 source = "$sourceTag:bubble",
                 tags = extraTags,
+                kind = "interaction",
+                interaction = "weread",
+                sessionId = FloatingService.sessionId,
             )
             Toast.makeText(
                 applicationContext,

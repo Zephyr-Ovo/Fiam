@@ -463,7 +463,7 @@ def _api_capture(payload: dict) -> dict:
     bridge for clients that can't speak MQTT (e.g. the Android app).
 
     Expected payload keys: text (required), source (optional),
-    url (optional), tags (optional list).
+    url (optional), tags (optional list), kind/interaction/session_id/meta.
     """
     if not _CONFIG:
         raise RuntimeError("config not loaded")
@@ -472,6 +472,11 @@ def _api_capture(payload: dict) -> dict:
         raise ValueError("missing text")
     source = (payload.get("source") or "favilla").strip()
     url = (payload.get("url") or "").strip()
+    meta = dict(payload.get("meta") or {})
+    for key in ("kind", "interaction", "session_id", "phase"):
+        value = payload.get(key)
+        if value not in (None, "", []):
+            meta[key] = value
     from fiam.plugins import is_receive_enabled
     if not is_receive_enabled(_CONFIG, "favilla"):
         raise RuntimeError("favilla plugin disabled")
@@ -485,11 +490,46 @@ def _api_capture(payload: dict) -> dict:
         "from_name": source,
         "url": url,
         "tags": payload.get("tags") or [],
+        "kind": meta.get("kind"),
+        "interaction": meta.get("interaction"),
+        "session_id": meta.get("session_id"),
+        "phase": meta.get("phase"),
+        "meta": meta,
         "t": datetime.now(timezone.utc),
     })
     if not ok:
         raise RuntimeError("publish rejected")
     return {"ok": True, "queued": True}
+
+
+def _api_app_status() -> dict:
+    status = _api_status()
+    flow_count = 0
+    thinking_count = 0
+    interaction_count = 0
+    if _CONFIG and _CONFIG.flow_path.exists():
+        try:
+            for line in _CONFIG.flow_path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                flow_count += 1
+                obj = json.loads(line)
+                meta = obj.get("meta") or {}
+                if meta.get("kind") == "thinking":
+                    thinking_count += 1
+                if meta.get("kind") == "interaction" or meta.get("interaction"):
+                    interaction_count += 1
+        except Exception:
+            pass
+    return {
+        "daemon": status.get("daemon"),
+        "events": status.get("events"),
+        "embeddings": status.get("embeddings"),
+        "flow_beats": flow_count,
+        "thinking_beats": thinking_count,
+        "interaction_beats": interaction_count,
+        "home": status.get("home"),
+    }
 
 
 # ------------------------------------------------------------------
@@ -838,6 +878,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # Strip query string
         raw = self.path
         path = raw.split("?")[0]
+
+        if path == "/api/app/status":
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            self._serve_json(_api_app_status())
+            return
 
         # /login?token=<view_token> → set cookie + redirect to /
         if path == "/login":

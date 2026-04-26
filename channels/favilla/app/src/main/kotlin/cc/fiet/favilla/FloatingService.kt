@@ -35,11 +35,10 @@ class FloatingService : Service() {
     override fun onCreate() {
         super.onCreate()
         wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        // A new bubble session = a new conversation boundary. Every capture
-        // sent while this service is alive carries the same session tag so the
-        // server (or later batching) can group them into one fiam event.
-        sessionId = java.util.UUID.randomUUID().toString().substring(0, 8) +
-            "-" + (System.currentTimeMillis() / 1000).toString()
+        // A new bubble lifetime is an interaction window. Captures share this
+        // session id so the server can keep them together without event-cutting.
+        sessionId = pendingSessionId ?: newSessionId()
+        pendingSessionId = null
         startInForeground()
         addBubble()
     }
@@ -150,13 +149,20 @@ class FloatingService : Service() {
         /**
          * Non-null while the floating bubble is active. All captures sent
          * during the same bubble lifetime share this id; toggling the bubble
-         * off = closing the conversation (the event boundary).
+         * off = closing the interaction window.
          */
         @Volatile
         var sessionId: String? = null
             private set
 
-        fun start(ctx: Context) {
+        @Volatile
+        private var pendingSessionId: String? = null
+
+        fun newSessionId(): String = java.util.UUID.randomUUID().toString().substring(0, 8) +
+            "-" + (System.currentTimeMillis() / 1000).toString()
+
+        fun start(ctx: Context, sessionId: String? = null) {
+            pendingSessionId = sessionId
             val i = Intent(ctx, FloatingService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ctx.startForegroundService(i)
             else ctx.startService(i)

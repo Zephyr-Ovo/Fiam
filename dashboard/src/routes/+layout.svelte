@@ -35,7 +35,7 @@
 	<header
 		class="border-b border-[var(--color-surface0)] px-4 py-2 flex items-center gap-4 bg-[var(--color-mantle)]"
 	>
-		<span class="font-mono text-sm text-[var(--color-mauve)]">fiam</span>
+		<span class="font-mono text-sm text-[var(--color-mauve)]">ℱ fiam</span>
 		<nav class="flex gap-3 text-sm text-[var(--color-subtext1)]">
 			<a href="/" class="hover:text-[var(--color-lavender)]">overview</a>
 			<a href="/events" class="hover:text-[var(--color-lavender)]">events</a>

@@ -3,9 +3,11 @@
     <string name="app_name">Favilla</string>
     <string name="capture_label">🐦‍⬛</string>
     <string name="tagline">a spark → fiam</string>
-    <string name="usage_hint">1) Grant "display over other apps" permission. 2) Enable the Favilla accessibility service (silent, no audio). 3) Start the bubble. Then: (optionally) select text in any app → tap the crow → a compose dialog shows the quote and an input box. Starting or stopping the bubble marks a conversation boundary. Double-tap the bubble to dismiss it.</string>
+    <string name="usage_hint">1) Grant "display over other apps" permission. 2) Enable the Favilla accessibility service (silent, no audio). 3) Start readalong or start the bubble. Then: select text in any app → tap the crow → a compose dialog shows the quote and an input box. Double-tap the bubble to dismiss it.</string>
     <string name="btn_start_bubble">Start bubble</string>
     <string name="btn_stop_bubble">Stop bubble</string>
+    <string name="btn_start_readalong">Start readalong</string>
+    <string name="btn_end_readalong">End readalong</string>
     <string name="need_overlay_perm">Grant "Display over other apps" for Favilla first.</string>
     <string name="notif_channel_name">Favilla bubble</string>
     <string name="notif_running">Favilla is watching. Tap crow → capture selection.</string>
