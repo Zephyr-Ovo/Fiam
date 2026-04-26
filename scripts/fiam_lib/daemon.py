@@ -605,6 +605,7 @@ def cmd_start(args: argparse.Namespace) -> None:
     projects_dir = _claude_projects_dir()
     sanitized = _sanitize_home_path(config.home_path)
     jsonl_dir = projects_dir / sanitized
+    daemon_started_at = time.time()
 
     def _current_jsonl_mtime() -> float:
         if not jsonl_dir.is_dir():
@@ -618,6 +619,22 @@ def cmd_start(args: argparse.Namespace) -> None:
     active = False
     idle_timeout = config.idle_timeout_minutes * 60
     poll_interval = config.poll_interval_seconds
+
+    def _seed_jsonl_cursor_to_present() -> None:
+        if not jsonl_dir.is_dir():
+            return
+        cursor = _load_cursor(code_path)
+        changed = False
+        for jf in jsonl_dir.glob("*.jsonl"):
+            try:
+                stat = jf.stat()
+            except FileNotFoundError:
+                continue
+            if stat.st_mtime <= daemon_started_at:
+                cursor[jf.name] = {"byte_offset": stat.st_size, "mtime": stat.st_mtime}
+                changed = True
+        if changed:
+            _save_cursor(code_path, cursor)
 
     # Live recall: conductor fires on_drift → _refresh_recall (above)
     # Regex to strip daemon wake signal tags from user text
@@ -665,8 +682,11 @@ def cmd_start(args: argparse.Namespace) -> None:
                 jf_mtime = jf.stat().st_mtime
             except FileNotFoundError:
                 continue
-            if jf_mtime < entry["mtime"]:
+            entry_mtime = float(entry.get("mtime", 0.0))
+            if jf_mtime < entry_mtime:
                 entry["byte_offset"] = 0
+            elif jf_mtime <= entry_mtime:
+                continue
 
             results, new_offset = _conductor.receive_cc(jf, entry["byte_offset"])
             n_beats = len(results)
@@ -751,6 +771,7 @@ def cmd_start(args: argparse.Namespace) -> None:
         except Exception:
             pass  # non-critical
 
+    _seed_jsonl_cursor_to_present()
     _log_action("start", "daemon initialized")
     _write_daemon_state()
 
