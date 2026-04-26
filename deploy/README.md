@@ -58,6 +58,7 @@ sudo setfacl -m u:caddy:--x /home/fiet   # allow Caddy to traverse to dashboard/
 sudo systemctl reload caddy
 
 # 7. Start the dashboard backend under systemd
+grep -q '^FIAM_INGEST_TOKEN=' ~/fiam-code/.env || printf '\nFIAM_INGEST_TOKEN=%s\n' "$(openssl rand -hex 32)" >> ~/fiam-code/.env
 sudo cp ~/fiam-code/deploy/fiam-dashboard.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now fiam-dashboard
