@@ -26,16 +26,25 @@
 
     <!-- Hub -->
     <string name="hub_title">Hub</string>
-    <string name="hub_section_stickers">Stickers</string>
+    <string name="hub_section_quick">Quick markers</string>
+    <string name="hub_quick_hint">One tap drops a marker into the flow. Use these to tag context the AI should notice.</string>
     <string name="hub_section_images">Images</string>
     <string name="hub_section_voice">Voice note</string>
     <string name="hub_section_ai">AI control</string>
-    <string name="hub_voice_hint">Hold to record, release to send.</string>
+    <string name="hub_voice_hint">Hold to record. Audio is transcribed via STT and enters the flow as a text beat.</string>
     <string name="hub_ai_hint">Hand the phone to the AI via accessibility bridge.</string>
     <string name="hub_ai_toggle">Allow AI to control this phone</string>
-    <string name="hub_no_stickers">No stickers yet. Drop PNG files into assets/stickers/.</string>
     <string name="hub_no_images">No images yet. Pick from gallery to send.</string>
     <string name="hub_pick_image">Pick from gallery</string>
+    <string name="hub_image_hint">Pictures get described by the vision model (configured in Settings) and the description enters the flow as an action. Raw image is not sent to the main AI.</string>
+    <string name="qa_home">回家</string>
+    <string name="qa_calendar">日程</string>
+    <string name="qa_clock">计时</string>
+    <string name="qa_book">阅读</string>
+    <string name="qa_todo">待办</string>
+    <string name="qa_watch">运动</string>
+    <string name="qa_dashboard">状态</string>
+    <string name="qa_apps_add">更多</string>
 
     <!-- Stats -->
     <string name="stats_title">Stats</string>
@@ -54,6 +63,17 @@
     <string name="more_section_server">Server</string>
     <string name="more_section_perm">Permissions</string>
     <string name="more_section_capture">Capture &amp; readalong</string>
+    <string name="more_section_vision">Vision API (image understanding)</string>
+    <string name="more_section_voice">Voice channels (STT &amp; TTS)</string>
+    <string name="more_vision_hint">Pictures are described here, not sent to the main AI. Saves tokens. Leave blank to fall back to default routing on the server.</string>
+    <string name="more_voice_hint">STT turns voice notes into text beats. TTS feeds the wandering channel where the AI speaks aloud through this device.</string>
+    <string name="more_vision_url">Vision API base URL</string>
+    <string name="more_vision_key">Vision API key</string>
+    <string name="more_vision_model">Vision model (e.g. gpt-4o-mini, qwen-vl)</string>
+    <string name="more_stt_url">STT base URL</string>
+    <string name="more_stt_key">STT key</string>
+    <string name="more_tts_url">TTS base URL</string>
+    <string name="more_tts_key">TTS key</string>
     <string name="more_save">Save</string>
     <string name="more_backend_cc">Claude Code</string>
     <string name="more_backend_api">Custom API</string>

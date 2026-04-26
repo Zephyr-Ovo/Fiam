@@ -22,6 +22,13 @@ import cc.fiet.favilla.Prefs.customApiUrl
 import cc.fiet.favilla.Prefs.ingestToken
 import cc.fiet.favilla.Prefs.serverUrl
 import cc.fiet.favilla.Prefs.sourceTag
+import cc.fiet.favilla.Prefs.sttApiKey
+import cc.fiet.favilla.Prefs.sttApiUrl
+import cc.fiet.favilla.Prefs.ttsApiKey
+import cc.fiet.favilla.Prefs.ttsApiUrl
+import cc.fiet.favilla.Prefs.visionApiKey
+import cc.fiet.favilla.Prefs.visionApiUrl
+import cc.fiet.favilla.Prefs.visionModel
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.textfield.TextInputEditText
 import kotlinx.coroutines.launch
@@ -47,6 +54,13 @@ class MoreFragment : Fragment() {
         val etToken: TextInputEditText = view.findViewById(R.id.etToken)
         val etSource: TextInputEditText = view.findViewById(R.id.etSource)
         val etCustom: TextInputEditText = view.findViewById(R.id.etCustomApiUrl)
+        val etVisionUrl: TextInputEditText = view.findViewById(R.id.etVisionUrl)
+        val etVisionKey: TextInputEditText = view.findViewById(R.id.etVisionKey)
+        val etVisionModel: TextInputEditText = view.findViewById(R.id.etVisionModel)
+        val etSttUrl: TextInputEditText = view.findViewById(R.id.etSttUrl)
+        val etSttKey: TextInputEditText = view.findViewById(R.id.etSttKey)
+        val etTtsUrl: TextInputEditText = view.findViewById(R.id.etTtsUrl)
+        val etTtsKey: TextInputEditText = view.findViewById(R.id.etTtsKey)
         val rg: RadioGroup = view.findViewById(R.id.rgBackend)
         val rbCc: RadioButton = view.findViewById(R.id.rbBackendCc)
         val rbApi: RadioButton = view.findViewById(R.id.rbBackendApi)
@@ -55,6 +69,13 @@ class MoreFragment : Fragment() {
         etToken.setText(ctx.ingestToken)
         etSource.setText(ctx.sourceTag)
         etCustom.setText(ctx.customApiUrl)
+        etVisionUrl.setText(ctx.visionApiUrl)
+        etVisionKey.setText(ctx.visionApiKey)
+        etVisionModel.setText(ctx.visionModel)
+        etSttUrl.setText(ctx.sttApiUrl)
+        etSttKey.setText(ctx.sttApiKey)
+        etTtsUrl.setText(ctx.ttsApiUrl)
+        etTtsKey.setText(ctx.ttsApiKey)
         if (ctx.chatBackend == "api") rbApi.isChecked = true else rbCc.isChecked = true
 
         view.findViewById<MaterialButton>(R.id.btnSave).setOnClickListener {
@@ -62,6 +83,13 @@ class MoreFragment : Fragment() {
             ctx.ingestToken = etToken.text.toString()
             ctx.sourceTag = etSource.text.toString()
             ctx.customApiUrl = etCustom.text.toString()
+            ctx.visionApiUrl = etVisionUrl.text.toString()
+            ctx.visionApiKey = etVisionKey.text.toString()
+            ctx.visionModel = etVisionModel.text.toString()
+            ctx.sttApiUrl = etSttUrl.text.toString()
+            ctx.sttApiKey = etSttKey.text.toString()
+            ctx.ttsApiUrl = etTtsUrl.text.toString()
+            ctx.ttsApiKey = etTtsKey.text.toString()
             ctx.chatBackend = if (rbApi.isChecked) "api" else "cc"
             Toast.makeText(ctx, "saved", Toast.LENGTH_SHORT).show()
         }

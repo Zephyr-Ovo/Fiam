@@ -133,7 +133,7 @@
 
         <Space android:layout_width="match_parent" android:layout_height="@dimen/space_16" />
 
-        <!-- Stickers card -->
+        <!-- Quick markers card -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -144,24 +144,25 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="@string/hub_section_stickers"
+                android:text="@string/hub_section_quick"
                 android:textAppearance="@style/TextAppearance.Favilla.Title" />
 
             <TextView
-                android:id="@+id/tvStickersEmpty"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:paddingTop="@dimen/space_8"
-                android:text="@string/hub_no_stickers"
+                android:paddingTop="@dimen/space_4"
+                android:paddingBottom="@dimen/space_12"
+                android:text="@string/hub_quick_hint"
                 android:textAppearance="@style/TextAppearance.Favilla.Body"
                 android:textColor="@color/ink_muted" />
 
-            <androidx.recyclerview.widget.RecyclerView
-                android:id="@+id/rvStickers"
+            <GridLayout
+                android:id="@+id/gridQuick"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:paddingTop="@dimen/space_12"
-                android:visibility="gone" />
+                android:columnCount="4"
+                android:rowCount="2"
+                android:useDefaultMargins="false" />
         </LinearLayout>
 
         <Space android:layout_width="match_parent" android:layout_height="@dimen/space_16" />
@@ -197,6 +198,14 @@
                 android:text="@string/hub_pick_image"
                 app:icon="@drawable/ic_attach"
                 app:iconGravity="textStart" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingTop="@dimen/space_12"
+                android:text="@string/hub_image_hint"
+                android:textAppearance="@style/TextAppearance.Favilla.Meta"
+                android:textColor="@color/ink_faint" />
         </LinearLayout>
     </LinearLayout>
 </ScrollView>
