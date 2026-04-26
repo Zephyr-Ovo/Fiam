@@ -25,6 +25,22 @@
         <item name="bottomNavigationStyle">@style/Widget.Favilla.BottomNav</item>
         <item name="android:fontFamily">@font/anthropic_sans</item>
         <item name="fontFamily">@font/anthropic_sans</item>
+        <!-- force Material3 widgets to use our TextAppearance.Favilla.* (Anthropic Sans EN, system CJK fallback) -->
+        <item name="textAppearanceDisplayLarge">@style/TextAppearance.Favilla.Display</item>
+        <item name="textAppearanceDisplayMedium">@style/TextAppearance.Favilla.Display</item>
+        <item name="textAppearanceDisplaySmall">@style/TextAppearance.Favilla.Display</item>
+        <item name="textAppearanceHeadlineLarge">@style/TextAppearance.Favilla.Display</item>
+        <item name="textAppearanceHeadlineMedium">@style/TextAppearance.Favilla.Display</item>
+        <item name="textAppearanceHeadlineSmall">@style/TextAppearance.Favilla.Title</item>
+        <item name="textAppearanceTitleLarge">@style/TextAppearance.Favilla.Title</item>
+        <item name="textAppearanceTitleMedium">@style/TextAppearance.Favilla.Title</item>
+        <item name="textAppearanceTitleSmall">@style/TextAppearance.Favilla.Title</item>
+        <item name="textAppearanceBodyLarge">@style/TextAppearance.Favilla.Body</item>
+        <item name="textAppearanceBodyMedium">@style/TextAppearance.Favilla.Body</item>
+        <item name="textAppearanceBodySmall">@style/TextAppearance.Favilla.Body</item>
+        <item name="textAppearanceLabelLarge">@style/TextAppearance.Favilla.Body</item>
+        <item name="textAppearanceLabelMedium">@style/TextAppearance.Favilla.Body</item>
+        <item name="textAppearanceLabelSmall">@style/TextAppearance.Favilla.Meta</item>
     </style>
 
     <style name="Theme.Favilla.Transparent" parent="Theme.Favilla">
@@ -110,12 +126,13 @@
         <item name="android:lineSpacingMultiplier">1.4</item>
     </style>
 
+    <!-- assistant bubble: Source Han Serif SC (思源宋体), covers CJK + Latin -->
     <style name="TextAppearance.Favilla.Chat.Assistant" parent="TextAppearance.Material3.BodyLarge">
         <item name="android:textColor">@color/bubble_assistant_text</item>
         <item name="android:textSize">@dimen/text_chat</item>
-        <item name="android:fontFamily">@font/anthropic_serif_italic</item>
-        <item name="fontFamily">@font/anthropic_serif_italic</item>
-        <item name="android:lineSpacingMultiplier">1.45</item>
+        <item name="android:fontFamily">@font/noto_serif_sc</item>
+        <item name="fontFamily">@font/noto_serif_sc</item>
+        <item name="android:lineSpacingMultiplier">1.5</item>
     </style>
 
     <style name="TextAppearance.Favilla.Chat.User" parent="TextAppearance.Material3.BodyLarge">

@@ -1,6 +1,6 @@
 id = "tg"
 name = "Telegram bridge"
-enabled = true
+enabled = false
 status = "legacy_keep"
 kind = "channel"
 description = "Temporary Telegram channel until the self app/web route replaces daily chat."
