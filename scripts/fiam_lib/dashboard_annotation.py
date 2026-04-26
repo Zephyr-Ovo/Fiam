@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from fiam_lib.flow_text import normalize_beats
+
 _ROOT: Path | None = None
 _CONFIG: Any = None
 _POOL: Any = None
@@ -141,6 +143,8 @@ def annotate_request(payload: dict) -> dict:
 
 	if not beats:
 		raise ValueError("no beats to annotate")
+
+	beats = normalize_beats(beats, config=_CONFIG, root=_ROOT)
 
 	cuts = [0] * max(0, len(beats) - 1)
 	drift_cuts = [0] * max(0, len(beats) - 1)

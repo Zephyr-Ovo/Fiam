@@ -1,4 +1,4 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
-	<rect width="128" height="128" rx="24" fill="#11111b"/>
-	<text x="64" y="88" text-anchor="middle" font-size="88" font-family="Cambria Math, STIX Two Math, Times New Roman, serif" fill="#cba6f7">ℱ</text>
+	<rect width="128" height="128" rx="20" fill="#ffffff"/>
+	<text x="64" y="88" text-anchor="middle" font-size="88" font-family="Cambria Math, STIX Two Math, Times New Roman, serif" fill="#000000">ℱ</text>
 </svg>

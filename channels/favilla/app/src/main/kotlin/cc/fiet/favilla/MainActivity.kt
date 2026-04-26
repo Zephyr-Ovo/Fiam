@@ -8,15 +8,23 @@ import android.view.View
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
+import cc.fiet.favilla.Prefs.chatBackend
+import cc.fiet.favilla.Prefs.customApiUrl
 import cc.fiet.favilla.Prefs.ingestToken
 import cc.fiet.favilla.Prefs.serverUrl
 import cc.fiet.favilla.Prefs.sourceTag
 import cc.fiet.favilla.databinding.ActivityMainBinding
 import kotlinx.coroutines.launch
+import java.util.UUID
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var b: ActivityMainBinding
+    private val chatLog = StringBuilder()
+    private val chatSessionId: String by lazy {
+        "app-" + UUID.randomUUID().toString().substring(0, 8) +
+            "-" + (System.currentTimeMillis() / 1000).toString()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -26,18 +34,21 @@ class MainActivity : AppCompatActivity() {
         b.etUrl.setText(serverUrl)
         b.etToken.setText(ingestToken)
         b.etSource.setText(sourceTag)
+        b.etCustomApiUrl.setText(customApiUrl)
+        if (chatBackend == "api") b.rbBackendApi.isChecked = true else b.rbBackendCc.isChecked = true
+        resetChatLog()
 
         b.btnSave.setOnClickListener {
-            serverUrl = b.etUrl.text.toString()
-            ingestToken = b.etToken.text.toString()
-            sourceTag = b.etSource.text.toString()
+            saveSettings()
             toast("saved")
         }
 
+        b.btnSendChat.setOnClickListener {
+            sendChatMessage()
+        }
+
         b.btnTest.setOnClickListener {
-            serverUrl = b.etUrl.text.toString()
-            ingestToken = b.etToken.text.toString()
-            sourceTag = b.etSource.text.toString()
+            saveSettings()
             b.btnTest.isEnabled = false
             b.tvStatus.text = "loading stats..."
             lifecycleScope.launch {
@@ -51,9 +62,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         b.btnStartReadalong.setOnClickListener {
-            serverUrl = b.etUrl.text.toString()
-            ingestToken = b.etToken.text.toString()
-            sourceTag = b.etSource.text.toString()
+            saveSettings()
             if (ingestToken.isBlank()) {
                 toast("Favilla: set token first")
                 return@setOnClickListener
@@ -69,9 +78,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         b.btnEndReadalong.setOnClickListener {
-            serverUrl = b.etUrl.text.toString()
-            ingestToken = b.etToken.text.toString()
-            sourceTag = b.etSource.text.toString()
+            saveSettings()
             val sessionId = FloatingService.sessionId
             sendInteractionPhase("end", "结束共读", sessionId)
             FloatingService.stop(this)
@@ -134,6 +141,73 @@ class MainActivity : AppCompatActivity() {
             contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
         ).orEmpty()
         return enabled.split(':').any { it.equals(want, ignoreCase = true) }
+    }
+
+    private fun saveSettings() {
+        serverUrl = b.etUrl.text.toString()
+        ingestToken = b.etToken.text.toString()
+        sourceTag = b.etSource.text.toString()
+        customApiUrl = b.etCustomApiUrl.text.toString()
+        chatBackend = if (b.rbBackendApi.isChecked) "api" else "cc"
+    }
+
+    private fun resetChatLog() {
+        chatLog.clear()
+        chatLog.append("Fiet: ready.")
+        b.tvChatLog.text = chatLog.toString()
+    }
+
+    private fun appendChat(speaker: String, text: String) {
+        if (chatLog.isNotEmpty()) chatLog.append("\n\n")
+        chatLog.append(speaker).append(": ").append(text.trim())
+        b.tvChatLog.text = chatLog.toString()
+    }
+
+    private fun sendChatMessage() {
+        saveSettings()
+        val text = b.etChatMessage.text.toString().trim()
+        if (text.isBlank()) return
+        val backend = chatBackend
+        if (backend == "cc" && ingestToken.isBlank()) {
+            toast("Favilla: set token first")
+            return
+        }
+        if (backend == "api" && customApiUrl.isBlank()) {
+            toast("Favilla: set custom API URL first")
+            return
+        }
+        appendChat("Zephyr", text)
+        b.etChatMessage.setText("")
+        b.btnSendChat.isEnabled = false
+        b.tvStatus.text = "sending to $backend..."
+        lifecycleScope.launch {
+            val result = if (backend == "api") {
+                CaptureClient.chatCustom(
+                    endpointUrl = customApiUrl,
+                    token = ingestToken,
+                    text = text,
+                    source = sourceTag,
+                    sessionId = chatSessionId,
+                )
+            } else {
+                CaptureClient.chatCc(
+                    serverUrl = serverUrl,
+                    token = ingestToken,
+                    text = text,
+                    source = sourceTag,
+                    sessionId = chatSessionId,
+                )
+            }
+            if (result.ok) {
+                result.recall?.let { appendChat("Fiet recall", it) }
+                appendChat("Fiet", result.reply.ifBlank { "(no text returned)" })
+                b.tvStatus.text = "sent via $backend"
+            } else {
+                appendChat("Favilla", "send failed: ${result.error ?: "unknown error"}")
+                b.tvStatus.text = "send failed"
+            }
+            b.btnSendChat.isEnabled = true
+        }
     }
 
     private fun sendInteractionPhase(phase: String, text: String, sessionIdOverride: String? = null) {

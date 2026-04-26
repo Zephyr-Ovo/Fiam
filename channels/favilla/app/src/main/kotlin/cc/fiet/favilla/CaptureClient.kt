@@ -8,6 +8,12 @@ import java.net.URL
 
 data class CaptureResult(val ok: Boolean, val queued: Boolean, val id: String?, val error: String?)
 data class AppStatusResult(val ok: Boolean, val summary: String, val error: String?)
+data class ChatResult(
+    val ok: Boolean,
+    val reply: String,
+    val recall: String?,
+    val error: String?,
+)
 
 object CaptureClient {
     suspend fun send(
@@ -41,7 +47,7 @@ object CaptureClient {
             doOutput = true
             setRequestProperty("Content-Type", "application/json")
             setRequestProperty("X-Fiam-Token", token)
-            setRequestProperty("User-Agent", "favilla/0.1 (Android)")
+            setRequestProperty("User-Agent", "favilla/0.2 (Android)")
         }
         try {
             conn.outputStream.use { it.write(body) }
@@ -95,6 +101,71 @@ object CaptureClient {
             }
         } catch (e: Exception) {
             AppStatusResult(false, "", e.message ?: e.javaClass.simpleName)
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    suspend fun chatCc(
+        serverUrl: String,
+        token: String,
+        text: String,
+        source: String,
+        sessionId: String,
+    ): ChatResult = withContext(Dispatchers.IO) {
+        val body = JSONObject().apply {
+            put("backend", "cc")
+            put("text", text)
+            put("source", source)
+            put("session_id", sessionId)
+        }
+        postChat(URL(serverUrl.trimEnd('/') + "/api/app/chat"), token, body)
+    }
+
+    suspend fun chatCustom(
+        endpointUrl: String,
+        token: String,
+        text: String,
+        source: String,
+        sessionId: String,
+    ): ChatResult = withContext(Dispatchers.IO) {
+        if (endpointUrl.isBlank()) return@withContext ChatResult(false, "", null, "Custom API URL is empty")
+        val body = JSONObject().apply {
+            put("text", text)
+            put("source", source)
+            put("session_id", sessionId)
+        }
+        postChat(URL(endpointUrl.trim()), token, body)
+    }
+
+    private fun postChat(endpoint: URL, token: String, body: JSONObject): ChatResult {
+        val conn = (endpoint.openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 10_000
+            readTimeout = 260_000
+            doOutput = true
+            setRequestProperty("Content-Type", "application/json")
+            if (token.isNotBlank()) setRequestProperty("X-Fiam-Token", token)
+            setRequestProperty("User-Agent", "favilla/0.1 (Android)")
+        }
+        return try {
+            conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+            val code = conn.responseCode
+            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+            val resp = stream?.bufferedReader()?.use { it.readText() } ?: ""
+            if (code in 200..299) {
+                val json = JSONObject(resp)
+                ChatResult(
+                    ok = json.optBoolean("ok", true),
+                    reply = json.optString("reply", json.optString("text", "")),
+                    recall = json.optString("recall", "").takeIf { it.isNotBlank() },
+                    error = null,
+                )
+            } else {
+                ChatResult(false, "", null, "HTTP $code: $resp")
+            }
+        } catch (e: Exception) {
+            ChatResult(false, "", null, e.message ?: e.javaClass.simpleName)
         } finally {
             conn.disconnect()
         }

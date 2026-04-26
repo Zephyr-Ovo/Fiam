@@ -40,6 +40,7 @@ from fiam_lib.dashboard_annotation import (
     annotate_proposal as _annotate_proposal,
     annotate_request as _annotate_request,
 )
+from fiam_lib.flow_text import normalize_beats
 
 # Fix sys.path: add src/, remove scripts/ (fiam.py shadows fiam package)
 _src_dir = str(_ROOT / "src")
@@ -532,6 +533,116 @@ def _api_app_status() -> dict:
     }
 
 
+def _api_app_chat(payload: dict) -> dict:
+    if not _CONFIG:
+        raise RuntimeError("config not loaded")
+    text = str(payload.get("text") or "").strip()
+    if not text:
+        raise ValueError("missing text")
+    source = str(payload.get("source") or "favilla").strip() or "favilla"
+    backend = str(payload.get("backend") or "cc").strip().lower() or "cc"
+    if backend != "cc":
+        raise ValueError("server chat backend must be cc")
+    return _run_cc_app_chat(text=text, source=source)
+
+
+def _run_cc_app_chat(*, text: str, source: str) -> dict:
+    import subprocess
+
+    pending_recall = _pending_recall_for_app()
+    session = _load_app_active_session()
+    command = [
+        "claude", "-p", f"[app:{source}] {text}",
+        "--output-format", "json",
+        "--max-turns", "10",
+    ]
+    if _CONFIG.cc_model:
+        command.extend(["--model", _CONFIG.cc_model])
+    if _CONFIG.cc_disallowed_tools:
+        command.extend([
+            "--disallowedTools",
+            *[tool.strip() for tool in _CONFIG.cc_disallowed_tools.split(",") if tool.strip()],
+        ])
+    if session:
+        command.extend(["--resume", session["session_id"]])
+
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=240,
+            cwd=str(_CONFIG.home_path),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("claude chat timeout") from exc
+    except FileNotFoundError as exc:
+        raise RuntimeError("claude not found on server PATH") from exc
+
+    try:
+        data = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        detail = (result.stderr or result.stdout or "").strip()[:500]
+        raise RuntimeError(f"bad claude json: {detail}") from exc
+
+    session_id = str(data.get("session_id") or "").strip()
+    if session_id:
+        _save_app_active_session(session_id)
+
+    if result.returncode != 0 and data.get("subtype") != "error_max_turns":
+        detail = (data.get("error") or result.stderr or result.stdout or "claude failed")
+        raise RuntimeError(str(detail).strip()[:500])
+
+    reply = str(data.get("result") or "").strip()
+    return {
+        "ok": True,
+        "backend": "cc",
+        "reply": reply,
+        "recall": pending_recall,
+        "session_id": session_id,
+        "subtype": data.get("subtype"),
+        "cost_usd": data.get("total_cost_usd", 0),
+    }
+
+
+def _load_app_active_session() -> dict | None:
+    path = _CONFIG.active_session_path
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    session_id = str(data.get("session_id") or "").strip()
+    return data if session_id else None
+
+
+def _save_app_active_session(session_id: str) -> None:
+    path = _CONFIG.active_session_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "session_id": session_id,
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def _pending_recall_for_app(max_chars: int = 1400) -> str:
+    if not _CONFIG:
+        return ""
+    dirty = _CONFIG.home_path / ".recall_dirty"
+    recall_path = _CONFIG.background_path
+    if not dirty.exists() or not recall_path.exists():
+        return ""
+    try:
+        text = recall_path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+    if len(text) > max_chars:
+        return text[: max_chars - 1] + "…"
+    return text
+
+
 # ------------------------------------------------------------------
 # Pool-based APIs
 # ------------------------------------------------------------------
@@ -751,6 +862,7 @@ def _api_flow(offset: int = 0, limit: int = 50) -> dict:
             beats.append(json.loads(line))
         except json.JSONDecodeError:
             continue
+    beats = normalize_beats(beats, config=_CONFIG, root=_ROOT)
     return {"beats": beats, "offset": start, "total": total}
 
 
@@ -949,6 +1061,35 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 self._serve_json({"error": str(e)}, status=400)
                 return
             except Exception as e:
+                self._serve_json({"error": str(e)}, status=500)
+                return
+            self._serve_json(result)
+            return
+
+        if path == "/api/app/chat":
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = 0
+            if length <= 0 or length > 64 * 1024:
+                self._serve_json({"error": "bad length"}, status=400)
+                return
+            try:
+                body = self.rfile.read(length).decode("utf-8")
+                payload = json.loads(body)
+            except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                self._serve_json({"error": f"bad json: {e}"}, status=400)
+                return
+            try:
+                result = _api_app_chat(payload)
+            except ValueError as e:
+                self._serve_json({"error": str(e)}, status=400)
+                return
+            except Exception as e:
+                logger.exception("app chat error")
                 self._serve_json({"error": str(e)}, status=500)
                 return
             self._serve_json(result)
