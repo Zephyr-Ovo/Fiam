@@ -741,6 +741,9 @@ def cmd_start(args: argparse.Namespace) -> None:
         except Exception:
             pass  # non-critical
 
+    _log_action("start", "daemon initialized")
+    _write_daemon_state()
+
     last_replay_check: float = 0.0
     replay_interval = 30 * 60  # memory replay every 30 minutes when idle
 
