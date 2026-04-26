@@ -114,4 +114,4 @@ Custom API URL is called directly by the app. It receives `text`, `source`, and 
 
 ## Icon
 
-The app icon and avatar use the user-provided `avatar_ai.png` peach spark. Adaptive foreground assets are padded for Android's safe zone; legacy launcher PNGs are generated at density-correct sizes.
+The launcher icon uses the appicon artwork. Adaptive foreground assets are padded for Android's safe zone; legacy launcher PNGs are generated at density-correct sizes. `avatar_ai.png` is used only inside the app as the AI avatar.
