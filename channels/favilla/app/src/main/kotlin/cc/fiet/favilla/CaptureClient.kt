@@ -6,7 +6,7 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 
-data class CaptureResult(val ok: Boolean, val id: String?, val error: String?)
+data class CaptureResult(val ok: Boolean, val queued: Boolean, val id: String?, val error: String?)
 
 object CaptureClient {
     suspend fun send(
@@ -41,12 +41,17 @@ object CaptureClient {
             val resp = stream?.bufferedReader()?.use { it.readText() } ?: ""
             if (code in 200..299) {
                 val j = JSONObject(resp)
-                CaptureResult(true, j.optString("id", null), null)
+                CaptureResult(
+                    ok = true,
+                    queued = j.optBoolean("queued", false),
+                    id = j.optString("id", "").takeIf { it.isNotBlank() },
+                    error = null,
+                )
             } else {
-                CaptureResult(false, null, "HTTP $code: $resp")
+                CaptureResult(false, false, null, "HTTP $code: $resp")
             }
         } catch (e: Exception) {
-            CaptureResult(false, null, e.message ?: e.javaClass.simpleName)
+            CaptureResult(false, false, null, e.message ?: e.javaClass.simpleName)
         } finally {
             conn.disconnect()
         }

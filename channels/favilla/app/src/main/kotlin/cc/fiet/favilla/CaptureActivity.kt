@@ -40,9 +40,15 @@ class CaptureActivity : AppCompatActivity() {
                 text = text.trim(),
                 source = sourceTag,
             )
-            toast(if (r.ok) "Favilla ✓ ${r.id ?: ""}" else "Favilla ✗ ${r.error ?: "failed"}")
+            toast(if (r.ok) okToast(r) else "Favilla ✗ ${r.error ?: "failed"}")
             finish()
         }
+    }
+
+    private fun okToast(r: CaptureResult): String = when {
+        r.id != null -> "Favilla ✓ ${r.id}"
+        r.queued -> "Favilla ✓ queued"
+        else -> "Favilla ✓"
     }
 
     private fun extractText(i: Intent?): String? {

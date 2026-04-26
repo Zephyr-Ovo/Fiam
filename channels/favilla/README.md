@@ -8,7 +8,7 @@
 
 - **PROCESS_TEXT intent**：在系统文本选中菜单里加一项 "Send to fiam"
 - **SEND intent**：在任何 app 的"分享到…"里出现 Favilla
-- 选中 → POST 到 `{server}/api/capture` → fiam pipeline 接管 → 事件落入图谱
+- 选中 → POST 到 `{server}/api/capture` → MQTT `fiam/receive/favilla` → daemon 写入 flow
 
 ## 首次使用
 

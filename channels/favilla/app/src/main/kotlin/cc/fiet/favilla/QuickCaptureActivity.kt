@@ -127,12 +127,18 @@ class QuickCaptureActivity : AppCompatActivity() {
             )
             Toast.makeText(
                 applicationContext,
-                if (r.ok) "Favilla ✓ ${r.id ?: ""}" else "Favilla ✗ ${r.error ?: "failed"}",
+                if (r.ok) okToast(r) else "Favilla ✗ ${r.error ?: "failed"}",
                 Toast.LENGTH_SHORT,
             ).show()
             if (r.ok && tag != "typed") FavillaAccessibilityService.clearCache()
             finish()
         }
+    }
+
+    private fun okToast(r: CaptureResult): String = when {
+        r.id != null -> "Favilla ✓ ${r.id}"
+        r.queued -> "Favilla ✓ queued"
+        else -> "Favilla ✓"
     }
 
     companion object {

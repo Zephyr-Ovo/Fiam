@@ -50,7 +50,11 @@ class MainActivity : AppCompatActivity() {
                     source = sourceTag,
                     tags = listOf("self-test"),
                 )
-                b.tvStatus.text = if (r.ok) "✓ event id: ${r.id}" else "✗ ${r.error}"
+                b.tvStatus.text = if (r.ok) {
+                    if (r.queued) "✓ queued" else "✓ ${r.id ?: "ok"}"
+                } else {
+                    "✗ ${r.error}"
+                }
                 b.btnTest.isEnabled = true
             }
         }
