@@ -606,7 +606,15 @@ def cmd_start(args: argparse.Namespace) -> None:
     sanitized = _sanitize_home_path(config.home_path)
     jsonl_dir = projects_dir / sanitized
 
-    last_activity: float = 0.0
+    def _current_jsonl_mtime() -> float:
+        if not jsonl_dir.is_dir():
+            return 0.0
+        try:
+            return max((p.stat().st_mtime for p in jsonl_dir.glob("*.jsonl")), default=0.0)
+        except OSError:
+            return 0.0
+
+    last_activity: float = _current_jsonl_mtime()
     active = False
     idle_timeout = config.idle_timeout_minutes * 60
     poll_interval = config.poll_interval_seconds
