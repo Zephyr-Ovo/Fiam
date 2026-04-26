@@ -30,7 +30,7 @@ fiet.cc, www.fiet.cc {
 	# @blocked not remote_ip 1.2.3.4 5.6.7.8
 	# respond @blocked 403
 
-	basicauth * {
+	basic_auth * {
 		iris  $2a$14$REPLACE_WITH_HASH_FROM_caddy_hash_password
 		ai    $2a$14$REPLACE_WITH_HASH_FROM_caddy_hash_password
 		fiet  $2a$14$REPLACE_WITH_HASH_FROM_caddy_hash_password
@@ -51,8 +51,5 @@ fiet.cc, www.fiet.cc {
 		file_server
 	}
 
-	log {
-		output file /var/log/caddy/fiet.cc.log
-		format console
-	}
+	# Access logs go to the caddy systemd journal by default.
 }
