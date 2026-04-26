@@ -2,7 +2,7 @@
 <menu xmlns:android="http://schemas.android.com/apk/res/android">
     <item
         android:id="@+id/nav_home"
-        android:icon="@drawable/ic_home"
+        android:icon="@drawable/ic_nav_home"
         android:title="@string/nav_home" />
     <item
         android:id="@+id/nav_chat"
@@ -14,7 +14,7 @@
         android:title="@string/nav_reading" />
     <item
         android:id="@+id/nav_dashboard"
-        android:icon="@drawable/ic_dashboard"
+        android:icon="@drawable/ic_nav_dashboard"
         android:title="@string/nav_dashboard" />
     <item
         android:id="@+id/nav_stroll"
