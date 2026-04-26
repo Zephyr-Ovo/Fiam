@@ -154,6 +154,22 @@ class FiamConfig:
     graph_edge_api_key_env: str = "FIAM_GRAPH_API_KEY"
 
     # ------------------------------------------------------------------
+    # Multimodal routing
+    # ------------------------------------------------------------------
+    vision_provider: str = "openai_compatible"
+    vision_model: str = "gpt-4o-mini"
+    vision_base_url: str = ""
+    vision_api_key_env: str = "FIAM_VISION_API_KEY"
+    stt_provider: str = "openai_compatible"
+    stt_model: str = "whisper-1"
+    stt_base_url: str = ""
+    stt_api_key_env: str = "FIAM_STT_API_KEY"
+    tts_provider: str = "openai_compatible"
+    tts_model: str = "gpt-4o-mini-tts"
+    tts_base_url: str = ""
+    tts_api_key_env: str = "FIAM_TTS_API_KEY"
+
+    # ------------------------------------------------------------------
     # Debug
     # ------------------------------------------------------------------
     debug_mode: bool = False
@@ -443,6 +459,24 @@ class FiamConfig:
             f'edge_base_url = "{self.graph_edge_base_url}"',
             f'edge_api_key_env = "{self.graph_edge_api_key_env}"',
             "",
+            "[vision]",
+            f'provider = "{self.vision_provider}"',
+            f'model = "{self.vision_model}"',
+            f'base_url = "{self.vision_base_url}"',
+            f'api_key_env = "{self.vision_api_key_env}"',
+            "",
+            "[voice.stt]",
+            f'provider = "{self.stt_provider}"',
+            f'model = "{self.stt_model}"',
+            f'base_url = "{self.stt_base_url}"',
+            f'api_key_env = "{self.stt_api_key_env}"',
+            "",
+            "[voice.tts]",
+            f'provider = "{self.tts_provider}"',
+            f'model = "{self.tts_model}"',
+            f'base_url = "{self.tts_base_url}"',
+            f'api_key_env = "{self.tts_api_key_env}"',
+            "",
             "[comms]",
             f'tg_bot_token_env = "{self.tg_bot_token_env}"',
             f'tg_chat_id = "{self.tg_chat_id}"',
@@ -472,6 +506,10 @@ class FiamConfig:
         graph = raw.get("graph", {})
         conductor_cfg = raw.get("conductor", {})
         mqtt_cfg = raw.get("mqtt", {})
+        vision = raw.get("vision", {})
+        voice = raw.get("voice", {})
+        stt = voice.get("stt", {}) if isinstance(voice, dict) else {}
+        tts = voice.get("tts", {}) if isinstance(voice, dict) else {}
 
         return cls(
             home_path=home_path,
@@ -542,6 +580,19 @@ class FiamConfig:
             graph_edge_model=graph.get("edge_model", cls.graph_edge_model),
             graph_edge_base_url=graph.get("edge_base_url", cls.graph_edge_base_url),
             graph_edge_api_key_env=graph.get("edge_api_key_env", cls.graph_edge_api_key_env),
+            # Multimodal routing
+            vision_provider=vision.get("provider", cls.vision_provider),
+            vision_model=vision.get("model", cls.vision_model),
+            vision_base_url=vision.get("base_url", cls.vision_base_url),
+            vision_api_key_env=vision.get("api_key_env", cls.vision_api_key_env),
+            stt_provider=stt.get("provider", cls.stt_provider),
+            stt_model=stt.get("model", cls.stt_model),
+            stt_base_url=stt.get("base_url", cls.stt_base_url),
+            stt_api_key_env=stt.get("api_key_env", cls.stt_api_key_env),
+            tts_provider=tts.get("provider", cls.tts_provider),
+            tts_model=tts.get("model", cls.tts_model),
+            tts_base_url=tts.get("base_url", cls.tts_base_url),
+            tts_api_key_env=tts.get("api_key_env", cls.tts_api_key_env),
             # Communication
             tg_bot_token_env=comm.get("tg_bot_token_env", cls.tg_bot_token_env),
             tg_chat_id=str(comm.get("tg_chat_id", "")),

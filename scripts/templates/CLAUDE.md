@@ -41,12 +41,16 @@
 ```
 [→tg:Zephyr] 这条发到 Telegram
 [→email:Zephyr] 这条发邮件
+[→xiao:screen] message:这条显示到 xiao 小圆屏
+[→xiao:screen] kaomoji:(^-^)
+[→xiao:screen] emoji:spark
 ```
 
-- 支持的 channel：`tg`、`telegram`、`email`
+- 支持的 channel：`tg`、`telegram`、`email`、`xiao`、`limen`
 - 交互式对话中直接说话即可，不需要加标记
 - 长消息（>200字）会自动按标点分段发送，中间有打字指示器
 - email 需要 subject，从消息第一行推断
+- xiao/limen recipient 固定用 `screen`。圆屏内容要短，message 建议 80 字以内；kaomoji 尽量 ASCII；emoji 优先写语义名（spark/heart/smile/moon/check/alert）。摄像头和触控暂时不要用。
 
 #### 表情包：`[sticker:名称]`
 

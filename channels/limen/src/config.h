@@ -10,8 +10,9 @@
 #endif
 
 // ---- Fiam API ----
-#define CAPTURE_HOST "fiet.cc"
-#define CAPTURE_PORT 8766
+#ifndef FIAM_BASE_URL
+#define FIAM_BASE_URL "https://fiet.cc"
+#endif
 #define CAPTURE_PATH "/api/capture"
 #define WEARABLE_REPLY_PATH "/api/wearable/reply"
 
@@ -25,6 +26,6 @@
 #define CAMERA_FRAME_SIZE FRAMESIZE_VGA  // 640x480, good balance of quality vs upload speed
 
 // ---- Behavior ----
-#define CAPTURE_INTERVAL_MS  300000  // Auto-capture every 5 min (0 = manual only)
-#define REPLY_POLL_INTERVAL_MS 15000 // Poll for Fiet reply every 15s
+#define CAPTURE_INTERVAL_MS  0       // Camera/touch are deferred; screen-only today.
+#define DISPLAY_POLL_INTERVAL_MS 3000 // Poll display queue every 3s
 #define DISPLAY_TIMEOUT_MS  30000    // Dim screen after 30s idle

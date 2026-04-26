@@ -3,6 +3,8 @@
     <string name="app_name">Favilla</string>
     <string name="capture_label">🐦‍⬛</string>
     <string name="tagline">a spark → fiam</string>
+    <string name="splash_line_default">今天也一起散步</string>
+    <string name="stroll_label">散步</string>
 
     <!-- Bottom nav -->
     <string name="nav_chat">Chat</string>
@@ -66,7 +68,7 @@
     <string name="more_section_vision">Vision API (image understanding)</string>
     <string name="more_section_voice">Voice channels (STT &amp; TTS)</string>
     <string name="more_vision_hint">Pictures are described here, not sent to the main AI. Saves tokens. Leave blank to fall back to default routing on the server.</string>
-    <string name="more_voice_hint">STT turns voice notes into text beats. TTS feeds the wandering channel where the AI speaks aloud through this device.</string>
+    <string name="more_voice_hint">STT turns voice notes into text beats. TTS feeds stroll mode, where the AI speaks aloud through this device.</string>
     <string name="more_vision_url">Vision API base URL</string>
     <string name="more_vision_key">Vision API key</string>
     <string name="more_vision_model">Vision model (e.g. gpt-4o-mini, qwen-vl)</string>
@@ -92,9 +94,9 @@
 
     <!-- Notifications -->
     <string name="notif_channel_name">Favilla bubble</string>
-    <string name="notif_channel_replies">Fiet replies</string>
+    <string name="notif_channel_replies">Assistant replies</string>
     <string name="notif_running">Favilla is watching. Tap crow → capture selection.</string>
-    <string name="notif_reply_title">Fiet</string>
+    <string name="notif_reply_title">Assistant</string>
 
     <!-- Accessibility / capture -->
     <string name="usage_hint">1) Grant overlay. 2) Enable accessibility. 3) Start readalong or bubble. Tap the crow on selected text.</string>

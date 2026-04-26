@@ -1,6 +1,6 @@
 # Limen
 
-Fiet's physical perception anchor — a wearable pin that lets AI see the world.
+Fiet's physical perception anchor — a wearable pin that gives AI a tiny physical surface.
 
 ## Hardware
 
@@ -10,10 +10,13 @@ Fiet's physical perception anchor — a wearable pin that lets AI see the world.
 
 ## What it does
 
-1. Captures photos via onboard camera
-2. Uploads to fiam `/api/capture` over WiFi
-3. Displays Fiet's replies on screen
-4. Touch/button triggers on-demand capture
+Current screen-first build:
+
+1. Connects to WiFi
+2. Polls fiam `/api/wearable/reply`
+3. Displays `message`, `kaomoji`, or `emoji` commands on the round screen
+
+Camera and touch are present in hardware but intentionally deferred.
 
 ## Build
 
@@ -30,17 +33,23 @@ pio device monitor       # serial log
 
 Edit `src/config.h`:
 - WiFi SSID/password
-- Server host/port/token
+- `FIAM_BASE_URL` (default `https://fiet.cc`)
+- `FIAM_TOKEN` (same ingest token used by Favilla)
 
 ## Architecture
 
 ```
-Limen (XIAO) ──WiFi──► ISP /api/capture (image + metadata)
-                        │
-                        ▼
-                   fiam daemon → Fiet processes → outbox/TG
-                        │
-Limen (XIAO) ◄──WiFi── GET /api/wearable/reply
+Fiet response ──[→xiao:screen]──► daemon/conductor ──MQTT──► dashboard queue
+                                                                   │
+Limen (XIAO) ◄────────────── WiFi GET /api/wearable/reply ◄────────┘
+```
+
+Screen command examples:
+
+```text
+[→xiao:screen] message:I'm here.
+[→xiao:screen] kaomoji:(^-^)
+[→xiao:screen] emoji:spark
 ```
 
 Limen is a standalone client. It does not run Python or fiam code.

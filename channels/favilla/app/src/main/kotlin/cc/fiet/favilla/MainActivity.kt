@@ -69,7 +69,7 @@ class MainActivity : AppCompatActivity() {
                     REPLY_CHANNEL_ID,
                     getString(R.string.notif_channel_replies),
                     NotificationManager.IMPORTANCE_DEFAULT,
-                ).apply { description = "Fiet's replies when chat is in background." },
+                ).apply { description = "Assistant replies when chat is in background." },
             )
         }
     }

@@ -8,6 +8,7 @@ import java.net.URL
 
 data class CaptureResult(val ok: Boolean, val queued: Boolean, val id: String?, val error: String?)
 data class AppStatusResult(val ok: Boolean, val summary: String, val error: String?)
+data class SplashResult(val ok: Boolean, val line: String, val error: String?)
 data class ChatResult(
     val ok: Boolean,
     val reply: String,
@@ -67,6 +68,32 @@ object CaptureClient {
             }
         } catch (e: Exception) {
             CaptureResult(false, false, null, e.message ?: e.javaClass.simpleName)
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    suspend fun appSplash(serverUrl: String, token: String): SplashResult = withContext(Dispatchers.IO) {
+        val endpoint = URL(serverUrl.trimEnd('/') + "/api/app/splash")
+        val conn = (endpoint.openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 800
+            readTimeout = 900
+            setRequestProperty("X-Fiam-Token", token)
+            setRequestProperty("User-Agent", "favilla/0.3 (Android)")
+        }
+        try {
+            val code = conn.responseCode
+            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+            val resp = stream?.bufferedReader()?.use { it.readText() } ?: ""
+            if (code in 200..299) {
+                val j = JSONObject(resp)
+                SplashResult(true, j.optString("line", ""), null)
+            } else {
+                SplashResult(false, "", "HTTP $code: $resp")
+            }
+        } catch (e: Exception) {
+            SplashResult(false, "", e.message ?: e.javaClass.simpleName)
         } finally {
             conn.disconnect()
         }

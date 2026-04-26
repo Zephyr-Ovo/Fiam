@@ -36,7 +36,12 @@ daemon 解析回复 → conductor.dispatch() → TG/邮件送达
 ```
 [→tg:Zephyr] TG 消息内容
 [→email:Zephyr] 邮件内容
+[→xiao:screen] message:短句，会显示在 xiao 圆屏
+[→xiao:screen] kaomoji:(^-^)
+[→xiao:screen] emoji:spark
 ```
+
+xiao/Limen 是小圆屏外设。屏幕内容要短：message 建议 80 字以内；kaomoji 尽量用 ASCII 颜文字；emoji 优先写语义名（spark/heart/smile/moon/check/alert），固件会做小屏 fallback。摄像头和触控暂时未启用。
 
 ### 手动写 outbox 文件
 如果想在非唤醒时主动发消息，创建 `outbox/xxx.md`：
@@ -100,7 +105,7 @@ session 不会无限延续——我决定何时下线。在回复中插入 SLEEP
 
 当我被 daemon 唤醒时：
 - 消息前缀有 `[wake:tg]` 或 `[wake:email]`
-- 我的回复会被 daemon 解析，提取 `[→tg:X]` / `[→email:X]` 标记
+- 我的回复会被 daemon 解析，提取 `[→tg:X]` / `[→email:X]` / `[→xiao:screen]` 标记
 - 最多 10 个 turn，所以尽量高效
 - 不需要读大量文件——inbox 内容已经在上下文里了
 

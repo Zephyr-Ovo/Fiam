@@ -66,6 +66,28 @@ edge_model = "deepseek-chat"
 edge_base_url = "https://api.deepseek.com"
 edge_api_key_env = "FIAM_GRAPH_API_KEY"
 
+[vision]
+# Image understanding is deliberately routed away from the main AI.
+# The vision model returns text; that text enters flow as kind=action.
+provider = "openai_compatible"
+model = "gpt-4o-mini"                # e.g. qwen-vl, gemini-2.0-flash via compatible proxy, etc.
+base_url = ""
+api_key_env = "FIAM_VISION_API_KEY"
+
+[voice.stt]
+# Voice notes are transcribed and then treated like ordinary text beats.
+provider = "openai_compatible"
+model = "whisper-1"
+base_url = ""
+api_key_env = "FIAM_STT_API_KEY"
+
+[voice.tts]
+# Stroll mode may speak aloud through an attached app/device.
+provider = "openai_compatible"
+model = "gpt-4o-mini-tts"
+base_url = ""
+api_key_env = "FIAM_TTS_API_KEY"
+
 [communication]
 tg_bot_token_env = "FIAM_TG_BOT_TOKEN"   # env var name (never put token directly in config)
 tg_chat_id = ""                            # your Telegram user/chat ID

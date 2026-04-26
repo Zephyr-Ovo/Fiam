@@ -2,8 +2,25 @@
 
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+#include <ArduinoJson.h>
 #include "config.h"
 #include "esp_camera.h"
+
+struct DisplayCommand {
+    bool hasMessage = false;
+    String type = "message";
+    String text = "";
+    int ttlMs = DISPLAY_TIMEOUT_MS;
+};
+
+bool beginHttp(HTTPClient& http, WiFiClientSecure& secure, const String& url) {
+    if (url.startsWith("https://")) {
+        secure.setInsecure();
+        return http.begin(secure, url);
+    }
+    return http.begin(url);
+}
 
 bool wifiConnect() {
     WiFi.begin(WIFI_SSID, WIFI_PASS);
@@ -29,8 +46,9 @@ int uploadCapture(camera_fb_t* fb, const char* source) {
     if (!fb || !fb->buf) return -1;
 
     HTTPClient http;
-    String url = String("http://") + CAPTURE_HOST + ":" + CAPTURE_PORT + CAPTURE_PATH;
-    http.begin(url);
+    WiFiClientSecure secure;
+    String url = String(FIAM_BASE_URL) + CAPTURE_PATH;
+    if (!beginHttp(http, secure, url)) return -1;
     http.addHeader("X-Fiam-Token", FIAM_TOKEN);
 
     // Build multipart body
@@ -67,21 +85,30 @@ int uploadCapture(camera_fb_t* fb, const char* source) {
     return code;
 }
 
-// Poll Fiet's reply for display on screen
-// Returns reply text, empty string if none
-String pollReply() {
-    if (WiFi.status() != WL_CONNECTED) return "";
+// Poll next display command for the round screen.
+DisplayCommand pollDisplayCommand() {
+    DisplayCommand cmd;
+    if (WiFi.status() != WL_CONNECTED) return cmd;
 
     HTTPClient http;
-    String url = String("http://") + CAPTURE_HOST + ":" + CAPTURE_PORT + WEARABLE_REPLY_PATH;
-    http.begin(url);
+    WiFiClientSecure secure;
+    String url = String(FIAM_BASE_URL) + WEARABLE_REPLY_PATH;
+    if (!beginHttp(http, secure, url)) return cmd;
     http.addHeader("X-Fiam-Token", FIAM_TOKEN);
 
     int code = http.GET();
-    String result = "";
+    String body = "";
     if (code == 200) {
-        result = http.getString();
+        body = http.getString();
+        JsonDocument doc;
+        DeserializationError err = deserializeJson(doc, body);
+        if (!err) {
+            cmd.hasMessage = doc["has_message"] | false;
+            cmd.type = String((const char*) (doc["type"] | "message"));
+            cmd.text = String((const char*) (doc["text"] | ""));
+            cmd.ttlMs = doc["ttl_ms"] | DISPLAY_TIMEOUT_MS;
+        }
     }
     http.end();
-    return result;
+    return cmd;
 }

@@ -31,6 +31,7 @@ _POOL = None        # Pool instance (lazy)
 _EMBEDDER = None    # Embedder instance (lazy)
 _BUS = None         # Bus instance (lazy, for /api/capture publishing)
 _COMPUTE_LOCK = threading.Lock()  # gate concurrent mutations
+_WEARABLE_LOCK = threading.Lock()
 
 from fiam_lib.dashboard_annotation import (
     configure as _configure_annotation,
@@ -98,14 +99,154 @@ def _get_bus():
     try:
         from fiam.bus import Bus
         _BUS = Bus(client_id="fiam-dashboard")
+        _BUS.subscribe("fiam/dispatch/xiao", _on_wearable_dispatch)
+        _BUS.subscribe("fiam/dispatch/limen", _on_wearable_dispatch)
         _BUS.connect(_CONFIG.mqtt_host, _CONFIG.mqtt_port, _CONFIG.mqtt_keepalive)
         _BUS.loop_start()
         logger.info("bus connected to %s:%d", _CONFIG.mqtt_host, _CONFIG.mqtt_port)
         return _BUS
     except Exception as exc:
-        logger.warning("bus init failed (capture disabled): %s", exc)
+        logger.warning("bus init failed (capture/wearable disabled): %s", exc)
         _BUS = None
         return None
+
+
+def _wearable_queue_path() -> Path:
+    base = (_CONFIG.store_dir if _CONFIG else (_ROOT / "store")) / "wearable"
+    base.mkdir(parents=True, exist_ok=True)
+    return base / "xiao_queue.jsonl"
+
+
+def _splash_line() -> str:
+    if not _CONFIG:
+        return "今天也一起散步"
+    daily = _CONFIG.daily_summary_path
+    if daily.exists():
+        for line in daily.read_text(encoding="utf-8", errors="replace").splitlines():
+            clean = line.strip().lstrip("#- ").strip()
+            if clean:
+                return clean[:80]
+    return "今天也一起散步"
+
+
+def _api_app_splash() -> dict:
+    return {
+        "ok": True,
+        "mode": "stroll",
+        "label": "散步",
+        "tagline": "a spark → fiam",
+        "line": _splash_line(),
+    }
+
+
+def _vision_route() -> dict:
+    if not _CONFIG:
+        return {"provider": "default", "model": "", "base_url": ""}
+    return {
+        "provider": getattr(_CONFIG, "vision_provider", "openai_compatible"),
+        "model": getattr(_CONFIG, "vision_model", ""),
+        "base_url": getattr(_CONFIG, "vision_base_url", ""),
+        "api_key_env": getattr(_CONFIG, "vision_api_key_env", "FIAM_VISION_API_KEY"),
+    }
+
+
+def _voice_routes() -> dict:
+    if not _CONFIG:
+        return {"stt": {}, "tts": {}}
+    return {
+        "stt": {
+            "provider": getattr(_CONFIG, "stt_provider", "openai_compatible"),
+            "model": getattr(_CONFIG, "stt_model", ""),
+            "base_url": getattr(_CONFIG, "stt_base_url", ""),
+            "api_key_env": getattr(_CONFIG, "stt_api_key_env", "FIAM_STT_API_KEY"),
+        },
+        "tts": {
+            "provider": getattr(_CONFIG, "tts_provider", "openai_compatible"),
+            "model": getattr(_CONFIG, "tts_model", ""),
+            "base_url": getattr(_CONFIG, "tts_base_url", ""),
+            "api_key_env": getattr(_CONFIG, "tts_api_key_env", "FIAM_TTS_API_KEY"),
+        },
+    }
+
+
+def _display_type_from_text(text: str, explicit: str = "") -> tuple[str, str]:
+    raw = (text or "").strip()
+    prefix, sep, rest = raw.partition(":")
+    if sep and prefix.strip().lower() in {"message", "msg", "kaomoji", "emoji", "status"}:
+        explicit = prefix.strip().lower()
+        raw = rest.strip()
+    kind = (explicit or "").strip().lower()
+    aliases = {"msg": "message", "text": "message", "face": "kaomoji"}
+    kind = aliases.get(kind, kind)
+    if kind not in {"message", "kaomoji", "emoji", "status"}:
+        if len(raw) <= 12 and any(ch in raw for ch in "()_^;><=-~*"):
+            kind = "kaomoji"
+        elif len(raw) <= 8 and any(ord(ch) > 0x2600 for ch in raw):
+            kind = "emoji"
+        else:
+            kind = "message"
+    return kind, raw[:240]
+
+
+def _normalize_wearable_payload(payload: dict) -> dict:
+    text = str(payload.get("text") or payload.get("body") or "").strip()
+    if not text:
+        raise ValueError("missing text")
+    explicit = str(payload.get("type") or payload.get("display_type") or "")
+    kind, text = _display_type_from_text(text, explicit)
+    recipient = str(payload.get("recipient") or "screen").strip() or "screen"
+    now = datetime.now(timezone.utc).isoformat()
+    return {
+        "id": f"xiao-{int(time.time() * 1000)}",
+        "t": now,
+        "recipient": recipient,
+        "type": kind,
+        "text": text,
+        "ttl_ms": int(payload.get("ttl_ms") or 30000),
+        "source": str(payload.get("source") or "dispatch"),
+    }
+
+
+def _enqueue_wearable_message(payload: dict) -> dict:
+    item = _normalize_wearable_payload(payload)
+    path = _wearable_queue_path()
+    with _WEARABLE_LOCK:
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(item, ensure_ascii=False) + "\n")
+    return {"ok": True, "queued": True, "id": item["id"], "type": item["type"]}
+
+
+def _api_wearable_reply() -> dict:
+    path = _wearable_queue_path()
+    with _WEARABLE_LOCK:
+        rows: list[dict] = []
+        if path.exists():
+            for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+        item = rows[0] if rows else None
+        rest = rows[1:] if rows else []
+        path.write_text(
+            "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rest),
+            encoding="utf-8",
+        )
+    if item is None:
+        return {"ok": True, "has_message": False}
+    return {"ok": True, "has_message": True, **item}
+
+
+def _on_wearable_dispatch(target: str, payload: dict) -> None:
+    try:
+        enriched = dict(payload)
+        enriched.setdefault("source", f"dispatch/{target}")
+        _enqueue_wearable_message(enriched)
+        logger.info("wearable queued target=%s type=%s", target, enriched.get("type", "message"))
+    except Exception:
+        logger.error("wearable dispatch failed target=%s payload=%r", target, payload, exc_info=True)
 
 
 def _pipeline_tail(n: int = 40) -> str:
@@ -365,6 +506,11 @@ def _api_config() -> dict:
     return {
         "memory_mode": _CONFIG.memory_mode,
         "annotation": _annotation_state(),
+        "multimodal": {
+            "vision": _vision_route(),
+            "voice": _voice_routes(),
+            "stroll": {"internal_name": "stroll", "label": "散步"},
+        },
     }
 
 
@@ -474,23 +620,29 @@ def _api_capture(payload: dict) -> dict:
     source = (payload.get("source") or "favilla").strip()
     url = (payload.get("url") or "").strip()
     meta = dict(payload.get("meta") or {})
+    tags = payload.get("tags") or []
     for key in ("kind", "interaction", "session_id", "phase"):
         value = payload.get(key)
         if value not in (None, "", []):
             meta[key] = value
+    if any(str(tag).lower() in {"image", "vision", "vision_pending"} for tag in tags):
+        meta.setdefault("kind", "action")
+        meta["route"] = "vision"
+        meta["vision"] = _vision_route()
     from fiam.plugins import is_receive_enabled
-    if not is_receive_enabled(_CONFIG, "favilla"):
-        raise RuntimeError("favilla plugin disabled")
+    receive_source = source.lower() if source.lower() in {"xiao", "limen"} else "favilla"
+    if not is_receive_enabled(_CONFIG, receive_source):
+        raise RuntimeError(f"{receive_source} plugin disabled")
 
     bus = _get_bus()
     if bus is None:
         raise RuntimeError("MQTT bus unavailable")
-    ok = bus.publish_receive("favilla", {
+    ok = bus.publish_receive(receive_source, {
         "text": text,
-        "source": "favilla",
+        "source": receive_source,
         "from_name": source,
         "url": url,
-        "tags": payload.get("tags") or [],
+        "tags": tags,
         "kind": meta.get("kind"),
         "interaction": meta.get("interaction"),
         "session_id": meta.get("session_id"),
@@ -993,11 +1145,25 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         raw = self.path
         path = raw.split("?")[0]
 
+        if path == "/api/app/splash":
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            self._serve_json(_api_app_splash())
+            return
+
         if path == "/api/app/status":
             if not _ingest_token_ok(self):
                 self._serve_json({"error": "unauthorized"}, status=401)
                 return
             self._serve_json(_api_app_status())
+            return
+
+        if path == "/api/wearable/reply":
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            self._serve_json(_api_wearable_reply())
             return
 
         # /login?token=<view_token> → set cookie + redirect to /
@@ -1092,6 +1258,34 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return
             except Exception as e:
                 logger.exception("app chat error")
+                self._serve_json({"error": str(e)}, status=500)
+                return
+            self._serve_json(result)
+            return
+
+        if path == "/api/wearable/message":
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = 0
+            if length <= 0 or length > 16 * 1024:
+                self._serve_json({"error": "bad length"}, status=400)
+                return
+            try:
+                body = self.rfile.read(length).decode("utf-8")
+                payload = json.loads(body)
+                result = _enqueue_wearable_message(payload)
+            except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                self._serve_json({"error": f"bad json: {e}"}, status=400)
+                return
+            except ValueError as e:
+                self._serve_json({"error": str(e)}, status=400)
+                return
+            except Exception as e:
+                logger.exception("wearable message error")
                 self._serve_json({"error": str(e)}, status=500)
                 return
             self._serve_json(result)
@@ -1326,6 +1520,7 @@ def main():
     args = parser.parse_args()
 
     _load_config()
+    _get_bus()
     import os
     if not os.environ.get("FIAM_VIEW_TOKEN"):
         print("WARN: FIAM_VIEW_TOKEN not set — direct GET requests will return 401 unless proxied by Caddy auth.",
