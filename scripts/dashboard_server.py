@@ -729,6 +729,7 @@ def _ingest_token_ok(handler) -> bool:
 
 def _viewer_token_ok(handler) -> bool:
     """Auth for dashboard viewing. Accepts FIAM_VIEW_TOKEN via:
+    0. Header  X-Forwarded-User   (trusted local Caddy basic-auth proxy)
     1. Cookie  fiam_view=<token>   (set by /login redirect)
     2. Query   ?token=<token>       (one-shot, used by /login)
     3. Header  X-Fiam-View-Token    (programmatic clients)
@@ -736,6 +737,9 @@ def _viewer_token_ok(handler) -> bool:
     """
     import os
     import hmac
+    forwarded_user = handler.headers.get("X-Forwarded-User", "").lower()
+    if forwarded_user in {"iris", "ai", "fiet"}:
+        return True
     expected = os.environ.get("FIAM_VIEW_TOKEN", "")
     if not expected:
         return False
@@ -1134,7 +1138,7 @@ def main():
     _load_config()
     import os
     if not os.environ.get("FIAM_VIEW_TOKEN"):
-        print("WARN: FIAM_VIEW_TOKEN not set — all GET requests will return 401.",
+        print("WARN: FIAM_VIEW_TOKEN not set — direct GET requests will return 401 unless proxied by Caddy auth.",
               file=sys.stderr)
     server = HTTPServer((args.bind, args.port), DashboardHandler)
     print(f"Dashboard: http://{args.bind}:{args.port}/")
