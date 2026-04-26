@@ -15,7 +15,7 @@ ExecStart=/home/fiet/fiam-code/.venv/bin/python /home/fiet/fiam-code/scripts/fia
 Restart=on-failure
 RestartSec=10
 KillSignal=SIGTERM
-TimeoutStopSec=120
+TimeoutStopSec=20
 StandardOutput=journal
 StandardError=journal
 
