@@ -17,8 +17,10 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# src/ must stay before scripts/ because scripts/fiam.py shadows the fiam package.
+_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(_ROOT / "scripts"))
+sys.path.insert(0, str(_ROOT / "src"))
 
 from fiam.bus import Bus, DISPATCH_PREFIX  # noqa: E402
 from fiam.plugins import is_dispatch_enabled, is_receive_enabled  # noqa: E402
