@@ -30,7 +30,8 @@ fiet.cc, www.fiet.cc {
 	# @blocked not remote_ip 1.2.3.4 5.6.7.8
 	# respond @blocked 403
 
-	basic_auth * {
+	@protected not path /.well-known/acme-challenge/*
+	basic_auth @protected {
 		iris  $2a$14$REPLACE_WITH_HASH_FROM_caddy_hash_password
 		ai    $2a$14$REPLACE_WITH_HASH_FROM_caddy_hash_password
 		fiet  $2a$14$REPLACE_WITH_HASH_FROM_caddy_hash_password
