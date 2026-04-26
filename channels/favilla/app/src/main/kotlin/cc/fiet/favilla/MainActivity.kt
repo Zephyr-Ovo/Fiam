@@ -32,14 +32,14 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (savedInstanceState == null) {
-            showFragment(R.id.nav_chat)
-            b.bottomNav.selectedItemId = R.id.nav_chat
+            showFragment(R.id.nav_home)
+            b.navRail.selectedItemId = R.id.nav_home
         }
 
-        b.bottomNav.setOnItemSelectedListener { item ->
+        b.navRail.setOnItemSelectedListener { item ->
             showFragment(item.itemId); true
         }
-        b.bottomNav.setOnItemReselectedListener { /* no-op */ }
+        b.navRail.setOnItemReselectedListener { /* no-op */ }
     }
 
     private fun showFragment(id: Int) {
@@ -49,10 +49,15 @@ class MainActivity : AppCompatActivity() {
         if (current?.tag == tag) return
         val next = fm.findFragmentByTag(tag) ?: when (id) {
             R.id.nav_chat -> ChatFragment()
-            R.id.nav_hub -> HubFragment()
-            R.id.nav_stats -> StatsFragment()
-            R.id.nav_more -> MoreFragment()
-            else -> ChatFragment()
+            R.id.nav_phone -> HubFragment()              // Phone control reuses Hub for now
+            R.id.nav_settings -> MoreFragment()          // Settings == old More
+            R.id.nav_home -> PlaceholderFragment.newInstance(getString(R.string.nav_home))
+            R.id.nav_reading -> PlaceholderFragment.newInstance(getString(R.string.nav_reading))
+            R.id.nav_dashboard -> PlaceholderFragment.newInstance(getString(R.string.nav_dashboard))
+            R.id.nav_stroll -> PlaceholderFragment.newInstance(getString(R.string.nav_stroll))
+            R.id.nav_reminder -> PlaceholderFragment.newInstance(getString(R.string.nav_reminder))
+            R.id.nav_history -> PlaceholderFragment.newInstance(getString(R.string.nav_history))
+            else -> PlaceholderFragment.newInstance(getString(R.string.nav_home))
         }
         fm.beginTransaction()
             .setReorderingAllowed(true)

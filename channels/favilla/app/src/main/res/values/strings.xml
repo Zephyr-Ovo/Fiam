@@ -7,10 +7,22 @@
     <string name="stroll_label">散步</string>
 
     <!-- Bottom nav -->
+    <string name="nav_home">Home</string>
     <string name="nav_chat">Chat</string>
+    <string name="nav_reading">Reading</string>
+    <string name="nav_dashboard">Dashboard</string>
+    <string name="nav_stroll">Stroll</string>
+    <string name="nav_reminder">Reminder</string>
+    <string name="nav_phone">Phone</string>
+    <string name="nav_history">History</string>
+    <string name="nav_settings">Settings</string>
     <string name="nav_hub">Hub</string>
     <string name="nav_stats">Stats</string>
     <string name="nav_more">More</string>
+
+    <!-- Placeholder -->
+    <string name="placeholder_coming_soon">coming soon</string>
+    <string name="placeholder_hint">还没做。先把元件放对位置；细节后续打磨。</string>
 
     <!-- Chat -->
     <string name="chat_title">Claude</string>
