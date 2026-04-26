@@ -78,7 +78,7 @@ class FloatingService : Service() {
         val notif: Notification = NotificationCompat.Builder(this, ch)
             .setContentTitle(getString(R.string.app_name))
             .setContentText(getString(R.string.notif_running))
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setSmallIcon(R.drawable.ic_spark)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_MIN)
             .build()

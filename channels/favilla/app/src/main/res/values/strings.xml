@@ -11,17 +11,17 @@
     <string name="nav_more">More</string>
 
     <!-- Chat -->
-    <string name="chat_title">Fiet</string>
+    <string name="chat_title">Assistant</string>
     <string name="chat_subtitle_cc">via Claude Code</string>
     <string name="chat_subtitle_api">via custom API</string>
-    <string name="chat_input_hint">Message Fiet…</string>
+    <string name="chat_input_hint">Message…</string>
     <string name="chat_send">Send</string>
     <string name="chat_attach">Attach</string>
     <string name="chat_mic">Voice</string>
     <string name="chat_recall_title">Memory recalled</string>
     <string name="chat_thinking">thinking…</string>
     <string name="chat_empty_title">Start a conversation</string>
-    <string name="chat_empty_subtitle">Ask Fiet anything, or share something to remember.</string>
+    <string name="chat_empty_subtitle">Ask anything, or share something to remember.</string>
     <string name="chat_new">New chat</string>
 
     <!-- Hub -->
@@ -31,8 +31,8 @@
     <string name="hub_section_voice">Voice note</string>
     <string name="hub_section_ai">AI control</string>
     <string name="hub_voice_hint">Hold to record, release to send.</string>
-    <string name="hub_ai_hint">Let Fiet drive the phone via the desktop ADB bridge.</string>
-    <string name="hub_ai_toggle">Hand the phone to Fiet</string>
+    <string name="hub_ai_hint">Hand the phone to the AI via accessibility bridge.</string>
+    <string name="hub_ai_toggle">Allow AI to control this phone</string>
     <string name="hub_no_stickers">No stickers yet. Drop PNG files into assets/stickers/.</string>
     <string name="hub_no_images">No images yet. Pick from gallery to send.</string>
     <string name="hub_pick_image">Pick from gallery</string>

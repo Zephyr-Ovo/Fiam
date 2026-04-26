@@ -23,6 +23,8 @@
         <item name="materialButtonStyle">@style/Widget.Favilla.Button</item>
         <item name="textInputStyle">@style/Widget.Favilla.TextInputLayout</item>
         <item name="bottomNavigationStyle">@style/Widget.Favilla.BottomNav</item>
+        <item name="android:fontFamily">@font/anthropic_sans</item>
+        <item name="fontFamily">@font/anthropic_sans</item>
     </style>
 
     <style name="Theme.Favilla.Transparent" parent="Theme.Favilla">
@@ -81,40 +83,48 @@
     <style name="TextAppearance.Favilla.Display" parent="TextAppearance.Material3.HeadlineMedium">
         <item name="android:textColor">@color/ink</item>
         <item name="android:textSize">@dimen/text_display</item>
-        <item name="android:fontFamily">serif</item>
+        <item name="android:fontFamily">@font/anthropic_serif_italic</item>
+        <item name="fontFamily">@font/anthropic_serif_italic</item>
         <item name="android:letterSpacing">-0.02</item>
     </style>
 
     <style name="TextAppearance.Favilla.Title" parent="TextAppearance.Material3.TitleLarge">
         <item name="android:textColor">@color/ink</item>
         <item name="android:textSize">@dimen/text_title</item>
-        <item name="android:fontFamily">serif</item>
+        <item name="android:fontFamily">@font/anthropic_serif_italic</item>
+        <item name="fontFamily">@font/anthropic_serif_italic</item>
         <item name="android:letterSpacing">-0.01</item>
     </style>
 
     <style name="TextAppearance.Favilla.Body" parent="TextAppearance.Material3.BodyMedium">
         <item name="android:textColor">@color/ink</item>
         <item name="android:textSize">@dimen/text_body</item>
+        <item name="android:fontFamily">@font/anthropic_sans</item>
+        <item name="fontFamily">@font/anthropic_sans</item>
         <item name="android:lineSpacingMultiplier">1.4</item>
     </style>
 
     <style name="TextAppearance.Favilla.Chat.Assistant" parent="TextAppearance.Material3.BodyLarge">
         <item name="android:textColor">@color/bubble_assistant_text</item>
         <item name="android:textSize">@dimen/text_chat</item>
-        <item name="android:fontFamily">serif</item>
+        <item name="android:fontFamily">@font/anthropic_serif_italic</item>
+        <item name="fontFamily">@font/anthropic_serif_italic</item>
         <item name="android:lineSpacingMultiplier">1.45</item>
     </style>
 
     <style name="TextAppearance.Favilla.Chat.User" parent="TextAppearance.Material3.BodyLarge">
         <item name="android:textColor">@color/bubble_user_text</item>
         <item name="android:textSize">@dimen/text_chat</item>
+        <item name="android:fontFamily">@font/anthropic_sans</item>
+        <item name="fontFamily">@font/anthropic_sans</item>
         <item name="android:lineSpacingMultiplier">1.4</item>
     </style>
 
     <style name="TextAppearance.Favilla.Meta" parent="TextAppearance.Material3.LabelSmall">
         <item name="android:textColor">@color/ink_faint</item>
         <item name="android:textSize">@dimen/text_meta</item>
-        <item name="android:fontFamily">monospace</item>
+        <item name="android:fontFamily">@font/anthropic_mono</item>
+        <item name="fontFamily">@font/anthropic_mono</item>
         <item name="android:letterSpacing">0.04</item>
     </style>
 
