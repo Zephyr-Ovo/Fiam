@@ -68,6 +68,9 @@
     <string name="home_hero_title">Let\'s go for a walk together.</string>
     <string name="home_hero_sub">An ambient companion. Just step outside.</string>
     <string name="home_hero_cta">Start Walk</string>
+    <string name="home_thought_label">💭 last thought</string>
+    <string name="home_thought_empty">No thought yet — start a conversation.</string>
+    <string name="home_thought_meta">via Chat</string>
     <string name="home_quick_title">Quick access</string>
     <string name="home_edit">Edit</string>
     <string name="home_done">Done</string>

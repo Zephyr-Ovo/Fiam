@@ -11,7 +11,6 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
-import com.google.android.material.button.MaterialButton
 import org.json.JSONArray
 import java.util.Calendar
 
@@ -60,10 +59,10 @@ class HomeFragment : Fragment() {
         greeting.setText(greetingRes())
         todayNote.text = todayLine()
 
-        view.findViewById<MaterialButton>(R.id.heroCta).setOnClickListener {
-            navigateTo(R.id.nav_stroll)
+        // Tap "last thought" card -> open Chat
+        view.findViewById<View>(R.id.homeThoughtCard).setOnClickListener {
+            navigateTo(R.id.nav_chat)
         }
-
         loadActive()
         editToggle.setOnClickListener { setEditMode(!editMode) }
         renderTiles()
