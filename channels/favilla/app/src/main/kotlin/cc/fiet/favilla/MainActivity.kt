@@ -74,7 +74,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun select(id: Int) {
         if (selectedId == id) return
-        val accent = ContextCompat.getColor(this, R.color.peach)
+        val accent = ContextCompat.getColor(this, R.color.plum)
         val muted = ContextCompat.getColor(this, R.color.ink_muted)
         for ((itemId, view) in itemViews) {
             val active = itemId == id
@@ -87,6 +87,9 @@ class MainActivity : AppCompatActivity() {
         showFragment(id)
     }
 
+    /** Public entry for fragments (e.g. HomeFragment tile click) to switch nav. */
+    fun selectNav(id: Int) = select(id)
+
     private fun showFragment(id: Int) {
         val tag = "tab-$id"
         val fm = supportFragmentManager
@@ -96,9 +99,9 @@ class MainActivity : AppCompatActivity() {
             R.id.nav_chat -> ChatFragment()
             R.id.nav_phone -> HubFragment()              // Phone control reuses Hub for now
             R.id.nav_settings -> MoreFragment()          // Settings == old More
-            R.id.nav_home -> PlaceholderFragment.newInstance(getString(R.string.nav_home))
-            R.id.nav_reading -> PlaceholderFragment.newInstance(getString(R.string.nav_reading))
-            R.id.nav_dashboard -> PlaceholderFragment.newInstance(getString(R.string.nav_dashboard))
+            R.id.nav_home -> HomeFragment()
+            R.id.nav_reading -> StudioFragment()
+            R.id.nav_dashboard -> DashboardFragment()
             R.id.nav_stroll -> PlaceholderFragment.newInstance(getString(R.string.nav_stroll))
             R.id.nav_reminder -> PlaceholderFragment.newInstance(getString(R.string.nav_reminder))
             R.id.nav_history -> PlaceholderFragment.newInstance(getString(R.string.nav_history))

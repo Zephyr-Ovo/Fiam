@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="120dp"
+    android:orientation="vertical"
+    android:padding="16dp"
+    android:gravity="bottom|start"
+    android:background="@drawable/bg_tile_plum"
+    android:clickable="true"
+    android:focusable="true"
+    android:foreground="?android:attr/selectableItemBackground">
+
+    <ImageView
+        android:id="@+id/tileIcon"
+        android:layout_width="22dp"
+        android:layout_height="22dp"
+        android:layout_marginBottom="8dp"
+        android:contentDescription="@null"
+        android:tint="@color/plum_deep" />
+
+    <TextView
+        android:id="@+id/tileLabel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textAppearance="@style/TextAppearance.Favilla.Title"
+        android:textSize="16sp"
+        android:textColor="@color/ink_strong" />
+
+    <TextView
+        android:id="@+id/tileSub"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textAppearance="@style/TextAppearance.Favilla.Meta"
+        android:textColor="@color/ink_muted"
+        android:visibility="gone" />
+</LinearLayout>

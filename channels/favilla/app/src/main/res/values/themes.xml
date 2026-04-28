@@ -2,10 +2,10 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
 
     <style name="Theme.Favilla" parent="Theme.Material3.Light.NoActionBar">
-        <item name="colorPrimary">@color/peach</item>
+        <item name="colorPrimary">@color/plum</item>
         <item name="colorOnPrimary">#FFFFFF</item>
-        <item name="colorPrimaryContainer">@color/peach_wash</item>
-        <item name="colorOnPrimaryContainer">@color/ink</item>
+        <item name="colorPrimaryContainer">@color/plum_wash</item>
+        <item name="colorOnPrimaryContainer">@color/plum_deep</item>
         <item name="colorSecondary">@color/sage</item>
         <item name="colorOnSecondary">#FFFFFF</item>
         <item name="colorSurface">@color/paper</item>
@@ -99,7 +99,7 @@
     </style>
 
     <style name="Widget.Favilla.BottomNav.Indicator" parent="Widget.Material3.BottomNavigationView.ActiveIndicator">
-        <item name="android:color">@color/peach_wash</item>
+        <item name="android:color">@color/plum_wash</item>
     </style>
 
     <style name="TextAppearance.Favilla.Display" parent="TextAppearance.Material3.HeadlineMedium">

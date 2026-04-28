@@ -1,0 +1,339 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.core.widget.NestedScrollView
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/paper_cream"
+    android:fillViewport="true"
+    android:scrollbars="none">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingStart="22dp"
+        android:paddingEnd="22dp"
+        android:paddingTop="32dp"
+        android:paddingBottom="40dp">
+
+        <!-- Title row -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/studio_title"
+                android:textAppearance="@style/TextAppearance.Favilla.Display"
+                android:textColor="@color/plum_deep"
+                android:textSize="34sp" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="✦"
+                android:textColor="@color/accent_studio"
+                android:textSize="22sp" />
+
+            <View
+                android:layout_width="14dp"
+                android:layout_height="14dp" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="🔍"
+                android:textSize="20sp" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="@string/studio_sub"
+            android:textAppearance="@style/TextAppearance.Favilla.Body"
+            android:textColor="@color/ink_muted"
+            android:textStyle="italic" />
+
+        <!-- Reading + Window row -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="22dp"
+            android:orientation="horizontal">
+
+            <!-- Currently Reading small card -->
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1.1"
+                android:layout_marginEnd="10dp"
+                android:background="@drawable/bg_card_studio"
+                android:orientation="vertical"
+                android:padding="18dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/studio_reading_label"
+                    android:textAppearance="@style/TextAppearance.Favilla.Meta"
+                    android:textColor="@color/plum_deep" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:text="@string/studio_reading_book"
+                    android:textAppearance="@style/TextAppearance.Favilla.Title"
+                    android:textColor="@color/ink_strong"
+                    android:textSize="20sp" />
+
+                <ProgressBar
+                    android:layout_width="match_parent"
+                    android:layout_height="6dp"
+                    android:layout_marginTop="14dp"
+                    android:max="100"
+                    android:progress="60"
+                    android:progressDrawable="@android:drawable/progress_horizontal"
+                    android:progressTint="@color/plum"
+                    android:progressBackgroundTint="@color/plum_wash"
+                    style="?android:attr/progressBarStyleHorizontal" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:text="@string/studio_reading_progress"
+                    android:textAppearance="@style/TextAppearance.Favilla.Meta"
+                    android:textColor="@color/plum" />
+            </LinearLayout>
+
+            <!-- Window illustration placeholder -->
+            <FrameLayout
+                android:layout_width="0dp"
+                android:layout_height="160dp"
+                android:layout_weight="0.9"
+                android:layout_marginStart="10dp"
+                android:background="@drawable/bg_circle_warm">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:gravity="center"
+                    android:text="🪟"
+                    android:textSize="58sp" />
+            </FrameLayout>
+        </LinearLayout>
+
+        <!-- Notes + Journal asymmetric pair -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:orientation="horizontal">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="160dp"
+                android:layout_weight="1"
+                android:layout_marginEnd="8dp"
+                android:background="@drawable/bg_card_cream_lg"
+                android:gravity="bottom|start"
+                android:orientation="vertical"
+                android:padding="20dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="📁"
+                    android:textSize="28sp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:text="@string/studio_notes_title"
+                    android:textAppearance="@style/TextAppearance.Favilla.Title"
+                    android:textColor="@color/ink_strong"
+                    android:textSize="20sp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/studio_notes_count"
+                    android:textAppearance="@style/TextAppearance.Favilla.Meta"
+                    android:textColor="@color/ink_muted" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="160dp"
+                android:layout_weight="1"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/bg_card_lavender"
+                android:gravity="bottom|start"
+                android:orientation="vertical"
+                android:padding="20dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="🪶"
+                    android:textSize="28sp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:text="@string/studio_journal_title"
+                    android:textAppearance="@style/TextAppearance.Favilla.Title"
+                    android:textColor="@color/ink_strong"
+                    android:textSize="20sp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/studio_journal_sub"
+                    android:textAppearance="@style/TextAppearance.Favilla.Meta"
+                    android:textColor="@color/ink_muted" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- Plans pill row -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginEnd="12dp"
+                android:background="@drawable/bg_hero_plum"
+                android:orientation="vertical"
+                android:padding="20dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="🏔️"
+                    android:textSize="22sp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:text="@string/studio_plans_title"
+                    android:textAppearance="@style/TextAppearance.Favilla.Title"
+                    android:textColor="@color/plum_deep"
+                    android:textSize="20sp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:text="@string/studio_plans_sub"
+                    android:textAppearance="@style/TextAppearance.Favilla.Meta"
+                    android:textColor="@color/plum_deep" />
+
+                <ProgressBar
+                    android:layout_width="match_parent"
+                    android:layout_height="6dp"
+                    android:layout_marginTop="16dp"
+                    android:max="100"
+                    android:progress="42"
+                    android:progressTint="@color/plum"
+                    android:progressBackgroundTint="#33FFFFFF"
+                    style="?android:attr/progressBarStyleHorizontal" />
+            </LinearLayout>
+
+            <FrameLayout
+                android:layout_width="56dp"
+                android:layout_height="56dp"
+                android:background="@drawable/bg_circle_plum">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:gravity="center"
+                    android:text="+"
+                    android:textColor="#FFFFFF"
+                    android:textSize="28sp" />
+            </FrameLayout>
+        </LinearLayout>
+
+        <!-- Quote + Diary -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:orientation="horizontal">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="120dp"
+                android:layout_weight="1"
+                android:layout_marginEnd="8dp"
+                android:background="@drawable/bg_card_studio"
+                android:gravity="center_vertical|start"
+                android:orientation="vertical"
+                android:padding="18dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="🍃"
+                    android:textSize="18sp" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:text="@string/studio_quote"
+                    android:textAppearance="@style/TextAppearance.Favilla.Body"
+                    android:textColor="@color/plum_deep"
+                    android:textStyle="italic" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="120dp"
+                android:layout_weight="1"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/bg_card_plum_deep"
+                android:gravity="bottom|start"
+                android:orientation="vertical"
+                android:padding="18dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="📔"
+                    android:textSize="22sp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:text="@string/studio_diary_title"
+                    android:textAppearance="@style/TextAppearance.Favilla.Title"
+                    android:textColor="#FFFFFF"
+                    android:textSize="18sp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/studio_diary_sub"
+                    android:textAppearance="@style/TextAppearance.Favilla.Meta"
+                    android:textColor="#CCD9CDF1" />
+            </LinearLayout>
+        </LinearLayout>
+    </LinearLayout>
+</androidx.core.widget.NestedScrollView>

@@ -60,6 +60,68 @@
     <string name="qa_dashboard">状态</string>
     <string name="qa_apps_add">更多</string>
 
+    <!-- Home v2 -->
+    <string name="home_greet_morning">Good morning, Favilla</string>
+    <string name="home_greet_afternoon">Good afternoon, Favilla</string>
+    <string name="home_greet_evening">Good evening, Favilla</string>
+    <string name="home_greet_night">Late night, Favilla</string>
+    <string name="home_hero_title">Let\'s go for a walk together.</string>
+    <string name="home_hero_sub">An ambient companion. Just step outside.</string>
+    <string name="home_hero_cta">Start Walk</string>
+    <string name="home_quick_title">Quick access</string>
+    <string name="home_edit">Edit</string>
+    <string name="home_done">Done</string>
+    <string name="home_add_tile">+ Add tile</string>
+    <string name="home_today_note">Today</string>
+    <string name="home_tile_chat">Chat</string>
+    <string name="home_tile_studio">Studio</string>
+    <string name="home_tile_dashboard">Dashboard</string>
+    <string name="home_tile_walk">Walk</string>
+    <string name="home_tile_reading">Reading</string>
+    <string name="home_tile_journal">Journal</string>
+    <string name="home_tile_notes">Notes</string>
+    <string name="home_tile_settings">Settings</string>
+
+    <!-- Dashboard v2 -->
+    <string name="dash_section_no">03</string>
+    <string name="dash_title">Dashboard</string>
+    <string name="dash_today">Today</string>
+    <string name="dash_banner">You\'re doing great today! Keep it up, Favilla.</string>
+    <string name="dash_focus_title">Focus Time</string>
+    <string name="dash_focus_value">3h 24m</string>
+    <string name="dash_focus_delta">↑ 12% from yesterday</string>
+    <string name="dash_streak_title">Streak</string>
+    <string name="dash_streak_value">7 days</string>
+    <string name="dash_streak_sub">keep it up</string>
+    <string name="dash_health_title">Health Overview</string>
+    <string name="dash_health_score">87</string>
+    <string name="dash_health_label">Good</string>
+    <string name="dash_health_hr">72 bpm</string>
+    <string name="dash_health_o2">98%</string>
+    <string name="dash_health_sleep">7h 32m</string>
+    <string name="dash_health_steps">6,215</string>
+    <string name="dash_events_title">Upcoming</string>
+    <string name="dash_event_1_t">Project Meeting</string>
+    <string name="dash_event_1_h">10:00</string>
+    <string name="dash_event_2_t">Reading Time</string>
+    <string name="dash_event_2_h">15:30</string>
+
+    <!-- Studio v2 -->
+    <string name="studio_title">studio</string>
+    <string name="studio_sub">Create, reflect, grow.</string>
+    <string name="studio_reading_label">Currently Reading</string>
+    <string name="studio_reading_book">Sapiens</string>
+    <string name="studio_reading_progress">60%</string>
+    <string name="studio_notes_title">Notes</string>
+    <string name="studio_notes_count">24 notes</string>
+    <string name="studio_journal_title">Journal</string>
+    <string name="studio_journal_sub">Write freely</string>
+    <string name="studio_plans_title">Plans</string>
+    <string name="studio_plans_sub">3 active · this week</string>
+    <string name="studio_quote">Every page is a new version of you.</string>
+    <string name="studio_diary_title">Diary</string>
+    <string name="studio_diary_sub">Last entry · Yesterday</string>
+
     <!-- Stats -->
     <string name="stats_title">Stats</string>
     <string name="stats_refresh">Refresh</string>
