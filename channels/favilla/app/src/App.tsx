@@ -47,6 +47,8 @@ type Msg = {
   thinkingLocked?: boolean
   /** Non-bubble divider rendered in place of a chat bubble. */
   divider?: { kind: "scissor" | "recall"; label?: string }
+  /** True if recall was armed when this user message was sent. Renders 🌠. */
+  recallUsed?: boolean
 }
 
 const INK = "#3f2f29"
@@ -377,7 +379,7 @@ function Bubble({
 
         {msg.text && (
           <div
-            className={`md px-4 py-3 text-[14.5px] leading-[1.6] ${
+            className={`md relative px-4 py-3 text-[14.5px] leading-[1.6] ${
               isUser
                 ? "rounded-[18px] rounded-br-[6px]"
                 : "rounded-[18px] rounded-bl-[6px]"
@@ -397,6 +399,15 @@ function Bubble({
             }}
           >
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.text}</ReactMarkdown>
+            {msg.recallUsed && (
+              <span
+                aria-label="recall used"
+                className="pointer-events-none absolute -bottom-1 -right-1 select-none text-[14px] leading-none"
+                style={{ filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.25))" }}
+              >
+                🌠
+              </span>
+            )}
           </div>
         )}
 
@@ -475,7 +486,7 @@ function SendButton({ onSend, disabled }: { onSend: () => void; disabled: boolea
   )
 }
 
-export default function App() {
+export default function App({ onBack }: { onBack?: () => void } = {}) {
   const [peerName, setPeerName] = useState(appConfig.aiName)
   const [messages, setMessages] = useState<Msg[]>(seedMessages)
   const [input, setInput] = useState("")
@@ -509,6 +520,15 @@ export default function App() {
   useEffect(() => {
     if (peerName && peerName !== appConfig.aiName) saveConfig({ aiName: peerName })
   }, [peerName])
+
+  // Re-read peer name when settings save it from elsewhere.
+  useEffect(() => {
+    function onConfigChanged() {
+      setPeerName(appConfig.aiName)
+    }
+    window.addEventListener("favilla:config-changed", onConfigChanged)
+    return () => window.removeEventListener("favilla:config-changed", onConfigChanged)
+  }, [])
 
   // ---- manual cut + recall handlers ----
   // recallArmed: ON means the next outgoing message will trigger a recall
@@ -601,6 +621,7 @@ export default function App() {
       t: lastT + 1,
       text,
       attachments: userPills.length > 0 ? userPills : undefined,
+      recallUsed: wasArmed,
     }
     const aiId = `a-${Date.now()}`
     const aiMsg: Msg = { id: aiId, role: "ai", t: lastT + 1, text: "" }
@@ -677,40 +698,27 @@ export default function App() {
   }
 
   return (
-    <div
-      className="flex min-h-dvh items-center justify-center bg-cover bg-center bg-fixed"
-      style={{
-        backgroundImage: `url(${appConfig.bg})`,
-        padding: "clamp(0px, 4vw, 32px)",
-      }}
-    >
-      {/* phone frame ~390x844 */}
+    <div className="relative flex h-full w-full flex-col overflow-hidden">
       <div
-        className="relative overflow-hidden"
-        style={{
-          width: "min(100%, 390px)",
-          height: "min(100dvh, 844px)",
-          borderRadius: 28,
-          boxShadow:
-            "0 0 0 1px rgba(255,255,255,0.18), 0 30px 80px -20px rgba(0,0,0,0.45), 0 10px 30px -10px rgba(0,0,0,0.3)",
-        }}
-      >
-        <div
-          className="absolute inset-0 -z-10 bg-cover bg-center"
-          style={{ backgroundImage: `url(${appConfig.bg})` }}
-        />
+        className="absolute inset-0 -z-10 bg-cover bg-center"
+        style={{ backgroundImage: `url(${appConfig.bg})` }}
+      />
 
-        <div className="relative flex h-full flex-col">
-          {/* nav bar */}
+      <div className="relative flex h-full flex-col">
+          {/* nav bar — paddingTop pulls in safe-area inset on iOS/Android
+              so the title doesn't sit behind a translucent status bar. */}
           <header
-            className="flex h-14 shrink-0 items-center justify-between px-3"
+            className="flex shrink-0 items-center justify-between px-3"
             style={{
               background: "var(--color-cocoa)",
               color: "var(--color-cream)",
+              minHeight: 56,
+              paddingTop: "max(0px, env(safe-area-inset-top))",
             }}
           >
             <button
               type="button"
+              onClick={onBack}
               className="grid h-10 w-10 place-items-center rounded-full hover:bg-white/10"
               aria-label="Back"
             >
@@ -905,7 +913,6 @@ export default function App() {
               }
             }}
           />
-        </div>
       </div>
     </div>
   )

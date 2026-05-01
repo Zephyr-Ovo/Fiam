@@ -55,4 +55,10 @@ export function saveConfig(patch: Partial<AppConfig>) {
   } catch {
     /* quota / privacy mode */
   }
+  // Notify subscribers so live components (header peer name, etc.) re-read.
+  try {
+    window.dispatchEvent(new CustomEvent("favilla:config-changed"))
+  } catch {
+    /* SSR / non-browser */
+  }
 }
