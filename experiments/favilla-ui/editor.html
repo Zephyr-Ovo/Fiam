@@ -1,0 +1,1236 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>Favilla Layout Editor</title>
+<style>
+/* ─── Base ─── */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#13111C;
+  --panel:#1E1B2A;
+  --panel2:#262338;
+  --border:#2E2B40;
+  --accent:#7C5CBF;
+  --accent2:#A685E2;
+  --text:#E8E4F4;
+  --text2:#8C85A8;
+  --green:#5DB88A;
+  --red:#E07070;
+}
+body{
+  font-family:-apple-system,'SF Pro Text','PingFang SC',sans-serif;
+  background:var(--bg);
+  color:var(--text);
+  display:flex;
+  height:100vh;
+  overflow:hidden;
+  font-size:13px;
+}
+
+/* ─── Sidebar ─── */
+.sidebar{
+  width:220px;
+  background:var(--panel);
+  border-right:1px solid var(--border);
+  display:flex;
+  flex-direction:column;
+  overflow:hidden;
+  flex-shrink:0;
+}
+.sidebar-head{
+  padding:14px 16px 10px;
+  font-weight:700;
+  font-size:12px;
+  letter-spacing:1.2px;
+  color:var(--text2);
+  border-bottom:1px solid var(--border);
+}
+.comp-grid{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:8px;
+  padding:12px;
+  overflow-y:auto;
+  flex:1;
+}
+.comp-item{
+  background:var(--panel2);
+  border:1px solid var(--border);
+  border-radius:10px;
+  padding:10px 8px;
+  text-align:center;
+  cursor:grab;
+  user-select:none;
+  transition:border-color .15s,background .15s;
+}
+.comp-item:hover{border-color:var(--accent);background:#2E2A40}
+.comp-item:active{cursor:grabbing}
+.comp-icon{font-size:20px;margin-bottom:4px}
+.comp-name{font-size:11px;color:var(--text2)}
+
+/* ─── Canvas area ─── */
+.canvas-area{
+  flex:1;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:flex-start;
+  overflow:auto;
+  padding:24px 0 32px;
+  background:var(--bg);
+}
+.phone-label{
+  font-size:11px;
+  color:var(--text2);
+  margin-bottom:10px;
+  letter-spacing:.5px;
+}
+.phone-wrap{
+  position:relative;
+  width:375px;
+  background:#1a1825;
+  border-radius:40px;
+  border:1px solid #3a3750;
+  box-shadow:0 24px 64px rgba(0,0,0,.6);
+  overflow:hidden;
+}
+#canvas{
+  position:relative;
+  width:375px;
+  min-height:720px;
+  background:#FEFAF1;
+  overflow:hidden;
+}
+#canvas.drag-over{outline:2px dashed var(--accent);outline-offset:-2px}
+
+/* ─── Canvas elements ─── */
+.cel{
+  position:absolute;
+  cursor:move;
+  box-sizing:border-box;
+  min-width:20px;
+  min-height:20px;
+  outline:none;
+}
+.cel.selected{
+  outline:2px solid var(--accent);
+  outline-offset:1px;
+}
+.cel.selected::after{
+  content:'';
+  position:absolute;
+  inset:0;
+  background:rgba(124,92,191,.05);
+  pointer-events:none;
+}
+/* resize handles */
+.rh{
+  position:absolute;
+  width:8px;height:8px;
+  background:var(--accent);
+  border:1.5px solid white;
+  border-radius:2px;
+  z-index:999;
+}
+.rh-se{bottom:-4px;right:-4px;cursor:se-resize}
+.rh-e{top:50%;right:-4px;transform:translateY(-50%);cursor:e-resize}
+.rh-s{bottom:-4px;left:50%;transform:translateX(-50%);cursor:s-resize}
+
+/* ─── Properties panel ─── */
+.props-panel{
+  width:240px;
+  background:var(--panel);
+  border-left:1px solid var(--border);
+  display:flex;
+  flex-direction:column;
+  overflow:hidden;
+  flex-shrink:0;
+}
+.props-head{
+  padding:14px 16px 10px;
+  font-weight:700;
+  font-size:12px;
+  letter-spacing:1px;
+  color:var(--text2);
+  border-bottom:1px solid var(--border);
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+}
+.props-del{
+  background:transparent;
+  border:1px solid var(--border);
+  color:var(--red);
+  border-radius:6px;
+  padding:2px 8px;
+  font-size:11px;
+  cursor:pointer;
+}
+.props-del:hover{background:rgba(224,112,112,.12)}
+.props-body{
+  flex:1;
+  overflow-y:auto;
+  padding:12px;
+}
+.prop-group{
+  margin-bottom:14px;
+}
+.prop-label{
+  font-size:11px;
+  color:var(--text2);
+  margin-bottom:5px;
+  letter-spacing:.4px;
+}
+.prop-input{
+  width:100%;
+  background:var(--panel2);
+  border:1px solid var(--border);
+  border-radius:8px;
+  color:var(--text);
+  padding:7px 10px;
+  font-size:13px;
+  outline:none;
+  transition:border-color .15s;
+}
+.prop-input:focus{border-color:var(--accent)}
+.prop-row{display:flex;gap:8px}
+.prop-row .prop-input{flex:1}
+.color-preview{
+  width:32px;height:32px;
+  border-radius:8px;
+  border:1px solid var(--border);
+  cursor:pointer;
+  flex-shrink:0;
+}
+.prop-upload{
+  width:100%;
+  background:var(--panel2);
+  border:1px dashed var(--accent);
+  border-radius:8px;
+  color:var(--accent2);
+  padding:10px;
+  font-size:12px;
+  text-align:center;
+  cursor:pointer;
+  transition:background .15s;
+}
+.prop-upload:hover{background:rgba(124,92,191,.1)}
+.prop-img-preview{
+  width:100%;
+  border-radius:8px;
+  margin-top:8px;
+  max-height:100px;
+  object-fit:cover;
+  display:none;
+}
+
+/* No selection state */
+.props-empty{
+  flex:1;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  color:var(--text2);
+  font-size:12px;
+  padding:20px;
+  text-align:center;
+  line-height:1.6;
+}
+
+/* ─── Bottom XML bar ─── */
+.xml-bar{
+  position:fixed;
+  bottom:0; left:220px; right:240px;
+  height:40px;
+  background:var(--panel);
+  border-top:1px solid var(--border);
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:0 16px;
+  z-index:200;
+}
+.xml-btn{
+  background:var(--accent);
+  border:none;
+  border-radius:8px;
+  color:white;
+  padding:5px 16px;
+  font-size:12px;
+  font-weight:600;
+  cursor:pointer;
+  transition:background .15s;
+}
+.xml-btn:hover{background:#9470CF}
+.xml-btn.secondary{
+  background:transparent;
+  border:1px solid var(--border);
+  color:var(--text2);
+}
+.xml-btn.secondary:hover{border-color:var(--accent2);color:var(--text)}
+.xml-info{font-size:11px;color:var(--text2);flex:1}
+
+/* ─── XML Modal ─── */
+.modal-overlay{
+  position:fixed;inset:0;
+  background:rgba(0,0,0,.7);
+  z-index:500;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+}
+.modal-overlay.hidden{display:none}
+.modal{
+  background:var(--panel);
+  border:1px solid var(--border);
+  border-radius:16px;
+  width:680px;
+  max-height:80vh;
+  display:flex;
+  flex-direction:column;
+  overflow:hidden;
+}
+.modal-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding:16px 20px;
+  border-bottom:1px solid var(--border);
+}
+.modal-title{font-size:15px;font-weight:700}
+.modal-close{
+  background:transparent;
+  border:none;
+  color:var(--text2);
+  font-size:20px;
+  cursor:pointer;
+  line-height:1;
+}
+.modal-close:hover{color:var(--text)}
+pre#xml-output{
+  flex:1;
+  overflow:auto;
+  padding:16px 20px;
+  font-family:'JetBrains Mono','Courier New',monospace;
+  font-size:12px;
+  color:#C8EAFF;
+  line-height:1.6;
+  white-space:pre;
+  background:#0F0D18;
+}
+.modal-foot{
+  display:flex;
+  gap:8px;
+  padding:12px 20px;
+  border-top:1px solid var(--border);
+}
+.copied-msg{
+  font-size:12px;
+  color:var(--green);
+  display:none;
+  align-items:center;
+}
+</style>
+</head>
+<body>
+
+<!-- ─── LEFT: Component Palette ─── -->
+<div class="sidebar">
+  <div class="sidebar-head">COMPONENTS</div>
+  <div class="comp-grid">
+    <div class="comp-item" draggable="true" data-type="text">
+      <div class="comp-icon">T</div>
+      <div class="comp-name">Text</div>
+    </div>
+    <div class="comp-item" draggable="true" data-type="image">
+      <div class="comp-icon">🖼</div>
+      <div class="comp-name">Image</div>
+    </div>
+    <div class="comp-item" draggable="true" data-type="card">
+      <div class="comp-icon">▭</div>
+      <div class="comp-name">Card</div>
+    </div>
+    <div class="comp-item" draggable="true" data-type="button">
+      <div class="comp-icon">⬜</div>
+      <div class="comp-name">Button</div>
+    </div>
+    <div class="comp-item" draggable="true" data-type="header">
+      <div class="comp-icon">≡</div>
+      <div class="comp-name">Header</div>
+    </div>
+    <div class="comp-item" draggable="true" data-type="badge">
+      <div class="comp-icon">●</div>
+      <div class="comp-name">Badge</div>
+    </div>
+    <div class="comp-item" draggable="true" data-type="stat">
+      <div class="comp-icon">📊</div>
+      <div class="comp-name">Stat Card</div>
+    </div>
+    <div class="comp-item" draggable="true" data-type="divider">
+      <div class="comp-icon">─</div>
+      <div class="comp-name">Divider</div>
+    </div>
+    <div class="comp-item" draggable="true" data-type="row">
+      <div class="comp-icon">☰</div>
+      <div class="comp-name">Row</div>
+    </div>
+    <div class="comp-item" draggable="true" data-type="circle">
+      <div class="comp-icon">◯</div>
+      <div class="comp-name">Circle</div>
+    </div>
+    <div class="comp-item" draggable="true" data-type="input">
+      <div class="comp-icon">▭</div>
+      <div class="comp-name">Input</div>
+    </div>
+    <div class="comp-item" draggable="true" data-type="icon">
+      <div class="comp-icon">★</div>
+      <div class="comp-name">Icon</div>
+    </div>
+  </div>
+</div>
+
+<!-- ─── CENTER: Phone Canvas ─── -->
+<div class="canvas-area">
+  <div class="phone-label">375 × 812dp · Drag components from the left panel</div>
+  <div class="phone-wrap">
+    <div id="canvas"></div>
+  </div>
+  <div style="height:60px"></div>
+</div>
+
+<!-- ─── RIGHT: Properties ─── -->
+<div class="props-panel" id="props-panel">
+  <div class="props-head" id="props-head">
+    <span>PROPERTIES</span>
+  </div>
+  <div id="props-empty" class="props-empty">
+    Click an element on the canvas to edit its properties
+  </div>
+  <div id="props-body" class="props-body" style="display:none"></div>
+</div>
+
+<!-- ─── BOTTOM: XML Bar ─── -->
+<div class="xml-bar">
+  <span class="xml-info" id="xml-info">0 elements on canvas</span>
+  <button class="xml-btn secondary" onclick="clearCanvas()">Clear All</button>
+  <button class="xml-btn secondary" onclick="loadSample()">Load Stroll Sample</button>
+  <button class="xml-btn" onclick="exportXML()">Export XML</button>
+</div>
+
+<!-- ─── XML Modal ─── -->
+<div class="modal-overlay hidden" id="xml-modal" onclick="closeModal(event)">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-head">
+      <div class="modal-title">Android XML — ConstraintLayout</div>
+      <button class="modal-close" onclick="document.getElementById('xml-modal').classList.add('hidden')">×</button>
+    </div>
+    <pre id="xml-output"></pre>
+    <div class="modal-foot">
+      <button class="xml-btn" onclick="copyXML()">Copy XML</button>
+      <span id="copied-msg" class="copied-msg">✓ Copied!</span>
+    </div>
+  </div>
+</div>
+
+<!-- Hidden file input for image upload -->
+<input type="file" id="img-file-input" accept="image/*" style="display:none">
+
+<script>
+// ──────────────────────────────────────────
+// State
+// ──────────────────────────────────────────
+let elements = [];     // array of element objects
+let selectedId = null;
+let dragType = null;   // type being dragged from palette
+let isDraggingEl = false;
+let dragOffX = 0, dragOffY = 0;
+let resizing = null;   // {id, handle, startX, startY, startW, startH, startElX, startElY}
+let nextId = 1;
+
+const canvas = document.getElementById('canvas');
+
+// ──────────────────────────────────────────
+// Element defaults
+// ──────────────────────────────────────────
+function defaultProps(type) {
+  const base = {
+    text: { text: 'Text', fontSize: 16, fontWeight: 'normal', color: '#1A1625',
+            bg: 'transparent', borderRadius: 0, paddingH: 0, paddingV: 0 },
+    image: { src: null, srcName: null, bg: '#E8DDD0', borderRadius: 12, scaleType: 'centerCrop' },
+    card:  { bg: '#FFFFFF', borderRadius: 16, elevation: 4,
+             text: 'Card', textColor: '#1A1625', fontSize: 14 },
+    button:{ text: 'Button', bg: '#6E5BA8', textColor: '#FFFFFF', fontSize: 14,
+             borderRadius: 12, style: 'filled' },
+    header:{ text: 'Page Title', subtitle: 'Subtitle', bg: 'transparent',
+             textColor: '#1A1625', fontSize: 22 },
+    badge: { text: 'LIVE', bg: '#4D8C70', textColor: '#FFFFFF', fontSize: 11, borderRadius: 20 },
+    stat:  { value: '5,842', label: 'Steps', bg: 'rgba(255,255,255,0.2)', borderRadius: 16,
+             textColor: '#FFFFFF', blur: true },
+    divider:{ color: '#E8E4F0', height: 1 },
+    row:   { bg: 'transparent', gap: 10, borderRadius: 0 },
+    circle:{ bg: '#EDE6F7', borderRadius: 999, src: null, srcName: null },
+    input: { hint: 'Search...', bg: '#F0EDF5', borderRadius: 24, textColor: '#6E5BA8' },
+    icon:  { emoji: '⭐', fontSize: 28, bg: 'transparent' }
+  };
+  return JSON.parse(JSON.stringify(base[type] || {}));
+}
+
+function defaultSize(type) {
+  const sizes = {
+    text:    [160, 28],
+    image:   [120, 90],
+    card:    [160, 80],
+    button:  [160, 48],
+    header:  [335, 60],
+    badge:   [70, 28],
+    stat:    [100, 72],
+    divider: [335, 12],
+    row:     [335, 60],
+    circle:  [80, 80],
+    input:   [240, 44],
+    icon:    [44, 44]
+  };
+  return sizes[type] || [120, 60];
+}
+
+// ──────────────────────────────────────────
+// Render element as DOM
+// ──────────────────────────────────────────
+function renderEl(el) {
+  let existing = document.getElementById('el-' + el.id);
+  if (existing) existing.remove();
+
+  const div = document.createElement('div');
+  div.id = 'el-' + el.id;
+  div.className = 'cel' + (selectedId === el.id ? ' selected' : '');
+  div.style.left = el.x + 'px';
+  div.style.top = el.y + 'px';
+  div.style.width = el.w + 'px';
+  div.style.height = el.h + 'px';
+
+  const p = el.props;
+  let inner = '';
+
+  switch(el.type) {
+    case 'text':
+      div.style.cssText += `color:${p.color};font-size:${p.fontSize}px;font-weight:${p.fontWeight};
+        background:${p.bg};border-radius:${p.borderRadius}px;
+        padding:${p.paddingV}px ${p.paddingH}px;
+        display:flex;align-items:center;`;
+      inner = `<span style="white-space:pre-wrap;line-height:1.3">${p.text}</span>`;
+      break;
+    case 'image':
+      div.style.cssText += `background:${p.bg};border-radius:${p.borderRadius}px;overflow:hidden;`;
+      if (p.src) {
+        inner = `<img src="${p.src}" style="width:100%;height:100%;object-fit:cover;border-radius:${p.borderRadius}px">`;
+      } else {
+        inner = `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;
+          color:#8C85A8;font-size:12px">🖼 image</div>`;
+      }
+      break;
+    case 'circle':
+      div.style.cssText += `background:${p.bg};border-radius:${p.borderRadius}px;overflow:hidden;`;
+      if (p.src) {
+        inner = `<img src="${p.src}" style="width:100%;height:100%;object-fit:cover">`;
+      } else {
+        inner = `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;
+          color:#8C85A8;font-size:12px">◯</div>`;
+      }
+      break;
+    case 'card':
+      div.style.cssText += `background:${p.bg};border-radius:${p.borderRadius}px;
+        box-shadow:0 2px 14px rgba(0,0,0,0.06);
+        padding:12px 14px;display:flex;align-items:center;`;
+      inner = `<span style="color:${p.textColor};font-size:${p.fontSize}px;font-weight:600">${p.text}</span>`;
+      break;
+    case 'button':
+      div.style.cssText += `background:${p.style==='filled'?p.bg:'transparent'};
+        border:${p.style==='outlined'?'2px solid '+p.bg:'none'};
+        border-radius:${p.borderRadius}px;
+        display:flex;align-items:center;justify-content:center;
+        cursor:pointer;`;
+      inner = `<span style="color:${p.textColor};font-size:${p.fontSize}px;font-weight:700">${p.text}</span>`;
+      break;
+    case 'header':
+      div.style.cssText += `background:${p.bg};display:flex;flex-direction:column;justify-content:center;padding:0 4px;`;
+      inner = `<div style="color:${p.textColor};font-size:${p.fontSize}px;font-weight:800;line-height:1.1">${p.text}</div>
+               <div style="color:#9B92B0;font-size:13px;margin-top:2px;font-style:italic">${p.subtitle}</div>`;
+      break;
+    case 'badge':
+      div.style.cssText += `background:${p.bg};border-radius:${p.borderRadius}px;
+        display:flex;align-items:center;justify-content:center;
+        padding:0 10px;`;
+      inner = `<span style="color:${p.textColor};font-size:${p.fontSize}px;font-weight:700;letter-spacing:1px">${p.text}</span>`;
+      break;
+    case 'stat':
+      div.style.cssText += `background:${p.bg};border-radius:${p.borderRadius}px;
+        ${p.blur?'backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);':''}
+        border:1px solid rgba(255,255,255,0.2);
+        display:flex;flex-direction:column;justify-content:center;padding:10px 14px;`;
+      inner = `<div style="color:${p.textColor};font-size:22px;font-weight:800;line-height:1">${p.value}</div>
+               <div style="color:${p.textColor};opacity:.75;font-size:11px;margin-top:4px">${p.label}</div>`;
+      break;
+    case 'divider':
+      div.style.cssText += `display:flex;align-items:center;`;
+      inner = `<div style="width:100%;height:${p.height}px;background:${p.color};border-radius:1px"></div>`;
+      break;
+    case 'row':
+      div.style.cssText += `background:${p.bg};border-radius:${p.borderRadius}px;
+        display:flex;align-items:center;gap:${p.gap}px;padding:0 4px;`;
+      inner = `<div style="color:#8C85A8;font-size:11px;margin:auto">[ row container ]</div>`;
+      break;
+    case 'input':
+      div.style.cssText += `background:${p.bg};border-radius:${p.borderRadius}px;
+        display:flex;align-items:center;padding:0 14px;`;
+      inner = `<span style="color:#9B92B0;font-size:14px">🔍 ${p.hint}</span>`;
+      break;
+    case 'icon':
+      div.style.cssText += `background:${p.bg};display:flex;align-items:center;justify-content:center;`;
+      inner = `<span style="font-size:${p.fontSize}px;line-height:1">${p.emoji}</span>`;
+      break;
+  }
+
+  div.innerHTML = inner;
+
+  // Resize handles (when selected)
+  if (selectedId === el.id) {
+    ['se','e','s'].forEach(h => {
+      const rh = document.createElement('div');
+      rh.className = `rh rh-${h}`;
+      rh.dataset.handle = h;
+      rh.dataset.elid = el.id;
+      div.appendChild(rh);
+
+      rh.addEventListener('mousedown', e => {
+        e.stopPropagation();
+        resizing = { id: el.id, handle: h,
+          startX: e.clientX, startY: e.clientY,
+          startW: el.w, startH: el.h,
+          startElX: el.x, startElY: el.y };
+      });
+    });
+  }
+
+  // Select on click
+  div.addEventListener('mousedown', e => {
+    if (e.target.classList.contains('rh')) return;
+    e.stopPropagation();
+    selectEl(el.id);
+    isDraggingEl = true;
+    const rect = canvas.getBoundingClientRect();
+    dragOffX = e.clientX - rect.left - el.x;
+    dragOffY = e.clientY - rect.top - el.y;
+  });
+
+  canvas.appendChild(div);
+}
+
+function renderAll() {
+  canvas.querySelectorAll('.cel').forEach(c => c.remove());
+  elements.forEach(renderEl);
+  updateInfo();
+}
+
+function updateInfo() {
+  document.getElementById('xml-info').textContent =
+    `${elements.length} element${elements.length!==1?'s':''} on canvas`;
+}
+
+// ──────────────────────────────────────────
+// Selection & Properties
+// ──────────────────────────────────────────
+function selectEl(id) {
+  selectedId = id;
+  renderAll();
+  showProps(id);
+}
+
+function deselect() {
+  selectedId = null;
+  renderAll();
+  document.getElementById('props-empty').style.display = '';
+  document.getElementById('props-body').style.display = 'none';
+  document.getElementById('props-head').innerHTML =
+    '<span>PROPERTIES</span>';
+}
+
+canvas.addEventListener('mousedown', e => {
+  if (e.target === canvas) deselect();
+});
+
+function showProps(id) {
+  const el = elements.find(e => e.id === id);
+  if (!el) return;
+
+  document.getElementById('props-empty').style.display = 'none';
+  const body = document.getElementById('props-body');
+  body.style.display = '';
+
+  const head = document.getElementById('props-head');
+  head.innerHTML = `<span>${el.type.toUpperCase()}</span>
+    <button class="props-del" onclick="deleteEl(${id})">Delete</button>`;
+
+  const p = el.props;
+  let html = '';
+
+  // Position & size (all types)
+  html += `<div class="prop-group">
+    <div class="prop-label">POSITION</div>
+    <div class="prop-row">
+      <input class="prop-input" type="number" placeholder="X" value="${el.x}"
+        onchange="updateElProp(${id},'_x',this.value)">
+      <input class="prop-input" type="number" placeholder="Y" value="${el.y}"
+        onchange="updateElProp(${id},'_y',this.value)">
+    </div>
+    <div class="prop-label" style="margin-top:8px">SIZE</div>
+    <div class="prop-row">
+      <input class="prop-input" type="number" placeholder="W" value="${el.w}"
+        onchange="updateElProp(${id},'_w',this.value)">
+      <input class="prop-input" type="number" placeholder="H" value="${el.h}"
+        onchange="updateElProp(${id},'_h',this.value)">
+    </div>
+  </div>`;
+
+  // Type-specific props
+  switch(el.type) {
+    case 'text':
+      html += propText('Text', p.text, id, 'text');
+      html += propColorRow('Color', p.color, id, 'color');
+      html += propNum('Font Size', p.fontSize, id, 'fontSize');
+      html += `<div class="prop-group">
+        <div class="prop-label">FONT WEIGHT</div>
+        <select class="prop-input" onchange="updateElProp(${id},'fontWeight',this.value)">
+          <option ${p.fontWeight==='normal'?'selected':''}>normal</option>
+          <option ${p.fontWeight==='bold'?'selected':''}>bold</option>
+          <option value="600" ${p.fontWeight==='600'?'selected':''}>semi-bold (600)</option>
+        </select></div>`;
+      html += propColorRow('Background', p.bg, id, 'bg');
+      html += propNum('Border Radius', p.borderRadius, id, 'borderRadius');
+      break;
+
+    case 'image':
+    case 'circle':
+      html += propImg(id, p.src);
+      if (p.srcName) html += `<div class="prop-group"><div class="prop-label">XML NAME</div>
+        <input class="prop-input" value="${p.srcName}" onchange="updateElProp(${id},'srcName',this.value)"></div>`;
+      html += propColorRow('Background', p.bg, id, 'bg');
+      html += propNum('Border Radius', p.borderRadius, id, 'borderRadius');
+      break;
+
+    case 'card':
+      html += propText('Text', p.text, id, 'text');
+      html += propColorRow('Background', p.bg, id, 'bg');
+      html += propColorRow('Text Color', p.textColor, id, 'textColor');
+      html += propNum('Font Size', p.fontSize, id, 'fontSize');
+      html += propNum('Border Radius', p.borderRadius, id, 'borderRadius');
+      html += propNum('Elevation', p.elevation, id, 'elevation');
+      break;
+
+    case 'button':
+      html += propText('Label', p.text, id, 'text');
+      html += propColorRow('Background', p.bg, id, 'bg');
+      html += propColorRow('Text Color', p.textColor, id, 'textColor');
+      html += propNum('Border Radius', p.borderRadius, id, 'borderRadius');
+      html += `<div class="prop-group">
+        <div class="prop-label">STYLE</div>
+        <select class="prop-input" onchange="updateElProp(${id},'style',this.value)">
+          <option ${p.style==='filled'?'selected':''} value="filled">Filled</option>
+          <option ${p.style==='outlined'?'selected':''} value="outlined">Outlined</option>
+          <option ${p.style==='glass'?'selected':''} value="glass">Glass</option>
+        </select></div>`;
+      break;
+
+    case 'header':
+      html += propText('Title', p.text, id, 'text');
+      html += propText('Subtitle', p.subtitle, id, 'subtitle');
+      html += propColorRow('Text Color', p.textColor, id, 'textColor');
+      html += propNum('Font Size', p.fontSize, id, 'fontSize');
+      html += propColorRow('Background', p.bg, id, 'bg');
+      break;
+
+    case 'badge':
+      html += propText('Text', p.text, id, 'text');
+      html += propColorRow('Background', p.bg, id, 'bg');
+      html += propColorRow('Text Color', p.textColor, id, 'textColor');
+      html += propNum('Font Size', p.fontSize, id, 'fontSize');
+      html += propNum('Border Radius', p.borderRadius, id, 'borderRadius');
+      break;
+
+    case 'stat':
+      html += propText('Value', p.value, id, 'value');
+      html += propText('Label', p.label, id, 'label');
+      html += propColorRow('Background', p.bg, id, 'bg');
+      html += propColorRow('Text Color', p.textColor, id, 'textColor');
+      html += propNum('Border Radius', p.borderRadius, id, 'borderRadius');
+      html += `<div class="prop-group">
+        <div class="prop-label">BLUR (glass)</div>
+        <select class="prop-input" onchange="updateElProp(${id},'blur',this.value==='true')">
+          <option ${p.blur?'selected':''} value="true">On</option>
+          <option ${!p.blur?'selected':''} value="false">Off</option>
+        </select></div>`;
+      break;
+
+    case 'divider':
+      html += propColorRow('Color', p.color, id, 'color');
+      html += propNum('Height', p.height, id, 'height');
+      break;
+
+    case 'row':
+      html += propColorRow('Background', p.bg, id, 'bg');
+      html += propNum('Gap', p.gap, id, 'gap');
+      break;
+
+    case 'input':
+      html += propText('Hint', p.hint, id, 'hint');
+      html += propColorRow('Background', p.bg, id, 'bg');
+      html += propColorRow('Text Color', p.textColor, id, 'textColor');
+      html += propNum('Border Radius', p.borderRadius, id, 'borderRadius');
+      break;
+
+    case 'icon':
+      html += propText('Emoji', p.emoji, id, 'emoji');
+      html += propNum('Size', p.fontSize, id, 'fontSize');
+      html += propColorRow('Background', p.bg, id, 'bg');
+      break;
+  }
+
+  body.innerHTML = html;
+}
+
+function propText(label, val, id, key) {
+  return `<div class="prop-group">
+    <div class="prop-label">${label.toUpperCase()}</div>
+    <input class="prop-input" value="${(val||'').replace(/"/g,'&quot;')}"
+      onchange="updateElProp(${id},'${key}',this.value)">
+  </div>`;
+}
+function propNum(label, val, id, key) {
+  return `<div class="prop-group">
+    <div class="prop-label">${label.toUpperCase()}</div>
+    <input class="prop-input" type="number" value="${val||0}"
+      onchange="updateElProp(${id},'${key}',+this.value)">
+  </div>`;
+}
+function propColorRow(label, val, id, key) {
+  const safe = (val||'#FFFFFF').startsWith('#') ? val : '#FFFFFF';
+  return `<div class="prop-group">
+    <div class="prop-label">${label.toUpperCase()}</div>
+    <div class="prop-row">
+      <input class="prop-input" value="${val||''}"
+        oninput="updateElProp(${id},'${key}',this.value)">
+      <input type="color" class="color-preview" value="${safe}"
+        oninput="updateElPropColor(${id},'${key}',this.value)">
+    </div>
+  </div>`;
+}
+function propImg(id, src) {
+  return `<div class="prop-group">
+    <div class="prop-label">IMAGE</div>
+    <div class="prop-upload" onclick="triggerImgUpload(${id})">📁 Upload image</div>
+    ${src ? `<img class="prop-img-preview" id="pp-${id}" src="${src}" style="display:block">` : ''}
+  </div>`;
+}
+
+function updateElProp(id, key, val) {
+  const el = elements.find(e => e.id === id);
+  if (!el) return;
+  if (key === '_x') { el.x = +val; }
+  else if (key === '_y') { el.y = +val; }
+  else if (key === '_w') { el.w = Math.max(20, +val); }
+  else if (key === '_h') { el.h = Math.max(10, +val); }
+  else { el.props[key] = val; }
+  renderAll();
+  showProps(id);
+}
+function updateElPropColor(id, key, val) {
+  updateElProp(id, key, val);
+}
+
+function deleteEl(id) {
+  elements = elements.filter(e => e.id !== id);
+  selectedId = null;
+  renderAll();
+  document.getElementById('props-empty').style.display = '';
+  document.getElementById('props-body').style.display = 'none';
+  document.getElementById('props-head').innerHTML = '<span>PROPERTIES</span>';
+}
+
+function triggerImgUpload(id) {
+  const inp = document.getElementById('img-file-input');
+  inp.onchange = e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      const el = elements.find(e => e.id === id);
+      if (!el) return;
+      el.props.src = ev.target.result;
+      el.props.srcName = file.name.replace(/\.[^.]+$/,'').replace(/[^a-z0-9_]/gi,'_').toLowerCase();
+      renderAll();
+      showProps(id);
+    };
+    reader.readAsDataURL(file);
+  };
+  inp.click();
+}
+
+// ──────────────────────────────────────────
+// Drag from palette → canvas
+// ──────────────────────────────────────────
+document.querySelectorAll('.comp-item').forEach(item => {
+  item.addEventListener('dragstart', e => {
+    dragType = item.dataset.type;
+    e.dataTransfer.effectAllowed = 'copy';
+  });
+});
+
+canvas.addEventListener('dragover', e => {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'copy';
+  canvas.classList.add('drag-over');
+});
+canvas.addEventListener('dragleave', () => canvas.classList.remove('drag-over'));
+canvas.addEventListener('drop', e => {
+  e.preventDefault();
+  canvas.classList.remove('drag-over');
+  if (!dragType) return;
+  const rect = canvas.getBoundingClientRect();
+  const x = Math.round(e.clientX - rect.left);
+  const y = Math.round(e.clientY - rect.top);
+  const [w, h] = defaultSize(dragType);
+  const el = {
+    id: nextId++,
+    type: dragType,
+    x: Math.max(0, x - w/2),
+    y: Math.max(0, y - h/2),
+    w, h,
+    props: defaultProps(dragType)
+  };
+  elements.push(el);
+  selectEl(el.id);
+  dragType = null;
+});
+
+// ──────────────────────────────────────────
+// Move elements on canvas
+// ──────────────────────────────────────────
+document.addEventListener('mousemove', e => {
+  if (resizing) {
+    const r = resizing;
+    const dx = e.clientX - r.startX;
+    const dy = e.clientY - r.startY;
+    const el = elements.find(e => e.id === r.id);
+    if (!el) return;
+    if (r.handle === 'se') { el.w = Math.max(20, r.startW + dx); el.h = Math.max(10, r.startH + dy); }
+    else if (r.handle === 'e') { el.w = Math.max(20, r.startW + dx); }
+    else if (r.handle === 's') { el.h = Math.max(10, r.startH + dy); }
+    renderAll();
+    return;
+  }
+  if (!isDraggingEl || !selectedId) return;
+  const el = elements.find(e => e.id === selectedId);
+  if (!el) return;
+  const rect = canvas.getBoundingClientRect();
+  el.x = Math.max(0, Math.min(375 - el.w, e.clientX - rect.left - dragOffX));
+  el.y = Math.max(0, e.clientY - rect.top - dragOffY);
+  // Just update DOM position directly for perf
+  const dom = document.getElementById('el-' + el.id);
+  if (dom) { dom.style.left = el.x+'px'; dom.style.top = el.y+'px'; }
+});
+
+document.addEventListener('mouseup', () => {
+  isDraggingEl = false;
+  resizing = null;
+});
+
+// ──────────────────────────────────────────
+// XML Export
+// ──────────────────────────────────────────
+function exportXML() {
+  const sorted = [...elements].sort((a,b) => a.y - b.y);
+  let xml = `<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">\n\n`;
+
+  sorted.forEach(el => {
+    xml += elToXML(el);
+    xml += '\n';
+  });
+
+  xml += `</androidx.constraintlayout.widget.ConstraintLayout>`;
+  document.getElementById('xml-output').textContent = xml;
+  document.getElementById('xml-modal').classList.remove('hidden');
+}
+
+function elToXML(el) {
+  const p = el.props;
+  const id = `@+id/el_${el.type}_${el.id}`;
+  const W = el.w;
+  const H = el.h;
+  const marginTop = el.y;
+  const marginStart = el.x;
+
+  const constraints = `    app:layout_constraintTop_toTopOf="parent"
+    app:layout_constraintStart_toStartOf="parent"
+    android:layout_marginTop="${marginTop}dp"
+    android:layout_marginStart="${marginStart}dp"`;
+
+  switch(el.type) {
+    case 'text':
+      return `    <TextView
+    android:id="${id}"
+    android:layout_width="${W}dp"
+    android:layout_height="${H}dp"
+${constraints}
+    android:text="${esc(p.text)}"
+    android:textSize="${p.fontSize}sp"
+    android:textColor="${p.color}"
+    android:textStyle="${p.fontWeight==='bold'?'bold':'normal'}"
+    android:paddingHorizontal="${p.paddingH}dp"
+    android:paddingVertical="${p.paddingV}dp"
+    android:background="${bgAttr(p.bg, p.borderRadius)}"/>`;
+
+    case 'image':
+    case 'circle':
+      return `    <ImageView
+    android:id="${id}"
+    android:layout_width="${W}dp"
+    android:layout_height="${H}dp"
+${constraints}
+    android:src="${p.srcName ? '@drawable/' + p.srcName : '@drawable/placeholder'}"
+    android:scaleType="centerCrop"
+    android:background="${bgAttr(p.bg, p.borderRadius)}"/>`;
+
+    case 'card':
+      return `    <com.google.android.material.card.MaterialCardView
+    android:id="${id}"
+    android:layout_width="${W}dp"
+    android:layout_height="${H}dp"
+${constraints}
+    app:cardBackgroundColor="${p.bg}"
+    app:cardCornerRadius="${p.borderRadius}dp"
+    app:cardElevation="${p.elevation}dp">
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:text="${esc(p.text)}"
+            android:textColor="${p.textColor}"
+            android:textSize="${p.fontSize}sp"
+            android:textStyle="bold"
+            android:gravity="center_vertical"
+            android:paddingHorizontal="14dp"/>
+    </com.google.android.material.card.MaterialCardView>`;
+
+    case 'button':
+      return `    <com.google.android.material.button.MaterialButton
+    android:id="${id}"
+    android:layout_width="${W}dp"
+    android:layout_height="${H}dp"
+${constraints}
+    android:text="${esc(p.text)}"
+    android:textColor="${p.textColor}"
+    android:textSize="${p.fontSize}sp"
+    app:backgroundTint="${p.bg}"
+    app:cornerRadius="${p.borderRadius}dp"
+    style="${p.style==='outlined'?'@style/Widget.MaterialComponents.Button.OutlinedButton':'@style/Widget.MaterialComponents.Button'}"/>`;
+
+    case 'header':
+      return `    <!-- Header: ${esc(p.text)} -->
+    <TextView
+    android:id="${id}_title"
+    android:layout_width="${W}dp"
+    android:layout_height="wrap_content"
+${constraints}
+    android:text="${esc(p.text)}"
+    android:textSize="${p.fontSize}sp"
+    android:textColor="${p.textColor}"
+    android:textStyle="bold"/>
+    <TextView
+    android:id="${id}_sub"
+    android:layout_width="${W}dp"
+    android:layout_height="wrap_content"
+    app:layout_constraintTop_toBottomOf="${id}_title"
+    app:layout_constraintStart_toStartOf="parent"
+    android:layout_marginStart="${marginStart}dp"
+    android:layout_marginTop="2dp"
+    android:text="${esc(p.subtitle)}"
+    android:textSize="13sp"
+    android:textColor="#9B92B0"
+    android:textStyle="italic"/>`;
+
+    case 'badge':
+      return `    <TextView
+    android:id="${id}"
+    android:layout_width="${W}dp"
+    android:layout_height="${H}dp"
+${constraints}
+    android:text="${esc(p.text)}"
+    android:textSize="${p.fontSize}sp"
+    android:textColor="${p.textColor}"
+    android:textStyle="bold"
+    android:gravity="center"
+    android:letterSpacing="0.05"
+    android:background="@drawable/bg_badge_${el.id}"/>
+    <!-- bg_badge_${el.id}: shape oval, solid color ${p.bg}, corner ${p.borderRadius}dp -->`;
+
+    case 'stat':
+      return `    <!-- StatCard: ${p.label} -->
+    <LinearLayout
+    android:id="${id}"
+    android:layout_width="${W}dp"
+    android:layout_height="${H}dp"
+${constraints}
+    android:orientation="vertical"
+    android:gravity="center_vertical"
+    android:paddingHorizontal="14dp"
+    android:background="@drawable/bg_stat_glass">
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="${esc(p.value)}"
+            android:textSize="22sp"
+            android:textColor="${p.textColor}"
+            android:textStyle="bold"/>
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="${esc(p.label)}"
+            android:textSize="11sp"
+            android:textColor="${p.textColor}"
+            android:alpha="0.75"
+            android:layout_marginTop="4dp"/>
+    </LinearLayout>`;
+
+    case 'divider':
+      return `    <View
+    android:id="${id}"
+    android:layout_width="${W}dp"
+    android:layout_height="${p.height}dp"
+${constraints}
+    android:background="${p.color}"/>`;
+
+    case 'input':
+      return `    <com.google.android.material.textfield.TextInputLayout
+    android:id="${id}_wrap"
+    android:layout_width="${W}dp"
+    android:layout_height="${H}dp"
+${constraints}
+    style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+    app:boxCornerRadiusTopStart="${p.borderRadius}dp"
+    app:boxCornerRadiusTopEnd="${p.borderRadius}dp"
+    app:boxCornerRadiusBottomStart="${p.borderRadius}dp"
+    app:boxCornerRadiusBottomEnd="${p.borderRadius}dp"
+    app:boxBackgroundColor="${p.bg}">
+        <com.google.android.material.textfield.TextInputEditText
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:hint="${esc(p.hint)}"
+            android:textColor="${p.textColor}"/>
+    </com.google.android.material.textfield.TextInputLayout>`;
+
+    case 'icon':
+      return `    <TextView
+    android:id="${id}"
+    android:layout_width="${W}dp"
+    android:layout_height="${H}dp"
+${constraints}
+    android:text="${p.emoji}"
+    android:textSize="${p.fontSize}sp"
+    android:gravity="center"
+    android:background="${bgAttr(p.bg, 0)}"/>`;
+
+    default:
+      return `    <!-- ${el.type} at (${el.x},${el.y}) -->`;
+  }
+}
+
+function bgAttr(color, radius) {
+  if (!color || color === 'transparent' || color === 'rgba(0,0,0,0)') return '@null';
+  if (radius > 0) return '@drawable/bg_r' + radius; // note: generate this drawable
+  return `"${color}"`;
+}
+function esc(str) { return (str||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+function copyXML() {
+  const txt = document.getElementById('xml-output').textContent;
+  navigator.clipboard.writeText(txt).then(() => {
+    const msg = document.getElementById('copied-msg');
+    msg.style.display = 'flex';
+    setTimeout(() => msg.style.display = 'none', 2000);
+  });
+}
+
+function closeModal(e) {
+  if (e.target === document.getElementById('xml-modal'))
+    document.getElementById('xml-modal').classList.add('hidden');
+}
+
+function clearCanvas() {
+  if (!confirm('Clear all elements?')) return;
+  elements = [];
+  selectedId = null;
+  renderAll();
+  document.getElementById('props-empty').style.display = '';
+  document.getElementById('props-body').style.display = 'none';
+  document.getElementById('props-head').innerHTML = '<span>PROPERTIES</span>';
+}
+
+// ──────────────────────────────────────────
+// Load Stroll Sample
+// ──────────────────────────────────────────
+function loadSample() {
+  if (elements.length && !confirm('Replace canvas with Stroll sample?')) return;
+  elements = [];
+  selectedId = null;
+  nextId = 1;
+
+  const add = (type, x, y, w, h, props) => {
+    elements.push({ id: nextId++, type, x, y, w, h,
+      props: Object.assign(defaultProps(type), props) });
+  };
+
+  // Green gradient background card
+  add('card', 0, 0, 375, 400, { bg: '#5A9878', borderRadius: 0, text: '', elevation: 0 });
+  // Status
+  add('text', 20, 14, 200, 20, { text: '9:41', color: 'rgba(255,255,255,0.85)', fontSize: 13 });
+  // Back + Title
+  add('text', 20, 50, 200, 32, { text: '‹  Stroll', color: '#FFFFFF', fontSize: 18, fontWeight: 'bold' });
+  // Shoe icon
+  add('icon', 320, 48, 36, 36, { emoji: '👟', fontSize: 24, bg: 'transparent' });
+  // LIVE badge
+  add('badge', 20, 100, 68, 28, { text: '● LIVE', bg: 'rgba(255,255,255,0.18)', textColor: '#FFFFFF', fontSize: 11, borderRadius: 20 });
+  // Timer
+  add('text', 20, 138, 220, 52, { text: '00:12:36', color: '#FFFFFF', fontSize: 42, fontWeight: 'bold' });
+  // FABs
+  add('circle', 312, 98, 44, 44, { bg: 'rgba(255,255,255,0.18)', borderRadius: 999 });
+  add('icon', 312, 98, 44, 44, { emoji: '📷', fontSize: 18, bg: 'transparent' });
+  add('circle', 312, 152, 44, 44, { bg: 'rgba(255,255,255,0.18)', borderRadius: 999 });
+  add('icon', 312, 152, 44, 44, { emoji: '🎙', fontSize: 18, bg: 'transparent' });
+  add('circle', 312, 206, 44, 44, { bg: 'rgba(255,255,255,0.18)', borderRadius: 999 });
+  add('icon', 312, 206, 44, 44, { emoji: '⛶', fontSize: 18, bg: 'transparent' });
+  // Pace chip
+  add('badge', 20, 200, 130, 26, { text: "5'42\" / km", bg: 'rgba(255,255,255,0.18)', textColor: '#FFFFFF', fontSize: 11, borderRadius: 20 });
+  // Stats row
+  add('stat', 16, 290, 110, 72, { value: '5,842', label: 'Steps', bg: 'rgba(255,255,255,0.18)', textColor: '#FFFFFF', blur: true, borderRadius: 16 });
+  add('stat', 134, 290, 110, 72, { value: '4.2 km', label: 'Distance', bg: 'rgba(255,255,255,0.18)', textColor: '#FFFFFF', blur: true, borderRadius: 16 });
+  add('stat', 252, 290, 108, 72, { value: '312', label: 'Energy cal', bg: 'rgba(255,255,255,0.18)', textColor: '#FFFFFF', blur: true, borderRadius: 16 });
+  // Dock background
+  add('card', 0, 376, 375, 100, { bg: 'rgba(255,255,255,0.2)', borderRadius: 0, elevation: 0, text: '' });
+  // Dock divider
+  add('divider', 0, 376, 375, 1, { color: 'rgba(255,255,255,0.3)', height: 1 });
+  // Flashlight btn
+  add('card', 16, 388, 52, 52, { bg: 'rgba(255,255,255,0.2)', borderRadius: 14, elevation: 0, text: '🔦', textColor: '#FFFFFF', fontSize: 22 });
+  // Pause btn
+  add('button', 80, 388, 132, 52, { text: '⏸ Pause', bg: '#FFFFFF', textColor: '#4D8C70', borderRadius: 14, style: 'filled', fontSize: 14 });
+  // End btn
+  add('button', 224, 388, 132, 52, { text: '■ End Stroll', bg: 'rgba(255,255,255,0.15)', textColor: '#FFFFFF', borderRadius: 14, style: 'outlined', fontSize: 14 });
+
+  renderAll();
+}
+</script>
+</body>
+</html>

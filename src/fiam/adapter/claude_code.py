@@ -27,9 +27,15 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from fiam.runtime.turns import (
+    parse_ts as _parse_ts,
+    speaker_label as _speaker_label,
+    speaker_text as _speaker_text,
+    split_routed_text as _extract_routed,
+)
 
 if TYPE_CHECKING:
     from fiam.store.beat import Beat, UserStatus, AiStatus
@@ -404,27 +410,6 @@ class ClaudeCodeAdapter:
 # Helpers for beat parsing
 # ------------------------------------------------------------------
 
-def _parse_ts(ts_str: str) -> datetime:
-    """Parse ISO timestamp string, fallback to now()."""
-    if ts_str:
-        try:
-            return datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-        except ValueError:
-            pass
-    return datetime.now(timezone.utc)
-
-
-def _speaker_label(name: str, fallback: str) -> str:
-    return (name or fallback).strip().lower() or fallback
-
-
-def _speaker_text(speaker: str, text: str) -> str:
-    clean = text.strip()
-    if clean.startswith(f"{speaker}:") or clean.startswith(f"{speaker}："):
-        return clean
-    return f"{speaker}：{clean}"
-
-
 def _tool_brief(name: str, inp: dict) -> str:
     """Produce a brief natural-language summary of a tool_use block."""
     if name in ("Read", "Glob"):
@@ -446,25 +431,3 @@ def _tool_brief(name: str, inp: dict) -> str:
     return f"[{name}]"
 
 
-def _extract_routed(text: str) -> tuple[list["OutboundMarker"], str]:
-    """Extract routing markers from assistant text.
-
-    Returns (routed_parts, remaining_text).
-    routed_parts: list of OutboundMarker values.
-
-    Routing markers are parsed by fiam.markers, so plugin dispatch aliases work
-    here too. Text outside markers remains normal CC dialogue.
-    """
-    from fiam.markers import parse_outbound_markers
-
-    markers = parse_outbound_markers(text)
-    if not markers:
-        return [], text
-
-    remaining = re.sub(
-        r"\[→[A-Za-z0-9_-]+:[^\]\n]+\]\s*.*?(?=(?:\n\s*)?\[→[A-Za-z0-9_-]+:[^\]\n]+\]|\Z)",
-        "",
-        text,
-        flags=re.DOTALL,
-    ).strip()
-    return markers, remaining

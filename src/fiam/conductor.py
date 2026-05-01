@@ -79,6 +79,7 @@ class Conductor:
 
         self._drift_threshold = drift_threshold
         self._last_vec: np.ndarray | None = None
+        self._last_ingested_vec: np.ndarray | None = None
         self._on_drift = on_drift
 
         # StreamGorge for real-time segmentation
@@ -90,6 +91,11 @@ class Conductor:
 
         # Beat buffer (parallel to gorge's embedding buffer)
         self._beat_buf: list[Beat] = []
+
+    @property
+    def last_ingested_vector(self) -> np.ndarray | None:
+        """Embedding vector for the most recently ingested beat, if available."""
+        return self._last_ingested_vec
 
     # ==================================================================
     # Status
@@ -125,6 +131,7 @@ class Conductor:
         except Exception:
             logger.error("embed failed for beat at %s, skipping gorge", beat.t.isoformat())
             return None
+        self._last_ingested_vec = vec
 
         if self.feature_store is not None:
             try:

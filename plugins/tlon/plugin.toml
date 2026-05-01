@@ -1,0 +1,31 @@
+id = "tlon"
+name = "Tlön garden"
+enabled = true
+status = "active"
+kind = "tool"
+description = "AI-curated knowledge-garden frontend at tlon.garden. Mutates world state through structured ops; the SvelteKit frontend renders the result."
+transports = ["fs"]
+capabilities = ["mutate_world", "list_world"]
+entrypoint = "../Tlon/bridge/apply_op.py"
+auth = "filesystem only — Tlön repo must live as a sibling of fiam-code"
+latency = "synchronous; frontend polls /world.json every 3s"
+env = ["TLON_REPO_PATH (optional, default ../Tlon)"]
+
+[ops]
+add_tile = "Place a knowledge building. Args: hex [q,r], asset (path under static/models/), label, source?"
+remove_tile = "Args: id"
+add_scene = "Place an animated/interactive scene. Args: hex, asset, animation?, label?"
+set_weather = "Args: weather in {clear,rain,snow,fog,storm}"
+set_season = "Args: season in {spring,summer,autumn,winter}"
+advance_time = "Args: days (int)"
+regenerate_terrain = "Args: seed?, size?"
+set_label = "Args: id, label"
+lock_region = "Args: region, visibility in {public,owner_only,ai_only}"
+set_npc_persona = "Args: npc_id, persona (system prompt for cheap LLM)"
+
+notes = [
+  "All ops are JSON. Pipe via stdin: '<json>' | python <entrypoint> -",
+  "Schema: ../Tlon/world/ops.schema.json",
+  "State: ../Tlon/world/world.json",
+  "Op log: ../Tlon/world/ops.log.jsonl",
+]

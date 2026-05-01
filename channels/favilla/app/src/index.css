@@ -1,0 +1,143 @@
+@import "tailwindcss";
+
+@font-face {
+  font-family: "Anthropic Serif";
+  src: url("./assets/fonts/AnthropicSerif-Roman.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Anthropic Serif";
+  src: url("./assets/fonts/AnthropicSerif-Italic.ttf") format("truetype");
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Anthropic Sans";
+  src: url("./assets/fonts/AnthropicSans-Roman.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Anthropic Sans";
+  src: url("./assets/fonts/AnthropicSans-Italic.ttf") format("truetype");
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Anthropic Mono";
+  src: url("./assets/fonts/AnthropicMono-Roman.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Favilla v2 design tokens — palette: Cocoa / Dusty / Peach / Cream / Sage */
+@theme {
+  --color-cocoa: #664E44;
+  --color-cocoa-deep: #3f2f29;
+  --color-dusty: #B08B7F;
+  --color-dusty-soft: #d6bdb3;
+  --color-peach: #FFE8D6;
+  --color-peach-deep: #f4cdb0;
+  --color-cream: #FAF4E5;
+  --color-sage: #C7C3B0;
+  --color-sage-deep: #8a8674;
+
+  --color-paper: #FAF4E5;
+  --color-ink: #3f2f29;
+
+  --font-serif: "Anthropic Serif", "Source Han Serif SC", "Noto Serif SC", serif;
+  --font-sans: "Anthropic Sans", system-ui, sans-serif;
+  --font-mono: "Anthropic Mono", ui-monospace, monospace;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--color-cream);
+  color: var(--color-ink);
+  font-family: var(--font-serif);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Markdown content — sans for body, serif italic for emphasis */
+.md {
+  font-family: var(--font-sans);
+}
+.md p {
+  margin: 0 0 0.6em 0;
+}
+.md p:last-child { margin-bottom: 0; }
+.md em {
+  font-family: var(--font-serif);
+  font-style: italic;
+}
+.md ul, .md ol {
+  margin: 0.4em 0 0.6em 0;
+  padding-left: 1.2em;
+  list-style: none;
+}
+.md ul > li {
+  position: relative;
+  padding-left: 0.2em;
+  margin: 0.15em 0;
+}
+.md ul > li::before {
+  content: "✦";
+  position: absolute;
+  left: -1em;
+  top: 0.05em;
+  color: var(--color-dusty);
+  font-size: 0.85em;
+}
+.md ol {
+  counter-reset: item;
+}
+.md ol > li {
+  position: relative;
+  counter-increment: item;
+  margin: 0.15em 0;
+}
+.md ol > li::before {
+  content: counter(item) ".";
+  position: absolute;
+  left: -1.4em;
+  color: var(--color-dusty);
+  font-style: italic;
+}
+.md em { font-style: italic; }
+.md strong { font-weight: 600; color: var(--color-cocoa-deep); }
+.md a { color: var(--color-cocoa); text-decoration: underline; text-decoration-color: var(--color-dusty); text-underline-offset: 2px; }
+.md code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  background: rgba(102,78,68,0.08);
+  padding: 0.05em 0.35em;
+  border-radius: 4px;
+}
+.md blockquote {
+  margin: 0.5em 0;
+  padding-left: 0.9em;
+  border-left: 2px solid var(--color-dusty);
+  color: var(--color-cocoa);
+  font-style: italic;
+}
+
+/* Slim, no-arrow scrollbar for the composer textarea */
+.composer-input::-webkit-scrollbar { width: 4px; }
+.composer-input::-webkit-scrollbar-track { background: transparent; }
+.composer-input::-webkit-scrollbar-thumb {
+  background: rgba(63, 47, 41, 0.25);
+  border-radius: 2px;
+}
+.composer-input::-webkit-scrollbar-button { display: none; }
+.composer-input { scrollbar-width: thin; scrollbar-color: rgba(63,47,41,0.25) transparent; }

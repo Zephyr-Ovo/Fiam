@@ -98,6 +98,15 @@ def main() -> None:
     plugin_disable.add_argument("plugin_id", type=str)
     sub_plugin.set_defaults(func=_cmd_plugin)
 
+    # api — manual API runtime smoke call
+    sub_api = subparsers.add_parser("api", help="Call configured API runtime once")
+    add_common(sub_api)
+    sub_api.add_argument("text", type=str, help="User text to send to the API runtime")
+    sub_api.add_argument("--source", type=str, default="cli", help="Source label for prompt/flow metadata")
+    sub_api.add_argument("--no-record", action="store_true", default=False,
+                         help="Do not write the call into flow.jsonl")
+    sub_api.set_defaults(func=_cmd_api)
+
     args = parser.parse_args()
     args.func(args)
 
@@ -145,6 +154,10 @@ def _cmd_remove_home(args):
 def _cmd_plugin(args):
     from fiam_lib.plugins import cmd_plugin
     cmd_plugin(args)
+
+def _cmd_api(args):
+    from fiam_lib.api_runtime import cmd_api
+    cmd_api(args)
 
 if __name__ == "__main__":
     main()

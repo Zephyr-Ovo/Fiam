@@ -15,7 +15,14 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fiam_lib.core import _project_root, _toml_path, _build_config, _pid_path, _is_daemon_running
+from fiam_lib.core import (
+    _project_root,
+    _toml_path,
+    _build_config,
+    _pid_path,
+    _is_daemon_running,
+    _load_env_file,
+)
 
 # ------------------------------------------------------------------
 # Pipeline diagnostic log  (logs/pipeline.log)
@@ -410,17 +417,7 @@ def cmd_start(args: argparse.Namespace) -> None:
     code_path = _project_root()
 
     # ── Load .env (secrets like API keys, bot tokens) ──
-    env_file = code_path / ".env"
-    if env_file.is_file():
-        for line in env_file.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "=" in line:
-                key, _, val = line.partition("=")
-                key, val = key.strip(), val.strip().strip("\"'")
-                if key and key not in os.environ:
-                    os.environ[key] = val
+    _load_env_file(code_path)
 
     # ── Setup pipeline log ──
     log_dir = code_path / "logs"
@@ -463,12 +460,10 @@ def cmd_start(args: argparse.Namespace) -> None:
 
     # Initial imports for new architecture
     from fiam.retriever.embedder import Embedder
-    from fiam.retriever.spread import retrieve
     from fiam.store.features import FeatureStore
     from fiam.store.pool import Pool
     from fiam.conductor import Conductor
     from fiam.bus import Bus, RECEIVE_ALL
-    import numpy as np
     import queue as _queue
 
     # ── MQTT bus: replaces all channel polling ──
@@ -525,58 +520,15 @@ def cmd_start(args: argparse.Namespace) -> None:
     event_count = _pool.event_count
 
     # ── Recall: daemon owns this (recall never enters flow) ──
-    _recall_path = config.background_path
-    _recall_dirty_path = _recall_path.parent / ".recall_dirty" if _recall_path else None
     _recall_top_k = 3
 
     def _refresh_recall(query_vec) -> None:
         """Run spreading activation and write recall.md + .recall_dirty marker."""
-        results = retrieve(
-            query_vec,
-            _pool,
-            shield_after=datetime.now(timezone.utc).replace(
-                hour=0, minute=0, second=0, microsecond=0
-            ),
-            top_k=_recall_top_k,
-        )
-        if not results:
-            return
+        from fiam.runtime.recall import refresh_recall
 
-        now = datetime.now(timezone.utc)
-        lines = [f"<!-- recall | {now.strftime('%Y-%m-%dT%H:%M:%SZ')} -->", ""]
-
-        for event_id, activation in results:
-            ev = _pool.get_event(event_id)
-            if ev is None:
-                continue
-            body = _pool.read_body(event_id)
-            fragment = body.strip()[:200]
-            if len(body.strip()) > 200:
-                fragment += "..."
-
-            age = now - ev.t
-            if age.days > 30:
-                hint = f"{age.days // 30}个月前"
-            elif age.days > 0:
-                hint = f"{age.days}天前"
-            elif age.seconds > 3600:
-                hint = f"{age.seconds // 3600}小时前"
-            else:
-                hint = "刚才"
-
-            lines.append(f"- ({hint}) {fragment}")
-            ev.access_count += 1
-
-        _pool.save_events()
-
-        content = "\n".join(lines) + "\n"
-        _recall_path.parent.mkdir(parents=True, exist_ok=True)
-        _recall_path.write_text(content, encoding="utf-8")
-        # Touch dirty marker so hook knows there's fresh recall
-        if _recall_dirty_path:
-            _recall_dirty_path.touch()
-
-        _plog.info("recall refreshed (%d fragments)", len(results))
+        count = refresh_recall(config, _pool, query_vec, top_k=_recall_top_k)
+        if count:
+            _plog.info("recall refreshed (%d fragments)", count)
 
     # ── Conductor: stateless hub, drift → _refresh_recall callback ──
     _conductor = Conductor(

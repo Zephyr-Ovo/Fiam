@@ -211,6 +211,17 @@ class FiamConfig:
     cc_disallowed_tools: str = ""     # comma-separated tool names to disable (e.g. "WebFetch,NotebookEdit")
 
     # ------------------------------------------------------------------
+    # API runtime parameters (OpenAI-compatible chat completions)
+    # ------------------------------------------------------------------
+    api_provider: str = "openai_compatible"
+    api_model: str = "deepseek/deepseek-chat-v3-0324:free"
+    api_base_url: str = "https://openrouter.ai/api/v1"
+    api_key_env: str = "OPENROUTER_API_KEY"
+    api_temperature: float = 0.7
+    api_max_tokens: int = 2048
+    api_timeout_seconds: int = 60
+
+    # ------------------------------------------------------------------
     # Features
     # ------------------------------------------------------------------
     git_enabled: bool = True
@@ -437,6 +448,15 @@ class FiamConfig:
             f"tg_poll_interval = {self.tg_poll_interval}",
             f"email_poll_interval = {self.email_poll_interval}",
             "",
+            "[api]",
+            f'provider = "{self.api_provider}"',
+            f'model = "{self.api_model}"',
+            f'base_url = "{self.api_base_url}"',
+            f'api_key_env = "{self.api_key_env}"',
+            f"temperature = {self.api_temperature}",
+            f"max_tokens = {self.api_max_tokens}",
+            f"timeout_seconds = {self.api_timeout_seconds}",
+            "",
             "[conductor]",
             f'memory_mode = "{self.memory_mode}"',
             f"gorge_max_beat = {self.gorge_max_beat}",
@@ -501,6 +521,7 @@ class FiamConfig:
         extraction = raw.get("extraction", {})
         narrative = raw.get("narrative", {})
         daemon = raw.get("daemon", {})
+        api = raw.get("api", {})
         features = raw.get("features", {})
         comm = raw.get("communication", raw.get("comms", {}))
         graph = raw.get("graph", {})
@@ -569,6 +590,14 @@ class FiamConfig:
             daily_budget_usd=daemon.get("daily_budget_usd", cls.daily_budget_usd),
             cc_model=daemon.get("cc_model", cls.cc_model),
             cc_disallowed_tools=daemon.get("cc_disallowed_tools", cls.cc_disallowed_tools),
+            # API runtime
+            api_provider=api.get("provider", cls.api_provider),
+            api_model=api.get("model", cls.api_model),
+            api_base_url=api.get("base_url", cls.api_base_url),
+            api_key_env=api.get("api_key_env", cls.api_key_env),
+            api_temperature=api.get("temperature", cls.api_temperature),
+            api_max_tokens=api.get("max_tokens", cls.api_max_tokens),
+            api_timeout_seconds=api.get("timeout_seconds", cls.api_timeout_seconds),
             # MQTT
             mqtt_host=mqtt_cfg.get("host", cls.mqtt_host),
             mqtt_port=mqtt_cfg.get("port", cls.mqtt_port),

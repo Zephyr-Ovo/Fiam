@@ -690,57 +690,230 @@ def _api_app_chat(payload: dict) -> dict:
     if not _CONFIG:
         raise RuntimeError("config not loaded")
     text = str(payload.get("text") or "").strip()
-    if not text:
+    attachments = payload.get("attachments") or []
+    if not isinstance(attachments, list):
+        attachments = []
+    # Validate attachment paths are inside uploads dir
+    safe_attachments = []
+    uploads_root = (_CONFIG.home_path / "uploads").resolve()
+    for att in attachments:
+        if not isinstance(att, dict):
+            continue
+        p = str(att.get("path") or "").strip()
+        if not p:
+            continue
+        try:
+            resolved = Path(p).resolve()
+        except Exception:
+            continue
+        try:
+            resolved.relative_to(uploads_root)
+        except ValueError:
+            continue
+        if not resolved.exists():
+            continue
+        safe_attachments.append({
+            "path": str(resolved),
+            "name": str(att.get("name") or resolved.name),
+            "mime": str(att.get("mime") or ""),
+        })
+    if not text and not safe_attachments:
         raise ValueError("missing text")
+    if not text:
+        text = "(see attached file)"
     source = str(payload.get("source") or "favilla").strip() or "favilla"
     backend = str(payload.get("backend") or "cc").strip().lower() or "cc"
+    if backend == "api":
+        return _run_api_app_chat(text=text, source=source, attachments=safe_attachments)
     if backend != "cc":
-        raise ValueError("server chat backend must be cc")
-    return _run_cc_app_chat(text=text, source=source)
+        raise ValueError("server chat backend must be cc or api")
+    return _run_cc_app_chat(text=text, source=source, attachments=safe_attachments)
 
 
-# CoT visibility: AI wraps the part it agrees to reveal in <<COT:show>>...<<COT:end>>.
-# <<COT:hide>> is a bare marker meaning "I deliberately won't reveal anything this turn."
-# All COT markers are stripped from the user-facing reply before it leaves the server.
+def _api_app_upload(payload: dict) -> dict:
+    """Accept base64-encoded files, save under home_path/uploads/<date>/<hash>-<name>."""
+    if not _CONFIG:
+        raise RuntimeError("config not loaded")
+    import base64
+    import hashlib
+    files_in = payload.get("files") or []
+    if not isinstance(files_in, list) or not files_in:
+        raise ValueError("missing files")
+    date_dir = datetime.now().strftime("%Y-%m-%d")
+    out_dir = _CONFIG.home_path / "uploads" / date_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+    saved = []
+    for f in files_in:
+        if not isinstance(f, dict):
+            continue
+        name = str(f.get("name") or "").strip()
+        b64 = str(f.get("data") or "")
+        mime = str(f.get("mime") or "")
+        if not name or not b64:
+            continue
+        # Strip data: prefix if present
+        if "," in b64 and b64.startswith("data:"):
+            b64 = b64.split(",", 1)[1]
+        try:
+            raw = base64.b64decode(b64)
+        except Exception as exc:
+            raise ValueError(f"bad base64 for {name}: {exc}") from exc
+        # Sanitize name: keep ext, strip path components
+        safe_name = Path(name).name.replace("/", "_").replace("\\", "_")
+        digest = hashlib.sha256(raw).hexdigest()[:12]
+        target = out_dir / f"{digest}-{safe_name}"
+        target.write_bytes(raw)
+        saved.append({
+            "path": str(target),
+            "name": safe_name,
+            "mime": mime,
+            "size": len(raw),
+        })
+    return {"ok": True, "files": saved}
+
+
+# ------------------------------------------------------------------
+# App memory ops (manual mode): /api/app/recall, /api/app/seal
+# ------------------------------------------------------------------
+#
+# Until BGE-M3 is well-tuned for personal-life semantics, the system runs
+# in manual memory_mode: the user (via Favilla app or dashboard) decides
+# *when* to recall and *when* to seal an event. Embeddings/edges are still
+# computed and stored so we accumulate training data; they just don't
+# auto-fire retrieval or auto-segment beats.
+#
+# These endpoints are intentionally lightweight stubs right now:
+# - /api/app/recall: writes a small fake recall.md using existing events
+#   (or a placeholder if pool is empty), touches .recall_dirty so the next
+#   chat turn picks it up via _pending_recall_for_app().
+# - /api/app/seal: simulates DS processing time (sleep 2s) so the UI can
+#   show its hourglass animation, then appends a fake event to the pool
+#   (random-init 1024-d fingerprint). Real seal logic comes after the
+#   CC-path beat ingestion fix.
+
+import threading
+
+_SEAL_LOCK = threading.Lock()
+_SEAL_BUSY = False
+
+
+def _api_app_recall(payload: dict) -> dict:
+    """Toggle/write a recall.md so the next chat turn injects it."""
+    if not _CONFIG:
+        raise RuntimeError("config not loaded")
+    recall_path = _CONFIG.background_path
+    dirty_marker = _CONFIG.home_path / ".recall_dirty"
+    # Build fake recall body. If we have events in the pool, list a few
+    # of them; otherwise write a placeholder so we can exercise the wire.
+    lines = ["# Recall (manual)\n"]
+    used: list[str] = []
+    if _POOL is not None:
+        try:
+            events = _POOL.load_events()[-5:]
+            for ev in events:
+                title = (getattr(ev, "id", None) or "event").replace("_", " ")
+                t = getattr(ev, "t", None)
+                lines.append(f"- {title}  (t={t})")
+                used.append(str(getattr(ev, "id", "")))
+        except Exception:
+            pass
+    if not used:
+        lines += [
+            "- placeholder-event-1  (weight=0.7)",
+            "- placeholder-event-2  (weight=0.5)",
+            "- placeholder-event-3  (weight=0.3)",
+        ]
+    recall_path.parent.mkdir(parents=True, exist_ok=True)
+    recall_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    dirty_marker.write_text("manual\n", encoding="utf-8")
+    return {"ok": True, "count": len(used) or 3, "path": str(recall_path)}
+
+
+def _api_app_seal(payload: dict) -> dict:
+    """Synchronously package an event (currently fake). Blocks ~2s so the
+    UI hourglass animation has something to render."""
+    global _SEAL_BUSY
+    if not _CONFIG:
+        raise RuntimeError("config not loaded")
+    with _SEAL_LOCK:
+        if _SEAL_BUSY:
+            return {"ok": False, "error": "seal already in progress"}
+        _SEAL_BUSY = True
+    try:
+        import time as _time
+        import numpy as _np
+        # Simulate DS naming + edge proposal latency
+        _time.sleep(2.0)
+        if _POOL is not None:
+            try:
+                event_id = _POOL.new_event_id() if hasattr(_POOL, "new_event_id") else f"manual-{int(_time.time())}"
+                fp = _np.random.randn(_CONFIG.embedding_dim).astype(_np.float32)
+                fp /= max(float(_np.linalg.norm(fp)), 1e-9)
+                body = f"# {event_id}\n\n(manual seal placeholder)\n"
+                if hasattr(_POOL, "ingest_event"):
+                    _POOL.ingest_event(event_id, datetime.now(), body, fp)
+                return {"ok": True, "event_id": event_id, "fake": True}
+            except Exception as exc:
+                logger.exception("seal pool ingest failed")
+                return {"ok": False, "error": str(exc)}
+        return {"ok": True, "fake": True, "note": "no pool"}
+    finally:
+        with _SEAL_LOCK:
+            _SEAL_BUSY = False
+
+
+def _api_app_seal_status(_payload: dict | None = None) -> dict:
+    return {"ok": True, "busy": _SEAL_BUSY}
+
+
+# CoT visibility (new lock protocol):
+# - <<COT:show>>...<<COT:end>> wraps a thought block AI agrees to share.
+# - <<COT:lock>> (anywhere) locks the ENTIRE thought chain for this turn
+#   (covers both marker thoughts AND any native reasoning the backend may carry).
+# - Default = unlocked. AI must opt-in to lock.
+# All COT markers are stripped from the user-facing reply.
 _COT_SHOW_RE = re.compile(r"<<COT:show>>\s*(.*?)\s*<<COT:end>>", re.DOTALL | re.IGNORECASE)
+_COT_LOCK_RE = re.compile(r"<<COT:lock>>", re.IGNORECASE)
+# Legacy hide marker (kept for back-compat during transition; treated as lock).
 _COT_HIDE_RE = re.compile(r"<<COT:hide>>", re.IGNORECASE)
-_COT_DEFAULT_VISIBILITY = "hide"  # "hide" | "show"; future: read from config
 
 
-def _parse_cot(reply: str) -> tuple[str, list[dict], str]:
+def _parse_cot(reply: str) -> tuple[str, list[dict], bool]:
     """Strip <<COT:*>> markers from reply.
 
-    Returns (cleaned_reply, thoughts, intent).
-    - thoughts: list of {"text": str, "locked": False} from <<COT:show>>...<<COT:end>> blocks
-    - intent: "show" if any show block; "hide" if a bare <<COT:hide>> was present;
-              otherwise "default" (client should follow server default visibility).
+    Returns (cleaned_reply, thoughts, locked).
+    - thoughts: list of {"kind":"think","text":str,"source":"marker"} from <<COT:show>> blocks
+    - locked: True if AI wrote <<COT:lock>> (or legacy <<COT:hide>>); else False (default unlock)
     """
     if not reply:
-        return "", [], "default"
+        return "", [], False
     thoughts: list[dict] = []
     for match in _COT_SHOW_RE.finditer(reply):
         body = match.group(1).strip()
         if body:
-            thoughts.append({"text": body, "locked": False})
+            thoughts.append({"kind": "think", "text": body, "source": "marker"})
     cleaned = _COT_SHOW_RE.sub("", reply)
-    has_hide = bool(_COT_HIDE_RE.search(cleaned))
+    locked = bool(_COT_LOCK_RE.search(cleaned) or _COT_HIDE_RE.search(cleaned))
+    cleaned = _COT_LOCK_RE.sub("", cleaned)
     cleaned = _COT_HIDE_RE.sub("", cleaned).strip()
-    if thoughts:
-        intent = "show"
-    elif has_hide:
-        intent = "hide"
-    else:
-        intent = "default"
-    return cleaned, thoughts, intent
+    return cleaned, thoughts, locked
 
 
-def _run_cc_app_chat(*, text: str, source: str) -> dict:
+def _run_cc_app_chat(*, text: str, source: str, attachments: list | None = None) -> dict:
     import subprocess
 
     pending_recall = _pending_recall_for_app()
     session = _load_app_active_session()
+    prompt_text = text
+    if attachments:
+        lines = ["[attachments]"]
+        for a in attachments:
+            mime = a.get("mime") or ""
+            lines.append(f"- {a['path']}  (name={a['name']!r}, mime={mime})")
+        lines.append("")
+        prompt_text = "\n".join(lines) + text
     command = [
-        "claude", "-p", f"[app:{source}] {text}",
+        "claude", "-p", f"[app:{source} backend=cc] {prompt_text}",
         "--output-format", "json",
         "--max-turns", "10",
     ]
@@ -784,8 +957,7 @@ def _run_cc_app_chat(*, text: str, source: str) -> dict:
         _save_app_active_session(session_id)
 
     reply = str(data.get("result") or "").strip()
-    cleaned_reply, thoughts, cot_intent = _parse_cot(reply)
-    cot_locked = (cot_intent == "hide") or (cot_intent == "default" and _COT_DEFAULT_VISIBILITY == "hide")
+    cleaned_reply, thoughts, thoughts_locked = _parse_cot(reply)
     return {
         "ok": True,
         "backend": "cc",
@@ -795,8 +967,69 @@ def _run_cc_app_chat(*, text: str, source: str) -> dict:
         "subtype": data.get("subtype"),
         "cost_usd": data.get("total_cost_usd", 0),
         "thoughts": thoughts,
-        "cot_intent": cot_intent,
-        "cot_locked": cot_locked,
+        "thoughts_locked": thoughts_locked,
+    }
+
+
+def _run_api_app_chat(*, text: str, source: str, attachments: list | None = None) -> dict:
+    if not _CONFIG or not _POOL:
+        raise RuntimeError("config not loaded")
+
+    from fiam.conductor import Conductor
+    from fiam.runtime.api import ApiRuntime
+    from fiam.runtime.recall import refresh_recall
+    from fiam.store.features import FeatureStore
+
+    feature_store = FeatureStore(_CONFIG.feature_dir, dim=_CONFIG.embedding_dim)
+    bus = _get_bus()
+
+    def _refresh(vec):
+        return refresh_recall(_CONFIG, _POOL, vec, top_k=_CONFIG.recall_top_k)
+
+    conductor = Conductor(
+        pool=_POOL,
+        embedder=_get_embedder(),
+        config=_CONFIG,
+        flow_path=_CONFIG.flow_path,
+        drift_threshold=_CONFIG.drift_threshold,
+        gorge_max_beat=_CONFIG.gorge_max_beat,
+        gorge_min_depth=_CONFIG.gorge_min_depth,
+        gorge_stream_confirm=_CONFIG.gorge_stream_confirm,
+        bus=bus,
+        memory_mode=_CONFIG.memory_mode,
+        feature_store=feature_store,
+    )
+    runtime = ApiRuntime.from_config(
+        _CONFIG,
+        conductor=conductor,
+        dispatcher=conductor.dispatch if bus is not None else None,
+        recall_refresher=_refresh,
+    )
+    api_text = text
+    if attachments:
+        lines = ["[attachments]"]
+        for a in attachments:
+            mime = a.get("mime") or ""
+            lines.append(f"- {a['path']}  (name={a['name']!r}, mime={mime})")
+        lines.append("")
+        api_text = "\n".join(lines) + text
+    api_text = f"[app:{source} backend=api] {api_text}"
+    result = runtime.ask(api_text, source=source)
+    cleaned_reply, thoughts, thoughts_locked = _parse_cot(result.reply)
+    return {
+        "ok": True,
+        "backend": "api",
+        "reply": cleaned_reply,
+        "recall": _pending_recall_for_app(),
+        "session_id": "",
+        "subtype": None,
+        "cost_usd": 0,
+        "model": result.model,
+        "usage": result.usage,
+        "recall_fragments": result.recall_fragments,
+        "dispatched": result.dispatched,
+        "thoughts": thoughts,
+        "thoughts_locked": thoughts_locked,
     }
 
 
@@ -1200,6 +1433,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._serve_json(_api_app_status())
             return
 
+        if path == "/api/app/seal/status":
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            self._serve_json(_api_app_seal_status())
+            return
+
         if path == "/api/wearable/reply":
             if not _ingest_token_ok(self):
                 self._serve_json({"error": "unauthorized"}, status=401)
@@ -1299,6 +1539,64 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return
             except Exception as e:
                 logger.exception("app chat error")
+                self._serve_json({"error": str(e)}, status=500)
+                return
+            self._serve_json(result)
+            return
+
+        if path == "/api/app/upload":
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = 0
+            if length <= 0 or length > 32 * 1024 * 1024:  # 32MB cap
+                self._serve_json({"error": "bad length"}, status=400)
+                return
+            try:
+                body = self.rfile.read(length).decode("utf-8")
+                payload = json.loads(body)
+            except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                self._serve_json({"error": f"bad json: {e}"}, status=400)
+                return
+            try:
+                result = _api_app_upload(payload)
+            except ValueError as e:
+                self._serve_json({"error": str(e)}, status=400)
+                return
+            except Exception as e:
+                logger.exception("app upload error")
+                self._serve_json({"error": str(e)}, status=500)
+                return
+            self._serve_json(result)
+            return
+
+        if path in ("/api/app/recall", "/api/app/seal"):
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = 0
+            payload: dict = {}
+            if length > 0:
+                try:
+                    payload = json.loads(self.rfile.read(length).decode("utf-8")) or {}
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    payload = {}
+            try:
+                if path == "/api/app/recall":
+                    result = _api_app_recall(payload)
+                else:
+                    result = _api_app_seal(payload)
+            except ValueError as e:
+                self._serve_json({"error": str(e)}, status=400)
+                return
+            except Exception as e:
+                logger.exception("app memory op error")
                 self._serve_json({"error": str(e)}, status=500)
                 return
             self._serve_json(result)

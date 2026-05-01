@@ -43,7 +43,7 @@ Claude Code session
 
 ### 功能插件协议
 
-功能性入口统一用 `plugins/<id>/plugin.toml` 注册；基础设施（dashboard、网页、git diff、flow、Pool、recall）不作为插件单位。入站统一发布到 `fiam/receive/<source>`，出站统一由 AI marker（如 `[→tg:Iris] ...`）解析到 `fiam/dispatch/<target>`。禁用某项功能时改 manifest 的 `enabled = false`，daemon、Conductor、bridge 都会按该开关跳过收发。
+功能性入口统一用 `plugins/<id>/plugin.toml` 注册；基础设施（dashboard、网页、git diff、flow、Pool、recall）不作为插件单位。入站统一发布到 `fiam/receive/<source>`，出站统一由 AI marker（如 `[→tg:Zephyr] ...`）解析到 `fiam/dispatch/<target>`。禁用某项功能时改 manifest 的 `enabled = false`，daemon、Conductor、bridge 都会按该开关跳过收发。
 
 当前 manifests：`tg`、`email`、`favilla`、`xiao`、`app`、`voice-call`、`device-control`、`ring`、`mcp`。详细协议见 [docs/plugin_protocol.md](docs/plugin_protocol.md)。
 
@@ -173,7 +173,7 @@ plugins/                   # 功能插件 manifest（可接入/禁用）
 
 MCP 是 AI 主动查工具/资源的协议，不是后台 hook。Claude Code 可以通过 hooks/JSONL 深度接入；Claude API 由 Fiam 组装 identity envelope；Claude app 如果不能 hook，就主要通过 MCP/API 主动查询 Fiam。身份意识不放在某个 Claude 客户端里，而放在 `home/self/`、`flow.jsonl`、Pool 和一次性 `recall.md`。
 
-三端路由：Claude app 用 MCP 主动查；自制 app/web 走 Fiam API（入站 `app`、出站 `[→app:Iris]`）；代码/仓库/长任务走 Claude Code。自动触发记忆保存在服务器 flow/Pool；AI 主动写的知识放 `home/self/`、`home/world/` 等文字空间并 git 同步。Website/dashboard 只是展示和编辑层，不作为私密记忆源头。
+三端路由：Claude app 用 MCP 主动查；自制 app/web 走 Fiam API（入站 `app`、出站 `[→app:Zephyr]`）；代码/仓库/长任务走 Claude Code。自动触发记忆保存在服务器 flow/Pool；AI 主动写的知识放 `home/self/`、`home/world/` 等文字空间并 git 同步。Website/dashboard 只是展示和编辑层，不作为私密记忆源头。
 
 ## 许可证
 
