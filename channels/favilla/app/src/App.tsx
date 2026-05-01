@@ -550,12 +550,10 @@ export default function App() {
 
   function onRecallClick() {
     if (sealBusy) return // memory is being rebuilt; recall would be inconsistent
-    setRecallArmed((on) => {
-      const next = !on
-      // Fire the actual recall.md write only when arming. Disarming is local.
-      if (next) recallNow().catch(() => {})
-      return next
-    })
+    // Arming is purely visual: marks intent that the next send should refresh
+    // recall.md *before* sendChat. Tapping again disarms (mistap-safe).
+    // The real network call to recallNow() happens in handleSend.
+    setRecallArmed((on) => !on)
   }
 
   function onPickFiles(e: React.ChangeEvent<HTMLInputElement>) {
@@ -578,8 +576,14 @@ export default function App() {
     if ((!text && pendingFiles.length === 0) || sending) return
     setInput("")
     setSending(true)
-    // Sending always disarms recall (per toggle UX spec).
-    if (recallArmed) setRecallArmed(false)
+    // If recall is armed, refresh recall.md on the server FIRST so the AI
+    // sees the freshest memory in this turn. Then disarm (toggle UX spec:
+    // armed state only persists across taps, not across sends).
+    const wasArmed = recallArmed
+    if (wasArmed) {
+      setRecallArmed(false)
+      try { await recallNow() } catch { /* non-fatal: chat still goes out */ }
+    }
 
     // Snapshot pending files for this turn, then clear UI immediately
     const filesToSend = pendingFiles.map((p) => p.file)
@@ -870,7 +874,7 @@ export default function App() {
                     <RecallIcon
                       className="h-[14px] w-[14px]"
                       strokeWidth={1.2}
-                      fill={recallArmed ? "#c9a23a" : "none"}
+                      fill={recallArmed ? "#FAEC8C" : "none"}
                     />
                   )}
                 </button>
