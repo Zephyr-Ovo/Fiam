@@ -4,6 +4,7 @@ import { Home, type HomeTarget } from "./routes/Home"
 import { Settings } from "./routes/Settings"
 import { appConfig } from "./config"
 import { installGlobalTapHaptics } from "./lib/haptics"
+import { App as CapApp } from "@capacitor/app"
 
 type Page = "home" | "chat"
 
@@ -16,6 +17,11 @@ function isPhoneish() {
   // @ts-expect-error — Capacitor injects a global on native.
   if (window.Capacitor?.isNativePlatform?.()) return true
   return window.matchMedia("(max-width: 480px)").matches
+}
+
+function isNative(): boolean {
+  // @ts-expect-error capacitor injects global at runtime
+  return !!(typeof window !== "undefined" && window.Capacitor?.isNativePlatform?.())
 }
 
 export default function Shell() {
@@ -31,6 +37,35 @@ export default function Shell() {
     return () => mq.removeEventListener("change", onChange)
   }, [])
 
+  // Hardware / system back button — match top-left back button:
+  //   home + settings open  -> close settings
+  //   home (nothing open)   -> minimize app (do NOT exit, keeps services alive)
+  //   any other page        -> go back to home
+  useEffect(() => {
+    if (!isNative()) return
+    let handle: { remove: () => void } | null = null
+    let cancelled = false
+    void CapApp.addListener("backButton", () => {
+      if (settingsOpen) {
+        setSettingsOpen(false)
+        return
+      }
+      if (page !== "home") {
+        setPage("home")
+        return
+      }
+      // On home: send to background instead of killing process
+      void CapApp.minimizeApp()
+    }).then((h) => {
+      if (cancelled) h.remove()
+      else handle = h
+    })
+    return () => {
+      cancelled = true
+      handle?.remove()
+    }
+  }, [page, settingsOpen])
+
   function onHomeNavigate(t: HomeTarget) {
     if (t === "settings") {
       setSettingsOpen(true)
@@ -44,9 +79,13 @@ export default function Shell() {
     console.info("[home] target not yet wired:", t)
   }
 
+  // Render Home + App together; toggle visibility instead of unmount so
+  // returning to Home is instant and big assets aren't re-decoded.
   const inner = (
     <>
-      {page === "home" && <Home onNavigate={onHomeNavigate} />}
+      <div style={{ display: page === "home" ? "block" : "none", height: "100%" }}>
+        <Home onNavigate={onHomeNavigate} />
+      </div>
       {page === "chat" && <App onBack={() => setPage("home")} />}
       <Settings open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </>

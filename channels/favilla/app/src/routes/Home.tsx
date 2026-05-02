@@ -123,8 +123,7 @@ export function Home({ onNavigate }: Props) {
               width: s.w * SCALE,
               height: s.h * SCALE,
               transformOrigin: "center",
-              filter:
-                "drop-shadow(0 8px 14px rgba(63,47,41,0.28)) drop-shadow(0 2px 4px rgba(63,47,41,0.18))",
+              willChange: "transform",
             }}
           />
         )
@@ -135,7 +134,7 @@ export function Home({ onNavigate }: Props) {
           ariaLabel={s.label}
           onClick={() => {
             // Let the press shrink+release animation play out before navigating.
-            window.setTimeout(() => onNavigate(s.go), 240)
+            window.setTimeout(() => onNavigate(s.go), 90)
           }}
           onPressStart={() => setPressed(s.key)}
           onPressEnd={() => setPressed((p) => (p === s.key ? null : p))}
@@ -151,7 +150,7 @@ export function Home({ onNavigate }: Props) {
       {/* setting button (top layer, top-left) */}
       <PressButton
         ariaLabel="Settings"
-        onClick={() => window.setTimeout(() => onNavigate("settings"), 240)}
+        onClick={() => window.setTimeout(() => onNavigate("settings"), 90)}
         style={{
           left: 35 * SCALE,
           top: 56 * SCALE,
@@ -165,7 +164,7 @@ export function Home({ onNavigate }: Props) {
       {/* strollentry — "↑ Escaping my desk…" header text. Tap → walking */}
       <PressButton
         ariaLabel="Go for a walk"
-        onClick={() => window.setTimeout(() => onNavigate("walking"), 240)}
+        onClick={() => window.setTimeout(() => onNavigate("walking"), 90)}
         style={{
           left: 131 * SCALE,
           top: 67 * SCALE,

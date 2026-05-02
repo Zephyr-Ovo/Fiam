@@ -10,10 +10,10 @@ function isNative(): boolean {
   return !!(typeof window !== "undefined" && window.Capacitor?.isNativePlatform?.())
 }
 
-export function tap(ms = 8) {
+export function tap(ms = 18) {
   try {
     if (isNative()) {
-      void Haptics.impact({ style: ImpactStyle.Light })
+      void Haptics.impact({ style: ImpactStyle.Medium })
       return
     }
     if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
@@ -30,7 +30,7 @@ export function installGlobalTapHaptics() {
   const handler = (e: PointerEvent) => {
     const t = e.target as Element | null
     if (!t) return
-    if (t.closest('button, [role="button"], a[href], textarea, input')) tap(8)
+    if (t.closest('button, [role="button"], a[href], textarea, input')) tap(18)
   }
   window.addEventListener("pointerdown", handler, { passive: true, capture: true })
 }

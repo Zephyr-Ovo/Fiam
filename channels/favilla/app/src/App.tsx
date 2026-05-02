@@ -463,10 +463,10 @@ function BubbleBody({
         {recallUsed && (
           <span
             aria-label="recall used"
-            className="pointer-events-none absolute -bottom-1 -right-1 select-none text-[14px] leading-none"
-            style={{ filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.25))" }}
+            className="pointer-events-none absolute -bottom-1 -right-1 select-none"
+            style={{ filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.25))", color: "#FFCC00" }}
           >
-            🌠
+            <RecallIcon className="h-[14px] w-[14px]" strokeWidth={1.6} color="#FFCC00" />
           </span>
         )}
       </div>
@@ -846,7 +846,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
           {/* messages — only the most recent 7 sealed blocks (cut-bounded) + live tail */}
           <main
             ref={scrollRef}
-            className="flex flex-1 flex-col gap-[9px] overflow-y-auto px-4 pt-5 pb-24"
+            className="flex flex-1 flex-col gap-[9px] overflow-y-auto px-4 pt-8 pb-36"
           >
             {(() => {
               const SHOW_BLOCKS = 7
@@ -981,7 +981,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                 }}
                 placeholder={`Reply to ${peerName}…`}
                 className="composer-input resize-none bg-transparent px-2 py-1 text-[15px] leading-[1.4] focus:outline-none"
-                style={{ fontFamily: "var(--font-sans)", color: INK, maxHeight: 71 }}
+                style={{ fontFamily: "var(--font-sans)", color: INK, maxHeight: 92, minHeight: 36 }}
               />
               {/* tools row (bottom): + / recall on left, voice / send on right */}
               <div className="flex items-center gap-1">
@@ -1017,7 +1017,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                           style={{
                             left: 0,
                             bottom: "calc(100% + 8px)",
-                            minWidth: 168,
+                            minWidth: 134,
                             background: "rgba(255,250,243,0.96)",
                             backdropFilter: "blur(14px) saturate(110%)",
                             WebkitBackdropFilter: "blur(14px) saturate(110%)",
@@ -1028,21 +1028,21 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                           <button
                             type="button"
                             onClick={() => { setAttachOpen(false); cameraInputRef.current?.click() }}
-                            className="flex items-center gap-3 px-4 py-3 text-left hover:bg-black/5"
+                            className="flex items-center gap-2 px-3 py-2 text-left hover:bg-black/5"
                             style={{ color: INK, fontFamily: "var(--font-sans)" }}
                           >
-                            <Camera className="h-[18px] w-[18px]" strokeWidth={1.6} />
-                            <span className="text-[14px]">Take photo</span>
+                            <Camera className="h-[16px] w-[16px]" strokeWidth={1.6} />
+                            <span className="text-[13px]">Take photo</span>
                           </button>
                           <div style={{ height: 1, background: "rgba(176,139,127,0.18)" }} />
                           <button
                             type="button"
                             onClick={() => { setAttachOpen(false); fileInputRef.current?.click() }}
-                            className="flex items-center gap-3 px-4 py-3 text-left hover:bg-black/5"
+                            className="flex items-center gap-2 px-3 py-2 text-left hover:bg-black/5"
                             style={{ color: INK, fontFamily: "var(--font-sans)" }}
                           >
-                            <ImageIcon className="h-[18px] w-[18px]" strokeWidth={1.6} />
-                            <span className="text-[14px]">Upload file</span>
+                            <ImageIcon className="h-[16px] w-[16px]" strokeWidth={1.6} />
+                            <span className="text-[13px]">Upload file</span>
                           </button>
                         </motion.div>
                       </>
@@ -1065,15 +1065,22 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                         : "Tap to arm recall for the next message"
                   }
                 >
-                  {sealBusy ? (
-                    <HourglassIcon className="h-[14px] w-[14px]" active />
-                  ) : (
-                    <RecallIcon
-                      className="h-[14px] w-[14px]"
-                      strokeWidth={1.4}
-                      color={recallArmed ? "#FFCC00" : "currentColor"}
-                    />
-                  )}
+                  <RecallIcon
+                    className="h-[14px] w-[14px]"
+                    strokeWidth={1.4}
+                    color={recallArmed ? "#FFCC00" : "currentColor"}
+                  />
+                </button>
+                {/* hourglass — separate, always visible (active during seal processing) */}
+                <button
+                  type="button"
+                  disabled
+                  className="grid h-9 w-9 shrink-0 place-items-center rounded-full opacity-90"
+                  style={{ color: "var(--color-cocoa)" }}
+                  aria-label={sealBusy ? "Event is being processed" : "Idle"}
+                  title={sealBusy ? "Event is being processed…" : "Idle"}
+                >
+                  <HourglassIcon className="h-[14px] w-[14px]" active={sealBusy} />
                 </button>
                 {/* spacer */}
                 <div className="flex-1" />
