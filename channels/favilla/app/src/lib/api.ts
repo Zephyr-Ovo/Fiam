@@ -147,6 +147,22 @@ export function recallNow() {
   return postMemoryOp("/api/app/recall")
 }
 
+// cutFlow: drop a divider marker into the unprocessed flow. The next
+//          processFlow() call will use these markers to split beats into
+//          multiple events. Cutting alone does NOT trigger DS work.
+export function cutFlow() {
+  return postMemoryOp("/api/app/cut")
+}
+
+// processFlow: ask the server to seal all unprocessed beats into events
+//              (using cut markers as segment dividers). Synchronous —
+//              resolves only when DS is done. UI should disable Send and
+//              show the hourglass animation while this is in flight.
+export function processFlow() {
+  return postMemoryOp("/api/app/process")
+}
+
+// Back-compat alias.
 export function sealEvent() {
-  return postMemoryOp("/api/app/seal")
+  return postMemoryOp("/api/app/process")
 }

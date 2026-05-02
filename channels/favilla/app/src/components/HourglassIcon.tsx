@@ -2,6 +2,9 @@ type Props = {
   className?: string
   active?: boolean
   filled?: boolean
+  /** 0..1 — how much sand to show in the TOP bulb (long-press progress).
+   *  Ignored when `active` is true (sand animation overrides). */
+  fillProgress?: number
   sandColor?: string
   /** Same outer size as RecallIcon (14×14) so it slots into the same button. */
   size?: number
@@ -14,12 +17,19 @@ export function HourglassIcon({
   className,
   active = false,
   filled = false,
+  fillProgress = 1,
   sandColor = SAND,
   size = 14,
   cycleSeconds = 2,
 }: Props) {
   const stroke = "currentColor"
   const baseFill = "none"
+  const showSand = active || filled
+  // Top bulb sand height grows from bottom up to top as fillProgress climbs.
+  // Bulb spans y in [0, 7]; bottom of bulb = y=7. Sand rect height = 7 * p.
+  const p = active ? 1 : Math.max(0, Math.min(1, fillProgress))
+  const topRectY = 7 - 7 * p
+  const topRectH = 7 * p
   return (
     <svg
       width={Math.round((size * 12) / 14)}
@@ -45,14 +55,14 @@ export function HourglassIcon({
         d="M9.5 10.5C9.5 9.57174 9.13125 8.6815 8.47487 8.02513C7.8185 7.36875 6.92826 7 6 7C5.07174 7 4.1815 7.36875 3.52513 8.02513C2.86875 8.6815 2.5 9.57174 2.5 10.5V13.5H9.5V10.5Z"
         fill={baseFill}
       />
-      {(active || filled) && (
+      {showSand && (
         <>
           <g clipPath="url(#hg-top-bulb)">
             <rect
               x="0"
-              y="0"
+              y={active ? 0 : topRectY}
               width="12"
-              height="7"
+              height={active ? 7 : topRectH}
               fill={sandColor}
               style={active ? ({ animation: `hg-drain ${cycleSeconds}s ease-in-out infinite`, transformOrigin: "6px 0.5px" } as React.CSSProperties) : undefined}
             />
@@ -62,7 +72,7 @@ export function HourglassIcon({
               x="0"
               y="7"
               width="12"
-              height="7"
+              height={active ? 7 : 0}
               fill={sandColor}
               style={active ? ({ animation: `hg-fill ${cycleSeconds}s ease-in-out infinite`, transformOrigin: "6px 13.5px" } as React.CSSProperties) : undefined}
             />

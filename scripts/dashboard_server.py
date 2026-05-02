@@ -846,13 +846,65 @@ def _api_app_recall(payload: dict) -> dict:
     return {"ok": True, "count": count, "path": str(_CONFIG.background_path)}
 
 
-def _api_app_seal(payload: dict) -> dict:
-    """Real seal: package all unprocessed flow beats as ONE event using the
-    same pipeline as the dashboard manual-annotation flow (request → edges
-    → confirm), but with no internal cuts (single segment per app seal).
+def _cut_file_path():
+    return _CONFIG.home_path / "app_cuts.jsonl"
 
-    App-side seal is immutable once confirmed — the user must use the web
-    console to edit the produced event.
+
+def _api_app_cut(_payload: dict) -> dict:
+    """Append a cut marker at the current end of flow.jsonl. The next
+    /api/app/process call will use these markers to slice unprocessed
+    beats into multiple segments (events).
+
+    Cut alone does NOT trigger DS processing. It just records a divider.
+    """
+    if not _CONFIG:
+        raise RuntimeError("config not loaded")
+    flow_path = _CONFIG.flow_path
+    if flow_path.exists():
+        offset = sum(1 for line in flow_path.read_text(encoding="utf-8").splitlines() if line.strip())
+    else:
+        offset = 0
+    cut_path = _cut_file_path()
+    cut_path.parent.mkdir(parents=True, exist_ok=True)
+    record = {"flow_offset": int(offset), "ts": datetime.now(timezone.utc).isoformat()}
+    with cut_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record) + "\n")
+    return {"ok": True, "flow_offset": offset}
+
+
+def _read_pending_cuts(start: int, end: int) -> list[int]:
+    """Return absolute flow offsets in (start, end) where the user cut."""
+    cut_path = _cut_file_path()
+    if not cut_path.exists():
+        return []
+    out: list[int] = []
+    for line in cut_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+            o = int(rec.get("flow_offset", -1))
+        except (json.JSONDecodeError, ValueError, TypeError):
+            continue
+        if start < o < end:
+            out.append(o)
+    return sorted(set(out))
+
+
+def _truncate_cut_file() -> None:
+    cut_path = _cut_file_path()
+    if cut_path.exists():
+        cut_path.write_text("", encoding="utf-8")
+
+
+def _api_app_seal(payload: dict) -> dict:
+    """Process all unprocessed flow beats. Cut markers (recorded via
+    /api/app/cut) split beats into multiple segments; each segment becomes
+    one event via the dashboard 3-phase annotation pipeline.
+
+    Cut markers are consumed (file truncated) on success. App-side seal is
+    immutable once confirmed — edit via web console.
     """
     global _SEAL_BUSY
     if not _CONFIG or not _POOL:
@@ -863,17 +915,26 @@ def _api_app_seal(payload: dict) -> dict:
         _SEAL_BUSY = True
     try:
         try:
+            from fiam_lib.dashboard_annotation import annotation_state as _annot_state
+            start = int(_annot_state().get("processed_until", 0))
             # Phase 1: load unprocessed beats
             proposal = _annotate_request({"limit": 10000})
             beats = proposal.get("beats", [])
             if not beats:
                 return {"ok": False, "error": "no beats to seal"}
-            # All beats → one segment (no internal cuts)
+            end = int(proposal.get("flow_end", start + len(beats)))
+            # Build cuts vector from pending cut markers in (start, end)
+            cut_offsets = _read_pending_cuts(start, end)
             cuts = [0] * max(0, len(beats) - 1)
-            # Phase 2: DS proposes name + edges to existing events
+            for o in cut_offsets:
+                idx = o - start - 1  # cut between beat[idx] and beat[idx+1]
+                if 0 <= idx < len(cuts):
+                    cuts[idx] = 1
+            # Phase 2: DS proposes name + edges
             _annotate_edges({"cuts": cuts, "drift_cuts": cuts})
-            # Phase 3: commit (creates event, fingerprint, edges, training data)
+            # Phase 3: commit
             result = _annotate_confirm({"cuts": cuts, "drift_cuts": cuts})
+            _truncate_cut_file()
             ev_ids = result.get("events_created", [])
             return {
                 "ok": True,
@@ -881,6 +942,7 @@ def _api_app_seal(payload: dict) -> dict:
                 "events_created": ev_ids,
                 "edges_created": result.get("edges_created", 0),
                 "beats": len(beats),
+                "segments": len(ev_ids),
             }
         except Exception as exc:
             logger.exception("seal failed")
@@ -1642,7 +1704,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._serve_json(result)
             return
 
-        if path in ("/api/app/recall", "/api/app/seal"):
+        if path in ("/api/app/recall", "/api/app/seal", "/api/app/cut", "/api/app/process"):
             if not _ingest_token_ok(self):
                 self._serve_json({"error": "unauthorized"}, status=401)
                 return
@@ -1659,7 +1721,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             try:
                 if path == "/api/app/recall":
                     result = _api_app_recall(payload)
+                elif path == "/api/app/cut":
+                    result = _api_app_cut(payload)
                 else:
+                    # /api/app/seal and /api/app/process both run the seal pipeline
                     result = _api_app_seal(payload)
             except ValueError as e:
                 self._serve_json({"error": str(e)}, status=400)

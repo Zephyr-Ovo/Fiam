@@ -24,7 +24,7 @@ import { HourglassIcon } from "./components/HourglassIcon"
 import { ConfirmModal } from "./components/ConfirmModal"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
-import { sendChat, uploadFiles, recallNow, sealEvent, type ChatAttachment } from "./lib/api"
+import { sendChat, uploadFiles, recallNow, cutFlow, processFlow, type ChatAttachment } from "./lib/api"
 import { appConfig, saveConfig } from "./config"
 
 // Module-level set of bubble ids whose entrance animation has already played.
@@ -571,6 +571,7 @@ function SendButton({ onSend, disabled }: { onSend: () => void; disabled: boolea
   return (
     <button
       type="button"
+      onMouseDown={(e) => e.preventDefault()}
       onClick={() => {
         if (disabled) return
         setShoot(true)
@@ -659,14 +660,18 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
     return () => window.removeEventListener("favilla:config-changed", onConfigChanged)
   }, [])
 
-  // ---- manual cut + recall handlers ----
-  // recallArmed: ON means the next outgoing message will trigger a recall
-  //   refresh on the server before the AI replies.
-  // sealBusy: ON while DS is processing a sealed event — recall is disabled
-  //   in the meantime so we don't query a half-built memory.
-  const [recallArmed, setRecallArmed] = useState(false)
+  // ---- manual cut + process handlers ----
+  // Scissor (剪刀) = cut. Drops a divider marker on the server (lightweight,
+  //   instant). Multiple cuts can be placed before processing.
+  // Hourglass (沙漏) = process. Long-press 1.2s → confirm → server seals all
+  //   unprocessed beats into events using cut markers as segment dividers.
+  //   sealBusy is ON for the entire DS round-trip; Send is disabled and the
+  //   sand animation runs.
   const [sealBusy, setSealBusy] = useState(false)
-  const hourglassTapRef = useRef<number[]>([])
+  const [hourglassHold, setHourglassHold] = useState(0) // 0..1 long-press progress
+  const hourglassTimerRef = useRef<number | null>(null)
+  const hourglassStartRef = useRef<number>(0)
+  const HOURGLASS_HOLD_MS = 1200
   const [confirmState, setConfirmState] = useState<
     | { open: false }
     | { open: true; title: string; message: string; onYes: () => void }
@@ -685,36 +690,52 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
 
   function onScissorClick() {
     if (sealBusy) return
-    askConfirm(
-      "Seal this block?",
-      "Everything since the last cut will be packaged into one event.",
-      runSeal,
-    )
+    // Cut is lightweight: drop a divider marker server-side, no DS work.
+    pushDivider("scissor", "cut")
+    cutFlow().catch(() => {})
   }
 
-  function runSeal() {
+  function runProcess() {
     if (sealBusy) return
-    pushDivider("scissor", "sealed")
+    pushDivider("scissor", "processing")
     setSealBusy(true)
-    sealEvent()
+    processFlow()
       .catch(() => {})
       .finally(() => setSealBusy(false))
   }
 
-  function onRecallClick() {
-    if (sealBusy) return // memory is being rebuilt; recall would be inconsistent
-    const now = Date.now()
-    // Track recent taps within a 2.2s window (phones can be slow to register).
-    const taps = [...hourglassTapRef.current.filter((t) => now - t < 2200), now]
-    hourglassTapRef.current = taps.slice(-4)
-    if (hourglassTapRef.current.length >= 4) {
-      hourglassTapRef.current = []
-      setRecallArmed(true)
-      // four-tap = process new event / refresh recall, NOT seal
-      recallNow().catch(() => {})
-      return
+  function clearHourglassHold() {
+    if (hourglassTimerRef.current !== null) {
+      window.cancelAnimationFrame(hourglassTimerRef.current)
+      hourglassTimerRef.current = null
     }
-    setRecallArmed((on) => !on)
+    setHourglassHold(0)
+  }
+
+  function onHourglassPressStart() {
+    if (sealBusy) return
+    hourglassStartRef.current = performance.now()
+    const tick = () => {
+      const elapsed = performance.now() - hourglassStartRef.current
+      const p = Math.min(1, elapsed / HOURGLASS_HOLD_MS)
+      setHourglassHold(p)
+      if (p >= 1) {
+        hourglassTimerRef.current = null
+        setHourglassHold(0)
+        askConfirm(
+          "Process unprocessed beats?",
+          "The server will seal everything since the last process into events (using cut markers as segment dividers).",
+          runProcess,
+        )
+        return
+      }
+      hourglassTimerRef.current = window.requestAnimationFrame(tick)
+    }
+    hourglassTimerRef.current = window.requestAnimationFrame(tick)
+  }
+
+  function onHourglassPressEnd() {
+    clearHourglassHold()
   }
 
   useEffect(() => {
@@ -825,10 +846,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
     const text = input.trim()
     if ((!text && pendingFiles.length === 0) || sending) return
     setInput("")
-    const wasArmed = recallArmed
-    if (wasArmed) {
-      setRecallArmed(false)
-    }
+    const wasArmed = false
 
     // Snapshot pending files for this turn, then clear UI immediately
     const filesToSend = pendingFiles.map((p) => p.file)
@@ -911,6 +929,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
             />
             <button
               type="button"
+              onMouseDown={(e) => e.preventDefault()}
               onClick={onScissorClick}
               className="grid h-10 w-10 place-items-center rounded-full hover:bg-white/10"
               aria-label="Cut"
@@ -1057,6 +1076,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                 <div className="relative">
                   <button
                     type="button"
+                    onMouseDown={(e) => e.preventDefault()}
                     onClick={() => setAttachOpen((v) => !v)}
                     className="grid h-9 w-9 shrink-0 place-items-center rounded-full hover:bg-black/5"
                     style={{ color: "var(--color-cocoa)" }}
@@ -1120,25 +1140,27 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                 </div>
                 <button
                   type="button"
-                  onClick={onRecallClick}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onPointerDown={onHourglassPressStart}
+                  onPointerUp={onHourglassPressEnd}
+                  onPointerLeave={onHourglassPressEnd}
+                  onPointerCancel={onHourglassPressEnd}
                   disabled={sealBusy}
                   className="grid h-9 w-9 shrink-0 place-items-center rounded-full transition-colors hover:bg-black/5 disabled:opacity-50"
                   style={{ color: "var(--color-cocoa)" }}
-                  aria-label={sealBusy ? "Processing event" : recallArmed ? "Recall armed" : "Recall"}
-                  aria-pressed={recallArmed}
+                  aria-label={sealBusy ? "Processing event" : "Process (long-press 1.2s)"}
                   title={
                     sealBusy
-                      ? "Event is being processed — recall paused"
-                      : recallArmed
-                        ? "Recall armed: next message will refresh memory"
-                        : "Tap to arm recall for the next message"
+                      ? "Event is being processed…"
+                      : "Long-press 1.2s to process unprocessed beats"
                   }
                 >
                   <HourglassIcon
                     className="h-4 w-4"
                     size={16}
                     active={sealBusy}
-                    filled={recallArmed || sealBusy}
+                    filled={sealBusy || hourglassHold > 0}
+                    fillProgress={sealBusy ? 1 : hourglassHold}
                     sandColor="#FAEC8C"
                     cycleSeconds={1}
                   />
@@ -1147,6 +1169,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                 <div className="flex-1" />
                 <button
                   type="button"
+                  onMouseDown={(e) => e.preventDefault()}
                   className="grid h-9 w-9 shrink-0 place-items-center rounded-full"
                   style={{ color: "var(--color-cocoa)" }}
                   aria-label="Voice"
@@ -1158,7 +1181,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                     if (input.trim() || pendingFiles.length > 0) handleSend()
                     else flushSendBatchNow()
                   }}
-                  disabled={sending || (!input.trim() && pendingFiles.length === 0 && sendBatchRef.current.items.length === 0)}
+                  disabled={sealBusy || sending || (!input.trim() && pendingFiles.length === 0 && sendBatchRef.current.items.length === 0)}
                 />
               </div>
             </div>

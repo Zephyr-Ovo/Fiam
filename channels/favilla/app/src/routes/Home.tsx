@@ -136,10 +136,7 @@ export function Home({ onNavigate }: Props) {
         <PressButton
           key={`hit-${s.key}`}
           ariaLabel={s.label}
-          onClick={() => {
-            // Let the press shrink+release animation play out before navigating.
-            window.setTimeout(() => onNavigate(s.go), 90)
-          }}
+          onClick={() => onNavigate(s.go)}
           onPressStart={() => setPressed(s.key)}
           onPressEnd={() => setPressed((p) => (p === s.key ? null : p))}
           style={{
@@ -154,7 +151,7 @@ export function Home({ onNavigate }: Props) {
       {/* setting button (top layer, top-left) */}
       <PressButton
         ariaLabel="Settings"
-        onClick={() => window.setTimeout(() => onNavigate("settings"), 90)}
+        onClick={() => onNavigate("settings")}
         style={{
           left: 35 * SCALE,
           top: 56 * SCALE,
@@ -168,7 +165,7 @@ export function Home({ onNavigate }: Props) {
       {/* strollentry — "↑ Escaping my desk…" header text. Tap → walking */}
       <PressButton
         ariaLabel="Go for a walk"
-        onClick={() => window.setTimeout(() => onNavigate("walking"), 90)}
+        onClick={() => onNavigate("walking")}
         style={{
           left: 131 * SCALE,
           top: 67 * SCALE,
@@ -200,25 +197,71 @@ function PressButton({
   style: CSSProperties
   shadow?: boolean
 }) {
+  // Three-phase choreography (independent of press duration):
+  //   1. press-down: scale to 0.96 over PRESS_MS
+  //   2. release rebound: scale back to 1.0 over REBOUND_MS
+  //   3. fire onClick AFTER rebound finishes
+  const PRESS_MS = 80
+  const REBOUND_MS = 180
+  const [pressed, setPressed] = useState(false)
+  const armedRef = useRef(false) // true between pointerDown and committed pointerUp
+  const fireTimerRef = useRef<number | null>(null)
+
+  function clearFire() {
+    if (fireTimerRef.current !== null) {
+      window.clearTimeout(fireTimerRef.current)
+      fireTimerRef.current = null
+    }
+  }
+
+  function handleDown(e: React.PointerEvent<HTMLButtonElement>) {
+    e.currentTarget.setPointerCapture?.(e.pointerId)
+    armedRef.current = true
+    setPressed(true)
+    onPressStart?.()
+  }
+
+  function handleUp() {
+    if (!armedRef.current) return
+    armedRef.current = false
+    setPressed(false) // triggers CSS transition back to 1.0 over REBOUND_MS
+    onPressEnd?.()
+    clearFire()
+    fireTimerRef.current = window.setTimeout(() => {
+      fireTimerRef.current = null
+      onClick()
+    }, REBOUND_MS)
+  }
+
+  function handleCancel() {
+    if (!armedRef.current) return
+    armedRef.current = false
+    setPressed(false)
+    onPressEnd?.()
+    // No onClick fire on cancel.
+  }
+
   return (
-    <motion.button
+    <button
       type="button"
       aria-label={ariaLabel}
-      onClick={onClick}
-      onTapStart={onPressStart}
-      onTap={onPressEnd}
-      onTapCancel={onPressEnd}
-      whileTap={{ scale: 0.97, y: 2 }}
-      transition={{ type: "spring", stiffness: 400, damping: 22 }}
+      onPointerDown={handleDown}
+      onPointerUp={handleUp}
+      onPointerCancel={handleCancel}
       className="absolute cursor-pointer border-0 bg-transparent p-0 outline-none focus-visible:ring-2 focus-visible:ring-amber-200/60"
       style={{
         ...style,
         background: DEBUG_HITBOX ? "rgba(255,0,0,0.22)" : undefined,
         outline: DEBUG_HITBOX ? "1px dashed rgba(200,0,0,0.7)" : undefined,
         filter: shadow ? "drop-shadow(0 8px 14px rgba(63,47,41,0.28)) drop-shadow(0 2px 4px rgba(63,47,41,0.18))" : undefined,
+        transform: pressed ? "scale(0.96) translateY(2px)" : "scale(1) translateY(0)",
+        transition: pressed
+          ? `transform ${PRESS_MS}ms cubic-bezier(0.4, 0, 0.6, 1)`
+          : `transform ${REBOUND_MS}ms cubic-bezier(0.34, 1.56, 0.64, 1)`,
+        touchAction: "manipulation",
       }}
     >
       {children}
-    </motion.button>
+    </button>
   )
 }
