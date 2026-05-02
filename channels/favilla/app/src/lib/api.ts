@@ -19,9 +19,11 @@ function authHeaders(): Record<string, string> {
   // Always inject token when we have one — the dev vite proxy strips it harmlessly.
   const t = getToken()
   if (t) h["X-Fiam-Token"] = t
-  const ork = (appConfig.openrouterKey || "").trim()
-  if (ork) h["X-OpenRouter-Key"] = ork
   return h
+}
+
+function orKey(): string {
+  return (appConfig.openrouterKey || "").trim()
 }
 
 export type ChatThought = {
@@ -96,10 +98,15 @@ export async function sendChat(
   attachments: ChatAttachment[] = [],
   backend: "cc" | "api" = appConfig.defaultBackend,
 ): Promise<ChatResponse> {
+  const body: Record<string, unknown> = { text, source, backend, attachments }
+  const ork = orKey()
+  if (ork) body.openrouter_key = ork
+  // eslint-disable-next-line no-console
+  console.log("[api] sendChat ->", `${getBase()}/api/app/chat`, { hasToken: !!getToken(), hasOR: !!ork })
   const res = await fetch(`${getBase()}/api/app/chat`, {
     method: "POST",
     headers: authHeaders(),
-    body: JSON.stringify({ text, source, backend, attachments }),
+    body: JSON.stringify(body),
   })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
