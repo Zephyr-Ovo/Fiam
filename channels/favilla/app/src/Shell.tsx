@@ -82,7 +82,7 @@ export default function Shell() {
   // Render Home + App together; toggle visibility instead of unmount so
   // returning to Home is instant and big assets aren't re-decoded.
   const isChat = page === "chat"
-  const slide = "transform 220ms cubic-bezier(0.22, 1, 0.36, 1)"
+  const slide = "transform 360ms cubic-bezier(0.32, 0.72, 0, 1)"
   const inner = (
     <>
       <div

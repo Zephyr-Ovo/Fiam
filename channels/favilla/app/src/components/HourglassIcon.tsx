@@ -19,7 +19,7 @@ export function HourglassIcon({
   cycleSeconds = 2,
 }: Props) {
   const stroke = "currentColor"
-  const baseFill = active || filled ? "white" : "white"
+  const baseFill = "none"
   return (
     <svg
       width={Math.round((size * 12) / 14)}

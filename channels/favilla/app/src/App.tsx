@@ -698,7 +698,8 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
   function onRecallClick() {
     if (sealBusy) return // memory is being rebuilt; recall would be inconsistent
     const now = Date.now()
-    const taps = [...hourglassTapRef.current.filter((t) => now - t < 1400), now]
+    // Track recent taps within a 2.2s window (phones can be slow to register).
+    const taps = [...hourglassTapRef.current.filter((t) => now - t < 2200), now]
     hourglassTapRef.current = taps.slice(-4)
     if (hourglassTapRef.current.length >= 4) {
       hourglassTapRef.current = []
@@ -772,28 +773,21 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
       }))
       const locked = !!res.thoughts_locked
       const full = res.reply || ""
-      let i = 0
-      const step = Math.max(1, Math.ceil(full.length / 120))
-      await new Promise<void>((resolve) => {
-        const tick = () => {
-          i = Math.min(full.length, i + step)
-          setMessages((m) =>
-            m.map((x) =>
-              x.id === aiId
-                ? {
-                    ...x,
-                    text: full.slice(0, i),
-                    thinking: thoughts.length > 0 ? thoughts : undefined,
-                    thinkingLocked: locked,
-                  }
-                : x,
-            ),
-          )
-          if (i < full.length) setTimeout(tick, 18)
-          else resolve()
-        }
-        tick()
-      })
+      // Set the full reply at once. The previous typewriter re-rendered the
+      // entire message list (with ReactMarkdown re-parsing) every 18ms,
+      // which was the dominant cause of in-chat lag on the Android WebView.
+      setMessages((m) =>
+        m.map((x) =>
+          x.id === aiId
+            ? {
+                ...x,
+                text: full,
+                thinking: thoughts.length > 0 ? thoughts : undefined,
+                thinkingLocked: locked,
+              }
+            : x,
+        ),
+      )
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e)
       setMessages((m) =>
@@ -1136,8 +1130,8 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                   }
                 >
                   <HourglassIcon
-                    className="h-5 w-5"
-                    size={20}
+                    className="h-4 w-4"
+                    size={16}
                     active={sealBusy}
                     filled={recallArmed || sealBusy}
                     sandColor="#FAEC8C"
