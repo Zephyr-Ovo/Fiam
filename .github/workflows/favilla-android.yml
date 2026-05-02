@@ -1,0 +1,58 @@
+name: Favilla Android APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_base:
+        description: "VITE_API_BASE (e.g. https://fiet.cc). Leave empty to use repo secret."
+        required: false
+        default: ""
+  push:
+    branches: [feat/memory-graph]
+    paths:
+      - "channels/favilla/app/**"
+      - ".github/workflows/favilla-android.yml"
+
+defaults:
+  run:
+    working-directory: channels/favilla/app
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: channels/favilla/app/package-lock.json
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install JS deps
+        run: npm ci
+
+      - name: Build web (Vite)
+        env:
+          VITE_API_BASE: ${{ github.event.inputs.api_base != '' && github.event.inputs.api_base || secrets.VITE_API_BASE }}
+          VITE_INGEST_TOKEN: ${{ secrets.VITE_INGEST_TOKEN }}
+        run: npm run build
+
+      - name: Capacitor sync (android)
+        run: npx cap sync android
+
+      - name: Gradle build (debug APK)
+        working-directory: channels/favilla/app/android
+        run: ./gradlew --no-daemon assembleDebug
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: favilla-debug-apk
+          path: channels/favilla/app/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error

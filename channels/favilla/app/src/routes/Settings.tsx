@@ -206,53 +206,6 @@ function Row({
   )
 }
 
-function SegRow({
-  label,
-  value,
-  options,
-  onChange,
-}: {
-  label: string
-  value: string
-  options: string[]
-  onChange: (v: string) => void
-}) {
-  return (
-    <div className="flex items-center gap-3 px-4 py-3">
-      <span
-        className="shrink-0 text-[13px]"
-        style={{ color: "#3f2f29", fontFamily: "var(--font-sans)", minWidth: 96 }}
-      >
-        {label}
-      </span>
-      <div
-        className="ml-auto flex gap-1 rounded-lg p-0.5"
-        style={{ background: "rgba(63,47,41,0.08)" }}
-      >
-        {options.map((opt) => {
-          const active = opt === value
-          return (
-            <button
-              key={opt}
-              type="button"
-              onClick={() => onChange(opt)}
-              className="rounded-md px-3 py-1 text-[12px] transition-colors"
-              style={{
-                background: active ? "rgba(255,250,243,0.95)" : "transparent",
-                color: active ? "#c9824a" : "rgba(63,47,41,0.65)",
-                fontFamily: "var(--font-sans)",
-                boxShadow: active ? "0 1px 3px rgba(63,47,41,0.18)" : undefined,
-              }}
-            >
-              {opt}
-            </button>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
-
 /** Single-field card (used for the side-by-side Names cards). */
 function SoloCard({ children }: { children: React.ReactNode }) {
   return (

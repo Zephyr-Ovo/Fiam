@@ -149,14 +149,6 @@ function VoiceChip({ seconds }: { seconds: number }) {
 }
 
 // ---------- File / image pill (colored by type) ----------
-function truncate(name: string, max = 22) {
-  if (name.length <= max) return name
-  const dot = name.lastIndexOf(".")
-  if (dot <= 0 || dot < name.length - 6) return name.slice(0, max - 1) + "…"
-  const ext = name.slice(dot)
-  const stem = name.slice(0, dot)
-  return stem.slice(0, max - ext.length - 1) + "…" + ext
-}
 
 function FilePill({ a }: { a: Extract<Attachment, { kind: "file" | "image" }> }) {
   const isImage = a.kind === "image"
@@ -217,7 +209,7 @@ function ThinkIcon({ kind }: { kind: ThinkStep["kind"] }) {
   return <Icon className="h-3.5 w-3.5" strokeWidth={1.6} />
 }
 
-function ThinkingChain({ steps, locked }: { steps: ThinkStep[]; locked?: boolean }) {
+function ThinkingChain({ steps, locked, peerName }: { steps: ThinkStep[]; locked?: boolean; peerName?: string }) {
   const [open, setOpen] = useState(false)
   if (locked) {
     return (
@@ -226,7 +218,7 @@ function ThinkingChain({ steps, locked }: { steps: ThinkStep[]; locked?: boolean
           className="mb-2 inline-flex items-center gap-1 text-[12px]"
           style={{ color: "rgba(63,47,41,0.45)", fontFamily: "var(--font-sans)" }}
         >
-          <span>Fiet thought silently</span>
+          <span>{(peerName || "Fiet")} thought silently</span>
           <LockIcon className="h-3.5 w-3" strokeWidth={1} />
         </div>
       </div>
@@ -370,7 +362,7 @@ function Bubble({
           )}
 
         {!isUser && (msg.thinkingLocked || (msg.thinking && msg.thinking.length > 0)) && (
-          <ThinkingChain steps={msg.thinking || []} locked={msg.thinkingLocked} />
+          <ThinkingChain steps={msg.thinking || []} locked={msg.thinkingLocked} peerName={peerName} />
         )}
 
         {voiceAttachments.length > 0 && (
@@ -745,13 +737,20 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
             </button>
           </header>
 
-          {/* messages */}
+          {/* messages — only the most recent 7 sealed blocks (cut-bounded) + live tail */}
           <main
             ref={scrollRef}
             className="flex flex-1 flex-col gap-[9px] overflow-y-auto px-4 pt-5 pb-24"
           >
-            {messages.map((m, i) => {
-              const prev = messages[i - 1]
+            {(() => {
+              const SHOW_BLOCKS = 7
+              const cutIdxs: number[] = []
+              messages.forEach((m, i) => { if (m.divider?.kind === "scissor") cutIdxs.push(i) })
+              const drop = Math.max(0, cutIdxs.length - SHOW_BLOCKS)
+              const startIdx = drop > 0 ? cutIdxs[drop - 1] + 1 : 0
+              return messages.slice(startIdx)
+            })().map((m, i, arr) => {
+              const prev = arr[i - 1]
               const showTime = !prev || m.t - prev.t > 10
               const sameAuthorAsPrev =
                 !!prev && prev.role === m.role && !showTime && !m.divider
