@@ -5,6 +5,7 @@ import { Settings } from "./routes/Settings"
 import { appConfig } from "./config"
 import { installGlobalTapHaptics } from "./lib/haptics"
 import { App as CapApp } from "@capacitor/app"
+import { LocalNotifications } from "@capacitor/local-notifications"
 
 type Page = "home" | "chat"
 
@@ -39,19 +40,68 @@ export default function Shell() {
   }, [])
 
   // App fires this whenever the assistant adds/updates a reply. Mark unread
-  // unless the chat view is currently visible.
+  // unless the chat view is currently visible. Also raise a system local
+  // notification when the app is in background / not in chat — same UX as
+  // any other chat app.
   useEffect(() => {
-    function onReply() {
+    function onReply(ev: Event) {
       if (page !== "chat") setUnread(true)
+      // Only fire system notification when the app is not foreground+chat.
+      const e = ev as CustomEvent<{ peerName?: string; preview?: string }>
+      const peer = e.detail?.peerName || appConfig.aiName || "Favilla"
+      const preview = (e.detail?.preview || "").trim().slice(0, 120) || "New reply"
+      const appHidden =
+        typeof document !== "undefined" && document.visibilityState === "hidden"
+      if (appHidden || page !== "chat") {
+        if (isNative()) {
+          // best-effort; ignore failures (permission denied etc.)
+          void LocalNotifications.schedule({
+            notifications: [
+              {
+                id: Date.now() % 2147483647,
+                title: peer,
+                body: preview,
+                smallIcon: "ic_launcher",
+                extra: { route: "chat" },
+              },
+            ],
+          }).catch(() => undefined)
+        }
+      }
     }
     window.addEventListener("favilla:newAiReply", onReply as EventListener)
-    return () => window.removeEventListener("favilla:newAiReply", onReply as EventListener)
+    return () =>
+      window.removeEventListener("favilla:newAiReply", onReply as EventListener)
   }, [page])
 
   // Clear unread when user enters chat.
   useEffect(() => {
     if (page === "chat") setUnread(false)
   }, [page])
+
+  // Request notification permission once on native, and route notification
+  // taps directly to the chat view.
+  useEffect(() => {
+    if (!isNative()) return
+    void LocalNotifications.requestPermissions().catch(() => undefined)
+    let handle: { remove: () => void } | null = null
+    let cancelled = false
+    void LocalNotifications.addListener(
+      "localNotificationActionPerformed",
+      () => {
+        // Always navigate to chat — there is only one chat target right now.
+        setPage("chat")
+        setUnread(false)
+      },
+    ).then((h) => {
+      if (cancelled) h.remove()
+      else handle = h
+    })
+    return () => {
+      cancelled = true
+      handle?.remove()
+    }
+  }, [])
 
   // Hardware / system back button — match top-left back button:
   //   home + settings open  -> close settings

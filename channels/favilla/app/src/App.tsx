@@ -848,7 +848,11 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
       )
       // Tell Shell to set the home unread dot if user isn't on chat.
       try {
-        window.dispatchEvent(new CustomEvent("favilla:newAiReply"))
+        window.dispatchEvent(
+          new CustomEvent("favilla:newAiReply", {
+            detail: { peerName, preview: full },
+          }),
+        )
       } catch {
         /* ignore */
       }
