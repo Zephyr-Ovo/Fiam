@@ -28,6 +28,7 @@ export default function Shell() {
   const [page, setPage] = useState<Page>("home")
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [phone, setPhone] = useState(isPhoneish())
+  const [unread, setUnread] = useState(false)
 
   useEffect(() => {
     installGlobalTapHaptics()
@@ -36,6 +37,21 @@ export default function Shell() {
     mq.addEventListener("change", onChange)
     return () => mq.removeEventListener("change", onChange)
   }, [])
+
+  // App fires this whenever the assistant adds/updates a reply. Mark unread
+  // unless the chat view is currently visible.
+  useEffect(() => {
+    function onReply() {
+      if (page !== "chat") setUnread(true)
+    }
+    window.addEventListener("favilla:newAiReply", onReply as EventListener)
+    return () => window.removeEventListener("favilla:newAiReply", onReply as EventListener)
+  }, [page])
+
+  // Clear unread when user enters chat.
+  useEffect(() => {
+    if (page === "chat") setUnread(false)
+  }, [page])
 
   // Hardware / system back button — match top-left back button:
   //   home + settings open  -> close settings
@@ -82,18 +98,18 @@ export default function Shell() {
   // Render Home + App together; toggle visibility instead of unmount so
   // returning to Home is instant and big assets aren't re-decoded.
   const isChat = page === "chat"
-  const slide = "transform 360ms cubic-bezier(0.32, 0.72, 0, 1)"
+  const slide = "transform 460ms cubic-bezier(0.22, 1, 0.36, 1)"
   const inner = (
     <>
       <div
         className="absolute inset-0 h-full w-full"
         style={{
-          transform: isChat ? "translateX(-18%)" : "translateX(0)",
+          transform: isChat ? "translateX(-12%)" : "translateX(0)",
           transition: slide,
           pointerEvents: isChat ? "none" : "auto",
         }}
       >
-        <Home onNavigate={onHomeNavigate} />
+        <Home onNavigate={onHomeNavigate} unread={unread} />
       </div>
       <div
         className="absolute inset-0 h-full w-full"

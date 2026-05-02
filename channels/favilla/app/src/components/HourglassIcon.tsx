@@ -72,7 +72,7 @@ export function HourglassIcon({
               x="0"
               y="7"
               width="12"
-              height={active ? 7 : 0}
+              height={active ? 7 : (filled && p >= 1 ? 7 : 0)}
               fill={sandColor}
               style={active ? ({ animation: `hg-fill ${cycleSeconds}s ease-in-out infinite`, transformOrigin: "6px 13.5px" } as React.CSSProperties) : undefined}
             />

@@ -47,9 +47,11 @@ const SLOTS: Slot[] = [
 
 type Props = {
   onNavigate: (t: HomeTarget) => void
+  /** Show a small red dot on the message icon (top-right) when there are unread chats. */
+  unread?: boolean
 }
 
-export function Home({ onNavigate }: Props) {
+export function Home({ onNavigate, unread = false }: Props) {
   // Track which slot is currently being pressed so the visible image can
   // shrink in sync with the (separate) hit overlay.
   const [pressed, setPressed] = useState<string | null>(null)
@@ -160,6 +162,38 @@ export function Home({ onNavigate }: Props) {
         }}
       >
         <img src="/home/setting.png" alt="" className="h-full w-full" draggable={false} />
+      </PressButton>
+
+      {/* message button (top layer, top-right) — symmetric to settings; small
+          red dot when there are unread chats. Tap → chat. */}
+      <PressButton
+        ariaLabel="Open chat (messages)"
+        onClick={() => onNavigate("chat")}
+        style={{
+          left: (412 - 35 - 31) * SCALE,
+          top: 56 * SCALE,
+          width: 31 * SCALE,
+          height: 33 * SCALE,
+        }}
+      >
+        <div className="relative h-full w-full">
+          <img src="/home/message.png" alt="" className="h-full w-full" draggable={false} />
+          {unread && (
+            <span
+              className="absolute"
+              style={{
+                top: 1 * SCALE,
+                right: 1 * SCALE,
+                width: 8 * SCALE,
+                height: 8 * SCALE,
+                borderRadius: "50%",
+                background: "#e0563a",
+                boxShadow: "0 0 0 1.5px rgba(255,250,243,0.95)",
+              }}
+              aria-hidden="true"
+            />
+          )}
+        </div>
       </PressButton>
 
       {/* strollentry — "↑ Escaping my desk…" header text. Tap → walking */}

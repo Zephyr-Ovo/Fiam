@@ -46,6 +46,9 @@ export function ConfirmModal({
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           transition={{ duration: 0.15 }}
+          // Block mousedown on the entire modal so the chat textarea
+          // doesn't lose focus (which would dismiss the soft keyboard).
+          onMouseDown={(e) => e.preventDefault()}
         >
           {/* frosted backdrop */}
           <button

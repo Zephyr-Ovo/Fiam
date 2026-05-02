@@ -823,6 +823,12 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
             : x,
         ),
       )
+      // Tell Shell to set the home unread dot if user isn't on chat.
+      try {
+        window.dispatchEvent(new CustomEvent("favilla:newAiReply"))
+      } catch {
+        /* ignore */
+      }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e)
       setMessages((m) =>
@@ -1085,8 +1091,8 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                 }}
                 onKeyDown={onComposerKeyDown}
                 placeholder={`Reply to ${peerName}…`}
-                className="composer-input resize-none bg-transparent px-2 py-1 text-[15px] leading-[1.4] focus:outline-none"
-                style={{ fontFamily: "var(--font-sans)", color: INK, maxHeight: 92, minHeight: 36 }}
+                className="composer-input resize-none bg-transparent px-2 pt-2.5 pb-1 text-[15px] leading-[1.4] focus:outline-none"
+                style={{ fontFamily: "var(--font-sans)", color: INK, maxHeight: 92, minHeight: 40 }}
               />
               {/* tools row (bottom): + / recall on left, voice / send on right */}
               <div className="flex items-center gap-1">
