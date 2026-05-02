@@ -48,7 +48,9 @@ jobs:
 
       - name: Gradle build (debug APK)
         working-directory: channels/favilla/app/android
-        run: ./gradlew --no-daemon assembleDebug
+        run: |
+          chmod +x ./gradlew
+          ./gradlew --no-daemon assembleDebug
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
