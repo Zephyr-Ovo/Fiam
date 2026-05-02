@@ -42,40 +42,51 @@ export function Settings({ open, onClose }: Props) {
 
   return (
     <div
-      className="absolute inset-0 z-40 flex items-center justify-center"
-      style={{
-        background: visible ? "rgba(40, 28, 22, 0.45)" : "rgba(40, 28, 22, 0)",
-        transition: "background 200ms ease-out",
-        pointerEvents: visible ? "auto" : "none",
-      }}
-      onClick={onClose}
-      onMouseDown={(e) => e.preventDefault()}
+      className="absolute inset-0 z-40"
+      style={{ pointerEvents: visible ? "auto" : "none" }}
     >
+      {/* dim backdrop — semi-transparent so the home page is still faintly
+          visible behind. Click-outside-to-close. NO mousedown preventDefault
+          here — that was killing input focus on the card. */}
+      <button
+        type="button"
+        aria-label="Dismiss settings"
+        onClick={onClose}
+        className="absolute inset-0"
+        style={{
+          background: visible ? "rgba(40, 28, 22, 0.45)" : "rgba(40, 28, 22, 0)",
+          transition: "background 200ms ease-out",
+          border: 0,
+          padding: 0,
+          cursor: "default",
+        }}
+      />
+      {/* card — sibling of backdrop, centered absolutely over it */}
       <div
         role="dialog"
         aria-label="Settings"
-        onClick={(e) => e.stopPropagation()}
-        className="relative flex flex-col"
+        className="absolute left-1/2 top-1/2 flex flex-col"
         style={{
+          transform: visible
+            ? "translate(-50%, -50%) scale(1)"
+            : "translate(-50%, -48%) scale(0.96)",
           width: "86%",
           maxWidth: 360,
           borderRadius: 22,
-          // frosted cream glass
-          background: "rgba(250, 244, 229, 0.55)",
-          backdropFilter: "blur(20px) saturate(135%)",
-          WebkitBackdropFilter: "blur(20px) saturate(135%)",
-          border: "1px solid rgba(255, 255, 255, 0.55)",
+          // frosted cream glass — kept for visual fidelity. Shell hides
+          // Home behind us so the blur layer is cheap to paint.
+          background: "rgba(250, 244, 229, 0.78)",
+          backdropFilter: "blur(18px) saturate(130%)",
+          WebkitBackdropFilter: "blur(18px) saturate(130%)",
+          border: "1px solid rgba(255, 255, 255, 0.6)",
           boxShadow:
             "0 18px 50px -12px rgba(40, 28, 22, 0.45), 0 1px 0 rgba(255,255,255,0.7) inset",
           padding: "20px 22px 16px",
           color: "#3f2f29",
           fontFamily: "var(--font-sans)",
           opacity: visible ? 1 : 0,
-          transform: visible
-            ? "scale(1) translateY(0)"
-            : "scale(0.96) translateY(6px)",
           transition:
-            "opacity 200ms ease-out, transform 200ms cubic-bezier(0.22, 1, 0.36, 1)",
+            "opacity 200ms ease-out, transform 220ms cubic-bezier(0.22, 1, 0.36, 1)",
           willChange: "transform, opacity",
         }}
       >

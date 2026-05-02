@@ -41,14 +41,23 @@ export function ConfirmModal({
     <AnimatePresence>
       {open && (
         <motion.div
-          className="absolute inset-0 z-30 grid place-items-center"
+          // FIXED to viewport so the modal does NOT get pushed up when the
+          // soft keyboard opens. Uses dynamic viewport units so the centre
+          // is always the visual center of the screen — including with the
+          // keyboard open. z-index above the chat composer.
+          className="fixed left-0 top-0 z-50 grid place-items-center"
+          style={{
+            width: "100vw",
+            height: "100dvh",
+          }}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           transition={{ duration: 0.15 }}
-          // Block mousedown on the entire modal so the chat textarea
-          // doesn't lose focus (which would dismiss the soft keyboard).
+          // Block mousedown so the chat textarea doesn't lose focus
+          // (which would dismiss the soft keyboard mid-confirm).
           onMouseDown={(e) => e.preventDefault()}
+          onTouchStart={(e) => e.preventDefault()}
         >
           {/* frosted backdrop */}
           <button

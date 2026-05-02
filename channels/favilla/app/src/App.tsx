@@ -544,26 +544,11 @@ function TimeSeparator({ t }: { t: number }) {
 }
 
 /** Dotted-line divider drawn in the chat (manual cut / recall mark).
- *  Special case: label="processing" renders a clean pulsing label only —
- *  no dashes, no scissors — to signal an in-flight server seal. */
+ *  No "processing" label — the gray-out state of the Send button is the
+ *  only signal users need (per user feedback). */
 function Divider({ kind, label }: { kind: "scissor" | "recall"; label?: string }) {
+  if (label === "processing") return null
   const color = "rgba(63,47,41,0.32)"
-  if (label === "processing") {
-    return (
-      <div className="my-2 flex justify-center">
-        <span
-          className="text-[10.5px] tracking-[0.18em] uppercase"
-          style={{
-            color: "rgba(63,47,41,0.5)",
-            fontFamily: "var(--font-sans)",
-            animation: "fav-pulse 1.4s ease-in-out infinite",
-          }}
-        >
-          processing…
-        </span>
-      </div>
-    )
-  }
   return (
     <div className="my-1.5 flex items-center gap-2">
       <div className="flex-1" style={{ borderTop: `1px dashed ${color}` }} />
@@ -709,13 +694,18 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
 
   function onScissorClick() {
     if (sealBusy) return
-    pushDivider("scissor", "cut")
-    cutFlow().catch(() => {})
+    askConfirm(
+      "Cut here?",
+      "Drop a cut marker. Beats before this point become a separate segment when you process.",
+      () => {
+        pushDivider("scissor", "cut")
+        cutFlow().catch(() => {})
+      },
+    )
   }
 
   function runProcess() {
     if (sealBusy) return
-    pushDivider("scissor", "processing")
     setSealBusy(true)
     processFlow()
       .catch(() => {})

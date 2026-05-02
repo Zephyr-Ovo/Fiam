@@ -151,8 +151,3 @@ body {
 @keyframes hg-drain { 0%,100%{transform:scaleY(1)} 50%{transform:scaleY(0.45)} }
 @keyframes hg-fill  { 0%,100%{transform:scaleY(1)} 50%{transform:scaleY(0.45)} }
 @keyframes hg-stream { 0%,100%{opacity:0} 30%,70%{opacity:1} }
-/* favilla keyframes */
-@keyframes fav-pulse { 0%,100% { opacity: 0.55 } 50% { opacity: 1 } }
-@keyframes hg-drain { 0%,100% { transform: scaleY(1) } 50% { transform: scaleY(0.45) } }
-@keyframes hg-fill { 0%,100% { transform: scaleY(1) } 50% { transform: scaleY(0.45) } }
-@keyframes hg-stream { 0%,100% { opacity: 0 } 30%,70% { opacity: 1 } }
