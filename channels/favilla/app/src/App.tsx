@@ -543,9 +543,27 @@ function TimeSeparator({ t }: { t: number }) {
   )
 }
 
-/** Dotted-line divider drawn in the chat (manual cut / recall mark). */
+/** Dotted-line divider drawn in the chat (manual cut / recall mark).
+ *  Special case: label="processing" renders a clean pulsing label only —
+ *  no dashes, no scissors — to signal an in-flight server seal. */
 function Divider({ kind, label }: { kind: "scissor" | "recall"; label?: string }) {
   const color = "rgba(63,47,41,0.32)"
+  if (label === "processing") {
+    return (
+      <div className="my-2 flex justify-center">
+        <span
+          className="text-[10.5px] tracking-[0.18em] uppercase"
+          style={{
+            color: "rgba(63,47,41,0.5)",
+            fontFamily: "var(--font-sans)",
+            animation: "fav-pulse 1.4s ease-in-out infinite",
+          }}
+        >
+          processing…
+        </span>
+      </div>
+    )
+  }
   return (
     <div className="my-1.5 flex items-center gap-2">
       <div className="flex-1" style={{ borderTop: `1px dashed ${color}` }} />
@@ -712,7 +730,12 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
     setHourglassHold(0)
   }
 
-  function onHourglassPressStart() {
+  function onHourglassPressStart(e?: React.PointerEvent<HTMLButtonElement>) {
+    // Block default so the focused textarea doesn't lose focus (which would
+    // dismiss the soft keyboard mid-press). preventDefault() on pointerdown
+    // works for both mouse and touch in Android WebView when touch-action is
+    // also constrained on the button.
+    e?.preventDefault()
     if (sealBusy) return
     hourglassFiredRef.current = false
     hourglassStartRef.current = performance.now()
@@ -1164,13 +1187,14 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                 <button
                   type="button"
                   onMouseDown={(e) => e.preventDefault()}
+                  onTouchStart={(e) => e.preventDefault()}
                   onPointerDown={onHourglassPressStart}
                   onPointerUp={onHourglassPressEnd}
                   onPointerLeave={() => clearHourglassHold()}
                   onPointerCancel={() => clearHourglassHold()}
                   disabled={sealBusy}
                   className="grid h-9 w-9 shrink-0 place-items-center rounded-full transition-colors hover:bg-black/5 disabled:opacity-50"
-                  style={{ color: "var(--color-cocoa)" }}
+                  style={{ color: "var(--color-cocoa)", touchAction: "none" }}
                   aria-label={
                     sealBusy
                       ? "Processing event"

@@ -1,4 +1,3 @@
-import { motion } from "framer-motion"
 import { useEffect, useRef, useState, type CSSProperties } from "react"
 
 /**
@@ -111,14 +110,12 @@ export function Home({ onNavigate, unread = false }: Props) {
       {SLOTS.map((s) => {
         const down = pressed === s.key
         return (
-          <motion.img
+          <img
             key={`img-${s.key}`}
             src={s.asset}
             alt=""
             className="pointer-events-none absolute select-none"
             draggable={false}
-            animate={{ scale: down ? 0.97 : 1, y: down ? 2 : 0 }}
-            transition={{ type: "spring", stiffness: 400, damping: 22 }}
             style={{
               left: s.x * SCALE,
               top: s.y * SCALE,
@@ -126,10 +123,12 @@ export function Home({ onNavigate, unread = false }: Props) {
               height: s.h * SCALE,
               transformOrigin: "center",
               willChange: "transform, filter",
+              transform: down ? "scale(0.97) translateY(2px)" : "scale(1) translateY(0)",
               filter: down
                 ? "drop-shadow(0 2px 4px rgba(63,47,41,0.18))"
                 : "drop-shadow(0 8px 12px rgba(63,47,41,0.28))",
-              transition: "filter 140ms ease-out",
+              transition:
+                "transform 180ms cubic-bezier(0.34, 1.56, 0.64, 1), filter 140ms ease-out",
             }}
           />
         )
@@ -165,19 +164,27 @@ export function Home({ onNavigate, unread = false }: Props) {
       </PressButton>
 
       {/* message button (top layer, top-right) — symmetric to settings; small
-          red dot when there are unread chats. Tap → chat. */}
+          red dot when there are unread chats. Tap → chat. Vertically
+          compressed to ~80% so the bell icon doesn't feel oversized next to
+          the settings sticker. */}
       <PressButton
         ariaLabel="Open chat (messages)"
         onClick={() => onNavigate("chat")}
         style={{
           left: (412 - 35 - 31) * SCALE,
-          top: 56 * SCALE,
+          top: (56 + 3) * SCALE,
           width: 31 * SCALE,
-          height: 33 * SCALE,
+          height: 27 * SCALE,
         }}
       >
         <div className="relative h-full w-full">
-          <img src="/home/message.png" alt="" className="h-full w-full" draggable={false} />
+          <img
+            src="/home/message.png"
+            alt=""
+            className="h-full w-full"
+            style={{ objectFit: "contain" }}
+            draggable={false}
+          />
           {unread && (
             <span
               className="absolute"

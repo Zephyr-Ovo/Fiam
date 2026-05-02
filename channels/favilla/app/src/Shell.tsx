@@ -97,16 +97,21 @@ export default function Shell() {
 
   // Render Home + App together; toggle visibility instead of unmount so
   // returning to Home is instant and big assets aren't re-decoded.
+  // While Settings is open, hide Home from compositing so the backdrop-filter
+  // blur doesn't have to repaint the whole collage every frame (this was the
+  // dominant source of the "paints in waves" lag).
   const isChat = page === "chat"
-  const slide = "transform 460ms cubic-bezier(0.22, 1, 0.36, 1)"
+  const slide = "transform 420ms cubic-bezier(0.22, 1, 0.36, 1)"
   const inner = (
     <>
       <div
         className="absolute inset-0 h-full w-full"
         style={{
-          transform: isChat ? "translateX(-12%)" : "translateX(0)",
+          transform: isChat ? "translate3d(-12%,0,0)" : "translate3d(0,0,0)",
           transition: slide,
           pointerEvents: isChat ? "none" : "auto",
+          willChange: "transform",
+          visibility: settingsOpen ? "hidden" : "visible",
         }}
       >
         <Home onNavigate={onHomeNavigate} unread={unread} />
@@ -114,9 +119,10 @@ export default function Shell() {
       <div
         className="absolute inset-0 h-full w-full"
         style={{
-          transform: isChat ? "translateX(0)" : "translateX(100%)",
+          transform: isChat ? "translate3d(0,0,0)" : "translate3d(100%,0,0)",
           transition: slide,
           pointerEvents: isChat ? "auto" : "none",
+          willChange: "transform",
         }}
       >
         <App onBack={() => setPage("home")} />
