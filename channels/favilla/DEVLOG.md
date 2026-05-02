@@ -97,5 +97,6 @@ Figma is reference-only, not a required pipeline. Design lives in code.
 - Page transitions: Home and Chat stay mounted; navigation uses horizontal translate slide. System/back and header back return to Home; Home back minimizes app via Capacitor instead of exiting.
 - Composer bottom memory control is one hourglass button again: tap toggles yellow armed state, four taps within ~1.4s triggers a short sand-flow burst and immediate `recallNow()` refresh. No separate extra hourglass button.
 - User message recall marker uses the provided sparkle SVG as an absolute corner badge; composer itself should not use the sparkle icon.
+- Hourglass icon shape is the user-provided 12×14 SVG (two bulbs + top/bottom rails), white at rest and pale gold when armed/animating. Copy affordance is transparent icon-only, not a white circular chip.
 - Sends are batched client-side: consecutive user sends within 60s render immediately in chat but flush to `/api/app/chat` as one combined payload after the window, or immediately if Send/Enter is pressed while the input is empty and a batch is pending.
 - Performance: Chat is pre-mounted behind Home; per-bubble `backdrop-filter` removed because Android WebView was visibly stalling when entering Chat.

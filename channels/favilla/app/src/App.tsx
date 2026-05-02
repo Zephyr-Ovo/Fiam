@@ -468,10 +468,10 @@ function BubbleBody({
         {recallUsed && (
           <span
             aria-label="recall used"
-            className="pointer-events-none absolute -bottom-1 -right-1 select-none"
-            style={{ filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.25))", color: "#FFCC00" }}
+            className="pointer-events-none absolute -bottom-1.5 -right-1.5 block select-none"
+            style={{ filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.2))", color: "#FAEC8C" }}
           >
-            <RecallIcon className="h-[14px] w-[14px]" strokeWidth={1.6} color="#FFCC00" />
+            <RecallIcon className="h-[13px] w-[13px]" strokeWidth={1.45} color="#FAEC8C" />
           </span>
         )}
       </div>
@@ -487,9 +487,10 @@ function BubbleBody({
             className="absolute top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center rounded-full"
             style={{
               [isUser ? "right" : "left"]: "calc(100% + 6px)",
-              background: "rgba(255,250,243,0.96)",
-              border: "1px solid rgba(176,139,127,0.22)",
-              boxShadow: "0 6px 14px -6px rgba(63,47,41,0.32)",
+              background: "transparent",
+              border: "none",
+              boxShadow: "none",
+              filter: "drop-shadow(0 1px 2px rgba(255,250,243,0.65)) drop-shadow(0 2px 4px rgba(63,47,41,0.24))",
               color: copied ? "#7a8a52" : INK,
             }}
             aria-label={copied ? "Copied" : "Copy message"}
