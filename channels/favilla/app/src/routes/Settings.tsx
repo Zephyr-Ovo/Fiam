@@ -45,17 +45,14 @@ export function Settings({ open, onClose }: Props) {
       className="absolute inset-0 z-40"
       style={{ pointerEvents: visible ? "auto" : "none" }}
     >
-      {/* dim backdrop — semi-transparent so the home page is still faintly
-          visible behind. Click-outside-to-close. NO mousedown preventDefault
-          here — that was killing input focus on the card. */}
+      {/* transparent backdrop — click-outside-to-close, no dim layer. */}
       <button
         type="button"
         aria-label="Dismiss settings"
         onClick={onClose}
         className="absolute inset-0"
         style={{
-          background: visible ? "rgba(40, 28, 22, 0.45)" : "rgba(40, 28, 22, 0)",
-          transition: "background 200ms ease-out",
+          background: "transparent",
           border: 0,
           padding: 0,
           cursor: "default",

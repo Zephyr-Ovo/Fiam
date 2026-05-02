@@ -583,28 +583,19 @@ function Divider({ kind, label }: { kind: "scissor" | "recall"; label?: string }
 
 /** Send button — icon shoots up-right then resets, no opacity fade. */
 function SendButton({ onSend, disabled }: { onSend: () => void; disabled: boolean }) {
-  const [shoot, setShoot] = useState(false)
   return (
     <button
       type="button"
       onMouseDown={(e) => e.preventDefault()}
       onClick={() => {
         if (disabled) return
-        setShoot(true)
         onSend()
-        setTimeout(() => setShoot(false), 220)
       }}
       disabled={disabled}
-      className="grid h-9 w-9 place-items-center rounded-full overflow-hidden transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
+      className="grid h-9 w-9 place-items-center rounded-full transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
       style={{ color: "var(--color-cocoa)" }}
     >
-      <motion.span
-        animate={shoot ? { x: 16, y: -12, opacity: 0 } : { x: 0, y: 0, opacity: 1 }}
-        transition={shoot ? { duration: 0.16, ease: [0.4, 0, 0.6, 1] } : { duration: 0 }}
-        className="grid place-items-center"
-      >
-        <Send className="h-5 w-5" strokeWidth={1.8} />
-      </motion.span>
+      <Send className="h-5 w-5" strokeWidth={1.8} />
     </button>
   )
 }

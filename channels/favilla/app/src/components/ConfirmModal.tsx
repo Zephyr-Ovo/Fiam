@@ -27,13 +27,9 @@ export function ConfirmModal({
   onCancel,
   onConfirm,
 }: Props) {
-  // ESC = cancel, Enter = confirm. Also blur the active element on open so
-  // the soft keyboard collapses — otherwise visualViewport shrinks and the
-  // modal (anchored to layout viewport) appears off-center on phones.
+  // ESC = cancel, Enter = confirm.
   useEffect(() => {
     if (!open) return
-    const active = document.activeElement
-    if (active && active instanceof HTMLElement) active.blur()
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") onCancel()
       else if (e.key === "Enter") onConfirm()
@@ -52,13 +48,11 @@ export function ConfirmModal({
           // a `position: fixed` element (CSS containing-block spec), which
           // breaks centering. Shell uses translate3d for slide, so without
           // a portal the modal lands at the wrong position.
-          className="fixed left-0 top-0 z-50 grid place-items-center"
-          style={{
-            // 100vw × 100lvh = full layout viewport (excludes soft keyboard).
-            // dvh would shrink when keyboard opens and push the dialog up.
-            width: "100vw",
-            height: "100lvh",
-          }}
+          // FIXED to viewport via portal to document.body. `inset:0` fills
+          // the layout viewport; the soft keyboard sits over the visual
+          // viewport but doesn't change layout viewport, so the dialog stays
+          // pinned to the screen center even when the keyboard is up.
+          className="fixed inset-0 z-50 grid place-items-center"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
