@@ -660,17 +660,18 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
     return () => window.removeEventListener("favilla:config-changed", onConfigChanged)
   }, [])
 
-  // ---- manual cut + process handlers ----
-  // Scissor (剪刀) = cut. Drops a divider marker on the server (lightweight,
-  //   instant). Multiple cuts can be placed before processing.
-  // Hourglass (沙漏) = process. Long-press 1.2s → confirm → server seals all
-  //   unprocessed beats into events using cut markers as segment dividers.
-  //   sealBusy is ON for the entire DS round-trip; Send is disabled and the
-  //   sand animation runs.
+  // ---- manual cut + recall + process handlers ----
+  // Scissor (剪刀) = cut. Drops a divider marker server-side (instant).
+  // Hourglass single-tap = toggle recall armed (light up/off).
+  //   When armed and the next message goes out, the server runs recall first.
+  // Hourglass long-press 1.2s = confirm dialog → /api/app/process (DS pipeline).
+  //   sealBusy=true for the whole DS round-trip; sand animation + Send disabled.
   const [sealBusy, setSealBusy] = useState(false)
+  const [recallArmed, setRecallArmed] = useState(false)
   const [hourglassHold, setHourglassHold] = useState(0) // 0..1 long-press progress
   const hourglassTimerRef = useRef<number | null>(null)
   const hourglassStartRef = useRef<number>(0)
+  const hourglassFiredRef = useRef(false) // true once long-press threshold reached
   const HOURGLASS_HOLD_MS = 1200
   const [confirmState, setConfirmState] = useState<
     | { open: false }
@@ -690,7 +691,6 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
 
   function onScissorClick() {
     if (sealBusy) return
-    // Cut is lightweight: drop a divider marker server-side, no DS work.
     pushDivider("scissor", "cut")
     cutFlow().catch(() => {})
   }
@@ -714,6 +714,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
 
   function onHourglassPressStart() {
     if (sealBusy) return
+    hourglassFiredRef.current = false
     hourglassStartRef.current = performance.now()
     const tick = () => {
       const elapsed = performance.now() - hourglassStartRef.current
@@ -721,6 +722,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
       setHourglassHold(p)
       if (p >= 1) {
         hourglassTimerRef.current = null
+        hourglassFiredRef.current = true
         setHourglassHold(0)
         askConfirm(
           "Process unprocessed beats?",
@@ -735,7 +737,13 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
   }
 
   function onHourglassPressEnd() {
+    const fired = hourglassFiredRef.current
     clearHourglassHold()
+    if (sealBusy) return
+    if (!fired) {
+      // Short tap → toggle recall armed.
+      setRecallArmed((on) => !on)
+    }
   }
 
   useEffect(() => {
@@ -846,7 +854,10 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
     const text = input.trim()
     if ((!text && pendingFiles.length === 0) || sending) return
     setInput("")
-    const wasArmed = false
+    const wasArmed = recallArmed
+    if (wasArmed) {
+      setRecallArmed(false)
+    }
 
     // Snapshot pending files for this turn, then clear UI immediately
     const filesToSend = pendingFiles.map((p) => p.file)
@@ -1029,6 +1040,12 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
             )}
             <div
               className="pointer-events-auto flex flex-col gap-1.5 rounded-[20px] p-1.5"
+              onMouseDown={(e) => {
+                // Don't blur the textarea when tapping anywhere inside the composer
+                // (blank padding, tools row, etc.). The textarea itself ignores its
+                // own mousedown so cursor placement still works.
+                if (e.target !== textareaRef.current) e.preventDefault()
+              }}
               style={{
                 background: "rgba(255,250,240,0.98)",
                 border: "1px solid rgba(176,139,127,0.22)",
@@ -1143,24 +1160,35 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                   onMouseDown={(e) => e.preventDefault()}
                   onPointerDown={onHourglassPressStart}
                   onPointerUp={onHourglassPressEnd}
-                  onPointerLeave={onHourglassPressEnd}
-                  onPointerCancel={onHourglassPressEnd}
+                  onPointerLeave={() => clearHourglassHold()}
+                  onPointerCancel={() => clearHourglassHold()}
                   disabled={sealBusy}
                   className="grid h-9 w-9 shrink-0 place-items-center rounded-full transition-colors hover:bg-black/5 disabled:opacity-50"
                   style={{ color: "var(--color-cocoa)" }}
-                  aria-label={sealBusy ? "Processing event" : "Process (long-press 1.2s)"}
+                  aria-label={
+                    sealBusy
+                      ? "Processing event"
+                      : recallArmed
+                        ? "Recall armed (long-press to process)"
+                        : "Tap to arm recall, long-press 1.2s to process"
+                  }
+                  aria-pressed={recallArmed}
                   title={
                     sealBusy
                       ? "Event is being processed…"
-                      : "Long-press 1.2s to process unprocessed beats"
+                      : recallArmed
+                        ? "Recall armed — next message will refresh memory. Tap again to disarm."
+                        : "Tap to arm recall · long-press 1.2s to process"
                   }
                 >
                   <HourglassIcon
                     className="h-4 w-4"
                     size={16}
                     active={sealBusy}
-                    filled={sealBusy || hourglassHold > 0}
-                    fillProgress={sealBusy ? 1 : hourglassHold}
+                    filled={sealBusy || recallArmed || hourglassHold > 0}
+                    fillProgress={
+                      sealBusy ? 1 : hourglassHold > 0 ? hourglassHold : recallArmed ? 1 : 0
+                    }
                     sandColor="#FAEC8C"
                     cycleSeconds={1}
                   />

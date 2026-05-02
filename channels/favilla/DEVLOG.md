@@ -2,6 +2,13 @@
 
 > Favilla app-specific notes. Root project/system notes stay in `../../DEVLOG.md`.
 
+## ⚠️ 操作语义 LOCKED — 每次开工必读
+**剪刀**=即点即切（无确认，仅落 cut marker `/api/app/cut`）。
+**沙漏单击**=toggle recall armed（亮↔暗；亮+下次发送=带召回；点发送或再次单击=灭）。
+**沙漏长按 1.2s**=弹窗确认→`/api/app/process`（3 阶段 DS 管线，沙漏漏沙动画 + 发送灰，完成信号到才解锁）。
+**键盘**：整个 footer 输入框区域点击不收起；其他位置点击收起。
+**Settings**：背景 `rgba(0,0,0,0.45)` 纯变暗不模糊；卡片 `backdrop-filter: blur(20px)` + `rgba(255,250,243,0.55)` 半透明磨砂；居中固定，CSS-only fade 120ms。
+
 ## Session 2026-04-30 — Hard Reset to React + Tailwind + shadcn
 
 **Trigger:** All previous attempts (XML → Compose → SvelteKit + Workspace Engine) hit the same wall: design-to-implementation lossiness produced "plastic-feeling" UI. Tech-stack churn was a symptom, not the cause. Real bottleneck: AI reading PNG screenshots loses spacing/typography/layer info, and default component libraries (any of them) feel like SaaS dashboards.

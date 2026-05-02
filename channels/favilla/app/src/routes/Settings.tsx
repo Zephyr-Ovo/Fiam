@@ -48,29 +48,29 @@ export function Settings({ open, onClose }: Props) {
         pointerEvents: visible ? "auto" : "none",
       }}
     >
-      {/* frosted backdrop — click to dismiss */}
+      {/* dim backdrop — no blur, just darken. Click to dismiss */}
       <button
         type="button"
         aria-label="Close settings"
         onClick={onClose}
         className="absolute inset-0 cursor-default border-0"
         style={{
-          background: "rgba(63,47,41,0.22)",
-          backdropFilter: "blur(16px) saturate(120%)",
-          WebkitBackdropFilter: "blur(16px) saturate(120%)",
+          background: "rgba(0,0,0,0.45)",
         }}
       />
 
-      {/* centered fixed card */}
+      {/* centered fixed frosted card */}
       <div
         className="relative flex flex-col overflow-hidden"
         style={{
           width: "85%",
           maxWidth: 360,
           borderRadius: 22,
-          background: "rgba(245,238,228,0.92)",
+          background: "rgba(255,250,243,0.55)",
+          backdropFilter: "blur(20px) saturate(140%)",
+          WebkitBackdropFilter: "blur(20px) saturate(140%)",
           border: "1px solid rgba(255,255,255,0.55)",
-          boxShadow: "0 18px 50px -12px rgba(63,47,41,0.4)",
+          boxShadow: "0 18px 50px -12px rgba(0,0,0,0.5)",
           padding: "18px 18px 14px",
         }}
       >
