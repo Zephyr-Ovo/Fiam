@@ -723,8 +723,9 @@ def _api_app_chat(payload: dict) -> dict:
         text = "(see attached file)"
     source = str(payload.get("source") or "favilla").strip() or "favilla"
     backend = str(payload.get("backend") or "cc").strip().lower() or "cc"
+    or_key = str(payload.get("openrouter_key") or "").strip()
     if backend == "api":
-        return _run_api_app_chat(text=text, source=source, attachments=safe_attachments)
+        return _run_api_app_chat(text=text, source=source, attachments=safe_attachments, openrouter_key=or_key)
     if backend != "cc":
         raise ValueError("server chat backend must be cc or api")
     return _run_cc_app_chat(text=text, source=source, attachments=safe_attachments)
@@ -971,9 +972,19 @@ def _run_cc_app_chat(*, text: str, source: str, attachments: list | None = None)
     }
 
 
-def _run_api_app_chat(*, text: str, source: str, attachments: list | None = None) -> dict:
+def _run_api_app_chat(*, text: str, source: str, attachments: list | None = None, openrouter_key: str = "") -> dict:
     if not _CONFIG or not _POOL:
         raise RuntimeError("config not loaded")
+
+    import os as _os
+    # Allow per-request OpenRouter key (e.g. from Favilla app Settings).
+    # Set the env var the runtime expects, but restore it after the call so
+    # concurrent requests using the server's own key are unaffected.
+    _prev_or_key: tuple[bool, str] | None = None
+    if openrouter_key:
+        env_name = _CONFIG.api.api_key_env if hasattr(_CONFIG, "api") else "OPENROUTER_API_KEY"
+        _prev_or_key = (env_name in _os.environ, _os.environ.get(env_name, ""))
+        _os.environ[env_name] = openrouter_key
 
     from fiam.conductor import Conductor
     from fiam.runtime.api import ApiRuntime
@@ -1014,7 +1025,16 @@ def _run_api_app_chat(*, text: str, source: str, attachments: list | None = None
         lines.append("")
         api_text = "\n".join(lines) + text
     api_text = f"[app:{source} backend=api] {api_text}"
-    result = runtime.ask(api_text, source=source)
+    try:
+        result = runtime.ask(api_text, source=source)
+    finally:
+        if _prev_or_key is not None:
+            had, prev = _prev_or_key
+            env_name = _CONFIG.api.api_key_env if hasattr(_CONFIG, "api") else "OPENROUTER_API_KEY"
+            if had:
+                _os.environ[env_name] = prev
+            else:
+                _os.environ.pop(env_name, None)
     cleaned_reply, thoughts, thoughts_locked = _parse_cot(result.reply)
     return {
         "ok": True,
