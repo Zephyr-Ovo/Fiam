@@ -13,6 +13,7 @@ from typing import Any, Callable, Protocol
 import numpy as np
 
 from fiam.runtime.prompt import build_api_messages
+from fiam.runtime.tools import TOOL_SCHEMAS, execute_tool_call
 from fiam.runtime.turns import assistant_text_beats, user_beat
 
 
@@ -20,10 +21,11 @@ class ApiClient(Protocol):
     def complete(
         self,
         *,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         model: str,
         temperature: float,
         max_tokens: int,
+        tools: list[dict[str, Any]] | None = None,
     ) -> "ApiCompletion":
         ...
 
@@ -34,6 +36,8 @@ class ApiCompletion:
     model: str = ""
     usage: dict[str, Any] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict)
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    finish_reason: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +50,7 @@ class ApiRuntimeResult:
     recall_fragments: int = 0
     dispatched: int = 0
     raw: dict[str, Any] = field(default_factory=dict)
+    tool_loops: int = 0
 
 
 class OpenAICompatibleClient:
@@ -80,17 +85,20 @@ class OpenAICompatibleClient:
     def complete(
         self,
         *,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         model: str,
         temperature: float,
         max_tokens: int,
+        tools: list[dict[str, Any]] | None = None,
     ) -> ApiCompletion:
-        body = {
+        body: dict[str, Any] = {
             "model": model,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
+        if tools:
+            body["tools"] = tools
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}",
@@ -112,15 +120,19 @@ class OpenAICompatibleClient:
         choices = data.get("choices") or []
         if not choices:
             raise RuntimeError("API response has no choices")
-        message = choices[0].get("message") or {}
+        choice = choices[0]
+        message = choice.get("message") or {}
         text = str(message.get("content") or "").strip()
-        if not text:
-            raise RuntimeError("API response has empty message content")
+        tool_calls = list(message.get("tool_calls") or [])
+        if not text and not tool_calls:
+            raise RuntimeError("API response has neither content nor tool_calls")
         return ApiCompletion(
             text=text,
             model=str(data.get("model") or model),
             usage=dict(data.get("usage") or {}),
             raw=data,
+            tool_calls=tool_calls,
+            finish_reason=str(choice.get("finish_reason") or ""),
         )
 
 
@@ -169,26 +181,70 @@ class ApiRuntime:
             include_recall=include_recall,
             consume_recall_dirty=True,
         )
-        completion = self.client.complete(
-            messages=messages,
-            model=self.config.api_model,
-            temperature=self.config.api_temperature,
-            max_tokens=self.config.api_max_tokens,
-        )
 
-        dispatched = self._dispatch(completion.text)
+        tools_enabled = bool(getattr(self.config, "api_tools_enabled", False))
+        tools = TOOL_SCHEMAS if tools_enabled else None
+        max_loops = max(1, int(getattr(self.config, "api_tools_max_loops", 10)))
+
+        loops = 0
+        completion: ApiCompletion | None = None
+        while True:
+            loops += 1
+            completion = self.client.complete(
+                messages=messages,
+                model=self.config.api_model,
+                temperature=self.config.api_temperature,
+                max_tokens=self.config.api_max_tokens,
+                tools=tools,
+            )
+            if not completion.tool_calls:
+                break
+            # Append the assistant message verbatim so the next request preserves
+            # the tool_call_ids the model issued.
+            assistant_msg: dict[str, Any] = {
+                "role": "assistant",
+                "content": completion.text or None,
+                "tool_calls": completion.tool_calls,
+            }
+            messages.append(assistant_msg)
+            for call in completion.tool_calls:
+                fn = call.get("function") or {}
+                name = str(fn.get("name") or "")
+                raw_args = str(fn.get("arguments") or "{}")
+                result = execute_tool_call(self.config, name, raw_args)
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": str(call.get("id") or ""),
+                    "name": name,
+                    "content": result,
+                })
+            if loops >= max_loops:
+                # Force one final no-tools call so the model emits a user-facing reply.
+                completion = self.client.complete(
+                    messages=messages,
+                    model=self.config.api_model,
+                    temperature=self.config.api_temperature,
+                    max_tokens=self.config.api_max_tokens,
+                    tools=None,
+                )
+                break
+
+        assert completion is not None
+        reply_text = completion.text or "(empty reply)"
+        dispatched = self._dispatch(reply_text)
         if record:
-            self._record_assistant(completion.text, source="api")
+            self._record_assistant(reply_text, source="api")
 
         return ApiRuntimeResult(
             ok=True,
             backend="api",
-            reply=completion.text,
+            reply=reply_text,
             model=completion.model,
             usage=completion.usage,
             recall_fragments=recall_fragments,
             dispatched=dispatched,
             raw=completion.raw,
+            tool_loops=loops,
         )
 
     def _record_user(self, text: str, *, source: str) -> int:

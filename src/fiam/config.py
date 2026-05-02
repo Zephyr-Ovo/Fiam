@@ -217,6 +217,8 @@ class FiamConfig:
     api_temperature: float = 0.7
     api_max_tokens: int = 2048
     api_timeout_seconds: int = 60
+    api_tools_enabled: bool = False    # enable text-editor + read tools (function calling)
+    api_tools_max_loops: int = 10      # safety cap on tool-call iterations
 
     # ------------------------------------------------------------------
     # Features
@@ -288,7 +290,16 @@ class FiamConfig:
 
     @property
     def claude_md_path(self) -> Path:
+        """Legacy alias. Prefer constitution_md_path. Kept for backward compat."""
         return self.home_path / "CLAUDE.md"
+
+    @property
+    def constitution_md_path(self) -> Path:
+        """Project knowledge / environment / system guide injected as system[0].
+
+        Renamed from CLAUDE.md so CC no longer auto-loads it; fiam owns it.
+        """
+        return self.home_path / "constitution.md"
 
     @property
     def self_dir(self) -> Path:

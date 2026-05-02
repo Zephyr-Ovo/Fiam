@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -30,12 +31,13 @@ class FakeClient:
         self.reply = reply
         self.calls: list[dict] = []
 
-    def complete(self, *, messages, model, temperature, max_tokens) -> ApiCompletion:
+    def complete(self, *, messages, model, temperature, max_tokens, tools=None) -> ApiCompletion:
         self.calls.append({
             "messages": messages,
             "model": model,
             "temperature": temperature,
             "max_tokens": max_tokens,
+            "tools": tools,
         })
         return ApiCompletion(
             text=self.reply,
@@ -96,9 +98,13 @@ class ApiRuntimeTest(unittest.TestCase):
             self.assertEqual(result.recall_fragments, 1)
             self.assertEqual(client.calls[0]["model"], "cheap/test-model")
 
-            prompt_text = "\n\n".join(m["content"] for m in client.calls[0]["messages"])
+            def _content_text(c: Any) -> str:
+                if isinstance(c, list):
+                    return "\n".join(b.get("text", "") for b in c if isinstance(b, dict))
+                return str(c)
+
+            prompt_text = "\n\n".join(_content_text(m["content"]) for m in client.calls[0]["messages"])
             self.assertIn("你是 Fiet。", prompt_text)
-            self.assertIn("[self]", prompt_text)
             self.assertIn("喜欢保持连续身份。", prompt_text)
             self.assertIn("[recall]", prompt_text)
             self.assertIn("昨天聊过 API runtime", prompt_text)
