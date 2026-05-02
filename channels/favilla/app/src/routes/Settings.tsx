@@ -41,9 +41,7 @@ export function Settings({ open, onClose }: Props) {
             onClick={onClose}
             className="absolute inset-0 cursor-default"
             style={{
-              background: "rgba(63,47,41,0.06)",
-              backdropFilter: "blur(7px) saturate(102%)",
-              WebkitBackdropFilter: "blur(7px) saturate(102%)",
+              background: "rgba(63,47,41,0.18)",
             }}
           />
 
@@ -58,9 +56,7 @@ export function Settings({ open, onClose }: Props) {
               height: "78%",
               borderTopLeftRadius: 28,
               borderTopRightRadius: 28,
-              background: "rgba(238,230,222,0.42)",
-              backdropFilter: "blur(22px) saturate(110%)",
-              WebkitBackdropFilter: "blur(22px) saturate(110%)",
+              background: "rgba(245,238,228,0.98)",
               borderTop: "1px solid rgba(255,255,255,0.5)",
               boxShadow: "0 -10px 40px -10px rgba(63,47,41,0.35)",
             }}
@@ -162,9 +158,7 @@ function Group({ title, children }: { title: string; children: React.ReactNode }
       <div
         className="overflow-hidden rounded-2xl"
         style={{
-          background: "rgba(255,250,243,0.48)",
-          backdropFilter: "blur(16px) saturate(110%)",
-          WebkitBackdropFilter: "blur(16px) saturate(110%)",
+          background: "rgba(255,250,243,0.85)",
           border: "1px solid rgba(255,255,255,0.45)",
           boxShadow: "0 1px 0 rgba(255,255,255,0.55) inset, 0 6px 18px -8px rgba(63,47,41,0.2)",
         }}
@@ -219,9 +213,7 @@ function SoloCard({ children }: { children: React.ReactNode }) {
     <div
       className="overflow-hidden rounded-2xl px-4 py-3"
       style={{
-        background: "rgba(255,250,243,0.48)",
-        backdropFilter: "blur(16px) saturate(110%)",
-        WebkitBackdropFilter: "blur(16px) saturate(110%)",
+        background: "rgba(255,250,243,0.85)",
         border: "1px solid rgba(255,255,255,0.45)",
         boxShadow: "0 1px 0 rgba(255,255,255,0.55) inset, 0 6px 18px -8px rgba(63,47,41,0.2)",
       }}

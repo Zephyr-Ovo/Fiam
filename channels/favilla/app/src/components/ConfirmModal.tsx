@@ -54,9 +54,7 @@ export function ConfirmModal({
             className="absolute inset-0"
             aria-label="Dismiss"
             style={{
-              background: "rgba(63,47,41,0.18)",
-              backdropFilter: "blur(8px) saturate(120%)",
-              WebkitBackdropFilter: "blur(8px) saturate(120%)",
+              background: "rgba(63,47,41,0.28)",
             }}
           />
           {/* dialog */}
@@ -67,9 +65,7 @@ export function ConfirmModal({
             transition={{ duration: 0.16, ease: [0.2, 0, 0.2, 1] }}
             className="relative w-[260px] overflow-hidden rounded-2xl"
             style={{
-              background: "rgba(255,250,240,0.78)",
-              backdropFilter: "blur(20px) saturate(160%)",
-              WebkitBackdropFilter: "blur(20px) saturate(160%)",
+              background: "rgba(255,250,240,0.97)",
               border: "1px solid rgba(176,139,127,0.28)",
               boxShadow:
                 "0 1px 0 rgba(255,255,255,0.85) inset, 0 24px 60px -16px rgba(63,47,41,0.45)",

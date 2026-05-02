@@ -123,7 +123,11 @@ export function Home({ onNavigate }: Props) {
               width: s.w * SCALE,
               height: s.h * SCALE,
               transformOrigin: "center",
-              willChange: "transform",
+              willChange: "transform, filter",
+              filter: down
+                ? "drop-shadow(0 2px 4px rgba(63,47,41,0.18))"
+                : "drop-shadow(0 8px 12px rgba(63,47,41,0.28))",
+              transition: "filter 140ms ease-out",
             }}
           />
         )

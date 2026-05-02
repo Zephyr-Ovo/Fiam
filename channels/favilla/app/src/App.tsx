@@ -443,7 +443,7 @@ function BubbleBody({
     }
   }
   return (
-    <div className="relative">
+    <div className="relative inline-block" style={{ overflow: "visible" }}>
       <div
         onClick={() => setShowCopy((v) => !v)}
         className={`md relative px-4 py-3 text-[14.5px] leading-[1.6] ${
@@ -465,26 +465,28 @@ function BubbleBody({
         }}
       >
         <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
-        {recallUsed && (
-          <span
-            aria-label="recall used"
-            className="pointer-events-none select-none"
-            style={{
-              position: "absolute",
-              right: 4,
-              bottom: 4,
-              width: 13,
-              height: 13,
-              display: "block",
-              lineHeight: 0,
-              filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.18))",
-              color: "#FAEC8C",
-            }}
-          >
-            <RecallIcon className="h-[13px] w-[13px]" strokeWidth={1.45} color="#FAEC8C" />
-          </span>
-        )}
       </div>
+      {recallUsed && (
+        <span
+          aria-label="recall used"
+          className="pointer-events-none select-none"
+          style={{
+            position: "absolute",
+            right: -4,
+            bottom: -4,
+            width: 14,
+            height: 14,
+            display: "block",
+            lineHeight: 0,
+            filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.22))",
+            color: "#FAEC8C",
+            transform: "rotate(12deg)",
+            zIndex: 2,
+          }}
+        >
+          <RecallIcon className="h-[14px] w-[14px]" strokeWidth={1.45} color="#FAEC8C" />
+        </span>
+      )}
       <AnimatePresence>
         {showCopy && (
           <motion.button
@@ -701,7 +703,8 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
     if (hourglassTapRef.current.length >= 4) {
       hourglassTapRef.current = []
       setRecallArmed(true)
-      runSeal()
+      // four-tap = process new event / refresh recall, NOT seal
+      recallNow().catch(() => {})
       return
     }
     setRecallArmed((on) => !on)
@@ -1009,8 +1012,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
             <div
               className="pointer-events-auto flex flex-col gap-1.5 rounded-[20px] p-1.5"
               style={{
-                background: "rgba(255,250,240,0.95)",
-                backdropFilter: "blur(10px)",
+                background: "rgba(255,250,240,0.98)",
                 border: "1px solid rgba(176,139,127,0.22)",
                 boxShadow:
                   "0 1px 0 rgba(255,255,255,0.7) inset, 0 10px 28px -14px rgba(102,78,68,0.4)",
@@ -1134,10 +1136,12 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                   }
                 >
                   <HourglassIcon
-                    className="h-[14px] w-[14px]"
+                    className="h-5 w-5"
+                    size={20}
                     active={sealBusy}
                     filled={recallArmed || sealBusy}
                     sandColor="#FAEC8C"
+                    cycleSeconds={1}
                   />
                 </button>
                 {/* spacer */}
