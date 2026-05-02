@@ -65,7 +65,7 @@ def _load_config():
         _POOL = Pool(_CONFIG.pool_dir)
         _POOL.ensure_dirs()
     _configure_annotation(
-        root=_ROOT,
+        root=_CONFIG.home_path if _CONFIG else _ROOT,
         config=_CONFIG,
         pool=_POOL,
         compute_lock=_COMPUTE_LOCK,
