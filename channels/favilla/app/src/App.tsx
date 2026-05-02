@@ -468,8 +468,18 @@ function BubbleBody({
         {recallUsed && (
           <span
             aria-label="recall used"
-            className="pointer-events-none absolute -bottom-1.5 -right-1.5 block select-none"
-            style={{ filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.2))", color: "#FAEC8C" }}
+            className="pointer-events-none select-none"
+            style={{
+              position: "absolute",
+              right: 4,
+              bottom: 4,
+              width: 13,
+              height: 13,
+              display: "block",
+              lineHeight: 0,
+              filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.18))",
+              color: "#FAEC8C",
+            }}
           >
             <RecallIcon className="h-[13px] w-[13px]" strokeWidth={1.45} color="#FAEC8C" />
           </span>
@@ -648,7 +658,6 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
   //   in the meantime so we don't query a half-built memory.
   const [recallArmed, setRecallArmed] = useState(false)
   const [sealBusy, setSealBusy] = useState(false)
-  const [hourglassBurst, setHourglassBurst] = useState(false)
   const hourglassTapRef = useRef<number[]>([])
   const [confirmState, setConfirmState] = useState<
     | { open: false }
@@ -671,14 +680,17 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
     askConfirm(
       "Seal this block?",
       "Everything since the last cut will be packaged into one event.",
-      () => {
-        pushDivider("scissor", "sealed")
-        setSealBusy(true)
-        sealEvent()
-          .catch(() => {})
-          .finally(() => setSealBusy(false))
-      },
+      runSeal,
     )
+  }
+
+  function runSeal() {
+    if (sealBusy) return
+    pushDivider("scissor", "sealed")
+    setSealBusy(true)
+    sealEvent()
+      .catch(() => {})
+      .finally(() => setSealBusy(false))
   }
 
   function onRecallClick() {
@@ -689,9 +701,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
     if (hourglassTapRef.current.length >= 4) {
       hourglassTapRef.current = []
       setRecallArmed(true)
-      setHourglassBurst(true)
-      recallNow().catch(() => {})
-      window.setTimeout(() => setHourglassBurst(false), 2400)
+      runSeal()
       return
     }
     setRecallArmed((on) => !on)
@@ -1125,8 +1135,8 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                 >
                   <HourglassIcon
                     className="h-[14px] w-[14px]"
-                    active={sealBusy || hourglassBurst}
-                    filled={recallArmed}
+                    active={sealBusy}
+                    filled={recallArmed || sealBusy}
                     sandColor="#FAEC8C"
                   />
                 </button>

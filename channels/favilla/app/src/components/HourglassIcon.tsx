@@ -19,7 +19,7 @@ export function HourglassIcon({
   cycleSeconds = 2,
 }: Props) {
   const stroke = "currentColor"
-  const fill = active || filled ? sandColor : "white"
+  const baseFill = active || filled ? "white" : "white"
   return (
     <svg
       width={Math.round((size * 12) / 14)}
@@ -29,23 +29,73 @@ export function HourglassIcon({
       xmlns="http://www.w3.org/2000/svg"
       className={className}
     >
+      <defs>
+        <clipPath id="hg-top-bulb">
+          <path d="M9.5 3.5C9.5 4.42826 9.13125 5.3185 8.47487 5.97487C7.8185 6.63125 6.92826 7 6 7C5.07174 7 4.1815 6.63125 3.52513 5.97487C2.86875 5.3185 2.5 4.42826 2.5 3.5V0.5H9.5V3.5Z" />
+        </clipPath>
+        <clipPath id="hg-bottom-bulb">
+          <path d="M9.5 10.5C9.5 9.57174 9.13125 8.6815 8.47487 8.02513C7.8185 7.36875 6.92826 7 6 7C5.07174 7 4.1815 7.36875 3.52513 8.02513C2.86875 8.6815 2.5 9.57174 2.5 10.5V13.5H9.5V10.5Z" />
+        </clipPath>
+      </defs>
       <path
         d="M9.5 3.5C9.5 4.42826 9.13125 5.3185 8.47487 5.97487C7.8185 6.63125 6.92826 7 6 7C5.07174 7 4.1815 6.63125 3.52513 5.97487C2.86875 5.3185 2.5 4.42826 2.5 3.5V0.5H9.5V3.5Z"
-        fill={fill}
-        stroke={stroke}
-        strokeWidth="1"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        style={active ? ({ animation: `hg-fill-pulse ${cycleSeconds}s ease-in-out infinite` } as React.CSSProperties) : undefined}
+        fill={baseFill}
       />
       <path
         d="M9.5 10.5C9.5 9.57174 9.13125 8.6815 8.47487 8.02513C7.8185 7.36875 6.92826 7 6 7C5.07174 7 4.1815 7.36875 3.52513 8.02513C2.86875 8.6815 2.5 9.57174 2.5 10.5V13.5H9.5V10.5Z"
-        fill={fill}
+        fill={baseFill}
+      />
+      {(active || filled) && (
+        <>
+          <g clipPath="url(#hg-top-bulb)">
+            <rect
+              x="0"
+              y="0"
+              width="12"
+              height="7"
+              fill={sandColor}
+              style={active ? ({ animation: `hg-drain ${cycleSeconds}s ease-in-out infinite`, transformOrigin: "6px 0.5px" } as React.CSSProperties) : undefined}
+            />
+          </g>
+          <g clipPath="url(#hg-bottom-bulb)">
+            <rect
+              x="0"
+              y="7"
+              width="12"
+              height="7"
+              fill={sandColor}
+              style={active ? ({ animation: `hg-fill ${cycleSeconds}s ease-in-out infinite`, transformOrigin: "6px 13.5px" } as React.CSSProperties) : undefined}
+            />
+          </g>
+          {active && (
+            <line
+              x1="6"
+              y1="6.45"
+              x2="6"
+              y2="7.55"
+              stroke={sandColor}
+              strokeWidth={0.7}
+              strokeLinecap="round"
+              style={{ animation: `hg-stream ${cycleSeconds}s ease-in-out infinite` }}
+            />
+          )}
+        </>
+      )}
+      <path
+        d="M9.5 3.5C9.5 4.42826 9.13125 5.3185 8.47487 5.97487C7.8185 6.63125 6.92826 7 6 7C5.07174 7 4.1815 6.63125 3.52513 5.97487C2.86875 5.3185 2.5 4.42826 2.5 3.5V0.5H9.5V3.5Z"
+        fill="none"
         stroke={stroke}
         strokeWidth="1"
         strokeLinecap="round"
         strokeLinejoin="round"
-        style={active ? ({ animation: `hg-fill-pulse ${cycleSeconds}s ease-in-out infinite reverse` } as React.CSSProperties) : undefined}
+      />
+      <path
+        d="M9.5 10.5C9.5 9.57174 9.13125 8.6815 8.47487 8.02513C7.8185 7.36875 6.92826 7 6 7C5.07174 7 4.1815 7.36875 3.52513 8.02513C2.86875 8.6815 2.5 9.57174 2.5 10.5V13.5H9.5V10.5Z"
+        fill="none"
+        stroke={stroke}
+        strokeWidth="1"
+        strokeLinecap="round"
+        strokeLinejoin="round"
       />
       <path
         d="M0.5 0.5H11.5"
@@ -61,9 +111,19 @@ export function HourglassIcon({
       />
 
       <style>{`
-        @keyframes hg-fill-pulse {
-          0%, 100% { fill-opacity: 0.78; }
-          50% { fill-opacity: 1; }
+        @keyframes hg-drain {
+          0% { transform: scaleY(1); }
+          88% { transform: scaleY(0); }
+          100% { transform: scaleY(1); }
+        }
+        @keyframes hg-fill {
+          0% { transform: scaleY(0); }
+          88% { transform: scaleY(1); }
+          100% { transform: scaleY(0); }
+        }
+        @keyframes hg-stream {
+          0%, 100% { opacity: 0; }
+          12%, 84% { opacity: 1; }
         }
       `}</style>
     </svg>
