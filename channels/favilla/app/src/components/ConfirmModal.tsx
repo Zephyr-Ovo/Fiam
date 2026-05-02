@@ -1,5 +1,6 @@
 import { motion, AnimatePresence } from "framer-motion"
 import { useEffect } from "react"
+import { createPortal } from "react-dom"
 
 type Props = {
   open: boolean
@@ -37,14 +38,16 @@ export function ConfirmModal({
     return () => window.removeEventListener("keydown", onKey)
   }, [open, onCancel, onConfirm])
 
-  return (
+  return createPortal(
     <AnimatePresence>
       {open && (
         <motion.div
-          // FIXED to viewport so the modal does NOT get pushed up when the
-          // soft keyboard opens. Uses dynamic viewport units so the centre
-          // is always the visual center of the screen — including with the
-          // keyboard open. z-index above the chat composer.
+          // FIXED to viewport via portal to document.body. Rendering through
+          // a portal is REQUIRED \u2014 any ancestor with `transform`, `filter`
+          // or `perspective` would otherwise become the containing block of
+          // a `position: fixed` element (CSS containing-block spec), which
+          // breaks centering. Shell uses translate3d for slide, so without
+          // a portal the modal lands at the wrong position.
           className="fixed left-0 top-0 z-50 grid place-items-center"
           style={{
             width: "100vw",
@@ -132,6 +135,7 @@ export function ConfirmModal({
           </motion.div>
         </motion.div>
       )}
-    </AnimatePresence>
+    </AnimatePresence>,
+    document.body,
   )
 }

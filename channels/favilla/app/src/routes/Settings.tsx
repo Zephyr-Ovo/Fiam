@@ -73,11 +73,12 @@ export function Settings({ open, onClose }: Props) {
           width: "86%",
           maxWidth: 360,
           borderRadius: 22,
-          // frosted cream glass — kept for visual fidelity. Shell hides
-          // Home behind us so the blur layer is cheap to paint.
-          background: "rgba(250, 244, 229, 0.78)",
-          backdropFilter: "blur(18px) saturate(130%)",
-          WebkitBackdropFilter: "blur(18px) saturate(130%)",
+          // frosted cream glass \u2014 genuinely translucent so the dimmed
+          // home behind shows through. backdrop-filter does the heavy
+          // lifting; the rgba background is intentionally low-alpha.
+          background: "rgba(250, 244, 229, 0.42)",
+          backdropFilter: "blur(22px) saturate(140%)",
+          WebkitBackdropFilter: "blur(22px) saturate(140%)",
           border: "1px solid rgba(255, 255, 255, 0.6)",
           boxShadow:
             "0 18px 50px -12px rgba(40, 28, 22, 0.45), 0 1px 0 rgba(255,255,255,0.7) inset",

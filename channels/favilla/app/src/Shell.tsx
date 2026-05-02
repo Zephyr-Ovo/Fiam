@@ -161,7 +161,6 @@ export default function Shell() {
           transition: slide,
           pointerEvents: isChat ? "none" : "auto",
           willChange: "transform",
-          visibility: settingsOpen ? "hidden" : "visible",
         }}
       >
         <Home onNavigate={onHomeNavigate} unread={unread} />
