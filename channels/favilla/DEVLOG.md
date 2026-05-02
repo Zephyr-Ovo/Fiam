@@ -77,7 +77,7 @@ Figma is reference-only, not a required pipeline. Design lives in code.
 - ConfirmModal: removed `mx-6`, frosted center alignment.
 - HourglassIcon: pure CSS `scaleY` drain/fill animation, gold sand `#FAEC8C`, no rotation.
 - Recall toggle: tap arms locally (gold fill); `recallNow()` called once at start of `handleSend()` if armed; send always disarms.
-- "Fiet thought silently" → `${peerName} thought silently` (reactive to settings rename).
+- "thought silently" → `${peerName} thought silently` (reactive to settings rename).
 - Chat composer: textarea on top + 4-icon mirror row (`+` / Recall left, Mic / Send right), all `h-9 w-9`.
 - User-message bubble shows ⭐ overlay if `recallUsed=true`.
 

@@ -1189,6 +1189,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                   disabled={sealBusy}
                   className="grid h-9 w-9 shrink-0 place-items-center rounded-full transition-colors hover:bg-black/5 disabled:opacity-50"
                   style={{ color: "var(--color-cocoa)", touchAction: "none" }}
+                  data-testid="hourglass"
                   aria-label={
                     sealBusy
                       ? "Processing event"

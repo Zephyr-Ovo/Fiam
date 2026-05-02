@@ -159,7 +159,7 @@ async function evalJs(ws, expr) {
 
     // 5) Long-press hourglass to trigger process confirm
     const hgBox = await evalJs(ws, `(() => {
-      const b = document.querySelector('[aria-label="Hourglass"]') || document.querySelector('[aria-label="hourglass"]')
+      const b = document.querySelector('[data-testid="hourglass"]') || document.querySelector('[aria-label*="recall" i]')
       if (!b) return null
       const r = b.getBoundingClientRect()
       return { x: r.x + r.width/2, y: r.y + r.height/2 }

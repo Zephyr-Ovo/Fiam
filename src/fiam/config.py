@@ -179,7 +179,6 @@ class FiamConfig:
     # ------------------------------------------------------------------
     idle_timeout_minutes: int = 30      # minutes of no JSONL activity → trigger processing
     poll_interval_seconds: int = 30     # how often to check JSONL mtime
-    tg_poll_interval: int = 60          # seconds between TG inbox polls (used by bridge_tg)
     email_poll_interval: int = 600      # seconds between email inbox polls (used by bridge_email)
 
     # ------------------------------------------------------------------
@@ -192,9 +191,7 @@ class FiamConfig:
     # ------------------------------------------------------------------
     # Communication (outbox dispatch)
     # ------------------------------------------------------------------
-    tg_bot_token_env: str = "FIAM_TG_BOT_TOKEN"  # env var holding Telegram Bot token
-    tg_chat_id: str = ""                          # Telegram chat ID for user
-    email_from: str = ""                           # AI's address (e.g. Fiet.C@proton.me)
+    email_from: str = ""                           # AI's address (e.g. ai@example.com)
     email_to: str = ""                             # User's address
     email_smtp_host: str = ""                      # SMTP host (e.g. 127.0.0.1 for ProtonMail Bridge)
     email_smtp_port: int = 1025
@@ -445,7 +442,6 @@ class FiamConfig:
             "[daemon]",
             f"idle_timeout_minutes = {self.idle_timeout_minutes}",
             f"poll_interval_seconds = {self.poll_interval_seconds}",
-            f"tg_poll_interval = {self.tg_poll_interval}",
             f"email_poll_interval = {self.email_poll_interval}",
             "",
             "[api]",
@@ -498,8 +494,6 @@ class FiamConfig:
             f'api_key_env = "{self.tts_api_key_env}"',
             "",
             "[comms]",
-            f'tg_bot_token_env = "{self.tg_bot_token_env}"',
-            f'tg_chat_id = "{self.tg_chat_id}"',
             f'email_from = "{self.email_from}"',
             f'email_to = "{self.email_to}"',
             f'email_smtp_host = "{self.email_smtp_host}"',
@@ -583,7 +577,6 @@ class FiamConfig:
             narrative_llm_base_url=narrative.get("llm_base_url", cls.narrative_llm_base_url),
             narrative_llm_api_key_env=narrative.get("llm_api_key_env", cls.narrative_llm_api_key_env),
             # Daemon
-            tg_poll_interval=daemon.get("tg_poll_interval", cls.tg_poll_interval),
             email_poll_interval=daemon.get("email_poll_interval", cls.email_poll_interval),
             idle_timeout_minutes=daemon.get("idle_timeout_minutes", cls.idle_timeout_minutes),
             poll_interval_seconds=daemon.get("poll_interval_seconds", cls.poll_interval_seconds),
@@ -623,8 +616,6 @@ class FiamConfig:
             tts_base_url=tts.get("base_url", cls.tts_base_url),
             tts_api_key_env=tts.get("api_key_env", cls.tts_api_key_env),
             # Communication
-            tg_bot_token_env=comm.get("tg_bot_token_env", cls.tg_bot_token_env),
-            tg_chat_id=str(comm.get("tg_chat_id", "")),
             email_from=comm.get("email_from", ""),
             email_to=comm.get("email_to", ""),
             email_smtp_host=comm.get("email_smtp_host", ""),

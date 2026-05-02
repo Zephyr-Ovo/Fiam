@@ -40,151 +40,8 @@ from fiam_lib.scheduler import WAKE_RE, SLEEP_RE, extract_wake_tags, append_to_s
 
 
 # ------------------------------------------------------------------
-# Telegram
+# Contacts
 # ------------------------------------------------------------------
-
-def _tg_send(token: str, chat_id: str, text: str) -> bool:
-    """Send a message via Telegram Bot API. Returns True on success."""
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = json.dumps({
-        "chat_id": chat_id,
-        "text": text,
-    }).encode()
-    req = urllib.request.Request(
-        url, data=payload,
-        headers={"Content-Type": "application/json"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return resp.status == 200
-    except urllib.error.URLError:
-        return False
-
-
-def _tg_typing(token: str, chat_id: str) -> None:
-    """Send typing indicator."""
-    url = f"https://api.telegram.org/bot{token}/sendChatAction"
-    payload = json.dumps({"chat_id": chat_id, "action": "typing"}).encode()
-    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
-    try:
-        urllib.request.urlopen(req, timeout=5)
-    except Exception:
-        pass
-
-
-def _segment_message(text: str) -> list[str]:
-    """Split a long message into natural TG-sized segments (ported from Aeliana)."""
-    import random
-    # 1st pass: split on paragraph breaks
-    raw = text.split("\n\n")
-    # 2nd pass: long chunks split on single newlines
-    chunks = []
-    for seg in raw:
-        if len(seg) > 200:
-            chunks.extend(seg.split("\n"))
-        else:
-            chunks.append(seg)
-    # 3rd pass: merge tiny adjacent pieces
-    merged = []
-    for c in chunks:
-        c = c.strip()
-        if not c:
-            continue
-        if merged and len(c) < 30 and len(merged[-1]) < 80:
-            merged[-1] += "\n" + c
-        else:
-            merged.append(c)
-    # Random sentence-level splitting (~40% chance on Chinese/English punctuation)
-    final = []
-    for seg in merged:
-        if len(seg) > 60 and random.random() < 0.4:
-            parts = re.split(r'(?<=[。！？!?])\s*', seg)
-            parts = [p for p in parts if p.strip()]
-            if len(parts) > 1:
-                final.extend(parts)
-                continue
-        final.append(seg)
-    return final if final else [text]
-
-
-def _tg_send_segmented(token: str, chat_id: str, text: str) -> bool:
-    """Send a message as natural segments with typing indicators."""
-    segments = _segment_message(text)
-    if len(segments) <= 1:
-        return _tg_send(token, chat_id, text)
-    ok = True
-    for i, seg in enumerate(segments):
-        if i > 0:
-            _tg_typing(token, chat_id)
-            time.sleep(min(1.0 + len(seg) * 0.02, 3.0))
-        if not _tg_send(token, chat_id, seg):
-            ok = False
-    return ok
-
-
-def _tg_send_sticker(token: str, chat_id: str, file_id: str) -> bool:
-    """Send a sticker by file_id via Telegram Bot API."""
-    url = f"https://api.telegram.org/bot{token}/sendSticker"
-    payload = json.dumps({"chat_id": chat_id, "sticker": file_id}).encode()
-    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return resp.status == 200
-    except urllib.error.URLError:
-        return False
-
-
-def _tg_send_photo(token: str, chat_id: str, photo_path: Path) -> bool:
-    """Send a local image file as photo via Telegram Bot API (multipart)."""
-    import mimetypes
-    boundary = "----FiamBoundary"
-    mime = mimetypes.guess_type(str(photo_path))[0] or "image/webp"
-    photo_data = photo_path.read_bytes()
-    body = (
-        f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="chat_id"\r\n\r\n{chat_id}\r\n'
-        f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="photo"; filename="{photo_path.name}"\r\n'
-        f"Content-Type: {mime}\r\n\r\n"
-    ).encode() + photo_data + f"\r\n--{boundary}--\r\n".encode()
-    url = f"https://api.telegram.org/bot{token}/sendPhoto"
-    req = urllib.request.Request(
-        url, data=body,
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return resp.status == 200
-    except urllib.error.URLError:
-        return False
-
-
-# ------------------------------------------------------------------
-# Sticker index (store/stickers/index.json)
-# ------------------------------------------------------------------
-
-def _sticker_dir(config: FiamConfig) -> Path:
-    return config.code_path / "channels" / "tg" / "stickers"
-
-
-def _load_sticker_index(config: FiamConfig) -> dict:
-    idx_path = _sticker_dir(config) / "index.json"
-    if idx_path.exists():
-        try:
-            data = json.loads(idx_path.read_text(encoding="utf-8"))
-            return {k: v for k, v in data.items() if not k.startswith("_")}
-        except Exception:
-            pass
-    return {}
-
-
-def _save_sticker_index(config: FiamConfig, index: dict) -> None:
-    d = _sticker_dir(config)
-    d.mkdir(parents=True, exist_ok=True)
-    full = {"_说明": "表情包索引。file=本地文件, file_id=TG原生sticker"}
-    full.update(index)
-    (d / "index.json").write_text(json.dumps(full, ensure_ascii=False, indent=2), encoding="utf-8")
-
 
 def _resolve_contact(name: str, config: FiamConfig) -> str:
     """Look up a named contact's email in self/contacts.json. Returns email or ''."""
@@ -205,30 +62,9 @@ def _resolve_contact(name: str, config: FiamConfig) -> str:
 
 
 def _extract_stickers(text: str, config: FiamConfig) -> tuple[str, list[dict]]:
-    """Extract [sticker:名称] tags from text. Returns (cleaned_text, sticker_list)."""
-    sticker_map = _load_sticker_index(config)
-    stickers: list[dict] = []
-
-    def replacer(match):
-        name = match.group(1).strip()
-        entry = sticker_map.get(name)
-        if not entry:
-            return ""
-        if isinstance(entry, str):
-            fp = _sticker_dir(config) / entry
-            if fp.exists():
-                stickers.append({"type": "file", "value": str(fp)})
-        elif isinstance(entry, dict):
-            if "file_id" in entry:
-                stickers.append({"type": "file_id", "value": entry["file_id"]})
-            elif "file" in entry:
-                fp = _sticker_dir(config) / entry["file"]
-                if fp.exists():
-                    stickers.append({"type": "file", "value": str(fp)})
-        return ""
-
-    cleaned = re.sub(r"\[sticker:([^\]]+)\]", replacer, text).strip()
-    return cleaned, stickers
+    """Strip [sticker:名称] tags from text. Stickers are no longer dispatched."""
+    cleaned = re.sub(r"\[sticker:([^\]]+)\]", "", text).strip()
+    return cleaned, []
 
 
 # ------------------------------------------------------------------
@@ -289,22 +125,10 @@ def dispatch_file(path: Path, config: FiamConfig) -> bool:
         return True  # Only had WAKE/SLEEP tags, nothing to send
 
     if via == "telegram":
-        token = os.environ.get(config.tg_bot_token_env, "")
-        chat_id = config.tg_chat_id
-        if not token or not chat_id:
-            print(f"[postman] TG not configured, skipping {path.name}")
-            return False
-        # Extract [sticker:xxx] tags before sending
-        text, stickers = _extract_stickers(body, config)
-        ok = True
-        if text:
-            ok = _tg_send_segmented(token, chat_id, text)
-        for stk in stickers:
-            if stk["type"] == "file_id":
-                _tg_send_sticker(token, chat_id, stk["value"])
-            elif stk["type"] == "file":
-                _tg_send_photo(token, chat_id, Path(stk["value"]))
-        return ok
+        # Telegram channel removed. Files marked `via: telegram` are silently
+        # dropped; convert them to `via: email` (or another channel) to send.
+        print(f"[postman] telegram channel removed, skipping {path.name}")
+        return False
 
     elif via == "email":
         subject = str(post.metadata.get("subject", f"From {config.ai_name}"))
@@ -444,107 +268,3 @@ def fetch_inbox(
     except Exception as e:
         print(f"[postman] IMAP fetch failed: {e}")
         return []
-
-
-# ------------------------------------------------------------------
-# Telegram inbound — poll for new messages via getUpdates
-# ------------------------------------------------------------------
-
-_tg_update_offset: int = 0  # module-level state for long-polling offset
-
-
-def fetch_tg_inbox(config: FiamConfig, timeout: int = 0) -> list[dict]:
-    """Poll Telegram Bot API for new messages and save to inbox/.
-
-    Each message becomes one .md file with YAML frontmatter.
-    Returns list of message dicts: [{from_name, source, text}].
-    """
-    global _tg_update_offset
-
-    token = os.environ.get(config.tg_bot_token_env, "")
-    chat_id = config.tg_chat_id
-    if not token or not chat_id:
-        return []
-
-    url = f"https://api.telegram.org/bot{token}/getUpdates"
-    params = {"timeout": timeout, "allowed_updates": '["message"]'}
-    if _tg_update_offset:
-        params["offset"] = _tg_update_offset
-
-    query = "&".join(f"{k}={v}" for k, v in params.items())
-    req = urllib.request.Request(f"{url}?{query}", method="GET")
-
-    try:
-        with urllib.request.urlopen(req, timeout=timeout + 10) as resp:
-            data = json.loads(resp.read())
-    except (urllib.error.URLError, json.JSONDecodeError):
-        return []
-
-    if not data.get("ok") or not data.get("result"):
-        return []
-
-    inbox_dir = config.inbox_dir
-    inbox_dir.mkdir(parents=True, exist_ok=True)
-    messages = []
-
-    for idx, update in enumerate(data["result"]):
-        _tg_update_offset = update["update_id"] + 1
-
-        msg = update.get("message")
-        if not msg:
-            continue
-
-        # Only accept messages from our chat
-        msg_chat_id = str(msg.get("chat", {}).get("id", ""))
-        if msg_chat_id != str(chat_id):
-            continue
-
-        # Extract content: text, sticker, or photo caption
-        text = msg.get("text", "")
-        sticker = msg.get("sticker")
-        if sticker and not text:
-            # Incoming sticker — record as [sticker:emoji] with file_id
-            emoji = sticker.get("emoji", "")
-            file_id = sticker.get("file_id", "")
-            # Look up or describe the sticker
-            idx = _load_sticker_index(config)
-            match_name = None
-            for name, entry in idx.items():
-                if isinstance(entry, dict) and entry.get("file_id") == file_id:
-                    match_name = name
-                    break
-            if match_name:
-                text = f"[sticker:{match_name}]"
-            else:
-                text = f"[sticker:{emoji or 'unknown'}] (file_id: {file_id})"
-        if not text:
-            continue
-
-        sender = msg.get("from", {})
-        from_name = sender.get("username") or sender.get("first_name", "unknown")
-        msg_id = msg.get("message_id", 0)
-        msg_ts = msg.get("date", 0) or time.time()
-        msg_date = datetime.fromtimestamp(msg_ts).strftime("%m-%d %H:%M")
-
-        ts = datetime.now().strftime("%m%d_%H%M%S")
-        fname = f"tg_{ts}_{idx:02d}.md"
-        md = (
-            f"---\n"
-            f"from: {from_name}\n"
-            f"via: telegram\n"
-            f"date: {msg_date}\n"
-            f"message_id: {msg_id}\n"
-            f"---\n\n"
-            f"{text.strip()}\n"
-        )
-        (inbox_dir / fname).write_text(md, encoding="utf-8")
-        messages.append({
-            "from_name": from_name,
-            "source": "tg",
-            "text": text.strip(),
-            "t": datetime.fromtimestamp(msg_ts),
-        })
-
-    if messages:
-        print(f"[postman] Fetched {len(messages)} TG message(s) → {inbox_dir}")
-    return messages

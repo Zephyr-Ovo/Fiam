@@ -29,7 +29,6 @@ half_life_base = 14.0
 [daemon]
 idle_timeout_minutes = 30    # post-session triggers after this many idle minutes
 poll_interval_seconds = 30
-tg_poll_interval = 60        # seconds between TG inbox polls
 email_poll_interval = 600    # seconds between email inbox polls
 daily_budget_usd = 5.0       # 0 = unlimited; daily CC spend cap for auto-wakes
 cc_model = ""                # CC model alias: "opus", "sonnet", or full name; empty = CC default
@@ -99,9 +98,7 @@ base_url = ""
 api_key_env = "FIAM_TTS_API_KEY"
 
 [communication]
-tg_bot_token_env = "FIAM_TG_BOT_TOKEN"   # env var name (never put token directly in config)
-tg_chat_id = ""                            # your Telegram user/chat ID
-email_from = ""                             # AI's email address (e.g. fiet@fiet.cc)
+email_from = ""                             # AI's email address (e.g. ai@example.com)
 email_to = ""                               # User's email address
 email_smtp_host = "smtppro.zoho.com"        # SMTP server (Zoho custom domain)
 email_smtp_port = 587                       # 587+TLS or 465+SSL
