@@ -27,6 +27,10 @@ import remarkGfm from "remark-gfm"
 import { sendChat, uploadFiles, recallNow, sealEvent, type ChatAttachment } from "./lib/api"
 import { appConfig, saveConfig } from "./config"
 
+// Module-level set of bubble ids whose entrance animation has already played.
+// Skipping replay prevents jank on tab switch / re-render of long histories.
+const SEEN_BUBBLE_IDS = new Set<string>()
+
 type Attachment =
   | { kind: "voice"; seconds: number }
   | { kind: "file"; name: string; size?: string }
@@ -360,12 +364,10 @@ function ErrorNote({ text }: { text: string }) {
 
 function Bubble({
   msg,
-  idx,
   peerName,
   showName,
 }: {
   msg: Msg
-  idx: number
   peerName: string
   showName: boolean
 }) {
@@ -376,11 +378,15 @@ function Bubble({
   const fileAttachments = (msg.attachments ?? []).filter(
     (a) => a.kind !== "voice",
   )
+  // Only animate the FIRST time we see this message id; on re-render skip
+  // entrance entirely (no jank scrolling/switching tabs back to chat).
+  const wasSeen = SEEN_BUBBLE_IDS.has(msg.id)
+  if (!wasSeen) SEEN_BUBBLE_IDS.add(msg.id)
   return (
     <motion.div
-      initial={{ opacity: 0, y: 8 }}
+      initial={wasSeen ? false : { opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ delay: 0.08 + idx * 0.05, duration: 0.4, ease: "easeOut" }}
+      transition={{ duration: 0.25, ease: "easeOut" }}
       className={`flex w-full ${isUser ? "justify-end" : "justify-start"}`}
     >
       <div
@@ -948,7 +954,6 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                   {showTime && <TimeSeparator t={m.t} />}
                   <Bubble
                     msg={m}
-                    idx={i}
                     peerName={peerName}
                     showName={!sameAuthorAsPrev}
                   />

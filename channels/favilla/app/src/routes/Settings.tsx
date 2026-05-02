@@ -50,7 +50,7 @@ export function Settings({ open, onClose }: Props) {
             initial={{ y: "100%" }}
             animate={{ y: 0 }}
             exit={{ y: "100%" }}
-            transition={{ type: "spring", stiffness: 320, damping: 32 }}
+            transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
             className="absolute inset-x-0 bottom-0 flex flex-col overflow-hidden"
             style={{
               height: "78%",

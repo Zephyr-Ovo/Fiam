@@ -799,65 +799,92 @@ _SEAL_BUSY = False
 
 
 def _api_app_recall(payload: dict) -> dict:
-    """Toggle/write a recall.md so the next chat turn injects it."""
-    if not _CONFIG:
-        raise RuntimeError("config not loaded")
-    recall_path = _CONFIG.background_path
-    dirty_marker = _CONFIG.home_path / ".recall_dirty"
-    # Build fake recall body. If we have events in the pool, list a few
-    # of them; otherwise write a placeholder so we can exercise the wire.
-    lines = ["# Recall (manual)\n"]
-    used: list[str] = []
-    if _POOL is not None:
-        try:
-            events = _POOL.load_events()[-5:]
-            for ev in events:
-                title = (getattr(ev, "id", None) or "event").replace("_", " ")
-                t = getattr(ev, "t", None)
-                lines.append(f"- {title}  (t={t})")
-                used.append(str(getattr(ev, "id", "")))
-        except Exception:
-            pass
-    if not used:
-        lines += [
-            "- placeholder-event-1  (weight=0.7)",
-            "- placeholder-event-2  (weight=0.5)",
-            "- placeholder-event-3  (weight=0.3)",
-        ]
-    recall_path.parent.mkdir(parents=True, exist_ok=True)
-    recall_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    dirty_marker.write_text("manual\n", encoding="utf-8")
-    return {"ok": True, "count": len(used) or 3, "path": str(recall_path)}
+    """Run real spread-activation recall over the pool using the latest
+    beats as the seed query vector, and write the result to recall.md so
+    the next chat turn picks it up via _pending_recall_for_app().
+    """
+    if not _CONFIG or not _POOL:
+        raise RuntimeError("config/pool not loaded")
+    import numpy as _np
+    from fiam.runtime.recall import refresh_recall
+    from fiam.store.beat import Beat
+    from fiam.store.features import FeatureStore
+
+    # Seed = mean of vectors for the most recent N beats in flow.jsonl
+    seed_n = max(1, int(payload.get("seed_beats", 8)))
+    flow_path = _CONFIG.flow_path
+    seed_vec = None
+    if flow_path.exists():
+        store = FeatureStore(_CONFIG.feature_dir, dim=_CONFIG.embedding_dim)
+        lines = flow_path.read_text(encoding="utf-8").splitlines()[-seed_n:]
+        vecs = []
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                raw = json.loads(line)
+                v = store.get_beat_vector(Beat.from_dict(raw))
+                if v is not None:
+                    vecs.append(v)
+            except Exception:
+                continue
+        if vecs:
+            arr = _np.mean(_np.stack(vecs), axis=0).astype(_np.float32)
+            n = float(_np.linalg.norm(arr))
+            if n > 1e-9:
+                seed_vec = arr / n
+
+    if seed_vec is None:
+        # No beats yet: write empty recall, mark dirty so chat sees nothing stale
+        _CONFIG.background_path.parent.mkdir(parents=True, exist_ok=True)
+        _CONFIG.background_path.write_text("", encoding="utf-8")
+        (_CONFIG.background_path.parent / ".recall_dirty").touch()
+        return {"ok": True, "count": 0, "note": "no beats"}
+
+    count = refresh_recall(_CONFIG, _POOL, seed_vec, top_k=_CONFIG.recall_top_k)
+    return {"ok": True, "count": count, "path": str(_CONFIG.background_path)}
 
 
 def _api_app_seal(payload: dict) -> dict:
-    """Synchronously package an event (currently fake). Blocks ~2s so the
-    UI hourglass animation has something to render."""
+    """Real seal: package all unprocessed flow beats as ONE event using the
+    same pipeline as the dashboard manual-annotation flow (request → edges
+    → confirm), but with no internal cuts (single segment per app seal).
+
+    App-side seal is immutable once confirmed — the user must use the web
+    console to edit the produced event.
+    """
     global _SEAL_BUSY
-    if not _CONFIG:
-        raise RuntimeError("config not loaded")
+    if not _CONFIG or not _POOL:
+        raise RuntimeError("config/pool not loaded")
     with _SEAL_LOCK:
         if _SEAL_BUSY:
             return {"ok": False, "error": "seal already in progress"}
         _SEAL_BUSY = True
     try:
-        import time as _time
-        import numpy as _np
-        # Simulate DS naming + edge proposal latency
-        _time.sleep(2.0)
-        if _POOL is not None:
-            try:
-                event_id = _POOL.new_event_id() if hasattr(_POOL, "new_event_id") else f"manual-{int(_time.time())}"
-                fp = _np.random.randn(_CONFIG.embedding_dim).astype(_np.float32)
-                fp /= max(float(_np.linalg.norm(fp)), 1e-9)
-                body = f"# {event_id}\n\n(manual seal placeholder)\n"
-                if hasattr(_POOL, "ingest_event"):
-                    _POOL.ingest_event(event_id, datetime.now(), body, fp)
-                return {"ok": True, "event_id": event_id, "fake": True}
-            except Exception as exc:
-                logger.exception("seal pool ingest failed")
-                return {"ok": False, "error": str(exc)}
-        return {"ok": True, "fake": True, "note": "no pool"}
+        try:
+            # Phase 1: load unprocessed beats
+            proposal = _annotate_request({"limit": 10000})
+            beats = proposal.get("beats", [])
+            if not beats:
+                return {"ok": False, "error": "no beats to seal"}
+            # All beats → one segment (no internal cuts)
+            cuts = [0] * max(0, len(beats) - 1)
+            # Phase 2: DS proposes name + edges to existing events
+            _annotate_edges({"cuts": cuts, "drift_cuts": cuts})
+            # Phase 3: commit (creates event, fingerprint, edges, training data)
+            result = _annotate_confirm({"cuts": cuts, "drift_cuts": cuts})
+            ev_ids = result.get("events_created", [])
+            return {
+                "ok": True,
+                "event_id": ev_ids[0] if ev_ids else None,
+                "events_created": ev_ids,
+                "edges_created": result.get("edges_created", 0),
+                "beats": len(beats),
+            }
+        except Exception as exc:
+            logger.exception("seal failed")
+            return {"ok": False, "error": str(exc)}
     finally:
         with _SEAL_LOCK:
             _SEAL_BUSY = False
@@ -885,6 +912,10 @@ def _parse_cot(reply: str) -> tuple[str, list[dict], bool]:
     Returns (cleaned_reply, thoughts, locked).
     - thoughts: list of {"kind":"think","text":str,"source":"marker"} from <<COT:show>> blocks
     - locked: True if AI wrote <<COT:lock>> (or legacy <<COT:hide>>); else False (default unlock)
+
+    Fallback: if the model wrapped its ENTIRE reply inside <<COT:show>> markers
+    so the cleaned body is empty, demote the last thought back to the user-facing
+    reply (avoids "AI's answer disappeared into thinking chain" bug).
     """
     if not reply:
         return "", [], False
@@ -897,6 +928,9 @@ def _parse_cot(reply: str) -> tuple[str, list[dict], bool]:
     locked = bool(_COT_LOCK_RE.search(cleaned) or _COT_HIDE_RE.search(cleaned))
     cleaned = _COT_LOCK_RE.sub("", cleaned)
     cleaned = _COT_HIDE_RE.sub("", cleaned).strip()
+    if not cleaned and thoughts:
+        cleaned = thoughts[-1]["text"]
+        thoughts = thoughts[:-1]
     return cleaned, thoughts, locked
 
 
