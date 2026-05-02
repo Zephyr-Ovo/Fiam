@@ -55,6 +55,8 @@ class Event:
         t = d["t"]
         if isinstance(t, str):
             t = datetime.fromisoformat(t.replace("Z", "+00:00"))
+        if isinstance(t, datetime) and t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
         return Event(
             id=d["id"],
             t=t,
