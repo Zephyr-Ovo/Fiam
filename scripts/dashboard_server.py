@@ -925,33 +925,48 @@ def _run_cc_app_chat(*, text: str, source: str, attachments: list | None = None)
             "--disallowedTools",
             *[tool.strip() for tool in _CONFIG.cc_disallowed_tools.split(",") if tool.strip()],
         ])
-    if session:
-        command.extend(["--resume", session["session_id"]])
+    def run_claude(resume_session_id: str | None):
+        cmd = list(command)
+        if resume_session_id:
+            cmd.extend(["--resume", resume_session_id])
+        try:
+            return subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=240,
+                cwd=str(_CONFIG.home_path),
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("claude chat timeout") from exc
+        except FileNotFoundError as exc:
+            raise RuntimeError("claude not found on server PATH") from exc
 
-    try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=240,
-            cwd=str(_CONFIG.home_path),
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError("claude chat timeout") from exc
-    except FileNotFoundError as exc:
-        raise RuntimeError("claude not found on server PATH") from exc
+    def parse_claude_result(result):
+        try:
+            data = json.loads(result.stdout or "{}")
+        except json.JSONDecodeError as exc:
+            detail = (result.stderr or result.stdout or "").strip()[:500]
+            raise RuntimeError(f"bad claude json: {detail}") from exc
+        is_partial_success = data.get("subtype") == "error_max_turns"
+        is_error = bool(data.get("is_error")) or result.returncode != 0
+        return data, is_partial_success, is_error
 
-    try:
-        data = json.loads(result.stdout or "{}")
-    except json.JSONDecodeError as exc:
-        detail = (result.stderr or result.stdout or "").strip()[:500]
-        raise RuntimeError(f"bad claude json: {detail}") from exc
-
-    is_partial_success = data.get("subtype") == "error_max_turns"
-    is_error = bool(data.get("is_error")) or result.returncode != 0
+    resume_id = session["session_id"] if session else None
+    result = run_claude(resume_id)
+    data, is_partial_success, is_error = parse_claude_result(result)
     if is_error and not is_partial_success:
         detail = (data.get("error") or data.get("result") or result.stderr or result.stdout or "claude failed")
-        raise RuntimeError(str(detail).strip()[:500])
+        if resume_id and "No conversation found with session ID" in str(detail):
+            try:
+                _CONFIG.active_session_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            result = run_claude(None)
+            data, is_partial_success, is_error = parse_claude_result(result)
+            detail = (data.get("error") or data.get("result") or result.stderr or result.stdout or "claude failed")
+        if is_error and not is_partial_success:
+            raise RuntimeError(str(detail).strip()[:500])
 
     session_id = str(data.get("session_id") or "").strip()
     if session_id:
