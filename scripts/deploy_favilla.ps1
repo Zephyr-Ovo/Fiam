@@ -26,9 +26,22 @@ Set-Location (git rev-parse --show-toplevel)
 $patPath = "$env:USERPROFILE\.fiam\github_pat.dpapi"
 if (-not (Test-Path $patPath)) { throw "PAT not found at $patPath" }
 Add-Type -AssemblyName System.Security
-$enc = [IO.File]::ReadAllBytes($patPath)
-$dec = [System.Security.Cryptography.ProtectedData]::Unprotect($enc, $null, 'CurrentUser')
-$pat = [Text.Encoding]::UTF8.GetString($dec).Trim()
+$raw = [IO.File]::ReadAllBytes($patPath)
+# File may be raw DPAPI bytes OR a hex/base64 string. Detect.
+try {
+    $enc = $raw
+    $dec = [System.Security.Cryptography.ProtectedData]::Unprotect($enc, $null, 'CurrentUser')
+} catch {
+    $txt = [Text.Encoding]::UTF8.GetString($raw).Trim()
+    if ($txt -match '^[0-9a-fA-F]+$') {
+        $enc = [byte[]]::new($txt.Length / 2)
+        for ($i = 0; $i -lt $enc.Length; $i++) { $enc[$i] = [Convert]::ToByte($txt.Substring($i*2,2),16) }
+    } else {
+        $enc = [Convert]::FromBase64String($txt)
+    }
+    $dec = [System.Security.Cryptography.ProtectedData]::Unprotect($enc, $null, 'CurrentUser')
+}
+$pat = [Text.Encoding]::Unicode.GetString($dec).Trim()
 
 # --- 2. Parse owner/repo ---
 $origin = (git remote get-url origin).Trim()
@@ -38,7 +51,7 @@ if ($origin -match 'github\.com[:/](?<o>[^/]+)/(?<r>[^/.]+)') {
 if (-not $Branch) { $Branch = (git rev-parse --abbrev-ref HEAD).Trim() }
 Write-Host "[deploy] $owner/$repo @ $Branch" -ForegroundColor Cyan
 
-$headers = @{ Authorization = "Bearer $pat"; Accept = "application/vnd.github+json"; "X-GitHub-Api-Version" = "2022-11-28" }
+$headers = @{ Authorization = "Bearer $pat"; Accept = "application/vnd.github+json"; "X-GitHub-Api-Version" = "2022-11-28"; "User-Agent" = "fiam-deploy-script" }
 $api = "https://api.github.com/repos/$owner/$repo"
 
 # --- 3. Push (capture target SHA) ---
@@ -54,7 +67,8 @@ $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
 $run = $null
 Write-Host "[deploy] waiting for workflow run on $Workflow ..." -ForegroundColor Cyan
 while ((Get-Date) -lt $deadline) {
-    $resp = Invoke-RestMethod -Uri "$api/actions/workflows/$Workflow/runs?branch=$Branch&per_page=10" -Headers $headers
+    $branchEnc = [System.Uri]::EscapeDataString($Branch)
+    $resp = Invoke-RestMethod -Uri "$api/actions/workflows/$Workflow/runs?branch=$branchEnc&per_page=10" -Headers $headers
     $run = $resp.workflow_runs | Where-Object { $_.head_sha -eq $targetSha } | Select-Object -First 1
     if ($run) {
         $st = $run.status; $cn = $run.conclusion
