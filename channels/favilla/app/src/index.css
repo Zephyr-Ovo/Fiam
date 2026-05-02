@@ -143,5 +143,5 @@ body {
 .composer-input { scrollbar-width: thin; scrollbar-color: rgba(63,47,41,0.25) transparent; }
 
 /* Custom selection colour to match Favilla cocoa palette. */
-::selection { background: rgba(255, 204, 0, 0.45); color: #3f2f29; }
-::-moz-selection { background: rgba(255, 204, 0, 0.45); color: #3f2f29; }
+::selection { background: rgba(102, 78, 68, 0.22); color: #3f2f29; }
+::-moz-selection { background: rgba(102, 78, 68, 0.22); color: #3f2f29; }

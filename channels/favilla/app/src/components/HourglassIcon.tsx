@@ -1,6 +1,8 @@
 type Props = {
   className?: string
   active?: boolean
+  filled?: boolean
+  sandColor?: string
   /** Same outer size as RecallIcon (14×14) so it slots into the same button. */
   size?: number
   /**
@@ -21,10 +23,13 @@ const SAND = "#FAEC8C"
 export function HourglassIcon({
   className,
   active = false,
+  filled = false,
+  sandColor = SAND,
   size = 14,
   cycleSeconds = 2,
 }: Props) {
   const stroke = "currentColor"
+  const showSand = active || filled
   return (
     <svg
       width={size}
@@ -42,43 +47,47 @@ export function HourglassIcon({
         </clipPath>
       </defs>
 
-      {/* Sand inside top bulb — drains from full to empty */}
-      <g clipPath="url(#hg-top-bulb)">
-        <rect
-          x="3"
-          y="2"
-          width="8"
-          height="5"
-          fill={SAND}
-          style={
-            active
-              ? ({
-                  animation: `hg-drain ${cycleSeconds}s ease-in-out infinite`,
-                  transformOrigin: "7px 2px",
-                } as React.CSSProperties)
-              : undefined
-          }
-        />
-      </g>
+      {showSand && (
+        <>
+          {/* Sand inside top bulb — drains from full to empty */}
+          <g clipPath="url(#hg-top-bulb)">
+            <rect
+              x="3"
+              y="2"
+              width="8"
+              height="5"
+              fill={sandColor}
+              style={
+                active
+                  ? ({
+                      animation: `hg-drain ${cycleSeconds}s ease-in-out infinite`,
+                      transformOrigin: "7px 2px",
+                    } as React.CSSProperties)
+                  : undefined
+              }
+            />
+          </g>
 
-      {/* Sand inside bottom bulb — fills from empty to full */}
-      <g clipPath="url(#hg-bot-bulb)">
-        <rect
-          x="3"
-          y="7"
-          width="8"
-          height="5"
-          fill={SAND}
-          style={
-            active
-              ? ({
-                  animation: `hg-fill ${cycleSeconds}s ease-in-out infinite`,
-                  transformOrigin: "7px 12px",
-                } as React.CSSProperties)
-              : undefined
-          }
-        />
-      </g>
+          {/* Sand inside bottom bulb — fills from empty to full */}
+          <g clipPath="url(#hg-bot-bulb)">
+            <rect
+              x="3"
+              y="7"
+              width="8"
+              height="5"
+              fill={sandColor}
+              style={
+                active
+                  ? ({
+                      animation: `hg-fill ${cycleSeconds}s ease-in-out infinite`,
+                      transformOrigin: "7px 12px",
+                    } as React.CSSProperties)
+                  : undefined
+              }
+            />
+          </g>
+        </>
+      )}
 
       {/* Falling stream in the neck */}
       {active && (
@@ -87,7 +96,7 @@ export function HourglassIcon({
           y1="6.4"
           x2="7"
           y2="7.6"
-          stroke={SAND}
+          stroke={sandColor}
           strokeWidth={0.7}
           strokeLinecap="round"
           style={{

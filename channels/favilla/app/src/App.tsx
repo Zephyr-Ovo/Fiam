@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import {
   ChevronLeft,
@@ -106,11 +106,18 @@ const seedMessages: Msg[] = [
 ]
 
 function formatT(t: number) {
-  const totalMin = (8 * 60 + 14 + t) % (24 * 60) // pretend day starts 08:14
+  const totalMin = ((8 * 60 + 14 + t) % (24 * 60) + 24 * 60) % (24 * 60) // pretend day starts 08:14
   const h = Math.floor(totalMin / 60)
   const m = totalMin % 60
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`
 }
+
+function currentT() {
+  const d = new Date()
+  return d.getHours() * 60 + d.getMinutes() - (8 * 60 + 14)
+}
+
+const SEND_MERGE_WINDOW_MS = 60_000
 
 // ---------- Voice (waveform) chip ----------
 function VoiceChip({ seconds }: { seconds: number }) {
@@ -449,8 +456,6 @@ function BubbleBody({
             ? "rgba(208,188,190,0.72)"
             : "rgba(235,235,235,0.62)",
           color: INK,
-          backdropFilter: "blur(14px) saturate(120%)",
-          WebkitBackdropFilter: "blur(14px) saturate(120%)",
           border: isUser
             ? "1px solid rgba(255,255,255,0.28)"
             : "1px solid rgba(255,255,255,0.5)",
@@ -574,12 +579,19 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
   const [input, setInput] = useState("")
   const [sending, setSending] = useState(false)
   const [pendingFiles, setPendingFiles] = useState<{ id: string; file: File }[]>([])
+  const sendBatchRef = useRef<{
+    timer: number | null
+    items: {
+      text: string
+      filesToSend: File[]
+      recallUsed: boolean
+    }[]
+  }>({ timer: null, items: [] })
   const scrollRef = useRef<HTMLElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const cameraInputRef = useRef<HTMLInputElement | null>(null)
   const [attachOpen, setAttachOpen] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
-  const lastT = useMemo(() => messages[messages.length - 1]?.t ?? 0, [messages])
 
   // Auto-scroll on new messages or text growth
   useEffect(() => {
@@ -635,6 +647,8 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
   //   in the meantime so we don't query a half-built memory.
   const [recallArmed, setRecallArmed] = useState(false)
   const [sealBusy, setSealBusy] = useState(false)
+  const [hourglassBurst, setHourglassBurst] = useState(false)
+  const hourglassTapRef = useRef<number[]>([])
   const [confirmState, setConfirmState] = useState<
     | { open: false }
     | { open: true; title: string; message: string; onYes: () => void }
@@ -643,7 +657,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
   function pushDivider(kind: "scissor" | "recall", label?: string) {
     setMessages((m) => [
       ...m,
-      { id: `div-${Date.now()}`, role: "ai", t: lastT + 1, divider: { kind, label } },
+      { id: `div-${Date.now()}`, role: "ai", t: currentT(), divider: { kind, label } },
     ])
   }
 
@@ -668,64 +682,46 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
 
   function onRecallClick() {
     if (sealBusy) return // memory is being rebuilt; recall would be inconsistent
-    // Arming is purely visual: marks intent that the next send should refresh
-    // recall.md *before* sendChat. Tapping again disarms (mistap-safe).
-    // The real network call to recallNow() happens in handleSend.
+    const now = Date.now()
+    const taps = [...hourglassTapRef.current.filter((t) => now - t < 1400), now]
+    hourglassTapRef.current = taps.slice(-4)
+    if (hourglassTapRef.current.length >= 4) {
+      hourglassTapRef.current = []
+      setRecallArmed(true)
+      setHourglassBurst(true)
+      recallNow().catch(() => {})
+      window.setTimeout(() => setHourglassBurst(false), 2400)
+      return
+    }
     setRecallArmed((on) => !on)
   }
 
-  function onPickFiles(e: React.ChangeEvent<HTMLInputElement>) {
-    const fs = Array.from(e.target.files || [])
-    if (!fs.length) return
-    setPendingFiles((cur) => [
-      ...cur,
-      ...fs.map((f) => ({ id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, file: f })),
-    ])
-    // Reset so selecting same file again re-triggers change
-    if (fileInputRef.current) fileInputRef.current.value = ""
-  }
+  useEffect(() => {
+    return () => {
+      const timer = sendBatchRef.current.timer
+      if (timer !== null) window.clearTimeout(timer)
+    }
+  }, [])
 
-  function removePending(id: string) {
-    setPendingFiles((cur) => cur.filter((p) => p.id !== id))
-  }
+  async function flushSendBatch() {
+    const batch = sendBatchRef.current
+    if (batch.timer !== null) {
+      window.clearTimeout(batch.timer)
+      batch.timer = null
+    }
+    const items = batch.items.splice(0)
+    if (!items.length) return
 
-  async function handleSend() {
-    const text = input.trim()
-    if ((!text && pendingFiles.length === 0) || sending) return
-    setInput("")
     setSending(true)
-    // If recall is armed, refresh recall.md on the server FIRST so the AI
-    // sees the freshest memory in this turn. Then disarm (toggle UX spec:
-    // armed state only persists across taps, not across sends).
-    const wasArmed = recallArmed
-    if (wasArmed) {
-      setRecallArmed(false)
-      try { await recallNow() } catch { /* non-fatal: chat still goes out */ }
-    }
-
-    // Snapshot pending files for this turn, then clear UI immediately
-    const filesToSend = pendingFiles.map((p) => p.file)
-    const userPills = pendingFiles.map((p) => {
-      const isImage = p.file.type.startsWith("image/")
-      return isImage
-        ? ({ kind: "image", name: p.file.name } as const)
-        : ({ kind: "file", name: p.file.name } as const)
-    })
-    setPendingFiles([])
-
-    const userMsg: Msg = {
-      id: `u-${Date.now()}`,
-      role: "user",
-      t: lastT + 1,
-      text,
-      attachments: userPills.length > 0 ? userPills : undefined,
-      recallUsed: wasArmed,
-    }
     const aiId = `a-${Date.now()}`
-    const aiMsg: Msg = { id: aiId, role: "ai", t: lastT + 1, text: "" }
-    setMessages((m) => [...m, userMsg, aiMsg])
+    setMessages((m) => [...m, { id: aiId, role: "ai", t: currentT(), text: "" }])
 
     try {
+      if (items.some((x) => x.recallUsed)) {
+        try { await recallNow() } catch { /* non-fatal: chat still goes out */ }
+      }
+
+      const filesToSend = items.flatMap((x) => x.filesToSend)
       let attachments: ChatAttachment[] = []
       if (filesToSend.length > 0) {
         const up = await uploadFiles(filesToSend)
@@ -741,7 +737,9 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
         }
         attachments = up.files
       }
-      const res = await sendChat(text || "(see attached file)", "favilla", attachments)
+
+      const combinedText = items.map((x) => x.text).filter(Boolean).join("\n\n")
+      const res = await sendChat(combinedText || "(see attached file)", "favilla", attachments)
       if (!res.ok) {
         setMessages((m) =>
           m.map((x) =>
@@ -759,7 +757,6 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
         source: t.source,
       }))
       const locked = !!res.thoughts_locked
-      // Typewriter reveal of res.reply
       const full = res.reply || ""
       let i = 0
       const step = Math.max(1, Math.ceil(full.length / 120))
@@ -793,6 +790,71 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
     } finally {
       setSending(false)
     }
+  }
+
+  function onPickFiles(e: React.ChangeEvent<HTMLInputElement>) {
+    const fs = Array.from(e.target.files || [])
+    if (!fs.length) return
+    setPendingFiles((cur) => [
+      ...cur,
+      ...fs.map((f) => ({ id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, file: f })),
+    ])
+    // Reset so selecting same file again re-triggers change
+    if (fileInputRef.current) fileInputRef.current.value = ""
+  }
+
+  function removePending(id: string) {
+    setPendingFiles((cur) => cur.filter((p) => p.id !== id))
+  }
+
+  async function handleSend() {
+    const text = input.trim()
+    if ((!text && pendingFiles.length === 0) || sending) return
+    setInput("")
+    const wasArmed = recallArmed
+    if (wasArmed) {
+      setRecallArmed(false)
+    }
+
+    // Snapshot pending files for this turn, then clear UI immediately
+    const filesToSend = pendingFiles.map((p) => p.file)
+    const userPills = pendingFiles.map((p) => {
+      const isImage = p.file.type.startsWith("image/")
+      return isImage
+        ? ({ kind: "image", name: p.file.name } as const)
+        : ({ kind: "file", name: p.file.name } as const)
+    })
+    setPendingFiles([])
+
+    const userMsg: Msg = {
+      id: `u-${Date.now()}`,
+      role: "user",
+      t: currentT(),
+      text,
+      attachments: userPills.length > 0 ? userPills : undefined,
+      recallUsed: wasArmed,
+    }
+    setMessages((m) => [...m, userMsg])
+
+    const batch = sendBatchRef.current
+    batch.items.push({ text, filesToSend, recallUsed: wasArmed })
+    if (batch.timer !== null) window.clearTimeout(batch.timer)
+    batch.timer = window.setTimeout(() => { void flushSendBatch() }, SEND_MERGE_WINDOW_MS)
+  }
+
+  function flushSendBatchNow() {
+    if (sending || sendBatchRef.current.items.length === 0) return
+    void flushSendBatch()
+  }
+
+  function onComposerKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key !== "Enter" || e.shiftKey) return
+    e.preventDefault()
+    if (input.trim() || pendingFiles.length > 0) {
+      handleSend()
+      return
+    }
+    flushSendBatchNow()
   }
 
   return (
@@ -973,12 +1035,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                     if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" })
                   }, 280)
                 }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault()
-                    handleSend()
-                  }
-                }}
+                onKeyDown={onComposerKeyDown}
                 placeholder={`Reply to ${peerName}…`}
                 className="composer-input resize-none bg-transparent px-2 py-1 text-[15px] leading-[1.4] focus:outline-none"
                 style={{ fontFamily: "var(--font-sans)", color: INK, maxHeight: 92, minHeight: 36 }}
@@ -1065,22 +1122,12 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                         : "Tap to arm recall for the next message"
                   }
                 >
-                  <RecallIcon
+                  <HourglassIcon
                     className="h-[14px] w-[14px]"
-                    strokeWidth={1.4}
-                    color={recallArmed ? "#FFCC00" : "currentColor"}
+                    active={sealBusy || hourglassBurst}
+                    filled={recallArmed}
+                    sandColor="#FAEC8C"
                   />
-                </button>
-                {/* hourglass — separate, always visible (active during seal processing) */}
-                <button
-                  type="button"
-                  disabled
-                  className="grid h-9 w-9 shrink-0 place-items-center rounded-full opacity-90"
-                  style={{ color: "var(--color-cocoa)" }}
-                  aria-label={sealBusy ? "Event is being processed" : "Idle"}
-                  title={sealBusy ? "Event is being processed…" : "Idle"}
-                >
-                  <HourglassIcon className="h-[14px] w-[14px]" active={sealBusy} />
                 </button>
                 {/* spacer */}
                 <div className="flex-1" />
@@ -1092,7 +1139,13 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                 >
                   <Mic className="h-5 w-5" strokeWidth={1.6} />
                 </button>
-                <SendButton onSend={handleSend} disabled={sending || (!input.trim() && pendingFiles.length === 0)} />
+                <SendButton
+                  onSend={() => {
+                    if (input.trim() || pendingFiles.length > 0) handleSend()
+                    else flushSendBatchNow()
+                  }}
+                  disabled={sending || (!input.trim() && pendingFiles.length === 0 && sendBatchRef.current.items.length === 0)}
+                />
               </div>
             </div>
           </footer>

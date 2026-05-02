@@ -81,12 +81,30 @@ export default function Shell() {
 
   // Render Home + App together; toggle visibility instead of unmount so
   // returning to Home is instant and big assets aren't re-decoded.
+  const isChat = page === "chat"
+  const slide = "transform 220ms cubic-bezier(0.22, 1, 0.36, 1)"
   const inner = (
     <>
-      <div style={{ display: page === "home" ? "block" : "none", height: "100%" }}>
+      <div
+        className="absolute inset-0 h-full w-full"
+        style={{
+          transform: isChat ? "translateX(-18%)" : "translateX(0)",
+          transition: slide,
+          pointerEvents: isChat ? "none" : "auto",
+        }}
+      >
         <Home onNavigate={onHomeNavigate} />
       </div>
-      {page === "chat" && <App onBack={() => setPage("home")} />}
+      <div
+        className="absolute inset-0 h-full w-full"
+        style={{
+          transform: isChat ? "translateX(0)" : "translateX(100%)",
+          transition: slide,
+          pointerEvents: isChat ? "auto" : "none",
+        }}
+      >
+        <App onBack={() => setPage("home")} />
+      </div>
       <Settings open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </>
   )
