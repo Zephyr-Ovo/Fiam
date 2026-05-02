@@ -100,7 +100,12 @@ Write-Host "[deploy] APK: $($apk.FullName)" -ForegroundColor Green
 
 # --- 6. adb install ---
 & $Adb devices | Out-Host
-Write-Host "[deploy] adb install -r ..." -ForegroundColor Cyan
-& $Adb install -r $apk.FullName
-if ($LASTEXITCODE -ne 0) { throw "adb install failed (exit $LASTEXITCODE)" }
+Write-Host "[deploy] adb install -r -d ..." -ForegroundColor Cyan
+& $Adb install -r -d $apk.FullName
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[deploy] install failed, trying uninstall + reinstall ..." -ForegroundColor Yellow
+    & $Adb uninstall cc.fiet.favilla | Out-Host
+    & $Adb install $apk.FullName
+    if ($LASTEXITCODE -ne 0) { throw "adb install failed (exit $LASTEXITCODE)" }
+}
 Write-Host "[deploy] done." -ForegroundColor Green

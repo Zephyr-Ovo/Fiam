@@ -1,5 +1,5 @@
 import { motion } from "framer-motion"
-import { useState, type CSSProperties } from "react"
+import { useEffect, useRef, useState, type CSSProperties } from "react"
 
 /**
  * Home — collage of paper cutouts. Layout coords come from the Figma
@@ -53,8 +53,37 @@ export function Home({ onNavigate }: Props) {
   // Track which slot is currently being pressed so the visible image can
   // shrink in sync with the (separate) hit overlay.
   const [pressed, setPressed] = useState<string | null>(null)
+  // Scale-to-fit: design canvas is 412×915. On real phones (or after status bar)
+  // the available height differs — we scale uniformly so the whole collage fits.
+  const wrapRef = useRef<HTMLDivElement | null>(null)
+  const [scale, setScale] = useState(1)
+  useEffect(() => {
+    function fit() {
+      const el = wrapRef.current
+      if (!el) return
+      const w = el.clientWidth, h = el.clientHeight
+      if (!w || !h) return
+      setScale(Math.min(w / 412, h / 915))
+    }
+    fit()
+    window.addEventListener("resize", fit)
+    const ro = new ResizeObserver(fit)
+    if (wrapRef.current) ro.observe(wrapRef.current)
+    return () => { window.removeEventListener("resize", fit); ro.disconnect() }
+  }, [])
   return (
-    <div className="relative h-full w-full overflow-hidden">
+    <div ref={wrapRef} className="relative h-full w-full overflow-hidden">
+      <div
+        className="absolute"
+        style={{
+          left: "50%",
+          top: 0,
+          width: 412,
+          height: 915,
+          transform: `translateX(-50%) scale(${scale})`,
+          transformOrigin: "top center",
+        }}
+      >
       {/* background collage layer (texture + flowers) */}
       <img
         src="/home/bg.png"
@@ -142,6 +171,7 @@ export function Home({ onNavigate }: Props) {
       >
         <img src="/home/strollentry.png" alt="" className="h-full w-full" draggable={false} />
       </PressButton>
+      </div>
     </div>
   )
 }

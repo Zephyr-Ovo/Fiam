@@ -1,12 +1,26 @@
 // API client for fiam dashboard backend.
-// In dev: requests go through vite proxy at /api → http://127.0.0.1:8766
-//         token is injected by vite proxy from VITE_INGEST_TOKEN.
-// In prod (Capacitor): set VITE_API_BASE to full URL and VITE_INGEST_TOKEN at build.
+// Reads apiBase + token from appConfig (Settings page) at CALL TIME, falling
+// back to build-time env (VITE_API_BASE / VITE_INGEST_TOKEN) for dev / proxy.
 
 import { appConfig } from "../config"
 
-const API_BASE = (import.meta.env.VITE_API_BASE as string) || ""
-const INGEST_TOKEN = (import.meta.env.VITE_INGEST_TOKEN as string) || ""
+function getBase(): string {
+  // appConfig.apiBase wins; trim trailing slash so we always do `${base}/api/...`.
+  const v = (appConfig.apiBase || (import.meta.env.VITE_API_BASE as string) || "").trim()
+  return v.replace(/\/+$/, "")
+}
+
+function getToken(): string {
+  return (appConfig.ingestToken || (import.meta.env.VITE_INGEST_TOKEN as string) || "").trim()
+}
+
+function authHeaders(): Record<string, string> {
+  const h: Record<string, string> = { "Content-Type": "application/json" }
+  // Always inject token when we have one — the dev vite proxy strips it harmlessly.
+  const t = getToken()
+  if (t) h["X-Fiam-Token"] = t
+  return h
+}
 
 export type ChatThought = {
   kind: "think" | "search" | "check" | "native"
@@ -55,8 +69,6 @@ function fileToBase64(file: File): Promise<string> {
 }
 
 export async function uploadFiles(files: File[]): Promise<UploadResponse> {
-  const headers: Record<string, string> = { "Content-Type": "application/json" }
-  if (API_BASE && INGEST_TOKEN) headers["X-Fiam-Token"] = INGEST_TOKEN
   const payload = {
     files: await Promise.all(
       files.map(async (f) => ({
@@ -66,9 +78,9 @@ export async function uploadFiles(files: File[]): Promise<UploadResponse> {
       })),
     ),
   }
-  const res = await fetch(`${API_BASE}/api/app/upload`, {
+  const res = await fetch(`${getBase()}/api/app/upload`, {
     method: "POST",
-    headers,
+    headers: authHeaders(),
     body: JSON.stringify(payload),
   })
   const data = await res.json().catch(() => ({}))
@@ -82,13 +94,10 @@ export async function sendChat(
   attachments: ChatAttachment[] = [],
   backend: "cc" | "api" = appConfig.defaultBackend,
 ): Promise<ChatResponse> {
-  const headers: Record<string, string> = { "Content-Type": "application/json" }
-  // In native (no proxy), inject token directly. In dev, vite proxy adds it.
-  if (API_BASE && INGEST_TOKEN) headers["X-Fiam-Token"] = INGEST_TOKEN
-  const res = await fetch(`${API_BASE}/api/app/chat`, {
+  const res = await fetch(`${getBase()}/api/app/chat`, {
     method: "POST",
-    headers,
-      body: JSON.stringify({ text, source, backend, attachments }),
+    headers: authHeaders(),
+    body: JSON.stringify({ text, source, backend, attachments }),
   })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
@@ -111,12 +120,10 @@ export async function sendChat(
 export type MemoryOpResponse = { ok: boolean; error?: string; [k: string]: unknown }
 
 async function postMemoryOp(path: string, body: object = {}): Promise<MemoryOpResponse> {
-  const headers: Record<string, string> = { "Content-Type": "application/json" }
-  if (API_BASE && INGEST_TOKEN) headers["X-Fiam-Token"] = INGEST_TOKEN
   try {
-    const res = await fetch(`${API_BASE}${path}`, {
+    const res = await fetch(`${getBase()}${path}`, {
       method: "POST",
-      headers,
+      headers: authHeaders(),
       body: JSON.stringify({ source: "favilla", ...body }),
     })
     const data = await res.json().catch(() => ({}))

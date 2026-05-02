@@ -5,6 +5,7 @@ import {
   ChevronRight,
   Scissors,
   Plus,
+  Camera,
   Mic,
   Send,
   Play,
@@ -358,7 +359,7 @@ function Bubble({
             !!msg.thinkingLocked ||
             (msg.thinking?.length ?? 0) > 0 ||
             (msg.attachments?.length ?? 0) > 0) && (
-            <NameTag>{isUser ? "you" : peerName.toLowerCase()}</NameTag>
+            <NameTag>{isUser ? (appConfig.userName || "you").toLowerCase() : peerName.toLowerCase()}</NameTag>
           )}
 
         {!isUser && (msg.thinkingLocked || (msg.thinking && msg.thinking.length > 0)) && (
@@ -486,6 +487,8 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
   const [pendingFiles, setPendingFiles] = useState<{ id: string; file: File }[]>([])
   const scrollRef = useRef<HTMLElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const cameraInputRef = useRef<HTMLInputElement | null>(null)
+  const [attachOpen, setAttachOpen] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const lastT = useMemo(() => messages[messages.length - 1]?.t ?? 0, [messages])
 
@@ -832,6 +835,14 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                 onChange={onPickFiles}
                 style={{ display: "none" }}
               />
+              <input
+                ref={cameraInputRef}
+                type="file"
+                accept="image/*"
+                capture="environment"
+                onChange={onPickFiles}
+                style={{ display: "none" }}
+              />
               {/* input row (top) */}
               <textarea
                 ref={textareaRef}
@@ -850,15 +861,70 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
               />
               {/* tools row (bottom): + / recall on left, voice / send on right */}
               <div className="flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  className="grid h-9 w-9 shrink-0 place-items-center rounded-full hover:bg-black/5"
-                  style={{ color: "var(--color-cocoa)" }}
-                  aria-label="Attach"
-                >
-                  <Plus className="h-5 w-5" strokeWidth={1.6} />
-                </button>
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setAttachOpen((v) => !v)}
+                    className="grid h-9 w-9 shrink-0 place-items-center rounded-full hover:bg-black/5"
+                    style={{ color: "var(--color-cocoa)" }}
+                    aria-label="Attach"
+                    aria-expanded={attachOpen}
+                  >
+                    <Plus className="h-5 w-5" strokeWidth={1.6} style={{
+                      transform: attachOpen ? "rotate(45deg)" : "rotate(0)",
+                      transition: "transform 160ms ease",
+                    }} />
+                  </button>
+                  <AnimatePresence>
+                    {attachOpen && (
+                      <>
+                        <button
+                          type="button"
+                          aria-label="Close attach menu"
+                          onClick={() => setAttachOpen(false)}
+                          className="fixed inset-0 z-10 cursor-default bg-transparent"
+                        />
+                        <motion.div
+                          initial={{ opacity: 0, y: 8, scale: 0.96 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          exit={{ opacity: 0, y: 6, scale: 0.96 }}
+                          transition={{ duration: 0.14, ease: "easeOut" }}
+                          className="absolute z-20 flex flex-col overflow-hidden rounded-2xl"
+                          style={{
+                            left: 0,
+                            bottom: "calc(100% + 8px)",
+                            minWidth: 168,
+                            background: "rgba(255,250,243,0.96)",
+                            backdropFilter: "blur(14px) saturate(110%)",
+                            WebkitBackdropFilter: "blur(14px) saturate(110%)",
+                            border: "1px solid rgba(176,139,127,0.22)",
+                            boxShadow: "0 12px 28px -10px rgba(63,47,41,0.32)",
+                          }}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => { setAttachOpen(false); cameraInputRef.current?.click() }}
+                            className="flex items-center gap-3 px-4 py-3 text-left hover:bg-black/5"
+                            style={{ color: INK, fontFamily: "var(--font-sans)" }}
+                          >
+                            <Camera className="h-[18px] w-[18px]" strokeWidth={1.6} />
+                            <span className="text-[14px]">Take photo</span>
+                          </button>
+                          <div style={{ height: 1, background: "rgba(176,139,127,0.18)" }} />
+                          <button
+                            type="button"
+                            onClick={() => { setAttachOpen(false); fileInputRef.current?.click() }}
+                            className="flex items-center gap-3 px-4 py-3 text-left hover:bg-black/5"
+                            style={{ color: INK, fontFamily: "var(--font-sans)" }}
+                          >
+                            <ImageIcon className="h-[18px] w-[18px]" strokeWidth={1.6} />
+                            <span className="text-[14px]">Album / file</span>
+                          </button>
+                        </motion.div>
+                      </>
+                    )}
+                  </AnimatePresence>
+                </div>
                 <button
                   type="button"
                   onClick={onRecallClick}

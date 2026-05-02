@@ -24,10 +24,10 @@ export type AppConfig = {
 
 const defaults: AppConfig = {
   aiName: "Favilla",
-  userName: "you",
+  userName: "Zephyr",
   bg: bgDefault,
-  apiBase: import.meta.env.VITE_API_TARGET ?? "",
-  ingestToken: import.meta.env.VITE_INGEST_TOKEN ?? "",
+  apiBase: (import.meta.env.VITE_API_BASE as string) ?? (import.meta.env.VITE_API_TARGET as string) ?? "",
+  ingestToken: (import.meta.env.VITE_INGEST_TOKEN as string) ?? "",
   defaultBackend: "api",
 }
 
