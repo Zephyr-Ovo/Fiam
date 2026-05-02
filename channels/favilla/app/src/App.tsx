@@ -359,7 +359,7 @@ function Bubble({
             !!msg.thinkingLocked ||
             (msg.thinking?.length ?? 0) > 0 ||
             (msg.attachments?.length ?? 0) > 0) && (
-            <NameTag>{isUser ? (appConfig.userName || "you").toLowerCase() : peerName.toLowerCase()}</NameTag>
+            <NameTag>{isUser ? (appConfig.userName || "you") : peerName}</NameTag>
           )}
 
         {!isUser && (msg.thinkingLocked || (msg.thinking && msg.thinking.length > 0)) && (
@@ -498,6 +498,20 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
     if (!el) return
     el.scrollTo({ top: el.scrollHeight, behavior: "smooth" })
   }, [messages])
+
+  // Re-snap to bottom whenever the visual viewport resizes (soft keyboard
+  // open/close). Otherwise the latest message hides under the composer pill.
+  useEffect(() => {
+    const vv = window.visualViewport
+    if (!vv) return
+    const onResize = () => {
+      const el = scrollRef.current
+      if (!el) return
+      window.setTimeout(() => el.scrollTo({ top: el.scrollHeight, behavior: "smooth" }), 60)
+    }
+    vv.addEventListener("resize", onResize)
+    return () => vv.removeEventListener("resize", onResize)
+  }, [])
 
   // Autosize textarea (cap at ~3 lines, then scroll)
   useEffect(() => {
@@ -849,6 +863,14 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                 rows={1}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
+                onFocus={() => {
+                  // When the soft keyboard pops up the viewport shrinks; give
+                  // the layout a couple of frames then snap to the latest msg.
+                  window.setTimeout(() => {
+                    const el = scrollRef.current
+                    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" })
+                  }, 280)
+                }}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) {
                     e.preventDefault()

@@ -63,7 +63,11 @@ export function Home({ onNavigate }: Props) {
       if (!el) return
       const w = el.clientWidth, h = el.clientHeight
       if (!w || !h) return
-      setScale(Math.min(w / 412, h / 915))
+      // Width-fit: design 412dp must fill the full phone width. Vertical
+      // overflow is clipped by overflow-hidden — the collage has no critical
+      // content past 800dp.
+      setScale(w / 412)
+      void h
     }
     fit()
     window.addEventListener("resize", fit)
@@ -76,12 +80,12 @@ export function Home({ onNavigate }: Props) {
       <div
         className="absolute"
         style={{
-          left: "50%",
+          left: 0,
           top: 0,
           width: 412,
           height: 915,
-          transform: `translateX(-50%) scale(${scale})`,
-          transformOrigin: "top center",
+          transform: `scale(${scale})`,
+          transformOrigin: "top left",
         }}
       >
       {/* background collage layer (texture + flowers) */}

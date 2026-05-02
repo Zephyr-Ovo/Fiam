@@ -1,9 +1,21 @@
 // Light haptic on tap.
-// Uses navigator.vibrate (Android Chromium WebView supports it).
-// No-op when unsupported (iOS WebView, desktop).
+// Prefer @capacitor/haptics on native (real haptic actuator).
+// Fallback to navigator.vibrate on web/WebView (Android Chromium honors it
+// when the AndroidManifest has VIBRATE permission).
+
+import { Haptics, ImpactStyle } from "@capacitor/haptics"
+
+function isNative(): boolean {
+  // @ts-expect-error capacitor injects global at runtime
+  return !!(typeof window !== "undefined" && window.Capacitor?.isNativePlatform?.())
+}
 
 export function tap(ms = 8) {
   try {
+    if (isNative()) {
+      void Haptics.impact({ style: ImpactStyle.Light })
+      return
+    }
     if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
       navigator.vibrate(ms)
     }
@@ -12,13 +24,13 @@ export function tap(ms = 8) {
   }
 }
 
-/** Install a global pointerdown listener that vibrates on any <button> tap. */
+/** Install a global pointerdown listener that fires a haptic on any tappable element. */
 export function installGlobalTapHaptics() {
   if (typeof window === "undefined") return
   const handler = (e: PointerEvent) => {
     const t = e.target as Element | null
     if (!t) return
-    if (t.closest('button, [role="button"], a[href]')) tap(8)
+    if (t.closest('button, [role="button"], a[href], textarea, input')) tap(8)
   }
   window.addEventListener("pointerdown", handler, { passive: true, capture: true })
 }

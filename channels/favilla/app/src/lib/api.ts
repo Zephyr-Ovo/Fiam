@@ -19,6 +19,8 @@ function authHeaders(): Record<string, string> {
   // Always inject token when we have one — the dev vite proxy strips it harmlessly.
   const t = getToken()
   if (t) h["X-Fiam-Token"] = t
+  const ork = (appConfig.openrouterKey || "").trim()
+  if (ork) h["X-OpenRouter-Key"] = ork
   return h
 }
 

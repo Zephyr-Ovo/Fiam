@@ -13,6 +13,12 @@
         <item name="windowActionBar">false</item>
         <item name="windowNoTitle">true</item>
         <item name="android:background">@null</item>
+        <!-- Status bar tinted to match in-app cocoa header. -->
+        <item name="android:statusBarColor">@color/colorPrimary</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <!-- Bottom system nav bar tinted to match composer area (warm cream). -->
+        <item name="android:navigationBarColor">@color/colorAccent</item>
+        <item name="android:windowLightNavigationBar">true</item>
     </style>
 
 

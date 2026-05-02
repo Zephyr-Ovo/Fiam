@@ -124,13 +124,20 @@ export function Settings({ open, onClose }: Props) {
                   label="API base"
                   value={draft.apiBase}
                   onChange={(v) => setDraft({ ...draft, apiBase: v })}
-                  placeholder="(empty = vite proxy)"
+                  placeholder="https://fiet.cc"
                 />
                 <Row
                   label="Ingest token"
                   value={draft.ingestToken}
                   onChange={(v) => setDraft({ ...draft, ingestToken: v })}
                   placeholder="X-Fiam-Token"
+                  secret
+                />
+                <Row
+                  label="OpenRouter key"
+                  value={draft.openrouterKey}
+                  onChange={(v) => setDraft({ ...draft, openrouterKey: v })}
+                  placeholder="sk-or-v1-..."
                   secret
                 />
               </Group>

@@ -18,6 +18,9 @@ export type AppConfig = {
   apiBase: string
   /** Auth token for backend. */
   ingestToken: string
+  /** OpenRouter API key (sk-or-...). Sent to backend as X-OpenRouter-Key when set;
+   *  backend falls back to its own env var if empty. */
+  openrouterKey: string
   /** Default backend used by sendChat: "cc" | "api". */
   defaultBackend: "cc" | "api"
 }
@@ -28,6 +31,7 @@ const defaults: AppConfig = {
   bg: bgDefault,
   apiBase: (import.meta.env.VITE_API_BASE as string) ?? (import.meta.env.VITE_API_TARGET as string) ?? "",
   ingestToken: (import.meta.env.VITE_INGEST_TOKEN as string) ?? "",
+  openrouterKey: (import.meta.env.VITE_OPENROUTER_KEY as string) ?? "",
   defaultBackend: "api",
 }
 
