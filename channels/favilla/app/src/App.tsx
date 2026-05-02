@@ -438,6 +438,19 @@ function BubbleBody({
 }) {
   const [showCopy, setShowCopy] = useState(false)
   const [copied, setCopied] = useState(false)
+  const wrapRef = useRef<HTMLDivElement | null>(null)
+  // Any interaction outside this bubble dismisses the copy button. The
+  // listener attaches only while the menu is open and uses `pointerdown`
+  // so it fires on the very first touch/click anywhere else.
+  useEffect(() => {
+    if (!showCopy) return
+    function onDown(e: PointerEvent) {
+      if (!wrapRef.current) return
+      if (!wrapRef.current.contains(e.target as Node)) setShowCopy(false)
+    }
+    window.addEventListener("pointerdown", onDown, true)
+    return () => window.removeEventListener("pointerdown", onDown, true)
+  }, [showCopy])
   async function copy() {
     try {
       await navigator.clipboard.writeText(text)
@@ -449,7 +462,7 @@ function BubbleBody({
     }
   }
   return (
-    <div className="relative inline-block" style={{ overflow: "visible" }}>
+    <div ref={wrapRef} className="relative inline-block" style={{ overflow: "visible" }}>
       <div
         onClick={() => setShowCopy((v) => !v)}
         className={`md relative px-4 py-3 text-[14.5px] leading-[1.6] ${
@@ -582,7 +595,7 @@ function SendButton({ onSend, disabled }: { onSend: () => void; disabled: boolea
         setTimeout(() => setShoot(false), 220)
       }}
       disabled={disabled}
-      className="grid h-9 w-9 place-items-center rounded-full overflow-hidden"
+      className="grid h-9 w-9 place-items-center rounded-full overflow-hidden transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
       style={{ color: "var(--color-cocoa)" }}
     >
       <motion.span

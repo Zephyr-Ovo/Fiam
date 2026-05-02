@@ -76,9 +76,9 @@ export function Settings({ open, onClose }: Props) {
           // frosted cream glass \u2014 genuinely translucent so the dimmed
           // home behind shows through. backdrop-filter does the heavy
           // lifting; the rgba background is intentionally low-alpha.
-          background: "rgba(250, 244, 229, 0.42)",
-          backdropFilter: "blur(22px) saturate(140%)",
-          WebkitBackdropFilter: "blur(22px) saturate(140%)",
+          background: "rgba(255, 250, 240, 0.28)",
+          backdropFilter: "blur(28px) saturate(160%)",
+          WebkitBackdropFilter: "blur(28px) saturate(160%)",
           border: "1px solid rgba(255, 255, 255, 0.6)",
           boxShadow:
             "0 18px 50px -12px rgba(40, 28, 22, 0.45), 0 1px 0 rgba(255,255,255,0.7) inset",

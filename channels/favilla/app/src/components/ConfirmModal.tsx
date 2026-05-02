@@ -27,9 +27,13 @@ export function ConfirmModal({
   onCancel,
   onConfirm,
 }: Props) {
-  // ESC = cancel, Enter = confirm
+  // ESC = cancel, Enter = confirm. Also blur the active element on open so
+  // the soft keyboard collapses — otherwise visualViewport shrinks and the
+  // modal (anchored to layout viewport) appears off-center on phones.
   useEffect(() => {
     if (!open) return
+    const active = document.activeElement
+    if (active && active instanceof HTMLElement) active.blur()
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") onCancel()
       else if (e.key === "Enter") onConfirm()
@@ -50,8 +54,10 @@ export function ConfirmModal({
           // a portal the modal lands at the wrong position.
           className="fixed left-0 top-0 z-50 grid place-items-center"
           style={{
+            // 100vw × 100lvh = full layout viewport (excludes soft keyboard).
+            // dvh would shrink when keyboard opens and push the dialog up.
             width: "100vw",
-            height: "100dvh",
+            height: "100lvh",
           }}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
