@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<resources>
+<resources xmlns:tools="http://schemas.android.com/tools">
 
     <!-- Base application theme. -->
     <style name="AppTheme" parent="Theme.AppCompat.Light.DarkActionBar">
@@ -16,9 +16,10 @@
         <!-- Status bar tinted to match in-app cocoa header. -->
         <item name="android:statusBarColor">@color/colorPrimary</item>
         <item name="android:windowLightStatusBar">false</item>
-        <!-- Bottom system nav bar tinted to match composer area (warm cream). -->
-        <item name="android:navigationBarColor">@color/colorAccent</item>
+        <!-- Transparent bottom system nav bar so Home collage (flowers) shows through. -->
+        <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:enforceNavigationBarContrast" tools:targetApi="q">false</item>
     </style>
 
 

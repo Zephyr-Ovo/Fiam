@@ -424,6 +424,10 @@ class Pool:
         """
         self.ensure_dirs()
 
+        # Always store timezone-aware UTC timestamps (callers may pass naive datetime.now()).
+        if isinstance(t, datetime) and t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
+
         # Content (safe to write first — orphan .md files are harmless)
         self.write_body(event_id, body)
 

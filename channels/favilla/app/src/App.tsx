@@ -15,6 +15,8 @@ import {
   Search,
   CheckCircle2,
   X,
+  Copy,
+  Check,
 } from "lucide-react"
 import { LockIcon } from "./components/LockIcon"
 import { RecallIcon } from "./components/RecallIcon"
@@ -50,6 +52,8 @@ type Msg = {
   divider?: { kind: "scissor" | "recall"; label?: string }
   /** True if recall was armed when this user message was sent. Renders 🌠. */
   recallUsed?: boolean
+  /** Render as centered light-red note instead of a chat bubble. */
+  error?: boolean
 }
 
 const INK = "#3f2f29"
@@ -323,6 +327,30 @@ function NameTag({ children }: { children: React.ReactNode }) {
   )
 }
 
+function ErrorNote({ text }: { text: string }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 4 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.25, ease: "easeOut" }}
+      className="flex w-full justify-center"
+    >
+      <span
+        className="text-[12px] leading-[1.4]"
+        style={{
+          color: "rgba(180,60,60,0.85)",
+          fontFamily: "var(--font-sans)",
+          letterSpacing: "0.02em",
+          maxWidth: "82%",
+          textAlign: "center",
+        }}
+      >
+        {text}
+      </span>
+    </motion.div>
+  )
+}
+
 function Bubble({
   msg,
   idx,
@@ -371,37 +399,11 @@ function Bubble({
         )}
 
         {msg.text && (
-          <div
-            className={`md relative px-4 py-3 text-[14.5px] leading-[1.6] ${
-              isUser
-                ? "rounded-[18px] rounded-br-[6px]"
-                : "rounded-[18px] rounded-bl-[6px]"
-            }`}
-            style={{
-              background: isUser
-                ? "rgba(208,188,190,0.72)"
-                : "rgba(235,235,235,0.62)",
-              color: INK,
-              backdropFilter: "blur(14px) saturate(120%)",
-              WebkitBackdropFilter: "blur(14px) saturate(120%)",
-              border: isUser
-                ? "1px solid rgba(255,255,255,0.28)"
-                : "1px solid rgba(255,255,255,0.5)",
-              boxShadow:
-                "0 1px 0 rgba(255,255,255,0.4) inset, 0 6px 20px -10px rgba(0,0,0,0.25)",
-            }}
-          >
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.text}</ReactMarkdown>
-            {msg.recallUsed && (
-              <span
-                aria-label="recall used"
-                className="pointer-events-none absolute -bottom-1 -right-1 select-none text-[14px] leading-none"
-                style={{ filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.25))" }}
-              >
-                🌠
-              </span>
-            )}
-          </div>
+          <BubbleBody
+            text={msg.text}
+            isUser={isUser}
+            recallUsed={!!msg.recallUsed}
+          />
         )}
 
         {fileAttachments.length > 0 && (
@@ -409,6 +411,93 @@ function Bubble({
         )}
       </div>
     </motion.div>
+  )
+}
+
+function BubbleBody({
+  text,
+  isUser,
+  recallUsed,
+}: {
+  text: string
+  isUser: boolean
+  recallUsed: boolean
+}) {
+  const [showCopy, setShowCopy] = useState(false)
+  const [copied, setCopied] = useState(false)
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1200)
+      window.setTimeout(() => setShowCopy(false), 1200)
+    } catch {
+      // ignore
+    }
+  }
+  return (
+    <div className="relative">
+      <div
+        onClick={() => setShowCopy((v) => !v)}
+        className={`md relative px-4 py-3 text-[14.5px] leading-[1.6] ${
+          isUser
+            ? "rounded-[18px] rounded-br-[6px]"
+            : "rounded-[18px] rounded-bl-[6px]"
+        }`}
+        style={{
+          background: isUser
+            ? "rgba(208,188,190,0.72)"
+            : "rgba(235,235,235,0.62)",
+          color: INK,
+          backdropFilter: "blur(14px) saturate(120%)",
+          WebkitBackdropFilter: "blur(14px) saturate(120%)",
+          border: isUser
+            ? "1px solid rgba(255,255,255,0.28)"
+            : "1px solid rgba(255,255,255,0.5)",
+          boxShadow:
+            "0 1px 0 rgba(255,255,255,0.4) inset, 0 6px 20px -10px rgba(0,0,0,0.25)",
+          cursor: "pointer",
+        }}
+      >
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+        {recallUsed && (
+          <span
+            aria-label="recall used"
+            className="pointer-events-none absolute -bottom-1 -right-1 select-none text-[14px] leading-none"
+            style={{ filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.25))" }}
+          >
+            🌠
+          </span>
+        )}
+      </div>
+      <AnimatePresence>
+        {showCopy && (
+          <motion.button
+            type="button"
+            initial={{ opacity: 0, scale: 0.92, x: isUser ? 4 : -4 }}
+            animate={{ opacity: 1, scale: 1, x: 0 }}
+            exit={{ opacity: 0, scale: 0.92 }}
+            transition={{ duration: 0.14, ease: "easeOut" }}
+            onClick={(e) => { e.stopPropagation(); copy() }}
+            className="absolute top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center rounded-full"
+            style={{
+              [isUser ? "right" : "left"]: "calc(100% + 6px)",
+              background: "rgba(255,250,243,0.96)",
+              border: "1px solid rgba(176,139,127,0.22)",
+              boxShadow: "0 6px 14px -6px rgba(63,47,41,0.32)",
+              color: copied ? "#7a8a52" : INK,
+            }}
+            aria-label={copied ? "Copied" : "Copy message"}
+          >
+            {copied ? (
+              <Check className="h-[14px] w-[14px]" strokeWidth={2} />
+            ) : (
+              <Copy className="h-[14px] w-[14px]" strokeWidth={1.7} />
+            )}
+          </motion.button>
+        )}
+      </AnimatePresence>
+    </div>
   )
 }
 
@@ -644,7 +733,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
           setMessages((m) =>
             m.map((x) =>
               x.id === aiId
-                ? { ...x, text: `_(upload failed: ${up.error || "unknown"})_` }
+                ? { ...x, text: `upload failed: ${up.error || "unknown"}`, error: true }
                 : x,
             ),
           )
@@ -657,7 +746,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
         setMessages((m) =>
           m.map((x) =>
             x.id === aiId
-              ? { ...x, text: `_(error: ${res.error || "unknown"})_` }
+              ? { ...x, text: `error: ${res.error || "unknown"}`, error: true }
               : x,
           ),
         )
@@ -698,7 +787,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
       const msg = e instanceof Error ? e.message : String(e)
       setMessages((m) =>
         m.map((x) =>
-          x.id === aiId ? { ...x, text: `_(network error: ${msg})_` } : x,
+          x.id === aiId ? { ...x, text: `network error: ${msg}`, error: true } : x,
         ),
       )
     } finally {
@@ -776,6 +865,14 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                   <Divider key={m.id} kind={m.divider.kind} label={m.divider.label} />
                 )
               }
+              if (m.error) {
+                return (
+                  <div key={m.id} className="flex flex-col gap-[6px]">
+                    {showTime && <TimeSeparator t={m.t} />}
+                    <ErrorNote text={m.text || "unknown error"} />
+                  </div>
+                )
+              }
               return (
                 <div key={m.id} className="flex flex-col gap-[6px]">
                   {showTime && <TimeSeparator t={m.t} />}
@@ -791,8 +888,13 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
             <div className="h-2" />
           </main>
 
-          {/* composer — absolute floating pill, chat scrolls behind it */}
-          <footer className="pointer-events-none absolute inset-x-0 bottom-0 px-3 pb-4 pt-2">
+          {/* composer — absolute floating pill, chat scrolls behind it.
+              padding-bottom respects the bottom safe-area (gesture bar) so
+              the pill never sits under transparent system nav. */}
+          <footer
+            className="pointer-events-none absolute inset-x-0 bottom-0 px-3 pt-2"
+            style={{ paddingBottom: "max(16px, calc(env(safe-area-inset-bottom) + 8px))" }}
+          >
             {pendingFiles.length > 0 && (
               <div className="pointer-events-auto mb-2 flex flex-wrap gap-1.5">
                 {pendingFiles.map((p) => {
@@ -940,7 +1042,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                             style={{ color: INK, fontFamily: "var(--font-sans)" }}
                           >
                             <ImageIcon className="h-[18px] w-[18px]" strokeWidth={1.6} />
-                            <span className="text-[14px]">Album / file</span>
+                            <span className="text-[14px]">Upload file</span>
                           </button>
                         </motion.div>
                       </>
@@ -968,8 +1070,8 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                   ) : (
                     <RecallIcon
                       className="h-[14px] w-[14px]"
-                      strokeWidth={1.2}
-                      fill={recallArmed ? "#FAEC8C" : "none"}
+                      strokeWidth={1.4}
+                      color={recallArmed ? "#FFCC00" : "currentColor"}
                     />
                   )}
                 </button>
