@@ -25,20 +25,6 @@ from fiam.store.pool import Pool
 
 
 # ------------------------------------------------------------------
-# Edge type multipliers (how strongly each edge type conducts energy)
-# ------------------------------------------------------------------
-
-DEFAULT_TYPE_MULT: dict[int, float] = {
-    0: 0.5,   # temporal  — weakest, just sequencing
-    1: 0.8,   # semantic  — content similarity
-    2: 1.4,   # causal    — strong link
-    3: 1.2,   # remind    — association
-    4: 1.0,   # elaboration
-    5: 0.3,   # contrast  — weakest semantic link
-}
-
-
-# ------------------------------------------------------------------
 # Seed: query vector → initial activation
 # ------------------------------------------------------------------
 
@@ -95,7 +81,6 @@ def spread_activation(
     steps: int = 2,
     decay: float = 0.5,
     inhibition: float = 0.3,
-    type_mult: dict[int, float] | None = None,
     threshold: float = 0.4,
 ) -> np.ndarray:
     """Propagate activation through Pool edges.
@@ -109,15 +94,11 @@ def spread_activation(
         steps: Number of propagation hops.
         decay: Energy multiplier per hop.
         inhibition: Lateral inhibition fraction when multi-source convergence.
-        type_mult: Per-edge-type conductance multipliers.
         threshold: Minimum activation to keep propagating (stop condition).
 
     Returns:
         Final activation vector (N,) normalised to [0, 1].
     """
-    if type_mult is None:
-        type_mult = DEFAULT_TYPE_MULT
-
     n = len(activation)
     if n == 0:
         return activation.copy()
@@ -156,11 +137,9 @@ def spread_activation(
                 continue
 
             w = float(edge_attr[ei, 1])
-            tid = int(edge_attr[ei, 0])
-            tm = type_mult.get(tid, 0.5)
 
             fan_pen = 1.0 / (1.0 + log(max(1, fan_out[src])))
-            propagated = act[src] * w * tm * fan_pen * decay
+            propagated = act[src] * w * fan_pen * decay
 
             if propagated > 0.001:
                 delta[dst] += propagated
@@ -192,7 +171,7 @@ def select_events(
     activation: np.ndarray,
     pool: Pool,
     *,
-    top_k: int = 5,
+    top_k: int = 3,
     min_activation: float = 0.15,
     rng: np.random.Generator | None = None,
 ) -> list[tuple[str, float]]:
@@ -247,9 +226,8 @@ def retrieve(
     decay: float = 0.5,
     inhibition: float = 0.3,
     threshold: float = 0.4,
-    top_k: int = 5,
+    top_k: int = 3,
     min_activation: float = 0.15,
-    type_mult: dict[int, float] | None = None,
     rng: np.random.Generator | None = None,
 ) -> list[tuple[str, float]]:
     """Full retrieval pipeline: seed → spread → select.
@@ -264,7 +242,6 @@ def retrieve(
         threshold: Activation floor for propagation.
         top_k: Max events to return.
         min_activation: Min activation to be a candidate.
-        type_mult: Edge type conductance multipliers.
         rng: Random generator for reproducible selection.
 
     Returns:
@@ -277,7 +254,7 @@ def retrieve(
     act = spread_activation(
         act, pool,
         steps=steps, decay=decay, inhibition=inhibition,
-        type_mult=type_mult, threshold=threshold,
+        threshold=threshold,
     )
 
     return select_events(

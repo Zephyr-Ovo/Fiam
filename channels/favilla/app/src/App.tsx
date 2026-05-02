@@ -968,6 +968,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
             <button
               type="button"
               onMouseDown={(e) => e.preventDefault()}
+              onTouchStart={(e) => e.preventDefault()}
               onClick={onScissorClick}
               className="grid h-10 w-10 place-items-center rounded-full hover:bg-white/10"
               aria-label="Cut"
@@ -1121,6 +1122,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                   <button
                     type="button"
                     onMouseDown={(e) => e.preventDefault()}
+                    onTouchStart={(e) => e.preventDefault()}
                     onClick={() => setAttachOpen((v) => !v)}
                     className="grid h-9 w-9 shrink-0 place-items-center rounded-full hover:bg-black/5"
                     style={{ color: "var(--color-cocoa)" }}
@@ -1227,6 +1229,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                 <button
                   type="button"
                   onMouseDown={(e) => e.preventDefault()}
+                  onTouchStart={(e) => e.preventDefault()}
                   className="grid h-9 w-9 shrink-0 place-items-center rounded-full"
                   style={{ color: "var(--color-cocoa)" }}
                   aria-label="Voice"
