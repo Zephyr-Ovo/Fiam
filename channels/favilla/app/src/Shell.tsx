@@ -25,6 +25,11 @@ function isNative(): boolean {
   return !!(typeof window !== "undefined" && window.Capacitor?.isNativePlatform?.())
 }
 
+function blurActiveInput() {
+  const active = document.activeElement
+  if (active instanceof HTMLElement && active !== document.body) active.blur()
+}
+
 export default function Shell() {
   const [page, setPage] = useState<Page>("home")
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -117,6 +122,7 @@ export default function Shell() {
         return
       }
       if (page !== "home") {
+        blurActiveInput()
         setPage("home")
         return
       }
@@ -174,7 +180,7 @@ export default function Shell() {
           willChange: "transform",
         }}
       >
-        <App onBack={() => setPage("home")} />
+        <App onBack={() => { blurActiveInput(); setPage("home") }} />
       </div>
       <Settings open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </>
