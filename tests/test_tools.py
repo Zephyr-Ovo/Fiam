@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -82,6 +83,38 @@ class ToolsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             out = execute_tool_call(_cfg(Path(tmp)), "rm_rf", "{}")
             self.assertEqual(out, "error: unknown tool 'rm_rf'")
+
+    def test_grep_schedule_and_state_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            cfg = _cfg(home)
+            (home / "uploads" / "2026-05-04").mkdir(parents=True)
+            (home / "uploads" / "2026-05-04" / "big.txt").write_text(
+                "alpha\nneedle detail\nomega\n",
+                encoding="utf-8",
+            )
+
+            hits = json.loads(execute_tool_call(cfg, "grep_files", json.dumps({
+                "path": "uploads",
+                "query": "needle",
+            })))
+            self.assertEqual(hits[0]["line"], 2)
+
+            wake_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+            out = json.loads(execute_tool_call(cfg, "schedule_wake", json.dumps({
+                "wake_at": wake_at,
+                "type": "notify",
+                "reason": "test wake",
+            })))
+            self.assertTrue(out["ok"])
+            self.assertTrue((home / "self" / "schedule.jsonl").exists())
+
+            state = json.loads(execute_tool_call(cfg, "set_ai_state", json.dumps({
+                "state": "busy",
+                "reason": "testing",
+            })))
+            self.assertEqual(state["state"], "busy")
+            self.assertTrue((home / "self" / "ai_state.json").exists())
 
 
 if __name__ == "__main__":

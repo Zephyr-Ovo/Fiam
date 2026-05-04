@@ -13,6 +13,9 @@ Tool surface (deliberately small, mirrors editor primitives):
 - ``insert(path, line, content)``     — insert after ``line`` (0 = file head)
 - ``create_file(path, content)``      — create new file, fail if exists
 - ``git_diff(path?, since?)``         — git diff inside home_path
+- ``grep_files(path, query)``         — search text files under a path
+- ``schedule_wake(wake_at, type, reason)`` — append a wake to self/schedule.jsonl
+- ``set_ai_state(state, until?, reason?)`` — update self/ai_state.json
 
 The ``remember`` action is intentionally NOT a separate tool: editing
 ``self/identity.md`` etc. is just ``str_replace`` on a known path.
@@ -23,6 +26,7 @@ from __future__ import annotations
 import json
 import subprocess
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -125,6 +129,57 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "path": {"type": "string", "description": "Relative path to limit the diff (optional)."},
                     "since": {"type": "string", "description": "Optional revision (e.g. 'HEAD~3')."},
                 },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "grep_files",
+            "description": (
+                "Search UTF-8 text files under a file or directory inside your home. "
+                "Use this for uploaded files instead of reading large files in full."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Relative or absolute path inside home, e.g. 'uploads'."},
+                    "query": {"type": "string", "description": "Literal text to search for."},
+                    "max_results": {"type": "integer", "minimum": 1, "maximum": 50},
+                },
+                "required": ["path", "query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "schedule_wake",
+            "description": "Append a future wake reminder to self/schedule.jsonl.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "wake_at": {"type": "string", "description": "ISO timestamp with timezone."},
+                    "type": {"type": "string", "enum": ["private", "notify", "seek", "check"]},
+                    "reason": {"type": "string"},
+                },
+                "required": ["wake_at", "type", "reason"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_ai_state",
+            "description": "Switch your current app-visible state in self/ai_state.json.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "state": {"type": "string", "enum": ["notify", "mute", "block", "sleep", "busy", "together", "online"]},
+                    "until": {"type": "string", "description": "Optional ISO timestamp or 'open' for sleep/busy states."},
+                    "reason": {"type": "string"},
+                },
+                "required": ["state"],
             },
         },
     },
@@ -245,6 +300,92 @@ def _git_diff(home: Path, args: dict[str, Any]) -> str:
     return out.stdout[:8000] or "(no diff)"
 
 
+def _grep_files(home: Path, args: dict[str, Any]) -> str:
+    root = _resolve(home, args["path"])
+    query = args["query"]
+    if not isinstance(query, str) or not query:
+        raise ToolError("query must be a non-empty string")
+    max_results = max(1, min(50, int(args.get("max_results", 20))))
+    files = [root] if root.is_file() else sorted(p for p in root.rglob("*") if p.is_file())
+    results: list[dict[str, Any]] = []
+    for path in files:
+        if len(results) >= max_results:
+            break
+        try:
+            rel = path.resolve().relative_to(home.resolve()).as_posix()
+        except ValueError:
+            continue
+        if path.stat().st_size > 5 * 1024 * 1024:
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except UnicodeDecodeError:
+            continue
+        for idx, line in enumerate(lines, start=1):
+            if query in line:
+                results.append({"path": rel, "line": idx, "text": line[:500]})
+                if len(results) >= max_results:
+                    break
+    return json.dumps(results, ensure_ascii=False)
+
+
+def _schedule_wake(home: Path, args: dict[str, Any]) -> str:
+    wake_at_raw = str(args["wake_at"]).strip()
+    wake_type = str(args["type"]).strip().lower()
+    reason = str(args["reason"]).strip()
+    if wake_type not in {"private", "notify", "seek", "check"}:
+        raise ToolError("type must be private, notify, seek, or check")
+    if not reason:
+        raise ToolError("reason is required")
+    try:
+        wake_at = datetime.fromisoformat(wake_at_raw)
+    except ValueError as exc:
+        raise ToolError("wake_at must be an ISO timestamp") from exc
+    if wake_at.tzinfo is None:
+        wake_at = wake_at.replace(tzinfo=timezone.utc)
+    if wake_at <= datetime.now(timezone.utc):
+        raise ToolError("wake_at must be in the future")
+    path = home / "self" / "schedule.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "wake_at": wake_at.isoformat(),
+        "type": wake_type,
+        "reason": reason,
+        "created": datetime.now(timezone.utc).isoformat(),
+    }
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    return json.dumps({"ok": True, **record}, ensure_ascii=False)
+
+
+def _set_ai_state(home: Path, args: dict[str, Any]) -> str:
+    state = str(args["state"]).strip().lower()
+    if state not in {"notify", "mute", "block", "sleep", "busy", "together", "online"}:
+        raise ToolError("invalid state")
+    record: dict[str, Any] = {
+        "state": state,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    until = str(args.get("until") or "").strip()
+    if until:
+        if until != "open":
+            try:
+                parsed = datetime.fromisoformat(until)
+            except ValueError as exc:
+                raise ToolError("until must be ISO timestamp or 'open'") from exc
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            until = parsed.isoformat()
+        record["until"] = until
+    reason = str(args.get("reason") or "").strip()
+    if reason:
+        record["reason"] = reason
+    path = home / "self" / "ai_state.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+    return json.dumps({"ok": True, **record}, ensure_ascii=False)
+
+
 _DISPATCH = {
     "read_file": _read_file,
     "list_dir": _list_dir,
@@ -252,6 +393,9 @@ _DISPATCH = {
     "insert": _insert,
     "create_file": _create_file,
     "git_diff": _git_diff,
+    "grep_files": _grep_files,
+    "schedule_wake": _schedule_wake,
+    "set_ai_state": _set_ai_state,
 }
 
 

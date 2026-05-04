@@ -698,14 +698,80 @@ def _select_app_chat_backend(text: str, attachments: list[dict] | None = None) -
     return "cc" if any(term in lowered for term in cc_terms) else "api"
 
 
-def _api_app_chat(payload: dict) -> dict:
-    if not _CONFIG:
-        raise RuntimeError("config not loaded")
-    text = str(payload.get("text") or "").strip()
+def _app_history_source(source: str) -> str:
+    clean = re.sub(r"[^A-Za-z0-9_-]+", "_", (source or "favilla").strip().lower()).strip("_")
+    return clean or "favilla"
+
+
+def _app_history_path(source: str = "favilla") -> Path:
+    return _CONFIG.home_path / "app_history" / f"{_app_history_source(source)}.jsonl"
+
+
+def _history_attachments(attachments: list[dict]) -> list[dict]:
+    out = []
+    for att in attachments:
+        mime = str(att.get("mime") or "")
+        out.append({
+            "kind": "image" if mime.startswith("image/") else "file",
+            "name": str(att.get("name") or Path(str(att.get("path") or "file")).name),
+            "path": str(att.get("path") or ""),
+            "mime": mime,
+            "size": att.get("size"),
+        })
+    return out
+
+
+def _append_app_history(source: str, message: dict) -> dict:
+    path = _app_history_path(source)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    now_min = int(time.time() // 60)
+    record = {
+        "id": str(message.get("id") or f"srv-{int(time.time() * 1000)}"),
+        "role": str(message.get("role") or "ai"),
+        "t": int(message.get("t") or now_min),
+    }
+    for key in ("text", "attachments", "thinking", "thinkingLocked", "divider", "recallUsed", "error"):
+        if key in message and message[key] not in (None, [], ""):
+            record[key] = message[key]
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    return record
+
+
+def _api_app_history(source: str = "favilla", limit: int = 200) -> dict:
+    path = _app_history_path(source)
+    if not path.exists():
+        return {"ok": True, "messages": []}
+    messages = []
+    for line in path.read_text(encoding="utf-8").splitlines()[-max(1, min(1000, limit)):]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            messages.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return {"ok": True, "messages": messages}
+
+
+def _api_app_history_append(payload: dict) -> dict:
+    source = str(payload.get("source") or "favilla")
+    role = str(payload.get("role") or "user")
+    if role not in {"user", "ai"}:
+        raise ValueError("role must be user or ai")
     attachments = payload.get("attachments") or []
     if not isinstance(attachments, list):
         attachments = []
-    # Validate attachment paths are inside uploads dir
+    safe_attachments = _validate_app_attachments(attachments)
+    record = _append_app_history(source, {
+        "role": role,
+        "text": str(payload.get("text") or ""),
+        "attachments": _history_attachments(safe_attachments),
+    })
+    return {"ok": True, "message": record}
+
+
+def _validate_app_attachments(attachments: list) -> list[dict]:
     safe_attachments = []
     uploads_root = (_CONFIG.home_path / "uploads").resolve()
     for att in attachments:
@@ -728,7 +794,50 @@ def _api_app_chat(payload: dict) -> dict:
             "path": str(resolved),
             "name": str(att.get("name") or resolved.name),
             "mime": str(att.get("mime") or ""),
+            "size": int(att.get("size") or resolved.stat().st_size),
         })
+    return safe_attachments
+
+
+def _apply_app_control_markers(reply: str) -> tuple[str, int]:
+    from fiam_lib.scheduler import WAKE_RE, append_to_schedule, extract_wake_tags
+
+    scheduled = 0
+    tags = extract_wake_tags(reply)
+    if tags and _CONFIG:
+        scheduled = append_to_schedule(tags, _CONFIG)
+    cleaned = WAKE_RE.sub("", reply).strip()
+    return cleaned, scheduled
+
+
+def _recent_uploads_block(limit: int = 12) -> str:
+    if not _CONFIG:
+        return ""
+    manifest = _CONFIG.home_path / "uploads" / "manifest.jsonl"
+    if not manifest.exists():
+        return ""
+    rows = []
+    for line in manifest.read_text(encoding="utf-8", errors="replace").splitlines()[-limit:]:
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        rows.append(
+            f"- {rec.get('path')} (name={rec.get('name')!r}, mime={rec.get('mime')!r}, size={rec.get('size')}, uploaded_at={rec.get('uploaded_at')})"
+        )
+    if not rows:
+        return ""
+    return "[available_uploads]\nFiles are available for manual inspection; do not assume their contents without using tools.\n" + "\n".join(rows)
+
+
+def _api_app_chat(payload: dict) -> dict:
+    if not _CONFIG:
+        raise RuntimeError("config not loaded")
+    text = str(payload.get("text") or "").strip()
+    attachments = payload.get("attachments") or []
+    if not isinstance(attachments, list):
+        attachments = []
+    safe_attachments = _validate_app_attachments(attachments)
     if not text and not safe_attachments:
         raise ValueError("missing text")
     if not text:
@@ -739,10 +848,23 @@ def _api_app_chat(payload: dict) -> dict:
         backend = _select_app_chat_backend(text, safe_attachments)
     or_key = str(payload.get("openrouter_key") or "").strip()
     if backend == "api":
-        return _run_api_app_chat(text=text, source=source, attachments=safe_attachments, openrouter_key=or_key)
-    if backend != "cc":
+        result = _run_api_app_chat(text=text, source=source, attachments=safe_attachments, openrouter_key=or_key)
+    elif backend == "cc":
+        result = _run_cc_app_chat(text=text, source=source, attachments=safe_attachments)
+    else:
         raise ValueError("server chat backend must be auto, cc, or api")
-    return _run_cc_app_chat(text=text, source=source, attachments=safe_attachments)
+    _append_app_history(source, {
+        "role": "user",
+        "text": text,
+        "attachments": _history_attachments(safe_attachments),
+    })
+    _append_app_history(source, {
+        "role": "ai",
+        "text": result.get("reply", ""),
+        "thinking": result.get("thoughts") or [],
+        "thinkingLocked": bool(result.get("thoughts_locked")),
+    })
+    return result
 
 
 def _api_app_upload(payload: dict) -> dict:
@@ -778,12 +900,20 @@ def _api_app_upload(payload: dict) -> dict:
         digest = hashlib.sha256(raw).hexdigest()[:12]
         target = out_dir / f"{digest}-{safe_name}"
         target.write_bytes(raw)
-        saved.append({
+        record = {
             "path": str(target),
             "name": safe_name,
             "mime": mime,
             "size": len(raw),
-        })
+        }
+        saved.append(record)
+        manifest = _CONFIG.home_path / "uploads" / "manifest.jsonl"
+        with manifest.open("a", encoding="utf-8") as mf:
+            mf.write(json.dumps({
+                "uploaded_at": datetime.now(timezone.utc).isoformat(),
+                "sha256": hashlib.sha256(raw).hexdigest(),
+                **record,
+            }, ensure_ascii=False) + "\n")
     return {"ok": True, "files": saved}
 
 
@@ -864,7 +994,7 @@ def _cut_file_path():
     return _CONFIG.home_path / "app_cuts.jsonl"
 
 
-def _api_app_cut(_payload: dict) -> dict:
+def _api_app_cut(payload: dict) -> dict:
     """Append a cut marker at the current end of flow.jsonl. The next
     /api/app/process call will use these markers to slice unprocessed
     beats into multiple segments (events).
@@ -883,6 +1013,11 @@ def _api_app_cut(_payload: dict) -> dict:
     record = {"flow_offset": int(offset), "ts": datetime.now(timezone.utc).isoformat()}
     with cut_path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record) + "\n")
+    source = str(payload.get("source") or "favilla")
+    _append_app_history(source, {
+        "role": "ai",
+        "divider": {"kind": "scissor", "label": "cut"},
+    })
     return {"ok": True, "flow_offset": offset}
 
 
@@ -1017,6 +1152,7 @@ def _run_cc_app_chat(*, text: str, source: str, attachments: list | None = None)
     pending_recall = _pending_recall_for_app()
     session = _load_app_active_session()
     prompt_text = text
+    uploads_block = _recent_uploads_block()
     if attachments:
         lines = ["[attachments]"]
         for a in attachments:
@@ -1024,6 +1160,8 @@ def _run_cc_app_chat(*, text: str, source: str, attachments: list | None = None)
             lines.append(f"- {a['path']}  (name={a['name']!r}, mime={mime})")
         lines.append("")
         prompt_text = "\n".join(lines) + text
+    if uploads_block:
+        prompt_text = uploads_block + "\n\n" + prompt_text
     system_context, user_prompt = build_plain_prompt_parts(
         _CONFIG,
         f"[app:{source} backend=cc] {prompt_text}",
@@ -1096,6 +1234,7 @@ def _run_cc_app_chat(*, text: str, source: str, attachments: list | None = None)
         _save_app_active_session(session_id)
 
     reply = str(data.get("result") or "").strip()
+    reply, scheduled_wakes = _apply_app_control_markers(reply)
     cleaned_reply, thoughts, thoughts_locked = _parse_cot(reply)
     return {
         "ok": True,
@@ -1107,6 +1246,7 @@ def _run_cc_app_chat(*, text: str, source: str, attachments: list | None = None)
         "cost_usd": data.get("total_cost_usd", 0),
         "thoughts": thoughts,
         "thoughts_locked": thoughts_locked,
+        "scheduled_wakes": scheduled_wakes,
     }
 
 
@@ -1155,6 +1295,7 @@ def _run_api_app_chat(*, text: str, source: str, attachments: list | None = None
         recall_refresher=_refresh,
     )
     api_text = text
+    uploads_block = _recent_uploads_block()
     if attachments:
         lines = ["[attachments]"]
         for a in attachments:
@@ -1162,6 +1303,8 @@ def _run_api_app_chat(*, text: str, source: str, attachments: list | None = None
             lines.append(f"- {a['path']}  (name={a['name']!r}, mime={mime})")
         lines.append("")
         api_text = "\n".join(lines) + text
+    if uploads_block:
+        api_text = uploads_block + "\n\n" + api_text
     api_text = f"[app:{source} backend=api] {api_text}"
     try:
         result = runtime.ask(api_text, source=source)
@@ -1173,7 +1316,8 @@ def _run_api_app_chat(*, text: str, source: str, attachments: list | None = None
                 _os.environ[env_name] = prev
             else:
                 _os.environ.pop(env_name, None)
-    cleaned_reply, thoughts, thoughts_locked = _parse_cot(result.reply)
+    reply, scheduled_wakes = _apply_app_control_markers(result.reply)
+    cleaned_reply, thoughts, thoughts_locked = _parse_cot(reply)
     return {
         "ok": True,
         "backend": "api",
@@ -1188,6 +1332,7 @@ def _run_api_app_chat(*, text: str, source: str, attachments: list | None = None
         "dispatched": result.dispatched,
         "thoughts": thoughts,
         "thoughts_locked": thoughts_locked,
+        "scheduled_wakes": scheduled_wakes,
     }
 
 
@@ -1591,6 +1736,21 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._serve_json(_api_app_status())
             return
 
+        if path == "/api/app/history":
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            from urllib.parse import parse_qs, urlparse
+
+            query = parse_qs(urlparse(raw).query)
+            source = (query.get("source") or ["favilla"])[0]
+            try:
+                limit = int((query.get("limit") or ["200"])[0])
+            except ValueError:
+                limit = 200
+            self._serve_json(_api_app_history(source=source, limit=limit))
+            return
+
         if path == "/api/app/seal/status":
             if not _ingest_token_ok(self):
                 self._serve_json({"error": "unauthorized"}, status=401)
@@ -1726,6 +1886,35 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return
             except Exception as e:
                 logger.exception("app upload error")
+                self._serve_json({"error": str(e)}, status=500)
+                return
+            self._serve_json(result)
+            return
+
+        if path == "/api/app/history":
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = 0
+            if length <= 0 or length > 64 * 1024:
+                self._serve_json({"error": "bad length"}, status=400)
+                return
+            try:
+                body = self.rfile.read(length).decode("utf-8")
+                payload = json.loads(body)
+            except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                self._serve_json({"error": f"bad json: {e}"}, status=400)
+                return
+            try:
+                result = _api_app_history_append(payload)
+            except ValueError as e:
+                self._serve_json({"error": str(e)}, status=400)
+                return
+            except Exception as e:
+                logger.exception("app history error")
                 self._serve_json({"error": str(e)}, status=500)
                 return
             self._serve_json(result)

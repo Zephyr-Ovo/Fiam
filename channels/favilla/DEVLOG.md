@@ -3,10 +3,13 @@
 > Favilla app-specific notes. Root project/system notes stay in `../../DEVLOG.md`.
 
 ## ⚠️ 操作语义 LOCKED — 每次开工必读
-**剪刀**=即点即切（无确认，仅落 cut marker `/api/app/cut`）。
+**剪刀**=弹窗确认后才落 cut marker `/api/app/cut`；剪刀本身不触发 DS 处理。
 **沙漏单击**=toggle recall armed（亮↔暗；亮+下次发送=带召回；点发送或再次单击=灭）。
 **沙漏长按 1.2s**=弹窗确认→`/api/app/process`（3 阶段 DS 管线，沙漏漏沙动画 + 发送灰，完成信号到才解锁）。
-**键盘**：整个 footer 输入框区域点击不收起；其他位置点击收起。
+**键盘**：按钮操作不改变当前键盘状态；键盘展开时点发送/剪刀/沙漏/加号/语音/返回都不能先收键盘，返回直接离开当前页。
+**Chat history**：聊天记录以 server `/api/app/history` 为准；App 不再 seed mock 测试会话。退出、重进、卸载、重装后应从服务器恢复历史。
+**Upload**：纯上传只把文件落到服务器 `uploads/` + `uploads/manifest.jsonl` 并记录 history，不唤醒 AI、不把全文注入上下文。后续 AI 只看近期上传清单（路径/文件名/mime/大小），需要自己用 grep/read 工具找内容。
+**Backend Settings**：`AI` = server auto-router（代码/附件/debug 等走 CC，日常短聊走 API）；`API`/`CC` = 用户手动强制后端，此状态下 AI 不能自行切换，除非用户改回 `AI` 或手动选择另一项。
 **Settings**：背景 `rgba(0,0,0,0.45)` 纯变暗不模糊；卡片 `backdrop-filter: blur(20px)` + `rgba(255,250,243,0.55)` 半透明磨砂；居中固定，CSS-only fade 120ms。
 
 ## Session 2026-04-30 — Hard Reset to React + Tailwind + shadcn

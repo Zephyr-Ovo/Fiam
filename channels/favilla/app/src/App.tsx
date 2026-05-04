@@ -24,7 +24,7 @@ import { HourglassIcon } from "./components/HourglassIcon"
 import { ConfirmModal } from "./components/ConfirmModal"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
-import { sendChat, uploadFiles, recallNow, cutFlow, processFlow, type ChatAttachment } from "./lib/api"
+import { fetchChatHistory, recordChatMessage, sendChat, uploadFiles, recallNow, cutFlow, processFlow, type ChatAttachment } from "./lib/api"
 import { appConfig, saveConfig } from "./config"
 
 // Module-level set of bubble ids whose entrance animation has already played.
@@ -33,7 +33,7 @@ const SEEN_BUBBLE_IDS = new Set<string>()
 
 type Attachment =
   | { kind: "voice"; seconds: number }
-  | { kind: "file"; name: string; size?: string }
+  | { kind: "file"; name: string; size?: string | number }
   | { kind: "image"; name: string }
 
 type ThinkStep = {
@@ -47,7 +47,7 @@ type Msg = {
   id: string
   role: "user" | "ai"
   text?: string
-  /** Minutes since epoch (mock). Used to decide whether to show a time separator. */
+  /** Minutes since epoch. Used to decide whether to show a time separator. */
   t: number
   attachments?: Attachment[]
   thinking?: ThinkStep[]
@@ -62,63 +62,15 @@ type Msg = {
 
 const INK = "#3f2f29"
 
-// Mock conversation seed. `t` in minutes (relative).
-const seedMessages: Msg[] = [
-  // 1: user voice (long-pressed → transcript shows below in same bubble area)
-  {
-    id: "1",
-    role: "user",
-    t: 0,
-    attachments: [{ kind: "voice", seconds: 47 }],
-    text:
-      "*“And the city, in the end, was nothing more than a way of being alone with someone.”*",
-  },
-  // 2: ai reply
-  {
-    id: "2",
-    role: "ai",
-    t: 1,
-    thinking: [
-      { kind: "think", text: "Listening to the recording", result: "0:47 transcribed" },
-      { kind: "search", text: "Looking up the passage in Calvino" },
-      { kind: "check", text: "Done" },
-    ],
-    text:
-      "I heard it. Your voice slowed on *alone with someone* — you held that part.\n\nIf solitude can be **shared**, what does the city give back to you tonight?",
-  },
-  // 3: user text + attachments below
-  {
-    id: "3",
-    role: "user",
-    t: 3,
-    text: "Some pages from this morning. The window first, then the notes.",
-    attachments: [
-      { kind: "image", name: "morning-window.jpg" },
-      { kind: "file", name: "calvino-cities.pdf" },
-      { kind: "file", name: "notes-2026.md" },
-      { kind: "image", name: "sunrise.png" },
-    ],
-  },
-  // 4: ai reply
-  {
-    id: "4",
-    role: "ai",
-    t: 4,
-    text:
-      "The window is honest — it doesn't decide for you what to look at. **Read me one line** from the notes; I'll keep the rest for later.",
-  },
-]
-
 function formatT(t: number) {
-  const totalMin = ((8 * 60 + 14 + t) % (24 * 60) + 24 * 60) % (24 * 60) // pretend day starts 08:14
-  const h = Math.floor(totalMin / 60)
-  const m = totalMin % 60
+  const d = new Date(t * 60_000)
+  const h = d.getHours()
+  const m = d.getMinutes()
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`
 }
 
 function currentT() {
-  const d = new Date()
-  return d.getHours() * 60 + d.getMinutes() - (8 * 60 + 14)
+  return Math.floor(Date.now() / 60_000)
 }
 
 const SEND_MERGE_WINDOW_MS = 60_000
@@ -586,6 +538,7 @@ function SendButton({ onSend, disabled }: { onSend: () => void; disabled: boolea
   return (
     <button
       type="button"
+      onPointerDown={(e) => e.preventDefault()}
       onMouseDown={(e) => e.preventDefault()}
       onClick={() => {
         if (disabled) return
@@ -602,7 +555,7 @@ function SendButton({ onSend, disabled }: { onSend: () => void; disabled: boolea
 
 export default function App({ onBack }: { onBack?: () => void } = {}) {
   const [peerName, setPeerName] = useState(appConfig.aiName)
-  const [messages, setMessages] = useState<Msg[]>(seedMessages)
+  const [messages, setMessages] = useState<Msg[]>([])
   const [input, setInput] = useState("")
   const [sending, setSending] = useState(false)
   const [pendingFiles, setPendingFiles] = useState<{ id: string; file: File }[]>([])
@@ -668,6 +621,24 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
     return () => window.removeEventListener("favilla:config-changed", onConfigChanged)
   }, [])
 
+  useEffect(() => {
+    let cancelled = false
+    fetchChatHistory("favilla")
+      .then((res) => {
+        if (cancelled || !res.ok || !res.messages) return
+        setMessages(res.messages.map((msg) => ({
+          ...msg,
+          attachments: (msg.attachments || []).map((att) => {
+            if (att.kind === "voice") return { kind: "voice", seconds: Number(att.size || 0) || 0 }
+            if (att.kind === "image") return { kind: "image", name: att.name }
+            return { kind: "file", name: att.name, size: att.size }
+          }),
+        })))
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [])
+
   // ---- manual cut + recall + process handlers ----
   // Scissor (剪刀) = cut. Drops a divider marker server-side (instant).
   // Hourglass single-tap = toggle recall armed (light up/off).
@@ -693,23 +664,10 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
     ])
   }
 
-  function releaseComposerFocus() {
-    textareaRef.current?.blur()
-    const active = document.activeElement
-    if (active instanceof HTMLElement && active !== document.body) active.blur()
-  }
-
-  function onToolPointerDown() {
-    releaseComposerFocus()
-  }
-
   function askConfirm(title: string, message: string, onYes: () => void, confirmLabel?: string) {
-    releaseComposerFocus()
     if (confirmTimerRef.current !== null) window.clearTimeout(confirmTimerRef.current)
-    confirmTimerRef.current = window.setTimeout(() => {
-      confirmTimerRef.current = null
-      setConfirmState({ open: true, title, message, confirmLabel, onYes })
-    }, 120)
+    confirmTimerRef.current = null
+    setConfirmState({ open: true, title, message, confirmLabel, onYes })
   }
 
   function onScissorClick() {
@@ -747,7 +705,6 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
     // works for both mouse and touch in Android WebView when touch-action is
     // also constrained on the button.
     e?.preventDefault()
-    releaseComposerFocus()
     if (sealBusy) return
     hourglassFiredRef.current = false
     hourglassStartRef.current = performance.now()
@@ -916,6 +873,46 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
     })
     setPendingFiles([])
 
+    if (!text && filesToSend.length > 0) {
+      setSending(true)
+      try {
+        const up = await uploadFiles(filesToSend)
+        if (!up.ok || !up.files) {
+          setMessages((m) => [...m, {
+            id: `e-${Date.now()}`,
+            role: "ai",
+            t: currentT(),
+            text: `upload failed: ${up.error || "unknown"}`,
+            error: true,
+          }])
+          return
+        }
+        const uploadedPills = up.files.map((file) => (
+          file.mime?.startsWith("image/")
+            ? ({ kind: "image", name: file.name } as const)
+            : ({ kind: "file", name: file.name, size: file.size } as const)
+        ))
+        const userMsg: Msg = {
+          id: `u-${Date.now()}`,
+          role: "user",
+          t: currentT(),
+          attachments: uploadedPills,
+          recallUsed: wasArmed,
+        }
+        setMessages((m) => [...m, userMsg])
+        await recordChatMessage({ role: "user", attachments: up.files.map((file) => ({
+          kind: file.mime?.startsWith("image/") ? "image" : "file",
+          name: file.name,
+          path: file.path,
+          mime: file.mime,
+          size: file.size,
+        })) })
+      } finally {
+        setSending(false)
+      }
+      return
+    }
+
     const userMsg: Msg = {
       id: `u-${Date.now()}`,
       role: "user",
@@ -968,6 +965,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
           >
             <button
               type="button"
+              onPointerDown={(e) => e.preventDefault()}
               onClick={onBack}
               className="grid h-10 w-10 place-items-center rounded-full hover:bg-white/10"
               aria-label="Back"
@@ -987,7 +985,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
             />
             <button
               type="button"
-              onPointerDown={onToolPointerDown}
+              onPointerDown={(e) => e.preventDefault()}
               onClick={onScissorClick}
               className="grid h-10 w-10 place-items-center rounded-full hover:bg-white/10"
               aria-label="Cut"
@@ -1140,7 +1138,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                 <div className="relative">
                   <button
                     type="button"
-                    onPointerDown={onToolPointerDown}
+                    onPointerDown={(e) => e.preventDefault()}
                     onClick={() => setAttachOpen((v) => !v)}
                     className="grid h-9 w-9 shrink-0 place-items-center rounded-full hover:bg-black/5"
                     style={{ color: "var(--color-cocoa)" }}
@@ -1180,7 +1178,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                         >
                           <button
                             type="button"
-                            onPointerDown={onToolPointerDown}
+                            onPointerDown={(e) => e.preventDefault()}
                             onClick={() => { setAttachOpen(false); cameraInputRef.current?.click() }}
                             className="flex items-center gap-2 px-3 py-2 text-left hover:bg-black/5"
                             style={{ color: INK, fontFamily: "var(--font-sans)" }}
@@ -1191,7 +1189,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                           <div style={{ height: 1, background: "rgba(176,139,127,0.18)" }} />
                           <button
                             type="button"
-                            onPointerDown={onToolPointerDown}
+                            onPointerDown={(e) => e.preventDefault()}
                             onClick={() => { setAttachOpen(false); fileInputRef.current?.click() }}
                             className="flex items-center gap-2 px-3 py-2 text-left hover:bg-black/5"
                             style={{ color: INK, fontFamily: "var(--font-sans)" }}
@@ -1247,7 +1245,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                 <div className="flex-1" />
                 <button
                   type="button"
-                  onPointerDown={onToolPointerDown}
+                  onPointerDown={(e) => e.preventDefault()}
                   className="grid h-9 w-9 shrink-0 place-items-center rounded-full"
                   style={{ color: "var(--color-cocoa)" }}
                   aria-label="Voice"

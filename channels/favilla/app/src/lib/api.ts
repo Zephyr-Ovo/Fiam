@@ -40,6 +40,19 @@ export type ChatAttachment = {
   size?: number
 }
 
+export type StoredChatMessage = {
+  id: string
+  role: "user" | "ai"
+  t: number
+  text?: string
+  attachments?: Array<{ kind: "voice" | "file" | "image"; name: string; size?: string | number; path?: string; mime?: string }>
+  thinking?: ChatThought[]
+  thinkingLocked?: boolean
+  divider?: { kind: "scissor" | "recall"; label?: string }
+  recallUsed?: boolean
+  error?: boolean
+}
+
 export type ChatResponse = {
   ok: boolean
   backend?: "cc" | "api"
@@ -56,6 +69,12 @@ export type ChatResponse = {
 export type UploadResponse = {
   ok: boolean
   files?: ChatAttachment[]
+  error?: string
+}
+
+export type HistoryResponse = {
+  ok: boolean
+  messages?: StoredChatMessage[]
   error?: string
 }
 
@@ -113,6 +132,28 @@ export async function sendChat(
     return { ok: false, reply: "", error: data.error || `HTTP ${res.status}` }
   }
   return data as ChatResponse
+}
+
+export async function fetchChatHistory(source = "favilla", limit = 300): Promise<HistoryResponse> {
+  const params = new URLSearchParams({ source, limit: String(limit) })
+  const res = await fetch(`${getBase()}/api/app/history?${params.toString()}`, {
+    method: "GET",
+    headers: authHeaders(),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) return { ok: false, error: data.error || `HTTP ${res.status}` }
+  return data as HistoryResponse
+}
+
+export async function recordChatMessage(message: Omit<StoredChatMessage, "id" | "t">, source = "favilla") {
+  const res = await fetch(`${getBase()}/api/app/history`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify({ source, ...message }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) return { ok: false, error: data.error || `HTTP ${res.status}` }
+  return data as { ok: boolean; message?: StoredChatMessage; error?: string }
 }
 
 // --- Memory operations (manual mode) ---

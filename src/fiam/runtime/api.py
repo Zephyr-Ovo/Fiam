@@ -15,6 +15,7 @@ import numpy as np
 from fiam.runtime.prompt import build_api_messages
 from fiam.runtime.tools import TOOL_SCHEMAS, execute_tool_call
 from fiam.runtime.turns import assistant_text_beats, user_beat
+from fiam.store.beat import Beat
 
 
 class ApiClient(Protocol):
@@ -224,6 +225,8 @@ class ApiRuntime:
                 name = str(fn.get("name") or "")
                 raw_args = str(fn.get("arguments") or "{}")
                 result = execute_tool_call(self.config, name, raw_args)
+                if record:
+                    self._record_tool_action(name, raw_args, result)
                 messages.append({
                     "role": "tool",
                     "tool_call_id": str(call.get("id") or ""),
@@ -293,6 +296,20 @@ class ApiRuntime:
             meta=meta,
         ):
             self.conductor._ingest_beat(beat)
+
+    def _record_tool_action(self, name: str, raw_args: str, result: str) -> None:
+        if self.conductor is None:
+            return
+        summary = result.replace("\n", " ")[:300]
+        text = f"api tool {name}({raw_args[:300]}) -> {summary}"
+        self.conductor._ingest_beat(Beat(
+            t=datetime.now(timezone.utc),
+            text=text,
+            source="action",
+            user=self.conductor.user_status,
+            ai=self.conductor.ai_status,
+            meta={"runtime": "api", "tool": name},
+        ))
 
     def _dispatch(self, text: str) -> int:
         if self.dispatcher is None:
