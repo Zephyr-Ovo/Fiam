@@ -534,11 +534,19 @@ function Divider({ kind, label }: { kind: "scissor" | "recall"; label?: string }
 }
 
 /** Send button — icon shoots up-right then resets, no opacity fade. */
-function SendButton({ onSend, disabled }: { onSend: () => void; disabled: boolean }) {
+function SendButton({
+  onSend,
+  disabled,
+  onStablePointerDown,
+}: {
+  onSend: () => void
+  disabled: boolean
+  onStablePointerDown: (e: React.PointerEvent<HTMLElement>) => void
+}) {
   return (
     <button
       type="button"
-      onPointerDown={(e) => e.preventDefault()}
+      onPointerDown={onStablePointerDown}
       onMouseDown={(e) => e.preventDefault()}
       onClick={() => {
         if (disabled) return
@@ -568,11 +576,63 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
     }[]
   }>({ timer: null, items: [] })
   const scrollRef = useRef<HTMLElement | null>(null)
+  const composerRef = useRef<HTMLDivElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const cameraInputRef = useRef<HTMLInputElement | null>(null)
   const [attachOpen, setAttachOpen] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const confirmTimerRef = useRef<number | null>(null)
+  const keyboardOpenRef = useRef(false)
+
+  function blurActiveInput() {
+    const active = document.activeElement
+    if (active instanceof HTMLElement && active !== document.body) active.blur()
+  }
+
+  function onStableControlPointerDown(e: React.PointerEvent<HTMLElement>) {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!keyboardOpenRef.current) blurActiveInput()
+  }
+
+  function exitChat() {
+    setAttachOpen(false)
+    blurActiveInput()
+    onBack?.()
+  }
+
+  function streamReply(aiId: string, full: string, thoughts: ThinkStep[], locked: boolean) {
+    if (!full) {
+      setMessages((m) =>
+        m.map((x) =>
+          x.id === aiId
+            ? { ...x, text: full, thinking: thoughts.length > 0 ? thoughts : undefined, thinkingLocked: locked }
+            : x,
+        ),
+      )
+      return
+    }
+    let index = 0
+    const chunk = Math.max(2, Math.ceil(full.length / 72))
+    const tick = () => {
+      index = Math.min(full.length, index + chunk)
+      const shown = full.slice(0, index)
+      setMessages((m) =>
+        m.map((x) =>
+          x.id === aiId
+            ? {
+                ...x,
+                text: shown,
+                thinking: thoughts.length > 0 ? thoughts : undefined,
+                thinkingLocked: locked,
+              }
+            : x,
+        ),
+      )
+      if (index < full.length) window.setTimeout(tick, 18)
+    }
+    tick()
+  }
 
   // Auto-scroll on new messages or text growth
   useEffect(() => {
@@ -587,10 +647,12 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
     const vv = window.visualViewport
     if (!vv) return
     const onResize = () => {
+      keyboardOpenRef.current = window.innerHeight - vv.height > 120
       const el = scrollRef.current
       if (!el) return
       window.setTimeout(() => el.scrollTo({ top: el.scrollHeight, behavior: "smooth" }), 60)
     }
+    onResize()
     vv.addEventListener("resize", onResize)
     return () => vv.removeEventListener("resize", onResize)
   }, [])
@@ -705,6 +767,8 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
     // works for both mouse and touch in Android WebView when touch-action is
     // also constrained on the button.
     e?.preventDefault()
+    e?.stopPropagation()
+    if (!keyboardOpenRef.current) blurActiveInput()
     if (sealBusy) return
     hourglassFiredRef.current = false
     hourglassStartRef.current = performance.now()
@@ -802,21 +866,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
       }))
       const locked = !!res.thoughts_locked
       const full = res.reply || ""
-      // Set the full reply at once. The previous typewriter re-rendered the
-      // entire message list (with ReactMarkdown re-parsing) every 18ms,
-      // which was the dominant cause of in-chat lag on the Android WebView.
-      setMessages((m) =>
-        m.map((x) =>
-          x.id === aiId
-            ? {
-                ...x,
-                text: full,
-                thinking: thoughts.length > 0 ? thoughts : undefined,
-                thinkingLocked: locked,
-              }
-            : x,
-        ),
-      )
+      streamReply(aiId, full, thoughts, locked)
       // Tell Shell to set the home unread dot if user isn't on chat.
       try {
         window.dispatchEvent(
@@ -965,8 +1015,11 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
           >
             <button
               type="button"
-              onPointerDown={(e) => e.preventDefault()}
-              onClick={onBack}
+              onPointerDown={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+              }}
+              onClick={exitChat}
               className="grid h-10 w-10 place-items-center rounded-full hover:bg-white/10"
               aria-label="Back"
             >
@@ -985,7 +1038,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
             />
             <button
               type="button"
-              onPointerDown={(e) => e.preventDefault()}
+              onPointerDown={onStableControlPointerDown}
               onClick={onScissorClick}
               className="grid h-10 w-10 place-items-center rounded-full hover:bg-white/10"
               aria-label="Cut"
@@ -998,6 +1051,11 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
           <main
             ref={scrollRef}
             className="flex flex-1 flex-col gap-[9px] overflow-y-auto px-4 pt-8 pb-36"
+            onPointerDown={(e) => {
+              if (composerRef.current?.contains(e.target as Node)) return
+              setAttachOpen(false)
+              blurActiveInput()
+            }}
           >
             {(() => {
               const SHOW_BLOCKS = 7
@@ -1084,6 +1142,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
               </div>
             )}
             <div
+              ref={composerRef}
               className="pointer-events-auto flex flex-col gap-1.5 rounded-[20px] p-1.5"
               onMouseDown={(e) => {
                 // Don't blur the textarea when tapping anywhere inside the composer
@@ -1138,7 +1197,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                 <div className="relative">
                   <button
                     type="button"
-                    onPointerDown={(e) => e.preventDefault()}
+                    onPointerDown={onStableControlPointerDown}
                     onClick={() => setAttachOpen((v) => !v)}
                     className="grid h-9 w-9 shrink-0 place-items-center rounded-full hover:bg-black/5"
                     style={{ color: "var(--color-cocoa)" }}
@@ -1157,6 +1216,12 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                           type="button"
                           aria-label="Close attach menu"
                           onClick={() => setAttachOpen(false)}
+                          onPointerDown={(e) => {
+                            e.preventDefault()
+                            e.stopPropagation()
+                            setAttachOpen(false)
+                            blurActiveInput()
+                          }}
                           className="fixed inset-0 z-10 cursor-default bg-transparent"
                         />
                         <motion.div
@@ -1178,7 +1243,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                         >
                           <button
                             type="button"
-                            onPointerDown={(e) => e.preventDefault()}
+                            onPointerDown={onStableControlPointerDown}
                             onClick={() => { setAttachOpen(false); cameraInputRef.current?.click() }}
                             className="flex items-center gap-2 px-3 py-2 text-left hover:bg-black/5"
                             style={{ color: INK, fontFamily: "var(--font-sans)" }}
@@ -1189,7 +1254,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                           <div style={{ height: 1, background: "rgba(176,139,127,0.18)" }} />
                           <button
                             type="button"
-                            onPointerDown={(e) => e.preventDefault()}
+                            onPointerDown={onStableControlPointerDown}
                             onClick={() => { setAttachOpen(false); fileInputRef.current?.click() }}
                             className="flex items-center gap-2 px-3 py-2 text-left hover:bg-black/5"
                             style={{ color: INK, fontFamily: "var(--font-sans)" }}
@@ -1245,7 +1310,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                 <div className="flex-1" />
                 <button
                   type="button"
-                  onPointerDown={(e) => e.preventDefault()}
+                  onPointerDown={onStableControlPointerDown}
                   className="grid h-9 w-9 shrink-0 place-items-center rounded-full"
                   style={{ color: "var(--color-cocoa)" }}
                   aria-label="Voice"
@@ -1253,6 +1318,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                   <Mic className="h-5 w-5" strokeWidth={1.6} />
                 </button>
                 <SendButton
+                  onStablePointerDown={onStableControlPointerDown}
                   onSend={() => {
                     if (input.trim() || pendingFiles.length > 0) handleSend()
                     else flushSendBatchNow()

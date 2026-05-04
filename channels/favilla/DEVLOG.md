@@ -6,7 +6,7 @@
 **剪刀**=弹窗确认后才落 cut marker `/api/app/cut`；剪刀本身不触发 DS 处理。
 **沙漏单击**=toggle recall armed（亮↔暗；亮+下次发送=带召回；点发送或再次单击=灭）。
 **沙漏长按 1.2s**=弹窗确认→`/api/app/process`（3 阶段 DS 管线，沙漏漏沙动画 + 发送灰，完成信号到才解锁）。
-**键盘**：按钮操作不改变当前键盘状态；键盘展开时点发送/剪刀/沙漏/加号/语音/返回都不能先收键盘，返回直接离开当前页。
+**键盘**：普通工具操作保持当前键盘状态（展开则保持，收起则不弹出）；发送保持键盘以便连发；传文件/剪刀/沙漏/语音不主动弹键盘；点输入框外收键盘；返回直接退出会话并收键盘。
 **Chat history**：聊天记录以 server `/api/app/history` 为准；App 不再 seed mock 测试会话。退出、重进、卸载、重装后应从服务器恢复历史。
 **Upload**：纯上传只把文件落到服务器 `uploads/` + `uploads/manifest.jsonl` 并记录 history，不唤醒 AI、不把全文注入上下文。后续 AI 只看近期上传清单（路径/文件名/mime/大小），需要自己用 grep/read 工具找内容。
 **Backend Settings**：`AI` = server auto-router（代码/附件/debug 等走 CC，日常短聊走 API）；`API`/`CC` = 用户手动强制后端，此状态下 AI 不能自行切换，除非用户改回 `AI` 或手动选择另一项。
@@ -19,6 +19,12 @@
 - Phone verified: empty server history on fresh start; send keeps keyboard open; `+` keeps keyboard open; header back exits Chat directly; scissor opens confirmation and writes cut divider only after confirm.
 - Phone verified: server-backed history restores after app force-stop/relaunch; pure upload adds one user attachment + upload manifest row and does not wake AI.
 - Phone verified: auto daily chat routes to API; forced CC via Settings/localStorage routes through Claude Code. After smoke, active history was archived/removed, active CC session cleared, and cut markers reset to 0.
+
+## Session 2026-05-03 — Chat keyboard semantics pass
+
+- Fixed tool controls to behave like a normal chat app: `+`/scissor/hourglass/voice do not summon the keyboard when it is closed, and preserve it when already open.
+- Header back now blurs the active input and exits Chat in one step. Tapping the message area outside the composer closes the keyboard and attachment menu.
+- Restored lightweight client-side typewriter rendering for AI replies without changing the backend contract.
 
 ## Session 2026-04-30 — Hard Reset to React + Tailwind + shadcn
 
