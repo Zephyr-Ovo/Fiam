@@ -259,7 +259,18 @@ function StrollHandle({ onOpen }: { onOpen: () => void }) {
       }}
       onPointerCancel={reset}
     >
-      <img src="/home/strollentry.png" alt="" className="h-full w-full select-none object-contain" draggable={false} />
+      <img
+        src="/home/strollentry.png"
+        alt=""
+        className="absolute select-none"
+        style={{
+          left: 35 * SCALE,
+          top: 18 * SCALE,
+          width: 173 * SCALE,
+          height: 20 * SCALE,
+        }}
+        draggable={false}
+      />
     </button>
   )
 }

@@ -1,6 +1,5 @@
 import { Camera, ChevronUp, Maximize2, Minimize2, Pause, Phone, Radio, Send, Square, Video } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
-import { StatusBar } from "@capacitor/status-bar"
 import { ConfirmModal } from "../components/ConfirmModal"
 import { StrollMapView } from "@stroll-map/StrollMapView"
 import { sampleTrack } from "@stroll-map/sampleTrack"
@@ -78,11 +77,6 @@ export function Stroll({ onBack }: Props) {
   const [mapExpanded, setMapExpanded] = useState(false)
   const [weather, setWeather] = useState<WeatherSnapshot>({ kind: "clear", intensity: 0.24, source: "fallback" })
   const foldStartYRef = useRef<number | null>(null)
-
-  useEffect(() => {
-    void StatusBar.hide().catch(() => undefined)
-    return () => { void StatusBar.show().catch(() => undefined) }
-  }, [])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -215,10 +209,15 @@ export function Stroll({ onBack }: Props) {
         </div>
       </section>
 
-      <section className={`${mapExpanded ? "absolute inset-0 z-[18]" : "relative min-h-0 flex-1"} overflow-hidden`} style={{ marginTop: mapExpanded ? 0 : LAYOUT.mapTop }}>
+      <section
+        className="overflow-hidden"
+        style={mapExpanded
+          ? { position: "absolute", inset: 0, zIndex: 18, marginTop: 0 }
+          : { position: "relative", minHeight: 0, flex: "1 1 0%", marginTop: LAYOUT.mapTop }}
+      >
         <MapPanel weather={weather} />
         <div className="pointer-events-none absolute inset-x-0 top-0" style={{ height: LAYOUT.mapFade, background: "linear-gradient(180deg, rgba(225,212,204,0.88) 0%, rgba(225,212,204,0.38) 46%, transparent 100%)" }} />
-        <ConversationLayer open={conversationOpen} onHide={() => setConversationOpen(false)} onShow={() => setConversationOpen(true)} />
+        <ConversationLayer bottom={mapExpanded ? 98 : LAYOUT.chatBottom} open={conversationOpen} onHide={() => setConversationOpen(false)} onShow={() => setConversationOpen(true)} />
       </section>
 
       <div className="absolute inset-x-0 z-20 pb-[calc(env(safe-area-inset-bottom)+10px)] pt-4" style={{ bottom: LAYOUT.composerBottom, background: "transparent" }}>
@@ -381,13 +380,13 @@ function WeatherCurtain({ weather }: { weather: WeatherSnapshot }) {
   )
 }
 
-function ConversationLayer({ open, onHide, onShow }: { open: boolean; onHide: () => void; onShow: () => void }) {
+function ConversationLayer({ bottom, open, onHide, onShow }: { bottom: number; open: boolean; onHide: () => void; onShow: () => void }) {
   if (!open) {
     return (
       <button
         type="button"
         className="absolute grid h-7 w-10 place-items-center rounded-[11px] border-0 p-0"
-        style={{ bottom: LAYOUT.chatBottom + 3, left: LAYOUT.chatX, background: GLASS, color: "rgba(255,250,243,0.86)", border: `1px solid ${GLASS_BORDER}`, backdropFilter: "blur(10px)" }}
+        style={{ bottom: bottom + 3, left: LAYOUT.chatX, background: GLASS, color: "rgba(255,250,243,0.86)", border: `1px solid ${GLASS_BORDER}`, backdropFilter: "blur(10px)" }}
         aria-label="Show stroll conversation"
         onClick={onShow}
       >
@@ -397,7 +396,7 @@ function ConversationLayer({ open, onHide, onShow }: { open: boolean; onHide: ()
   }
 
   return (
-    <button type="button" aria-label="Hide stroll conversation" onClick={onHide} className="absolute flex flex-col gap-1 border-0 bg-transparent p-0 text-left" style={{ bottom: LAYOUT.chatBottom, left: LAYOUT.chatX, width: LAYOUT.chatWidth }}>
+    <button type="button" aria-label="Hide stroll conversation" onClick={onHide} className="absolute flex flex-col gap-1 border-0 bg-transparent p-0 text-left" style={{ bottom, left: LAYOUT.chatX, width: LAYOUT.chatWidth }}>
       {chatter.map((line) => (
         <div key={`${line.name}-${line.text}`} className="w-fit px-2 py-1 text-[12px] leading-[1.3]" style={{ maxWidth: LAYOUT.chatWidth, borderRadius: LAYOUT.bubbleRadius, background: GLASS, border: `1px solid ${GLASS_BORDER}`, color: "rgba(255,250,243,0.9)", fontFamily: "var(--font-sans)", backdropFilter: "blur(10px)", boxShadow: "0 8px 24px -18px rgba(1,3,1,0.75)" }}>
           <span className="font-medium" style={{ color: "#F4D6CC" }}>{line.name}</span>

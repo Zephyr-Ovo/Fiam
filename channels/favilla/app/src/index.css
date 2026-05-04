@@ -183,8 +183,11 @@ body {
 }
 
 .mapboxgl-ctrl-logo,
-.mapboxgl-ctrl-bottom-left {
-  opacity: 0.52;
+.mapboxgl-ctrl-bottom-left,
+.mapboxgl-ctrl-bottom-right {
+  opacity: 0 !important;
+  pointer-events: none;
+  transform: translateY(96px);
 }
 
 .stroll-marker {

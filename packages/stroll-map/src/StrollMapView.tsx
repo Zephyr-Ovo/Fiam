@@ -87,7 +87,6 @@ export function StrollMapView({ token, track, labels = [], mode, weather, coordi
     map.dragPan.enable()
     map.touchZoomRotate.enable()
     map.touchZoomRotate.disableRotation()
-    map.addControl(new mapboxgl.AttributionControl({ compact: true }), "bottom-right")
     mapRef.current = map
 
     map.on("style.load", () => {
@@ -108,6 +107,14 @@ export function StrollMapView({ token, track, labels = [], mode, weather, coordi
       fittedRef.current = false
     }
   }, [token])
+
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+    const observer = new ResizeObserver(() => mapRef.current?.resize())
+    observer.observe(container)
+    return () => observer.disconnect()
+  }, [])
 
   useEffect(() => {
     const map = mapRef.current
