@@ -7,6 +7,7 @@ import { appConfig } from "./config"
 import { installGlobalTapHaptics } from "./lib/haptics"
 import { App as CapApp } from "@capacitor/app"
 import { LocalNotifications } from "@capacitor/local-notifications"
+import { StatusBar } from "@capacitor/status-bar"
 
 type Page = "home" | "chat" | "stroll"
 
@@ -29,6 +30,16 @@ function isNative(): boolean {
 function blurActiveInput() {
   const active = document.activeElement
   if (active instanceof HTMLElement && active !== document.body) active.blur()
+}
+
+function enterNativeFullscreen() {
+  void StatusBar.hide().catch(() => undefined)
+  void document.documentElement.requestFullscreen?.({ navigationUI: "hide" }).catch(() => undefined)
+}
+
+function leaveNativeFullscreen() {
+  void StatusBar.show().catch(() => undefined)
+  if (document.fullscreenElement) void document.exitFullscreen?.().catch(() => undefined)
 }
 
 export default function Shell() {
@@ -124,6 +135,7 @@ export default function Shell() {
       }
       if (page !== "home") {
         blurActiveInput()
+        leaveNativeFullscreen()
         setPage("home")
         return
       }
@@ -145,10 +157,12 @@ export default function Shell() {
       return
     }
     if (t === "chat") {
+      leaveNativeFullscreen()
       setPage("chat")
       return
     }
     if (t === "walking") {
+      enterNativeFullscreen()
       setPage("stroll")
       return
     }
@@ -194,7 +208,7 @@ export default function Shell() {
           willChange: "transform",
         }}
       >
-        <App onBack={() => { blurActiveInput(); setPage("home") }} />
+        <App onBack={() => { blurActiveInput(); leaveNativeFullscreen(); setPage("home") }} />
       </div>
       <div
         className="absolute inset-0 h-full w-full"
@@ -205,7 +219,7 @@ export default function Shell() {
           willChange: "transform",
         }}
       >
-        <Stroll onBack={() => { blurActiveInput(); setPage("home") }} />
+        <Stroll onBack={() => { blurActiveInput(); leaveNativeFullscreen(); setPage("home") }} />
       </div>
       <Settings open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </>

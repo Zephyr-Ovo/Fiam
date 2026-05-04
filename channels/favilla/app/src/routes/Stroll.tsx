@@ -34,7 +34,7 @@ const LAYOUT = {
   mapTop: -5,
   mapFade: 0,
   chatX: 26,
-  chatBottom: 57,
+  chatBottom: 86,
   chatWidth: 172,
   bubbleRadius: 14,
   composerBottom: 0,
@@ -158,7 +158,7 @@ export function Stroll({ onBack }: Props) {
         <button
           type="button"
           onClick={() => setMapExpanded((expanded) => !expanded)}
-          className="grid h-8 w-8 place-items-center border-0 bg-transparent p-0"
+          className="grid h-12 w-12 place-items-center border-0 bg-transparent p-0"
           style={{ color: INK }}
           aria-label={mapExpanded ? "Shrink map" : "Expand map"}
         >
@@ -217,7 +217,7 @@ export function Stroll({ onBack }: Props) {
       >
         <MapPanel weather={weather} />
         <div className="pointer-events-none absolute inset-x-0 top-0" style={{ height: LAYOUT.mapFade, background: "linear-gradient(180deg, rgba(225,212,204,0.88) 0%, rgba(225,212,204,0.38) 46%, transparent 100%)" }} />
-        <ConversationLayer bottom={mapExpanded ? 98 : LAYOUT.chatBottom} open={conversationOpen} onHide={() => setConversationOpen(false)} onShow={() => setConversationOpen(true)} />
+        <ConversationLayer bottom={mapExpanded ? 150 : LAYOUT.chatBottom} open={conversationOpen} onHide={() => setConversationOpen(false)} onShow={() => setConversationOpen(true)} />
       </section>
 
       <div className="absolute inset-x-0 z-20 pb-[calc(env(safe-area-inset-bottom)+10px)] pt-4" style={{ bottom: LAYOUT.composerBottom, background: "transparent" }}>
