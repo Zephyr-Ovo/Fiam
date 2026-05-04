@@ -1,5 +1,6 @@
 import { Camera, ChevronUp, Maximize2, Minimize2, Pause, Phone, Radio, Send, Square, Video } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
+import { StatusBar } from "@capacitor/status-bar"
 import { ConfirmModal } from "../components/ConfirmModal"
 import { StrollMapView } from "@stroll-map/StrollMapView"
 import { sampleTrack } from "@stroll-map/sampleTrack"
@@ -77,6 +78,15 @@ export function Stroll({ onBack }: Props) {
   const [mapExpanded, setMapExpanded] = useState(false)
   const [weather, setWeather] = useState<WeatherSnapshot>({ kind: "clear", intensity: 0.24, source: "fallback" })
   const foldStartYRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    void StatusBar.hide().catch(() => undefined)
+    void document.documentElement.requestFullscreen?.({ navigationUI: "hide" }).catch(() => undefined)
+    return () => {
+      void StatusBar.show().catch(() => undefined)
+      if (document.fullscreenElement) void document.exitFullscreen?.().catch(() => undefined)
+    }
+  }, [])
 
   useEffect(() => {
     const controller = new AbortController()

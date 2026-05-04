@@ -258,6 +258,7 @@ function StrollHandle({ onOpen }: { onOpen: () => void }) {
         reset()
       }}
       onPointerCancel={reset}
+      onClick={() => onOpen()}
     >
       <img
         src="/home/strollentry.png"
