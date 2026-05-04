@@ -47,6 +47,7 @@
 
 - Chat background blur is now restricted to actual blank `<main>` hits while the keyboard is visible. Tapping bubbles, thinking-chain controls, cut/process modal buttons, attachment controls, or send/share buttons must not alter keyboard visibility.
 - Added a document-level stale-focus release: if Android WebView leaves the textarea focused after the soft keyboard is already hidden, the next non-textarea pointerdown blurs it so controls cannot resurrect the keyboard.
+- Chat auto-scroll is pinned only while the user is already at the live tail. If the user scrolls up with the keyboard open, thinking-chain expand/collapse must preserve keyboard state and must not snap the list back to the bottom.
 - Auto-router no longer treats generic `api`/`backend` mentions as CC work. Explicit `backend=api`, `backend: api`, API/CC mode phrases, and `另一边/切换过去` phrases are handled directly.
 - New app history rows record the actual selected `backend` for both user and AI messages. Backend prompt context now treats `[app:... backend=api|cc]` as authoritative and repeats that TG routing tags are retired.
 

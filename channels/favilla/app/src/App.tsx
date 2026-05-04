@@ -386,6 +386,10 @@ function ThinkingChain({ steps, locked, peerName }: { steps: ThinkStep[]; locked
     <div className="w-full">
       <button
         type="button"
+        onPointerDown={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+        }}
         onClick={() => setOpen((v) => !v)}
         className="mb-2 inline-flex items-center gap-1 text-[12px]"
         style={{
@@ -848,6 +852,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const confirmTimerRef = useRef<number | null>(null)
   const maxViewportHeightRef = useRef(0)
+  const stickToBottomRef = useRef(true)
 
   function blurActiveInput() {
     const active = document.activeElement
@@ -876,6 +881,20 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
   function onStableControlPointerDown(e: React.PointerEvent<HTMLElement>) {
     e.preventDefault()
     e.stopPropagation()
+  }
+
+  function isNearBottom(el: HTMLElement) {
+    return el.scrollHeight - el.scrollTop - el.clientHeight < 140
+  }
+
+  function rememberScrollPin() {
+    const el = scrollRef.current
+    if (el) stickToBottomRef.current = isNearBottom(el)
+  }
+
+  function scrollToBottom(behavior: ScrollBehavior = "auto") {
+    const el = scrollRef.current
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior })
   }
 
   function exitChat() {
@@ -947,11 +966,9 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
     tick()
   }
 
-  // Auto-scroll on new messages or text growth
+  // Auto-scroll only while the user is reading the live tail.
   useEffect(() => {
-    const el = scrollRef.current
-    if (!el) return
-    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" })
+    if (stickToBottomRef.current) scrollToBottom("auto")
   }, [messages])
 
   // Re-snap to bottom whenever the visual viewport resizes (soft keyboard
@@ -961,9 +978,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
     if (!vv) return
     const onResize = () => {
       maxViewportHeightRef.current = Math.max(maxViewportHeightRef.current, vv.height, window.innerHeight)
-      const el = scrollRef.current
-      if (!el) return
-      window.setTimeout(() => el.scrollTo({ top: el.scrollHeight, behavior: "smooth" }), 60)
+      if (stickToBottomRef.current) window.setTimeout(() => scrollToBottom("auto"), 60)
     }
     onResize()
     vv.addEventListener("resize", onResize)
@@ -1133,6 +1148,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
     if (!items.length) return
 
     setSending(true)
+    stickToBottomRef.current = true
     const aiId = `a-${Date.now()}`
     setMessages((m) => [...m, { id: aiId, role: "ai", t: currentT(), text: "" }])
 
@@ -1261,6 +1277,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
           attachments: uploadedPills,
           recallUsed: wasArmed,
         }
+        stickToBottomRef.current = true
         setMessages((m) => [...m, userMsg])
         await recordChatMessage({ role: "user", attachments: up.files.map((file) => ({
           kind: file.mime?.startsWith("image/") ? "image" : "file",
@@ -1283,6 +1300,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
       attachments: userPills.length > 0 ? userPills : undefined,
       recallUsed: wasArmed,
     }
+    stickToBottomRef.current = true
     setMessages((m) => [...m, userMsg])
 
     const batch = sendBatchRef.current
@@ -1395,6 +1413,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
           <main
             ref={scrollRef}
             className="flex flex-1 flex-col gap-[9px] overflow-y-auto px-4 pt-8 pb-36"
+            onScroll={rememberScrollPin}
             onPointerDown={(e) => {
               if (e.target !== e.currentTarget) return
               setAttachOpen(false)
@@ -1532,8 +1551,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                   // When the soft keyboard pops up the viewport shrinks; give
                   // the layout a couple of frames then snap to the latest msg.
                   window.setTimeout(() => {
-                    const el = scrollRef.current
-                    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" })
+                    if (stickToBottomRef.current) scrollToBottom("auto")
                   }, 280)
                 }}
                 onKeyDown={onComposerKeyDown}
