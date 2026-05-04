@@ -689,14 +689,18 @@ def _select_app_chat_backend(text: str, attachments: list[dict] | None = None) -
     if attachments:
         return "cc"
     lowered = text.lower()
-    if re.search(r"(换|切|切换|转).{0,8}(api|backend=api)|\bapi\b.{0,8}(模式|后端|backend)", lowered):
+    api_token = r"(?<![a-z0-9])api(?![a-z0-9])"
+    cc_token = r"(?<![a-z0-9])cc(?![a-z0-9])|claude\s*code"
+    if re.search(rf"backend\s*(=|:|：)\s*{api_token}|(换|切|切换|转).{{0,8}}{api_token}|{api_token}.{{0,8}}(模式|后端|backend)", lowered):
         return "api"
-    if re.search(r"(换|切|切换|转).{0,8}(cc|claude code|backend=cc)|\bcc\b.{0,8}(模式|后端|backend)", lowered):
+    if re.search(rf"backend\s*(=|:|：)\s*({cc_token})|(换|切|切换|转).{{0,8}}({cc_token})|({cc_token}).{{0,8}}(模式|后端|backend)", lowered):
+        return "cc"
+    if re.search(r"(另一边|另一侧|另一端|切换过去|换过去|切过去)", lowered):
         return "cc"
     cc_terms = (
         "代码", "仓库", "文件", "目录", "终端", "命令", "脚本", "报错", "错误", "测试",
         "部署", "构建", "apk", "git", "github", "vscode", "python", "typescript",
-        "react", "svelte", "android", "api", "backend", "frontend", "server",
+        "react", "svelte", "android", "frontend", "server",
         "traceback", "pytest", "npm", "gradle", "systemd", "ssh", "curl",
     )
     return "cc" if any(term in lowered for term in cc_terms) else "api"
@@ -860,11 +864,13 @@ def _api_app_chat(payload: dict) -> dict:
     _append_app_history(source, {
         "role": "user",
         "text": text,
+        "backend": backend,
         "attachments": _history_attachments(safe_attachments),
     })
     _append_app_history(source, {
         "role": "ai",
         "text": result.get("reply", ""),
+        "backend": backend,
         "thinking": result.get("thoughts") or [],
         "thinkingLocked": bool(result.get("thoughts_locked")),
     })
@@ -1121,7 +1127,7 @@ _COT_LOCK_RE = re.compile(r"<<COT:lock>>", re.IGNORECASE)
 _COT_HIDE_RE = re.compile(r"<<COT:hide>>", re.IGNORECASE)
 
 _APP_BACKEND_CONTEXT = """[Favilla backend awareness]
-Favilla Settings has three labels: AI, API, and CC. AI means automatic routing, not a separate personality and not a place where you are trapped. API and CC are transport/capability surfaces for the same AI identity. The backend tag in the user message describes only the current request surface. You may explain that you can work through API or CC as task needs change across turns, and you should not claim you are unable to switch places just because the current tag says backend=api or backend=cc. If a task needs code/file/tool-heavy work, say you can use the CC/tool surface; if it needs lighter chat, API is fine.
+Favilla Settings has three labels: AI, API, and CC. AI means automatic routing, not a separate personality and not a place where you are trapped. API and CC are transport/capability surfaces for the same AI identity. The backend tag in the user message describes only the current request surface and is the authoritative surface for this reply. If the tag says backend=cc, you are replying through the CC/tool surface for this turn; if it says backend=api, you are replying through the API surface for this turn. You may explain that you can work through API or CC as task needs change across turns, and you should not claim you are unable to switch places just because the current tag says backend=api or backend=cc. If a task needs code/file/tool-heavy work, say you can use the CC/tool surface; if it needs lighter chat, API is fine. Favilla is the primary direct chat surface; Telegram/TG is retired history, so do not emit TG routing tags such as [→tg:...].
 
 Favilla uploads are stored under /home/fiet/fiet-home/uploads/ with an index at /home/fiet/fiet-home/uploads/manifest.jsonl. Do not mention old uploaded files just because they exist. Only inspect or discuss uploads when the current user message asks about files/images/uploads or includes current attachments."""
 

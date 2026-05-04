@@ -6,9 +6,9 @@
 **剪刀**=弹窗确认后才落 cut marker `/api/app/cut`；剪刀本身不触发 DS 处理。
 **沙漏单击**=toggle recall armed（亮↔暗；亮+下次发送=带召回；点发送或再次单击=灭）。
 **沙漏长按 1.2s**=弹窗确认→`/api/app/process`（3 阶段 DS 管线，沙漏漏沙动画 + 发送灰，完成信号到才解锁）。
-**键盘**：普通工具操作保持当前键盘状态（展开则保持，收起则不弹出）；发送保持键盘以便连发；传文件/剪刀/沙漏/语音不主动弹键盘；点输入框外收键盘；返回直接退出会话并收键盘。
+**键盘**：只有 textarea 目标区域负责拉起键盘；普通工具操作保持当前键盘状态（展开则保持，收起则不弹出）；发送保持键盘以便连发；传文件/剪刀/沙漏/语音/思考链展开不主动弹键盘也不收键盘；键盘已开时只有点聊天背景空白区收键盘；返回直接退出会话并收键盘。
 **Chat history**：聊天记录以 server `/api/app/history` 为准；App 不再 seed mock 测试会话。退出、重进、卸载、重装后应从服务器恢复历史。
-**Upload**：纯上传只把文件落到服务器 `uploads/` + `uploads/manifest.jsonl` 并记录 history，不唤醒 AI、不把全文注入上下文。后续 AI 只看近期上传清单（路径/文件名/mime/大小），需要自己用 grep/read 工具找内容。
+**Upload**：纯上传只把文件落到服务器 `uploads/` + `uploads/manifest.jsonl` 并记录 history，不唤醒 AI、不把全文注入上下文。后续 AI 只知道 manifest 路径；只有当前消息明确需要文件/图片时才自己用 grep/read 工具找内容。
 **Backend Settings**：`AI` = server auto-router（同一个 AI 身份可按任务在 API/CC 能力面间切换）；`API`/`CC` = 用户手动强制本轮请求后端，AI 仍应理解这是 transport/capability surface，不是身份变化。
 **Settings**：背景 `rgba(0,0,0,0.45)` 纯变暗不模糊；卡片 `backdrop-filter: blur(20px)` + `rgba(255,250,243,0.55)` 半透明磨砂；居中固定，CSS-only fade 120ms。
 
@@ -42,6 +42,13 @@
 - Confirm modal remembers the largest screen height so soft-keyboard viewport shrink is less likely to recenter the dialog into the keyboard-free area.
 - App prompt no longer injects concrete recent upload rows every turn. Backend context only tells AI where `uploads/manifest.jsonl` lives and to inspect files only when relevant.
 - Live constitution updated: Favilla is the primary direct channel, Telegram/TG is retired history, and `AI` means auto routing across API/CC surfaces.
+
+## Session 2026-05-04 — Keyboard focus + backend proof pass
+
+- Chat background blur is now restricted to actual blank `<main>` hits while the keyboard is visible. Tapping bubbles, thinking-chain controls, cut/process modal buttons, attachment controls, or send/share buttons must not alter keyboard visibility.
+- Added a document-level stale-focus release: if Android WebView leaves the textarea focused after the soft keyboard is already hidden, the next non-textarea pointerdown blurs it so controls cannot resurrect the keyboard.
+- Auto-router no longer treats generic `api`/`backend` mentions as CC work. Explicit `backend=api`, `backend: api`, API/CC mode phrases, and `另一边/切换过去` phrases are handled directly.
+- New app history rows record the actual selected `backend` for both user and AI messages. Backend prompt context now treats `[app:... backend=api|cc]` as authoritative and repeats that TG routing tags are retired.
 
 ## Session 2026-04-30 — Hard Reset to React + Tailwind + shadcn
 

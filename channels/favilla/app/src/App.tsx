@@ -847,11 +847,31 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
   const [attachOpen, setAttachOpen] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const confirmTimerRef = useRef<number | null>(null)
+  const maxViewportHeightRef = useRef(0)
 
   function blurActiveInput() {
     const active = document.activeElement
     if (active instanceof HTMLElement && active !== document.body) active.blur()
   }
+
+  function isKeyboardVisibleNow() {
+    if (typeof window === "undefined") return false
+    const vv = window.visualViewport
+    const current = vv?.height || window.innerHeight
+    maxViewportHeightRef.current = Math.max(maxViewportHeightRef.current, current, window.innerHeight)
+    return maxViewportHeightRef.current - current > 90
+  }
+
+  useEffect(() => {
+    function releaseStaleComposerFocus(e: PointerEvent) {
+      if (e.target === textareaRef.current) return
+      if (document.activeElement === textareaRef.current && !isKeyboardVisibleNow()) {
+        textareaRef.current?.blur()
+      }
+    }
+    document.addEventListener("pointerdown", releaseStaleComposerFocus, true)
+    return () => document.removeEventListener("pointerdown", releaseStaleComposerFocus, true)
+  }, [])
 
   function onStableControlPointerDown(e: React.PointerEvent<HTMLElement>) {
     e.preventDefault()
@@ -940,6 +960,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
     const vv = window.visualViewport
     if (!vv) return
     const onResize = () => {
+      maxViewportHeightRef.current = Math.max(maxViewportHeightRef.current, vv.height, window.innerHeight)
       const el = scrollRef.current
       if (!el) return
       window.setTimeout(() => el.scrollTo({ top: el.scrollHeight, behavior: "smooth" }), 60)
@@ -1375,9 +1396,9 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
             ref={scrollRef}
             className="flex flex-1 flex-col gap-[9px] overflow-y-auto px-4 pt-8 pb-36"
             onPointerDown={(e) => {
-              if (composerRef.current?.contains(e.target as Node)) return
+              if (e.target !== e.currentTarget) return
               setAttachOpen(false)
-              blurActiveInput()
+              if (isKeyboardVisibleNow()) blurActiveInput()
             }}
           >
             {(() => {
