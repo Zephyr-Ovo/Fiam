@@ -699,8 +699,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
     if (active instanceof HTMLElement && active !== document.body) active.blur()
   }
 
-  function onToolPointerDown(e: React.PointerEvent<HTMLElement>) {
-    e.preventDefault()
+  function onToolPointerDown() {
     releaseComposerFocus()
   }
 
