@@ -34,6 +34,13 @@ _BUS = None         # Bus instance (lazy, for /api/capture publishing)
 _COMPUTE_LOCK = threading.Lock()  # gate concurrent mutations
 _WEARABLE_LOCK = threading.Lock()
 
+# Fix sys.path before importing helpers that may themselves import fiam.*.
+_src_dir = str(_ROOT / "src")
+_scripts_dir = str(_ROOT / "scripts")
+sys.path = [p for p in sys.path if p not in {_src_dir, _scripts_dir}]
+sys.path.insert(0, _src_dir)
+sys.path.insert(1, _scripts_dir)
+
 from fiam_lib.dashboard_annotation import (
     configure as _configure_annotation,
     annotation_state as _annotation_state,
@@ -43,14 +50,6 @@ from fiam_lib.dashboard_annotation import (
     annotate_request as _annotate_request,
 )
 from fiam_lib.flow_text import normalize_beats
-
-# Fix sys.path: add src/, remove scripts/ (fiam.py shadows fiam package)
-_src_dir = str(_ROOT / "src")
-if _src_dir not in sys.path:
-    sys.path.insert(0, _src_dir)
-_scripts_dir = str(_ROOT / "scripts")
-if _scripts_dir in sys.path:
-    sys.path.remove(_scripts_dir)
 
 
 def _load_config():
@@ -686,6 +685,19 @@ def _api_app_status() -> dict:
     }
 
 
+def _select_app_chat_backend(text: str, attachments: list[dict] | None = None) -> str:
+    if attachments:
+        return "cc"
+    lowered = text.lower()
+    cc_terms = (
+        "代码", "仓库", "文件", "目录", "终端", "命令", "脚本", "报错", "错误", "测试",
+        "部署", "构建", "apk", "git", "github", "vscode", "python", "typescript",
+        "react", "svelte", "android", "api", "backend", "frontend", "server",
+        "traceback", "pytest", "npm", "gradle", "systemd", "ssh", "curl",
+    )
+    return "cc" if any(term in lowered for term in cc_terms) else "api"
+
+
 def _api_app_chat(payload: dict) -> dict:
     if not _CONFIG:
         raise RuntimeError("config not loaded")
@@ -722,12 +734,14 @@ def _api_app_chat(payload: dict) -> dict:
     if not text:
         text = "(see attached file)"
     source = str(payload.get("source") or "favilla").strip() or "favilla"
-    backend = str(payload.get("backend") or "cc").strip().lower() or "cc"
+    backend = str(payload.get("backend") or "auto").strip().lower() or "auto"
+    if backend == "auto":
+        backend = _select_app_chat_backend(text, safe_attachments)
     or_key = str(payload.get("openrouter_key") or "").strip()
     if backend == "api":
         return _run_api_app_chat(text=text, source=source, attachments=safe_attachments, openrouter_key=or_key)
     if backend != "cc":
-        raise ValueError("server chat backend must be cc or api")
+        raise ValueError("server chat backend must be auto, cc, or api")
     return _run_cc_app_chat(text=text, source=source, attachments=safe_attachments)
 
 

@@ -619,6 +619,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
   const cameraInputRef = useRef<HTMLInputElement | null>(null)
   const [attachOpen, setAttachOpen] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const confirmTimerRef = useRef<number | null>(null)
 
   // Auto-scroll on new messages or text growth
   useEffect(() => {
@@ -682,7 +683,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
   const HOURGLASS_HOLD_MS = 1200
   const [confirmState, setConfirmState] = useState<
     | { open: false }
-    | { open: true; title: string; message: string; onYes: () => void }
+    | { open: true; title: string; message: string; confirmLabel?: string; onYes: () => void }
   >({ open: false })
 
   function pushDivider(kind: "scissor" | "recall", label?: string) {
@@ -692,14 +693,37 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
     ])
   }
 
-  function askConfirm(title: string, message: string, onYes: () => void) {
-    setConfirmState({ open: true, title, message, onYes })
+  function releaseComposerFocus() {
+    textareaRef.current?.blur()
+    const active = document.activeElement
+    if (active instanceof HTMLElement && active !== document.body) active.blur()
+  }
+
+  function onToolPointerDown(e: React.PointerEvent<HTMLElement>) {
+    e.preventDefault()
+    releaseComposerFocus()
+  }
+
+  function askConfirm(title: string, message: string, onYes: () => void, confirmLabel?: string) {
+    releaseComposerFocus()
+    if (confirmTimerRef.current !== null) window.clearTimeout(confirmTimerRef.current)
+    confirmTimerRef.current = window.setTimeout(() => {
+      confirmTimerRef.current = null
+      setConfirmState({ open: true, title, message, confirmLabel, onYes })
+    }, 120)
   }
 
   function onScissorClick() {
     if (sealBusy) return
-    pushDivider("scissor", "cut")
-    cutFlow().catch(() => {})
+    askConfirm(
+      "Cut here?",
+      "Add a cut marker here. The next process pass will split events at this point.",
+      () => {
+        pushDivider("scissor", "cut")
+        cutFlow().catch(() => {})
+      },
+      "Cut",
+    )
   }
 
   function runProcess() {
@@ -724,6 +748,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
     // works for both mouse and touch in Android WebView when touch-action is
     // also constrained on the button.
     e?.preventDefault()
+    releaseComposerFocus()
     if (sealBusy) return
     hourglassFiredRef.current = false
     hourglassStartRef.current = performance.now()
@@ -739,6 +764,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
           "Process unprocessed beats?",
           "The server will seal everything since the last process into events (using cut markers as segment dividers).",
           runProcess,
+          "Process",
         )
         return
       }
@@ -761,6 +787,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
     return () => {
       const timer = sendBatchRef.current.timer
       if (timer !== null) window.clearTimeout(timer)
+      if (confirmTimerRef.current !== null) window.clearTimeout(confirmTimerRef.current)
     }
   }, [])
 
@@ -961,8 +988,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
             />
             <button
               type="button"
-              onMouseDown={(e) => e.preventDefault()}
-              onTouchStart={(e) => e.preventDefault()}
+              onPointerDown={onToolPointerDown}
               onClick={onScissorClick}
               className="grid h-10 w-10 place-items-center rounded-full hover:bg-white/10"
               aria-label="Cut"
@@ -1115,8 +1141,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                 <div className="relative">
                   <button
                     type="button"
-                    onMouseDown={(e) => e.preventDefault()}
-                    onTouchStart={(e) => e.preventDefault()}
+                    onPointerDown={onToolPointerDown}
                     onClick={() => setAttachOpen((v) => !v)}
                     className="grid h-9 w-9 shrink-0 place-items-center rounded-full hover:bg-black/5"
                     style={{ color: "var(--color-cocoa)" }}
@@ -1156,6 +1181,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                         >
                           <button
                             type="button"
+                            onPointerDown={onToolPointerDown}
                             onClick={() => { setAttachOpen(false); cameraInputRef.current?.click() }}
                             className="flex items-center gap-2 px-3 py-2 text-left hover:bg-black/5"
                             style={{ color: INK, fontFamily: "var(--font-sans)" }}
@@ -1166,6 +1192,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                           <div style={{ height: 1, background: "rgba(176,139,127,0.18)" }} />
                           <button
                             type="button"
+                            onPointerDown={onToolPointerDown}
                             onClick={() => { setAttachOpen(false); fileInputRef.current?.click() }}
                             className="flex items-center gap-2 px-3 py-2 text-left hover:bg-black/5"
                             style={{ color: INK, fontFamily: "var(--font-sans)" }}
@@ -1180,9 +1207,8 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                 </div>
                 <button
                   type="button"
-                  onMouseDown={(e) => e.preventDefault()}
-                  onTouchStart={(e) => e.preventDefault()}
                   onPointerDown={onHourglassPressStart}
+                  onTouchStart={(e) => e.preventDefault()}
                   onPointerUp={onHourglassPressEnd}
                   onPointerLeave={() => clearHourglassHold()}
                   onPointerCancel={() => clearHourglassHold()}
@@ -1222,8 +1248,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                 <div className="flex-1" />
                 <button
                   type="button"
-                  onMouseDown={(e) => e.preventDefault()}
-                  onTouchStart={(e) => e.preventDefault()}
+                  onPointerDown={onToolPointerDown}
                   className="grid h-9 w-9 shrink-0 place-items-center rounded-full"
                   style={{ color: "var(--color-cocoa)" }}
                   aria-label="Voice"
@@ -1244,6 +1269,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
             open={confirmState.open}
             title={confirmState.open ? confirmState.title : undefined}
             message={confirmState.open ? confirmState.message : undefined}
+            confirmLabel={confirmState.open ? confirmState.confirmLabel : undefined}
             onCancel={() => setConfirmState({ open: false })}
             onConfirm={() => {
               if (confirmState.open) {

@@ -52,8 +52,8 @@ export function ConfirmModal({
           // the layout viewport; the soft keyboard sits over the visual
           // viewport but doesn't change layout viewport, so the dialog stays
           // pinned to the screen center even when the keyboard is up.
-          className="fixed left-0 top-0 z-50 grid place-items-center"
-          style={{ width: "100vw", height: "100lvh" }}
+          className="fixed inset-0 z-50 grid place-items-center"
+          style={{ width: "100vw", height: "100vh", minHeight: "100lvh" }}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}

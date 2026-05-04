@@ -96,7 +96,7 @@ export async function sendChat(
   text: string,
   source = "favilla",
   attachments: ChatAttachment[] = [],
-  backend: "cc" | "api" = appConfig.defaultBackend,
+  backend: "auto" | "cc" | "api" = appConfig.defaultBackend,
 ): Promise<ChatResponse> {
   const body: Record<string, unknown> = { text, source, backend, attachments }
   const ork = orKey()

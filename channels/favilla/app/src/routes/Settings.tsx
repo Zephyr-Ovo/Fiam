@@ -173,10 +173,10 @@ function BackendField({
         Backend
       </div>
       <div
-        className="mt-1 grid grid-cols-2 gap-1 rounded-full p-1"
+        className="mt-1 grid grid-cols-3 gap-1 rounded-full p-1"
         style={{ background: "rgba(63, 47, 41, 0.09)" }}
       >
-        {(["api", "cc"] as const).map((backend) => {
+        {(["auto", "api", "cc"] as const).map((backend) => {
           const active = value === backend
           return (
             <button
@@ -189,7 +189,7 @@ function BackendField({
                 background: active ? "var(--color-cocoa)" : "transparent",
               }}
             >
-              {backend.toUpperCase()}
+              {backend === "auto" ? "AI" : backend.toUpperCase()}
             </button>
           )
         })}
