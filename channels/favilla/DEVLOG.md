@@ -51,6 +51,12 @@
 - Auto-router no longer treats generic `api`/`backend` mentions as CC work. Explicit `backend=api`, `backend: api`, API/CC mode phrases, and `另一边/切换过去` phrases are handled directly.
 - New app history rows record the actual selected `backend` for both user and AI messages. Backend prompt context now treats `[app:... backend=api|cc]` as authoritative and repeats that TG routing tags are retired.
 
+## Session 2026-05-04 — Stroll first layout
+
+- Home `walking` target now opens a `Stroll` route instead of logging a placeholder. Stroll uses the same mounted slide shell as Chat and returns Home with the same back behavior.
+- First static Stroll layout: compact header, 4:3 camera stage, Xiao circular screen preview at camera lower-right, voice/call and live/photo segmented controls at camera lower-left, lower map surface, translucent livestream-style conversation text directly over the map, and bottom Pause/End controls. Mapbox/Limen are not wired yet.
+- Stroll palette intentionally diverges from Chat, using muted peach, ink blue, grey-lilac, aqua, and slate references from the provided palette strips rather than copying them directly.
+
 ## Session 2026-04-30 — Hard Reset to React + Tailwind + shadcn
 
 **Trigger:** All previous attempts (XML → Compose → SvelteKit + Workspace Engine) hit the same wall: design-to-implementation lossiness produced "plastic-feeling" UI. Tech-stack churn was a symptom, not the cause. Real bottleneck: AI reading PNG screenshots loses spacing/typography/layer info, and default component libraries (any of them) feel like SaaS dashboards.

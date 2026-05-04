@@ -2,12 +2,13 @@ import { useEffect, useState } from "react"
 import App from "./App"
 import { Home, type HomeTarget } from "./routes/Home"
 import { Settings } from "./routes/Settings"
+import { Stroll } from "./routes/Stroll"
 import { appConfig } from "./config"
 import { installGlobalTapHaptics } from "./lib/haptics"
 import { App as CapApp } from "@capacitor/app"
 import { LocalNotifications } from "@capacitor/local-notifications"
 
-type Page = "home" | "chat"
+type Page = "home" | "chat" | "stroll"
 
 /**
  * On real device (Capacitor) or any narrow viewport we drop the desktop
@@ -147,6 +148,10 @@ export default function Shell() {
       setPage("chat")
       return
     }
+    if (t === "walking") {
+      setPage("stroll")
+      return
+    }
     // eslint-disable-next-line no-console
     console.info("[home] target not yet wired:", t)
   }
@@ -157,15 +162,16 @@ export default function Shell() {
   // blur doesn't have to repaint the whole collage every frame (this was the
   // dominant source of the "paints in waves" lag).
   const isChat = page === "chat"
+  const isStroll = page === "stroll"
   const slide = "transform 420ms cubic-bezier(0.22, 1, 0.36, 1)"
   const inner = (
     <>
       <div
         className="absolute inset-0 h-full w-full"
         style={{
-          transform: isChat ? "translate3d(-12%,0,0)" : "translate3d(0,0,0)",
+          transform: page !== "home" ? "translate3d(-12%,0,0)" : "translate3d(0,0,0)",
           transition: slide,
-          pointerEvents: isChat ? "none" : "auto",
+          pointerEvents: page !== "home" ? "none" : "auto",
           willChange: "transform",
         }}
       >
@@ -181,6 +187,17 @@ export default function Shell() {
         }}
       >
         <App onBack={() => { blurActiveInput(); setPage("home") }} />
+      </div>
+      <div
+        className="absolute inset-0 h-full w-full"
+        style={{
+          transform: isStroll ? "translate3d(0,0,0)" : "translate3d(100%,0,0)",
+          transition: slide,
+          pointerEvents: isStroll ? "auto" : "none",
+          willChange: "transform",
+        }}
+      >
+        <Stroll onBack={() => { blurActiveInput(); setPage("home") }} />
       </div>
       <Settings open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </>
