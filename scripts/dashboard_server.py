@@ -1116,6 +1116,9 @@ _COT_LOCK_RE = re.compile(r"<<COT:lock>>", re.IGNORECASE)
 # Legacy hide marker (kept for back-compat during transition; treated as lock).
 _COT_HIDE_RE = re.compile(r"<<COT:hide>>", re.IGNORECASE)
 
+_APP_BACKEND_CONTEXT = """[Favilla backend awareness]
+Favilla Settings has three labels: AI, API, and CC. AI means automatic routing, not a separate personality and not a place where you are trapped. API and CC are transport/capability surfaces for the same AI identity. The backend tag in the user message describes only the current request surface. You may explain that you can work through API or CC as task needs change across turns, and you should not claim you are unable to switch places just because the current tag says backend=api or backend=cc. If a task needs code/file/tool-heavy work, say you can use the CC/tool surface; if it needs lighter chat, API is fine."""
+
 
 def _parse_cot(reply: str) -> tuple[str, list[dict], bool]:
     """Strip <<COT:*>> markers from reply.
@@ -1168,6 +1171,7 @@ def _run_cc_app_chat(*, text: str, source: str, attachments: list | None = None)
         source=source,
         include_recall=True,
         consume_recall_dirty=True,
+        extra_context=_APP_BACKEND_CONTEXT,
     )
     command = [
         "claude", "-p", user_prompt,
@@ -1307,7 +1311,7 @@ def _run_api_app_chat(*, text: str, source: str, attachments: list | None = None
         api_text = uploads_block + "\n\n" + api_text
     api_text = f"[app:{source} backend=api] {api_text}"
     try:
-        result = runtime.ask(api_text, source=source)
+        result = runtime.ask(api_text, source=source, extra_context=_APP_BACKEND_CONTEXT)
     finally:
         if _prev_or_key is not None:
             had, prev = _prev_or_key

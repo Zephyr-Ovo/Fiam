@@ -17,6 +17,7 @@ import {
   X,
   Copy,
   Check,
+  Share2,
 } from "lucide-react"
 import { LockIcon } from "./components/LockIcon"
 import { RecallIcon } from "./components/RecallIcon"
@@ -74,6 +75,195 @@ function currentT() {
 }
 
 const SEND_MERGE_WINDOW_MS = 60_000
+
+function wrapCanvasText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number) {
+  const lines: string[] = []
+  for (const paragraph of text.replace(/\r/g, "").split("\n")) {
+    if (!paragraph) {
+      lines.push("")
+      continue
+    }
+    let line = ""
+    for (const char of Array.from(paragraph)) {
+      const next = line + char
+      if (line && ctx.measureText(next).width > maxWidth) {
+        lines.push(line)
+        line = char
+      } else {
+        line = next
+      }
+    }
+    if (line) lines.push(line)
+  }
+  return lines
+}
+
+function attachmentLine(a: Attachment) {
+  if (a.kind === "voice") return `voice 0:${String(a.seconds).padStart(2, "0")}`
+  if (a.kind === "image") return `image ${a.name}`
+  return `file ${a.name}`
+}
+
+function drawRoundRect(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number,
+) {
+  ctx.beginPath()
+  ctx.moveTo(x + r, y)
+  ctx.arcTo(x + w, y, x + w, y + h, r)
+  ctx.arcTo(x + w, y + h, x, y + h, r)
+  ctx.arcTo(x, y + h, x, y, r)
+  ctx.arcTo(x, y, x + w, y, r)
+  ctx.closePath()
+}
+
+async function makeShareImage(selected: Msg[], peerName: string) {
+  if (document.fonts?.ready) await document.fonts.ready.catch(() => undefined)
+  const width = 720
+  const pad = 36
+  const maxBubble = 510
+  const tmp = document.createElement("canvas")
+  const measure = tmp.getContext("2d")!
+  const sans = "Anthropic Sans, Inter, system-ui, sans-serif"
+  const serif = "Anthropic Serif, Georgia, serif"
+  const mono = "Anthropic Mono, ui-monospace, monospace"
+
+  type Block = {
+    msg: Msg
+    name: string
+    isUser: boolean
+    thinking: string[]
+    body: string[]
+    width: number
+    height: number
+  }
+  const blocks: Block[] = selected.map((msg) => {
+    const isUser = msg.role === "user"
+    const name = isUser ? (appConfig.userName || "you") : peerName
+    const thinkingText = !isUser
+      ? msg.thinkingLocked
+        ? [`${peerName} thought silently`]
+        : (msg.thinking || []).flatMap((step) => [step.text, step.result || ""].filter(Boolean))
+      : []
+    measure.font = `24px ${sans}`
+    const thinking = thinkingText.flatMap((text) => wrapCanvasText(measure, text, maxBubble - 36))
+    measure.font = `29px ${sans}`
+    const bodyText = [msg.text || "", ...(msg.attachments || []).map(attachmentLine)].filter(Boolean).join("\n")
+    const body = wrapCanvasText(measure, bodyText || " ", maxBubble - 42)
+    const bodyWidth = Math.min(
+      maxBubble,
+      Math.max(170, ...body.map((line) => measure.measureText(line || " ").width + 42)),
+    )
+    const thinkingWidth = thinking.length
+      ? Math.min(maxBubble, Math.max(220, ...thinking.map((line) => measure.measureText(line || " ").width + 36)))
+      : 0
+    const blockWidth = Math.max(bodyWidth, thinkingWidth)
+    const thinkingHeight = thinking.length ? thinking.length * 29 + 28 : 0
+    const bodyHeight = body.length * 34 + 30
+    return {
+      msg,
+      name,
+      isUser,
+      thinking,
+      body,
+      width: blockWidth,
+      height: 30 + thinkingHeight + bodyHeight + 26,
+    }
+  })
+  const height = Math.max(360, 62 + blocks.reduce((sum, block) => sum + block.height, 0) + 34)
+  const scale = 2
+  const canvas = document.createElement("canvas")
+  canvas.width = width * scale
+  canvas.height = height * scale
+  const ctx = canvas.getContext("2d")!
+  ctx.scale(scale, scale)
+  ctx.fillStyle = "#f7efe2"
+  ctx.fillRect(0, 0, width, height)
+  ctx.fillStyle = "rgba(176,139,127,0.10)"
+  for (let y = 22; y < height; y += 36) {
+    for (let x = 22; x < width; x += 36) {
+      ctx.beginPath()
+      ctx.arc(x, y, 1.1, 0, Math.PI * 2)
+      ctx.fill()
+    }
+  }
+  ctx.font = `600 24px ${serif}`
+  ctx.fillStyle = INK
+  ctx.fillText("Favilla", pad, 42)
+  let y = 72
+  for (const block of blocks) {
+    const x = block.isUser ? width - pad - block.width : pad
+    ctx.font = `italic 600 20px ${serif}`
+    ctx.fillStyle = "rgba(63,47,41,0.70)"
+    ctx.textAlign = block.isUser ? "right" : "left"
+    ctx.fillText(block.name, block.isUser ? x + block.width - 4 : x + 4, y)
+    y += 12
+    if (block.thinking.length) {
+      const h = block.thinking.length * 29 + 20
+      drawRoundRect(ctx, x, y, block.width, h, 16)
+      ctx.fillStyle = "rgba(255,250,240,0.72)"
+      ctx.fill()
+      ctx.strokeStyle = "rgba(176,139,127,0.24)"
+      ctx.stroke()
+      ctx.textAlign = "left"
+      ctx.font = `22px ${sans}`
+      ctx.fillStyle = "rgba(63,47,41,0.66)"
+      let ty = y + 29
+      for (const line of block.thinking) {
+        ctx.fillText(line || " ", x + 18, ty)
+        ty += 29
+      }
+      y += h + 8
+    }
+    const bodyHeight = block.body.length * 34 + 30
+    drawRoundRect(ctx, x, y, block.width, bodyHeight, 22)
+    ctx.fillStyle = block.isUser ? "rgba(208,188,190,0.82)" : "rgba(235,235,235,0.78)"
+    ctx.fill()
+    ctx.strokeStyle = "rgba(255,255,255,0.58)"
+    ctx.stroke()
+    ctx.textAlign = "left"
+    ctx.font = `29px ${sans}`
+    ctx.fillStyle = INK
+    let by = y + 39
+    for (const line of block.body) {
+      ctx.fillText(line || " ", x + 21, by)
+      by += 34
+    }
+    y += bodyHeight + 26
+  }
+  ctx.textAlign = "right"
+  ctx.font = `18px ${mono}`
+  ctx.fillStyle = "rgba(63,47,41,0.38)"
+  ctx.fillText(new Date().toLocaleString(), width - pad, height - 22)
+  const blob = await new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("image export failed"))), "image/png")
+  })
+  return blob
+}
+
+async function shareBlob(blob: Blob) {
+  const file = new File([blob], `favilla-chat-${Date.now()}.png`, { type: "image/png" })
+  const nav = navigator as Navigator & {
+    canShare?: (data: ShareData) => boolean
+    share?: (data: ShareData) => Promise<void>
+  }
+  if (nav.share && (!nav.canShare || nav.canShare({ files: [file] }))) {
+    await nav.share({ files: [file], title: "Favilla chat" })
+    return
+  }
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement("a")
+  a.href = url
+  a.download = file.name
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
 
 // ---------- Voice (waveform) chip ----------
 function VoiceChip({ seconds }: { seconds: number }) {
@@ -318,10 +508,18 @@ function Bubble({
   msg,
   peerName,
   showName,
+  selectionMode,
+  selected,
+  onSelect,
+  onLongSelect,
 }: {
   msg: Msg
   peerName: string
   showName: boolean
+  selectionMode?: boolean
+  selected?: boolean
+  onSelect?: () => void
+  onLongSelect?: () => void
 }) {
   const isUser = msg.role === "user"
   const voiceAttachments = (msg.attachments ?? []).filter(
@@ -368,6 +566,10 @@ function Bubble({
             text={msg.text}
             isUser={isUser}
             recallUsed={!!msg.recallUsed}
+            selectionMode={!!selectionMode}
+            selected={!!selected}
+            onSelect={onSelect}
+            onLongSelect={onLongSelect}
           />
         )}
 
@@ -383,14 +585,24 @@ function BubbleBody({
   text,
   isUser,
   recallUsed,
+  selectionMode,
+  selected,
+  onSelect,
+  onLongSelect,
 }: {
   text: string
   isUser: boolean
   recallUsed: boolean
+  selectionMode: boolean
+  selected: boolean
+  onSelect?: () => void
+  onLongSelect?: () => void
 }) {
   const [showCopy, setShowCopy] = useState(false)
   const [copied, setCopied] = useState(false)
   const wrapRef = useRef<HTMLDivElement | null>(null)
+  const longPressTimerRef = useRef<number | null>(null)
+  const longPressFiredRef = useRef(false)
   // Any interaction outside this bubble dismisses the copy button. The
   // listener attaches only while the menu is open and uses `pointerdown`
   // so it fires on the very first touch/click anywhere else.
@@ -403,6 +615,7 @@ function BubbleBody({
     window.addEventListener("pointerdown", onDown, true)
     return () => window.removeEventListener("pointerdown", onDown, true)
   }, [showCopy])
+  useEffect(() => () => clearLongPress(), [])
   async function copy() {
     try {
       await navigator.clipboard.writeText(text)
@@ -413,10 +626,44 @@ function BubbleBody({
       // ignore
     }
   }
+  function clearLongPress() {
+    if (longPressTimerRef.current !== null) {
+      window.clearTimeout(longPressTimerRef.current)
+      longPressTimerRef.current = null
+    }
+  }
   return (
     <div ref={wrapRef} className="relative inline-block" style={{ overflow: "visible" }}>
       <div
-        onClick={() => setShowCopy((v) => !v)}
+        onPointerDown={() => {
+          longPressFiredRef.current = false
+          if (!onLongSelect) return
+          clearLongPress()
+          longPressTimerRef.current = window.setTimeout(() => {
+            longPressTimerRef.current = null
+            longPressFiredRef.current = true
+            setShowCopy(false)
+            onLongSelect()
+          }, 460)
+        }}
+        onPointerUp={clearLongPress}
+        onPointerCancel={clearLongPress}
+        onPointerLeave={clearLongPress}
+        onContextMenu={(e) => e.preventDefault()}
+        onClick={(e) => {
+          if (longPressFiredRef.current) {
+            longPressFiredRef.current = false
+            e.preventDefault()
+            return
+          }
+          if (selectionMode) {
+            e.preventDefault()
+            setShowCopy(false)
+            onSelect?.()
+            return
+          }
+          setShowCopy((v) => !v)
+        }}
         className={`md relative px-4 py-3 text-[14.5px] leading-[1.6] ${
           isUser
             ? "rounded-[18px] rounded-br-[6px]"
@@ -430,12 +677,28 @@ function BubbleBody({
           border: isUser
             ? "1px solid rgba(255,255,255,0.28)"
             : "1px solid rgba(255,255,255,0.5)",
+          outline: selected ? "2px solid rgba(122,138,82,0.76)" : "none",
+          outlineOffset: 3,
           boxShadow:
             "0 1px 0 rgba(255,255,255,0.4) inset, 0 6px 20px -10px rgba(0,0,0,0.25)",
           cursor: "pointer",
         }}
       >
         <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+        {selected && (
+          <span
+            className="absolute -top-2 grid h-5 w-5 place-items-center rounded-full"
+            style={{
+              [isUser ? "left" : "right"]: -6,
+              background: "#7a8a52",
+              color: "#fffaf0",
+              boxShadow: "0 2px 8px rgba(63,47,41,0.25)",
+            }}
+            aria-hidden="true"
+          >
+            <Check className="h-3 w-3" strokeWidth={2.4} />
+          </span>
+        )}
       </div>
       {recallUsed && (
         <span
@@ -459,7 +722,7 @@ function BubbleBody({
         </span>
       )}
       <AnimatePresence>
-        {showCopy && (
+        {showCopy && !selectionMode && (
           <motion.button
             type="button"
             initial={{ opacity: 0, scale: 0.92, x: isUser ? 4 : -4 }}
@@ -566,6 +829,8 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
   const [messages, setMessages] = useState<Msg[]>([])
   const [input, setInput] = useState("")
   const [sending, setSending] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
+  const [sharing, setSharing] = useState(false)
   const [pendingFiles, setPendingFiles] = useState<{ id: string; file: File }[]>([])
   const sendBatchRef = useRef<{
     timer: number | null
@@ -582,7 +847,6 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
   const [attachOpen, setAttachOpen] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const confirmTimerRef = useRef<number | null>(null)
-  const keyboardOpenRef = useRef(false)
 
   function blurActiveInput() {
     const active = document.activeElement
@@ -592,13 +856,41 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
   function onStableControlPointerDown(e: React.PointerEvent<HTMLElement>) {
     e.preventDefault()
     e.stopPropagation()
-    if (!keyboardOpenRef.current) blurActiveInput()
   }
 
   function exitChat() {
     setAttachOpen(false)
+    setSelectedIds([])
     blurActiveInput()
     onBack?.()
+  }
+
+  function startSelecting(id: string) {
+    setAttachOpen(false)
+    setSelectedIds((cur) => (cur.includes(id) ? cur : [...cur, id]))
+  }
+
+  function toggleSelected(id: string) {
+    setSelectedIds((cur) => {
+      if (cur.includes(id)) return cur.filter((x) => x !== id)
+      return [...cur, id]
+    })
+  }
+
+  async function shareSelectedMessages() {
+    const selected = messages.filter((m) => selectedIds.includes(m.id) && !m.divider && !m.error)
+    if (!selected.length || sharing) return
+    setSharing(true)
+    try {
+      const blob = await makeShareImage(selected, peerName)
+      await shareBlob(blob)
+    } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") return
+      // eslint-disable-next-line no-console
+      console.warn("share image failed", e)
+    } finally {
+      setSharing(false)
+    }
   }
 
   function streamReply(aiId: string, full: string, thoughts: ThinkStep[], locked: boolean) {
@@ -612,11 +904,12 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
       )
       return
     }
+    const chars = Array.from(full)
     let index = 0
-    const chunk = Math.max(2, Math.ceil(full.length / 72))
+    const chunk = chars.length < 140 ? 1 : chars.length < 520 ? 3 : 5
     const tick = () => {
-      index = Math.min(full.length, index + chunk)
-      const shown = full.slice(0, index)
+      index = Math.min(chars.length, index + chunk)
+      const shown = chars.slice(0, index).join("")
       setMessages((m) =>
         m.map((x) =>
           x.id === aiId
@@ -629,7 +922,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
             : x,
         ),
       )
-      if (index < full.length) window.setTimeout(tick, 18)
+      if (index < chars.length) window.setTimeout(tick, 32)
     }
     tick()
   }
@@ -647,7 +940,6 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
     const vv = window.visualViewport
     if (!vv) return
     const onResize = () => {
-      keyboardOpenRef.current = window.innerHeight - vv.height > 120
       const el = scrollRef.current
       if (!el) return
       window.setTimeout(() => el.scrollTo({ top: el.scrollHeight, behavior: "smooth" }), 60)
@@ -768,7 +1060,6 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
     // also constrained on the button.
     e?.preventDefault()
     e?.stopPropagation()
-    if (!keyboardOpenRef.current) blurActiveInput()
     if (sealBusy) return
     hourglassFiredRef.current = false
     hourglassStartRef.current = performance.now()
@@ -1013,38 +1304,70 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
               paddingTop: "max(0px, env(safe-area-inset-top))",
             }}
           >
-            <button
-              type="button"
-              onPointerDown={(e) => {
-                e.preventDefault()
-                e.stopPropagation()
-              }}
-              onClick={exitChat}
-              className="grid h-10 w-10 place-items-center rounded-full hover:bg-white/10"
-              aria-label="Back"
-            >
-              <ChevronLeft className="h-5 w-5" strokeWidth={1.8} />
-            </button>
-            <input
-              value={peerName}
-              onChange={(e) => setPeerName(e.target.value)}
-              spellCheck={false}
-              className="rounded bg-transparent px-2 py-0.5 text-center text-[15px] tracking-wide outline-none focus:bg-white/10"
-              style={{
-                fontFamily: "var(--font-sans)",
-                color: "var(--color-cream)",
-                width: "55%",
-              }}
-            />
-            <button
-              type="button"
-              onPointerDown={onStableControlPointerDown}
-              onClick={onScissorClick}
-              className="grid h-10 w-10 place-items-center rounded-full hover:bg-white/10"
-              aria-label="Cut"
-            >
-              <Scissors className="h-5 w-5" strokeWidth={1.8} />
-            </button>
+            {selectedIds.length > 0 ? (
+              <>
+                <button
+                  type="button"
+                  onPointerDown={onStableControlPointerDown}
+                  onClick={() => setSelectedIds([])}
+                  className="grid h-10 w-10 place-items-center rounded-full hover:bg-white/10"
+                  aria-label="Cancel selection"
+                >
+                  <X className="h-5 w-5" strokeWidth={1.8} />
+                </button>
+                <div
+                  className="text-center text-[15px] tracking-wide"
+                  style={{ fontFamily: "var(--font-sans)", color: "var(--color-cream)", width: "55%" }}
+                >
+                  {selectedIds.length} selected
+                </div>
+                <button
+                  type="button"
+                  onPointerDown={onStableControlPointerDown}
+                  onClick={shareSelectedMessages}
+                  disabled={sharing}
+                  className="grid h-10 w-10 place-items-center rounded-full hover:bg-white/10 disabled:opacity-50"
+                  aria-label="Share selected messages"
+                >
+                  <Share2 className="h-5 w-5" strokeWidth={1.8} />
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onPointerDown={(e) => {
+                    e.preventDefault()
+                    e.stopPropagation()
+                  }}
+                  onClick={exitChat}
+                  className="grid h-10 w-10 place-items-center rounded-full hover:bg-white/10"
+                  aria-label="Back"
+                >
+                  <ChevronLeft className="h-5 w-5" strokeWidth={1.8} />
+                </button>
+                <input
+                  value={peerName}
+                  onChange={(e) => setPeerName(e.target.value)}
+                  spellCheck={false}
+                  className="rounded bg-transparent px-2 py-0.5 text-center text-[15px] tracking-wide outline-none focus:bg-white/10"
+                  style={{
+                    fontFamily: "var(--font-sans)",
+                    color: "var(--color-cream)",
+                    width: "55%",
+                  }}
+                />
+                <button
+                  type="button"
+                  onPointerDown={onStableControlPointerDown}
+                  onClick={onScissorClick}
+                  className="grid h-10 w-10 place-items-center rounded-full hover:bg-white/10"
+                  aria-label="Cut"
+                >
+                  <Scissors className="h-5 w-5" strokeWidth={1.8} />
+                </button>
+              </>
+            )}
           </header>
 
           {/* messages — only the most recent 7 sealed blocks (cut-bounded) + live tail */}
@@ -1089,6 +1412,10 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                     msg={m}
                     peerName={peerName}
                     showName={!sameAuthorAsPrev}
+                    selectionMode={selectedIds.length > 0}
+                    selected={selectedIds.includes(m.id)}
+                    onLongSelect={() => startSelecting(m.id)}
+                    onSelect={() => toggleSelected(m.id)}
                   />
                 </div>
               )
@@ -1129,6 +1456,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                       </span>
                       <button
                         type="button"
+                        onPointerDown={onStableControlPointerDown}
                         onClick={() => removePending(p.id)}
                         className="grid h-[14px] w-[14px] shrink-0 place-items-center rounded-full transition-opacity hover:opacity-70"
                         style={{ color: iconColor }}

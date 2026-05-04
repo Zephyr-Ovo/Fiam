@@ -176,6 +176,7 @@ class ApiRuntime:
         source: str = "api",
         record: bool = True,
         include_recall: bool = True,
+        extra_context: str = "",
     ) -> ApiRuntimeResult:
         clean = text.strip()
         if not clean:
@@ -191,6 +192,7 @@ class ApiRuntime:
             source=source,
             include_recall=include_recall,
             consume_recall_dirty=True,
+            extra_context=extra_context,
         )
 
         tools_enabled = bool(getattr(self.config, "api_tools_enabled", False))

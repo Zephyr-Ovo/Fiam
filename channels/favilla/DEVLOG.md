@@ -9,7 +9,7 @@
 **键盘**：普通工具操作保持当前键盘状态（展开则保持，收起则不弹出）；发送保持键盘以便连发；传文件/剪刀/沙漏/语音不主动弹键盘；点输入框外收键盘；返回直接退出会话并收键盘。
 **Chat history**：聊天记录以 server `/api/app/history` 为准；App 不再 seed mock 测试会话。退出、重进、卸载、重装后应从服务器恢复历史。
 **Upload**：纯上传只把文件落到服务器 `uploads/` + `uploads/manifest.jsonl` 并记录 history，不唤醒 AI、不把全文注入上下文。后续 AI 只看近期上传清单（路径/文件名/mime/大小），需要自己用 grep/read 工具找内容。
-**Backend Settings**：`AI` = server auto-router（代码/附件/debug 等走 CC，日常短聊走 API）；`API`/`CC` = 用户手动强制后端，此状态下 AI 不能自行切换，除非用户改回 `AI` 或手动选择另一项。
+**Backend Settings**：`AI` = server auto-router（同一个 AI 身份可按任务在 API/CC 能力面间切换）；`API`/`CC` = 用户手动强制本轮请求后端，AI 仍应理解这是 transport/capability surface，不是身份变化。
 **Settings**：背景 `rgba(0,0,0,0.45)` 纯变暗不模糊；卡片 `backdrop-filter: blur(20px)` + `rgba(255,250,243,0.55)` 半透明磨砂；居中固定，CSS-only fade 120ms。
 
 ## Session 2026-05-04 — Persistent chat + phone smoke
@@ -25,6 +25,14 @@
 - Fixed tool controls to behave like a normal chat app: `+`/scissor/hourglass/voice do not summon the keyboard when it is closed, and preserve it when already open.
 - Header back now blurs the active input and exits Chat in one step. Tapping the message area outside the composer closes the keyboard and attachment menu.
 - Restored lightweight client-side typewriter rendering for AI replies without changing the backend contract.
+
+## Session 2026-05-04 — Keyboard simplification + share image
+
+- Simplified chat keyboard rule: buttons never actively blur/focus the composer. Only tapping the message area outside controls or leaving Chat dismisses the keyboard.
+- Added long-press bubble selection. In selection mode the header switches to cancel/share; share generates a cream chat-style PNG with visible thinking chains expanded when available.
+- Reply rendering now uses softer grapheme chunk typing instead of one-shot full reply.
+- Server prompt context now tells both API and CC paths that Favilla `AI` mode is automatic routing across API/CC surfaces for the same AI identity.
+- Live cut/process check: `app_cuts.jsonl` was empty after processing, `annotation_state.processed_until` matched current flow length, and pool event files existed under `store/pool/events/`.
 
 ## Session 2026-04-30 — Hard Reset to React + Tailwind + shadcn
 
