@@ -12,6 +12,14 @@
 **Backend Settings**：`AI` = server auto-router（代码/附件/debug 等走 CC，日常短聊走 API）；`API`/`CC` = 用户手动强制后端，此状态下 AI 不能自行切换，除非用户改回 `AI` 或手动选择另一项。
 **Settings**：背景 `rgba(0,0,0,0.45)` 纯变暗不模糊；卡片 `backdrop-filter: blur(20px)` + `rgba(255,250,243,0.55)` 半透明磨砂；居中固定，CSS-only fade 120ms。
 
+## Session 2026-05-04 — Persistent chat + phone smoke
+
+- Commit `21959c6` built by GitHub Actions run #53 and installed on phone `OVOJUWYD4HIZYHKZ`; old package signature mismatch required uninstall + reinstall.
+- Build-time `VITE_INGEST_TOKEN` secret was missing/invalid in Actions, so phone Settings/localStorage was patched with live `apiBase=https://fiet.cc` + ingest token via WebView DevTools. Fix Actions secret before the next clean APK build.
+- Phone verified: empty server history on fresh start; send keeps keyboard open; `+` keeps keyboard open; header back exits Chat directly; scissor opens confirmation and writes cut divider only after confirm.
+- Phone verified: server-backed history restores after app force-stop/relaunch; pure upload adds one user attachment + upload manifest row and does not wake AI.
+- Phone verified: auto daily chat routes to API; forced CC via Settings/localStorage routes through Claude Code. After smoke, active history was archived/removed, active CC session cleared, and cut markers reset to 0.
+
 ## Session 2026-04-30 — Hard Reset to React + Tailwind + shadcn
 
 **Trigger:** All previous attempts (XML → Compose → SvelteKit + Workspace Engine) hit the same wall: design-to-implementation lossiness produced "plastic-feeling" UI. Tech-stack churn was a symptom, not the cause. Real bottleneck: AI reading PNG screenshots loses spacing/typography/layer info, and default component libraries (any of them) feel like SaaS dashboards.
