@@ -34,6 +34,15 @@
 - Server prompt context now tells both API and CC paths that Favilla `AI` mode is automatic routing across API/CC surfaces for the same AI identity.
 - Live cut/process check: `app_cuts.jsonl` was empty after processing, `annotation_state.processed_until` matched current flow length, and pool event files existed under `store/pool/events/`.
 
+## Session 2026-05-04 — Follow-up keyboard/prompt pass
+
+- Attach menu backdrop/cancel now only closes the menu; it does not blur or otherwise alter keyboard state.
+- AI reply typing slowed slightly (`42ms` chunk cadence) for a gentler typewriter feel.
+- Disabled per-tap Capacitor native haptics bridge; it caused visible first-tap jank on controls. Browser vibration remains best-effort.
+- Confirm modal remembers the largest screen height so soft-keyboard viewport shrink is less likely to recenter the dialog into the keyboard-free area.
+- App prompt no longer injects concrete recent upload rows every turn. Backend context only tells AI where `uploads/manifest.jsonl` lives and to inspect files only when relevant.
+- Live constitution updated: Favilla is the primary direct channel, Telegram/TG is retired history, and `AI` means auto routing across API/CC surfaces.
+
 ## Session 2026-04-30 — Hard Reset to React + Tailwind + shadcn
 
 **Trigger:** All previous attempts (XML → Compose → SvelteKit + Workspace Engine) hit the same wall: design-to-implementation lossiness produced "plastic-feeling" UI. Tech-stack churn was a symptom, not the cause. Real bottleneck: AI reading PNG screenshots loses spacing/typography/layer info, and default component libraries (any of them) feel like SaaS dashboards.

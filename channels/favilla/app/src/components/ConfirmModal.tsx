@@ -1,5 +1,5 @@
 import { motion, AnimatePresence } from "framer-motion"
-import { useEffect } from "react"
+import { useEffect, useState } from "react"
 import { createPortal } from "react-dom"
 
 type Props = {
@@ -27,6 +27,25 @@ export function ConfirmModal({
   onCancel,
   onConfirm,
 }: Props) {
+  const [screenHeight, setScreenHeight] = useState(() =>
+    typeof window === "undefined" ? 0 : window.innerHeight,
+  )
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const update = () => {
+      const vv = window.visualViewport
+      setScreenHeight((current) => Math.max(current, window.innerHeight, vv?.height || 0))
+    }
+    update()
+    window.addEventListener("resize", update)
+    window.visualViewport?.addEventListener("resize", update)
+    return () => {
+      window.removeEventListener("resize", update)
+      window.visualViewport?.removeEventListener("resize", update)
+    }
+  }, [])
+
   // ESC = cancel, Enter = confirm.
   useEffect(() => {
     if (!open) return
@@ -53,7 +72,7 @@ export function ConfirmModal({
           // viewport but doesn't change layout viewport, so the dialog stays
           // pinned to the screen center even when the keyboard is up.
           className="fixed inset-0 z-50 grid place-items-center"
-          style={{ width: "100vw", height: "100vh", minHeight: "100lvh" }}
+          style={{ width: "100vw", height: screenHeight ? `${screenHeight}px` : "100vh" }}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}

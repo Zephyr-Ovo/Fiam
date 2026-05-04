@@ -1,21 +1,9 @@
 // Light haptic on tap.
-// Prefer @capacitor/haptics on native (real haptic actuator).
-// Fallback to navigator.vibrate on web/WebView (Android Chromium honors it
-// when the AndroidManifest has VIBRATE permission).
-
-import { Haptics, ImpactStyle } from "@capacitor/haptics"
-
-function isNative(): boolean {
-  // @ts-expect-error capacitor injects global at runtime
-  return !!(typeof window !== "undefined" && window.Capacitor?.isNativePlatform?.())
-}
+// Uses the browser vibration path only. Calling Capacitor's native Haptics
+// bridge on every pointerdown made the first tap on many controls visibly lag.
 
 export function tap(ms = 18) {
   try {
-    if (isNative()) {
-      void Haptics.impact({ style: ImpactStyle.Medium })
-      return
-    }
     if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
       navigator.vibrate(ms)
     }

@@ -689,6 +689,10 @@ def _select_app_chat_backend(text: str, attachments: list[dict] | None = None) -
     if attachments:
         return "cc"
     lowered = text.lower()
+    if re.search(r"(换|切|切换|转).{0,8}(api|backend=api)|\bapi\b.{0,8}(模式|后端|backend)", lowered):
+        return "api"
+    if re.search(r"(换|切|切换|转).{0,8}(cc|claude code|backend=cc)|\bcc\b.{0,8}(模式|后端|backend)", lowered):
+        return "cc"
     cc_terms = (
         "代码", "仓库", "文件", "目录", "终端", "命令", "脚本", "报错", "错误", "测试",
         "部署", "构建", "apk", "git", "github", "vscode", "python", "typescript",
@@ -1117,7 +1121,9 @@ _COT_LOCK_RE = re.compile(r"<<COT:lock>>", re.IGNORECASE)
 _COT_HIDE_RE = re.compile(r"<<COT:hide>>", re.IGNORECASE)
 
 _APP_BACKEND_CONTEXT = """[Favilla backend awareness]
-Favilla Settings has three labels: AI, API, and CC. AI means automatic routing, not a separate personality and not a place where you are trapped. API and CC are transport/capability surfaces for the same AI identity. The backend tag in the user message describes only the current request surface. You may explain that you can work through API or CC as task needs change across turns, and you should not claim you are unable to switch places just because the current tag says backend=api or backend=cc. If a task needs code/file/tool-heavy work, say you can use the CC/tool surface; if it needs lighter chat, API is fine."""
+Favilla Settings has three labels: AI, API, and CC. AI means automatic routing, not a separate personality and not a place where you are trapped. API and CC are transport/capability surfaces for the same AI identity. The backend tag in the user message describes only the current request surface. You may explain that you can work through API or CC as task needs change across turns, and you should not claim you are unable to switch places just because the current tag says backend=api or backend=cc. If a task needs code/file/tool-heavy work, say you can use the CC/tool surface; if it needs lighter chat, API is fine.
+
+Favilla uploads are stored under /home/fiet/fiet-home/uploads/ with an index at /home/fiet/fiet-home/uploads/manifest.jsonl. Do not mention old uploaded files just because they exist. Only inspect or discuss uploads when the current user message asks about files/images/uploads or includes current attachments."""
 
 
 def _parse_cot(reply: str) -> tuple[str, list[dict], bool]:
@@ -1155,7 +1161,6 @@ def _run_cc_app_chat(*, text: str, source: str, attachments: list | None = None)
     pending_recall = _pending_recall_for_app()
     session = _load_app_active_session()
     prompt_text = text
-    uploads_block = _recent_uploads_block()
     if attachments:
         lines = ["[attachments]"]
         for a in attachments:
@@ -1163,8 +1168,6 @@ def _run_cc_app_chat(*, text: str, source: str, attachments: list | None = None)
             lines.append(f"- {a['path']}  (name={a['name']!r}, mime={mime})")
         lines.append("")
         prompt_text = "\n".join(lines) + text
-    if uploads_block:
-        prompt_text = uploads_block + "\n\n" + prompt_text
     system_context, user_prompt = build_plain_prompt_parts(
         _CONFIG,
         f"[app:{source} backend=cc] {prompt_text}",
@@ -1299,7 +1302,6 @@ def _run_api_app_chat(*, text: str, source: str, attachments: list | None = None
         recall_refresher=_refresh,
     )
     api_text = text
-    uploads_block = _recent_uploads_block()
     if attachments:
         lines = ["[attachments]"]
         for a in attachments:
@@ -1307,8 +1309,6 @@ def _run_api_app_chat(*, text: str, source: str, attachments: list | None = None
             lines.append(f"- {a['path']}  (name={a['name']!r}, mime={mime})")
         lines.append("")
         api_text = "\n".join(lines) + text
-    if uploads_block:
-        api_text = uploads_block + "\n\n" + api_text
     api_text = f"[app:{source} backend=api] {api_text}"
     try:
         result = runtime.ask(api_text, source=source, extra_context=_APP_BACKEND_CONTEXT)

@@ -922,7 +922,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
             : x,
         ),
       )
-      if (index < chars.length) window.setTimeout(tick, 32)
+      if (index < chars.length) window.setTimeout(tick, 42)
     }
     tick()
   }
@@ -1548,7 +1548,6 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                             e.preventDefault()
                             e.stopPropagation()
                             setAttachOpen(false)
-                            blurActiveInput()
                           }}
                           className="fixed inset-0 z-10 cursor-default bg-transparent"
                         />
