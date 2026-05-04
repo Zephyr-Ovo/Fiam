@@ -68,7 +68,7 @@
 - `btw/` is no longer a source of truth. Source/config files were cleared after migration; if `btw/node_modules` remains, it is only because Windows is holding a native Rolldown binary lock and can be removed after the locking process exits.
 - Latest Stroll map semantics: still 2D. The dark look comes from local-time Mapbox Standard night/dusk presets, not 3D. Default labels/POIs/3D objects are suppressed; the shared map keeps boundaries/roads as muted spatial data and overlays AI-owned labels such as where we turned, flower/photo notes, and slick paving.
 - Stroll now has a page-level weather curtain so rain/snow can animate across the whole Stroll surface, not only inside the map. The map still receives weather for Mapbox-native rain/snow when supported.
-- Stroll top-right control requests browser fullscreen; installed Android app also uses immersive sticky mode in `MainActivity` to hide status and navigation bars while focused.
+- Stroll top-right control expands/collapses the map inside the Stroll page so the map can cover the upper camera area while conversation/composer stay stable. Do not apply immersive sticky mode globally in `MainActivity`; Home must keep its existing proportions.
 - Tapping Stroll conversation bubbles hides the conversation stack; the small `^` chip restores it.
 - APK deploy should use GitHub Actions, not local Android tooling. `scripts/deploy_favilla.ps1` can dispatch `favilla-android.yml` with a local Mapbox public token input so the built APK uses the real Mapbox basemap without committing `.env.local`.
 

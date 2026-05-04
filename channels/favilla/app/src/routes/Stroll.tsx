@@ -1,5 +1,6 @@
 import { Camera, ChevronUp, Maximize2, Minimize2, Pause, Phone, Radio, Send, Square, Video } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
+import { StatusBar } from "@capacitor/status-bar"
 import { ConfirmModal } from "../components/ConfirmModal"
 import { StrollMapView } from "@stroll-map/StrollMapView"
 import { sampleTrack } from "@stroll-map/sampleTrack"
@@ -74,9 +75,14 @@ export function Stroll({ onBack }: Props) {
   const [recording, setRecording] = useState(false)
   const [mediaMode, setMediaMode] = useState<"live" | "photo">("live")
   const [conversationOpen, setConversationOpen] = useState(true)
-  const [fullscreenActive, setFullscreenActive] = useState(false)
+  const [mapExpanded, setMapExpanded] = useState(false)
   const [weather, setWeather] = useState<WeatherSnapshot>({ kind: "clear", intensity: 0.24, source: "fallback" })
   const foldStartYRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    void StatusBar.hide().catch(() => undefined)
+    return () => { void StatusBar.show().catch(() => undefined) }
+  }, [])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -91,12 +97,6 @@ export function Stroll({ onBack }: Props) {
     const timer = window.setInterval(() => setCallRecordingSeconds((seconds) => seconds + 1), 1000)
     return () => window.clearInterval(timer)
   }, [callRecordingState])
-
-  useEffect(() => {
-    const onFullscreenChange = () => setFullscreenActive(Boolean(document.fullscreenElement))
-    document.addEventListener("fullscreenchange", onFullscreenChange)
-    return () => document.removeEventListener("fullscreenchange", onFullscreenChange)
-  }, [])
 
   function startCall() {
     setCallActive(true)
@@ -140,14 +140,6 @@ export function Stroll({ onBack }: Props) {
     if (foldStartYRef.current - e.clientY > 24) foldHome()
   }
 
-  function toggleFullscreen() {
-    if (document.fullscreenElement) {
-      void document.exitFullscreen?.().catch(() => undefined)
-      return
-    }
-    void document.documentElement.requestFullscreen?.({ navigationUI: "hide" }).catch(() => undefined)
-  }
-
   return (
     <div
       className="relative flex h-full w-full flex-col overflow-hidden"
@@ -171,16 +163,16 @@ export function Stroll({ onBack }: Props) {
         </div>
         <button
           type="button"
-          onClick={toggleFullscreen}
+          onClick={() => setMapExpanded((expanded) => !expanded)}
           className="grid h-8 w-8 place-items-center border-0 bg-transparent p-0"
           style={{ color: INK }}
-          aria-label={fullscreenActive ? "Exit fullscreen" : "Enter fullscreen"}
+          aria-label={mapExpanded ? "Shrink map" : "Expand map"}
         >
-          {fullscreenActive ? <Minimize2 className="h-[17px] w-[17px]" strokeWidth={1.7} /> : <Maximize2 className="h-[17px] w-[17px]" strokeWidth={1.7} />}
+          {mapExpanded ? <Minimize2 className="h-[17px] w-[17px]" strokeWidth={1.7} /> : <Maximize2 className="h-[17px] w-[17px]" strokeWidth={1.7} />}
         </button>
       </header>
 
-      <section className="relative z-10" style={{ marginTop: LAYOUT.cameraTop, paddingLeft: LAYOUT.cameraInset, paddingRight: LAYOUT.cameraInset }}>
+      <section className="relative z-10" style={{ marginTop: LAYOUT.cameraTop, paddingLeft: LAYOUT.cameraInset, paddingRight: LAYOUT.cameraInset, opacity: mapExpanded ? 0 : 1, pointerEvents: mapExpanded ? "none" : "auto" }}>
         <div
           className="relative aspect-[4/3] w-full overflow-hidden"
           style={{
@@ -202,7 +194,7 @@ export function Stroll({ onBack }: Props) {
         </div>
       </section>
 
-      <section className="relative z-20 px-4" style={{ height: LAYOUT.bridgeHeight, marginTop: LAYOUT.bridgeTop }}>
+      <section className="relative z-20 px-4" style={{ height: LAYOUT.bridgeHeight, marginTop: LAYOUT.bridgeTop, opacity: mapExpanded ? 0 : 1, pointerEvents: mapExpanded ? "none" : "auto" }}>
         <div
           className="absolute grid place-items-center rounded-full"
           style={{
@@ -223,13 +215,13 @@ export function Stroll({ onBack }: Props) {
         </div>
       </section>
 
-      <section className="relative min-h-0 flex-1 overflow-hidden" style={{ marginTop: LAYOUT.mapTop }}>
+      <section className={`${mapExpanded ? "absolute inset-0 z-[18]" : "relative min-h-0 flex-1"} overflow-hidden`} style={{ marginTop: mapExpanded ? 0 : LAYOUT.mapTop }}>
         <MapPanel weather={weather} />
         <div className="pointer-events-none absolute inset-x-0 top-0" style={{ height: LAYOUT.mapFade, background: "linear-gradient(180deg, rgba(225,212,204,0.88) 0%, rgba(225,212,204,0.38) 46%, transparent 100%)" }} />
         <ConversationLayer open={conversationOpen} onHide={() => setConversationOpen(false)} onShow={() => setConversationOpen(true)} />
       </section>
 
-      <div className="absolute inset-x-0 z-20 pb-[calc(env(safe-area-inset-bottom)+10px)] pt-4" style={{ bottom: LAYOUT.composerBottom, background: "linear-gradient(180deg, transparent, rgba(144,168,182,0.76) 44%, rgba(144,168,182,0.94))" }}>
+      <div className="absolute inset-x-0 z-20 pb-[calc(env(safe-area-inset-bottom)+10px)] pt-4" style={{ bottom: LAYOUT.composerBottom, background: "transparent" }}>
         <div className="relative" style={{ height: LAYOUT.composerHeight }}>
           {callActive ? (
             <>
