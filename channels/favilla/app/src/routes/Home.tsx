@@ -203,21 +203,64 @@ export function Home({ onNavigate, unread = false }: Props) {
         </div>
       </PressButton>
 
-      {/* strollentry — "↑ Escaping my desk…" header text. Tap → walking */}
-      <PressButton
-        ariaLabel="Go for a walk"
-        onClick={() => onNavigate("walking")}
-        style={{
-          left: 131 * SCALE,
-          top: 67 * SCALE,
-          width: 173 * SCALE,
-          height: 20 * SCALE,
-        }}
-      >
-        <img src="/home/strollentry.png" alt="" className="h-full w-full" draggable={false} />
-      </PressButton>
+      <StrollHandle onOpen={() => onNavigate("walking")} />
       </div>
     </div>
+  )
+}
+
+function StrollHandle({ onOpen }: { onOpen: () => void }) {
+  const startRef = useRef<{ x: number; y: number; pointerId: number } | null>(null)
+  const pullRef = useRef(0)
+  const [pull, setPull] = useState(0)
+
+  function reset() {
+    startRef.current = null
+    pullRef.current = 0
+    setPull(0)
+  }
+
+  return (
+    <button
+      type="button"
+      aria-label="Pull down to open Stroll"
+      className="absolute border-0 bg-transparent p-0 outline-none"
+      style={{
+        left: 96 * SCALE,
+        top: 49 * SCALE,
+        width: 220 * SCALE,
+        height: 58 * SCALE,
+        transform: `translateY(${Math.min(pull, 70) * 0.18}px)`,
+        transition: pull ? "none" : "transform 180ms ease-out",
+        touchAction: "none",
+      }}
+      onPointerDown={(e) => {
+        if (e.pointerType === "mouse" && e.button !== 0) return
+        startRef.current = { x: e.clientX, y: e.clientY, pointerId: e.pointerId }
+        e.currentTarget.setPointerCapture?.(e.pointerId)
+      }}
+      onPointerMove={(e) => {
+        const start = startRef.current
+        if (!start) return
+        const dx = e.clientX - start.x
+        const dy = e.clientY - start.y
+        if (Math.abs(dx) > 44 && Math.abs(dx) > dy) {
+          reset()
+          return
+        }
+        const next = Math.max(0, Math.min(dy, 140))
+        pullRef.current = next
+        setPull(next)
+      }}
+      onPointerUp={(e) => {
+        e.preventDefault()
+        if (pullRef.current >= 72) onOpen()
+        reset()
+      }}
+      onPointerCancel={reset}
+    >
+      <img src="/home/strollentry.png" alt="" className="h-full w-full select-none object-contain" draggable={false} />
+    </button>
   )
 }
 

@@ -1,0 +1,11 @@
+{
+  "name": "@fiam/stroll-map",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "peerDependencies": {
+    "gcoord": "^1.0.7",
+    "mapbox-gl": "^3.23.0",
+    "react": "^19.0.0"
+  }
+}

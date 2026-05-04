@@ -163,13 +163,21 @@ export default function Shell() {
   // dominant source of the "paints in waves" lag).
   const isChat = page === "chat"
   const isStroll = page === "stroll"
+  const homeTransform = isChat
+    ? "translate3d(-12%,0,0)"
+    : isStroll
+      ? "translate3d(0,7%,0)"
+      : "translate3d(0,0,0)"
+  const strollTransform = isStroll
+    ? "translate3d(0,0,0)"
+    : "translate3d(0,-100%,0)"
   const slide = "transform 420ms cubic-bezier(0.22, 1, 0.36, 1)"
   const inner = (
     <>
       <div
         className="absolute inset-0 h-full w-full"
         style={{
-          transform: page !== "home" ? "translate3d(-12%,0,0)" : "translate3d(0,0,0)",
+          transform: homeTransform,
           transition: slide,
           pointerEvents: page !== "home" ? "none" : "auto",
           willChange: "transform",
@@ -191,7 +199,7 @@ export default function Shell() {
       <div
         className="absolute inset-0 h-full w-full"
         style={{
-          transform: isStroll ? "translate3d(0,0,0)" : "translate3d(100%,0,0)",
+          transform: strollTransform,
           transition: slide,
           pointerEvents: isStroll ? "auto" : "none",
           willChange: "transform",

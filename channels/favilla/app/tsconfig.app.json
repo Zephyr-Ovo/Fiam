@@ -22,7 +22,15 @@
     "noFallthroughCasesInSwitch": true,
     "ignoreDeprecations": "6.0",
     "baseUrl": ".",
-    "paths": { "@/*": ["src/*"] }
+    "paths": {
+      "@/*": ["src/*"],
+      "@stroll-map/*": ["../../../packages/stroll-map/src/*"],
+      "react": ["node_modules/@types/react"],
+      "react/jsx-runtime": ["node_modules/@types/react/jsx-runtime"],
+      "mapbox-gl": ["node_modules/mapbox-gl"],
+      "gcoord": ["node_modules/gcoord"],
+      "geojson": ["node_modules/@types/geojson"]
+    }
   },
   "include": ["src"]
 }

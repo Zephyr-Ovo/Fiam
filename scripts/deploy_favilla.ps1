@@ -15,6 +15,8 @@ param(
     [string]$Branch = "",
     [string]$Workflow = "favilla-android.yml",
     [string]$Adb = "D:\scrcpy-win64-v3.3.4\adb.exe",
+    [switch]$Dispatch,
+    [string]$MapboxToken = "",
     [int]$PollSeconds = 15,
     [int]$TimeoutMinutes = 20
 )
@@ -62,14 +64,33 @@ if (-not $SkipPush) {
 $targetSha = (git rev-parse HEAD).Trim()
 Write-Host "[deploy] target SHA $targetSha" -ForegroundColor DarkGray
 
+$eventFilter = ""
+$dispatchStartedAt = $null
+if ($Dispatch -or $MapboxToken) {
+    $dispatchStartedAt = (Get-Date).ToUniversalTime().AddSeconds(-10)
+    $dispatchBody = @{
+        ref = $Branch
+        inputs = @{
+            api_base = ""
+            mapbox_token = $MapboxToken
+        }
+    } | ConvertTo-Json -Depth 5
+    Write-Host "[deploy] workflow_dispatch $Workflow" -ForegroundColor Cyan
+    Invoke-RestMethod -Method Post -Uri "$api/actions/workflows/$Workflow/dispatches" -Headers $headers -Body $dispatchBody -ContentType "application/json" | Out-Null
+    $eventFilter = "workflow_dispatch"
+}
+
 # --- 4. Poll workflow runs for this SHA ---
 $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
 $run = $null
 Write-Host "[deploy] waiting for workflow run on $Workflow ..." -ForegroundColor Cyan
 while ((Get-Date) -lt $deadline) {
     $branchEnc = [System.Uri]::EscapeDataString($Branch)
-    $resp = Invoke-RestMethod -Uri "$api/actions/workflows/$Workflow/runs?branch=$branchEnc&per_page=10" -Headers $headers
-    $run = $resp.workflow_runs | Where-Object { $_.head_sha -eq $targetSha } | Select-Object -First 1
+    $eventQuery = if ($eventFilter) { "&event=$eventFilter" } else { "" }
+    $resp = Invoke-RestMethod -Uri "$api/actions/workflows/$Workflow/runs?branch=$branchEnc$eventQuery&per_page=20" -Headers $headers
+    $run = $resp.workflow_runs | Where-Object {
+        $_.head_sha -eq $targetSha -and (-not $dispatchStartedAt -or ([DateTime]$_.created_at).ToUniversalTime() -ge $dispatchStartedAt)
+    } | Select-Object -First 1
     if ($run) {
         $st = $run.status; $cn = $run.conclusion
         Write-Host ("  run #{0} status={1} conclusion={2}" -f $run.run_number, $st, $cn) -ForegroundColor DarkGray

@@ -151,3 +151,88 @@ body {
 @keyframes hg-drain { 0%,100%{transform:scaleY(1)} 50%{transform:scaleY(0.45)} }
 @keyframes hg-fill  { 0%,100%{transform:scaleY(1)} 50%{transform:scaleY(0.45)} }
 @keyframes hg-stream { 0%,100%{opacity:0} 30%,70%{opacity:1} }
+
+@keyframes stroll-wave {
+  0%, 100% { transform: scaleY(0.38); opacity: 0.58; }
+  50% { transform: scaleY(1); opacity: 1; }
+}
+
+.stroll-wave-bar {
+  transform-origin: center;
+  animation: stroll-wave 840ms ease-in-out infinite;
+}
+
+.stroll-map,
+.mapboxgl-map,
+.stroll-map__canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+.stroll-map__tint {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background:
+    linear-gradient(180deg, rgba(237, 229, 216, 0.12), rgba(244, 214, 204, 0.08) 48%, rgba(163, 185, 201, 0.05)),
+    radial-gradient(circle at 46% 38%, rgba(255, 255, 255, 0.08), transparent 42%);
+  mix-blend-mode: soft-light;
+  opacity: 0.32;
+}
+
+.mapboxgl-ctrl-logo,
+.mapboxgl-ctrl-bottom-left {
+  opacity: 0.52;
+}
+
+.stroll-marker {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: rgba(250, 244, 229, 0.84);
+  box-shadow: 0 8px 22px -12px rgba(38, 48, 74, 0.72);
+}
+
+.stroll-marker::before {
+  content: "";
+  width: 16px;
+  height: 20px;
+  border-radius: 10px 10px 8px 8px;
+  background: linear-gradient(180deg, #D99D92, #576E91);
+  box-shadow: 0 -9px 0 -4px #26304A;
+}
+
+@keyframes stroll-rain-fall {
+  from { transform: translate3d(0, -18vh, 0) rotate(10deg); }
+  to { transform: translate3d(-28px, 112vh, 0) rotate(10deg); }
+}
+
+@keyframes stroll-snow-fall {
+  from { transform: translate3d(0, -10vh, 0); }
+  to { transform: translate3d(18px, 108vh, 0); }
+}
+
+.stroll-rain-drop {
+  position: absolute;
+  top: -14vh;
+  width: 1.5px;
+  height: 28px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(232, 243, 247, 0), rgba(232, 243, 247, 0.74));
+  animation: stroll-rain-fall linear infinite;
+}
+
+.stroll-snowflake {
+  position: absolute;
+  top: -10vh;
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(255, 250, 243, 0.82);
+  box-shadow: 0 0 10px rgba(255, 250, 243, 0.3);
+  animation: stroll-snow-fall ease-in infinite;
+}
