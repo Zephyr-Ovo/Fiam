@@ -698,14 +698,8 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
 
   function onScissorClick() {
     if (sealBusy) return
-    askConfirm(
-      "Cut here?",
-      "Drop a cut marker. Beats before this point become a separate segment when you process.",
-      () => {
-        pushDivider("scissor", "cut")
-        cutFlow().catch(() => {})
-      },
-    )
+    pushDivider("scissor", "cut")
+    cutFlow().catch(() => {})
   }
 
   function runProcess() {

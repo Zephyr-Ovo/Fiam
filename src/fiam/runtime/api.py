@@ -53,6 +53,16 @@ class ApiRuntimeResult:
     tool_loops: int = 0
 
 
+def _merge_usage(total: dict[str, Any], usage: dict[str, Any]) -> None:
+    for key, value in usage.items():
+        if isinstance(value, (int, float)):
+            total[key] = total.get(key, 0) + value
+        elif isinstance(value, dict):
+            nested = total.setdefault(key, {})
+            if isinstance(nested, dict):
+                _merge_usage(nested, value)
+
+
 class OpenAICompatibleClient:
     """Tiny OpenAI-compatible chat completions client."""
 
@@ -187,6 +197,7 @@ class ApiRuntime:
         max_loops = max(1, int(getattr(self.config, "api_tools_max_loops", 10)))
 
         loops = 0
+        usage_total: dict[str, Any] = {}
         completion: ApiCompletion | None = None
         while True:
             loops += 1
@@ -197,6 +208,7 @@ class ApiRuntime:
                 max_tokens=self.config.api_max_tokens,
                 tools=tools,
             )
+            _merge_usage(usage_total, completion.usage)
             if not completion.tool_calls:
                 break
             # Append the assistant message verbatim so the next request preserves
@@ -227,6 +239,7 @@ class ApiRuntime:
                     max_tokens=self.config.api_max_tokens,
                     tools=None,
                 )
+                _merge_usage(usage_total, completion.usage)
                 break
 
         assert completion is not None
@@ -240,7 +253,7 @@ class ApiRuntime:
             backend="api",
             reply=reply_text,
             model=completion.model,
-            usage=completion.usage,
+            usage=usage_total or completion.usage,
             recall_fragments=recall_fragments,
             dispatched=dispatched,
             raw=completion.raw,

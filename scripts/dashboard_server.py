@@ -998,6 +998,7 @@ def _parse_cot(reply: str) -> tuple[str, list[dict], bool]:
 
 def _run_cc_app_chat(*, text: str, source: str, attachments: list | None = None) -> dict:
     import subprocess
+    from fiam.runtime.prompt import build_plain_prompt_parts
 
     pending_recall = _pending_recall_for_app()
     session = _load_app_active_session()
@@ -1009,11 +1010,23 @@ def _run_cc_app_chat(*, text: str, source: str, attachments: list | None = None)
             lines.append(f"- {a['path']}  (name={a['name']!r}, mime={mime})")
         lines.append("")
         prompt_text = "\n".join(lines) + text
+    system_context, user_prompt = build_plain_prompt_parts(
+        _CONFIG,
+        f"[app:{source} backend=cc] {prompt_text}",
+        source=source,
+        include_recall=True,
+        consume_recall_dirty=True,
+    )
     command = [
-        "claude", "-p", f"[app:{source} backend=cc] {prompt_text}",
+        "claude", "-p", user_prompt,
         "--output-format", "json",
         "--max-turns", "10",
+        "--setting-sources", "user",
+        "--exclude-dynamic-system-prompt-sections",
+        "--permission-mode", "bypassPermissions",
     ]
+    if system_context:
+        command.extend(["--append-system-prompt", system_context])
     if _CONFIG.cc_model:
         command.extend(["--model", _CONFIG.cc_model])
     if _CONFIG.cc_disallowed_tools:

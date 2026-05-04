@@ -45,20 +45,20 @@ export function Settings({ open, onClose }: Props) {
       className="absolute inset-0 z-40"
       style={{ pointerEvents: visible ? "auto" : "none" }}
     >
-      {/* transparent backdrop — click-outside-to-close, no dim layer. */}
       <button
         type="button"
         aria-label="Dismiss settings"
         onClick={onClose}
         className="absolute inset-0"
         style={{
-          background: "transparent",
+          background: "rgba(0,0,0,0.45)",
           border: 0,
           padding: 0,
           cursor: "default",
+          opacity: visible ? 1 : 0,
+          transition: "opacity 120ms ease-out",
         }}
       />
-      {/* card — sibling of backdrop, centered absolutely over it */}
       <div
         role="dialog"
         aria-label="Settings"
@@ -70,12 +70,9 @@ export function Settings({ open, onClose }: Props) {
           width: "86%",
           maxWidth: 360,
           borderRadius: 22,
-          // frosted cream glass \u2014 genuinely translucent so the dimmed
-          // home behind shows through. backdrop-filter does the heavy
-          // lifting; the rgba background is intentionally low-alpha.
-          background: "rgba(255, 250, 240, 0.28)",
-          backdropFilter: "blur(28px) saturate(160%)",
-          WebkitBackdropFilter: "blur(28px) saturate(160%)",
+          background: "rgba(255, 250, 243, 0.55)",
+          backdropFilter: "blur(20px) saturate(150%)",
+          WebkitBackdropFilter: "blur(20px) saturate(150%)",
           border: "1px solid rgba(255, 255, 255, 0.6)",
           boxShadow:
             "0 18px 50px -12px rgba(40, 28, 22, 0.45), 0 1px 0 rgba(255,255,255,0.7) inset",
@@ -84,7 +81,7 @@ export function Settings({ open, onClose }: Props) {
           fontFamily: "var(--font-sans)",
           opacity: visible ? 1 : 0,
           transition:
-            "opacity 200ms ease-out, transform 220ms cubic-bezier(0.22, 1, 0.36, 1)",
+            "opacity 120ms ease-out, transform 120ms ease-out",
           willChange: "transform, opacity",
         }}
       >
@@ -124,7 +121,10 @@ export function Settings({ open, onClose }: Props) {
           onChange={(v) => setDraft({ ...draft, openrouterKey: v })}
           placeholder="sk-or-v1-..."
           secret
-          last
+        />
+        <BackendField
+          value={draft.defaultBackend}
+          onChange={(v) => setDraft({ ...draft, defaultBackend: v })}
         />
 
         <div className="mt-5 flex justify-end gap-2">
@@ -152,6 +152,47 @@ export function Settings({ open, onClose }: Props) {
             Save
           </button>
         </div>
+      </div>
+    </div>
+  )
+}
+
+function BackendField({
+  value,
+  onChange,
+}: {
+  value: AppConfig["defaultBackend"]
+  onChange: (v: AppConfig["defaultBackend"]) => void
+}) {
+  return (
+    <div className="block" style={{ paddingTop: 8, paddingBottom: 8 }}>
+      <div
+        className="text-[10.5px] uppercase tracking-[0.08em]"
+        style={{ color: "rgba(63, 47, 41, 0.55)" }}
+      >
+        Backend
+      </div>
+      <div
+        className="mt-1 grid grid-cols-2 gap-1 rounded-full p-1"
+        style={{ background: "rgba(63, 47, 41, 0.09)" }}
+      >
+        {(["api", "cc"] as const).map((backend) => {
+          const active = value === backend
+          return (
+            <button
+              key={backend}
+              type="button"
+              onClick={() => onChange(backend)}
+              className="rounded-full px-3 py-1.5 text-[13px] font-medium transition-colors"
+              style={{
+                color: active ? "#fff" : "rgba(63, 47, 41, 0.68)",
+                background: active ? "var(--color-cocoa)" : "transparent",
+              }}
+            >
+              {backend.toUpperCase()}
+            </button>
+          )
+        })}
       </div>
     </div>
   )

@@ -37,12 +37,14 @@ cc_disallowed_tools = ""     # comma-separated CC tools to disable (e.g. "WebFet
 [api]
 # OpenAI-compatible AI source used outside Claude Code. Keep the key in env, never here.
 provider = "openai_compatible"
-model = "deepseek/deepseek-chat-v3-0324:free"
+model = "anthropic/claude-3.5-haiku"
 base_url = "https://openrouter.ai/api/v1"
 api_key_env = "OPENROUTER_API_KEY"
 temperature = 0.7
 max_tokens = 2048
 timeout_seconds = 60
+tools_enabled = true
+tools_max_loops = 10
 
 [conductor]
 memory_mode = "manual"       # "manual" = flow+vectors+human labels; "auto" = drift+gorge+Pool+DS edges

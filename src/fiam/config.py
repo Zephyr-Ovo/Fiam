@@ -211,13 +211,13 @@ class FiamConfig:
     # API runtime parameters (OpenAI-compatible chat completions)
     # ------------------------------------------------------------------
     api_provider: str = "openai_compatible"
-    api_model: str = "deepseek/deepseek-chat-v3-0324:free"
+    api_model: str = "anthropic/claude-3.5-haiku"
     api_base_url: str = "https://openrouter.ai/api/v1"
     api_key_env: str = "OPENROUTER_API_KEY"
     api_temperature: float = 0.7
     api_max_tokens: int = 2048
     api_timeout_seconds: int = 60
-    api_tools_enabled: bool = False    # enable text-editor + read tools (function calling)
+    api_tools_enabled: bool = True     # enable text-editor + read tools (function calling)
     api_tools_max_loops: int = 10      # safety cap on tool-call iterations
 
     # ------------------------------------------------------------------
@@ -463,6 +463,8 @@ class FiamConfig:
             f"temperature = {self.api_temperature}",
             f"max_tokens = {self.api_max_tokens}",
             f"timeout_seconds = {self.api_timeout_seconds}",
+            f"tools_enabled = {str(self.api_tools_enabled).lower()}",
+            f"tools_max_loops = {self.api_tools_max_loops}",
             "",
             "[conductor]",
             f'memory_mode = "{self.memory_mode}"',
@@ -602,6 +604,8 @@ class FiamConfig:
             api_temperature=api.get("temperature", cls.api_temperature),
             api_max_tokens=api.get("max_tokens", cls.api_max_tokens),
             api_timeout_seconds=api.get("timeout_seconds", cls.api_timeout_seconds),
+            api_tools_enabled=api.get("tools_enabled", cls.api_tools_enabled),
+            api_tools_max_loops=api.get("tools_max_loops", cls.api_tools_max_loops),
             # MQTT
             mqtt_host=mqtt_cfg.get("host", cls.mqtt_host),
             mqtt_port=mqtt_cfg.get("port", cls.mqtt_port),

@@ -17,6 +17,7 @@ if str(SRC) not in sys.path:
 from fiam.config import FiamConfig
 from fiam.conductor import Conductor
 from fiam.runtime.api import ApiCompletion, ApiRuntime
+from fiam.runtime.prompt import build_plain_prompt_parts
 from fiam.store.pool import Pool
 
 
@@ -44,6 +45,32 @@ class FakeClient:
             model=model,
             usage={"prompt_tokens": 10, "completion_tokens": 4},
             raw={"id": "fake"},
+        )
+
+
+class ToolLoopClient:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def complete(self, *, messages, model, temperature, max_tokens, tools=None) -> ApiCompletion:
+        self.calls.append({"messages": messages, "tools": tools})
+        if len(self.calls) == 1:
+            return ApiCompletion(
+                text="",
+                model=model,
+                usage={"prompt_tokens": 3, "completion_tokens": 1, "prompt_tokens_details": {"cached_tokens": 2}},
+                raw={"id": "tool-1"},
+                tool_calls=[{
+                    "id": "call_list",
+                    "type": "function",
+                    "function": {"name": "list_dir", "arguments": "{\"path\": \".\"}"},
+                }],
+            )
+        return ApiCompletion(
+            text="done",
+            model=model,
+            usage={"prompt_tokens": 5, "completion_tokens": 2, "prompt_tokens_details": {"cached_tokens": 4}},
+            raw={"id": "tool-2"},
         )
 
 
@@ -135,6 +162,8 @@ class ApiRuntimeTest(unittest.TestCase):
                     "temperature = 0.2",
                     "max_tokens = 256",
                     "timeout_seconds = 15",
+                    "tools_enabled = true",
+                    "tools_max_loops = 7",
                 ]) + "\n",
                 encoding="utf-8",
             )
@@ -146,6 +175,41 @@ class ApiRuntimeTest(unittest.TestCase):
             self.assertEqual(config.api_temperature, 0.2)
             self.assertEqual(config.api_max_tokens, 256)
             self.assertEqual(config.api_timeout_seconds, 15)
+            self.assertTrue(config.api_tools_enabled)
+            self.assertEqual(config.api_tools_max_loops, 7)
+
+    def test_plain_prompt_parts_use_constitution_self_recall_then_user(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self.make_config(Path(tmp))
+            config.constitution_md_path.write_text("constitution text", encoding="utf-8")
+            (config.self_dir / "identity.md").write_text("identity text", encoding="utf-8")
+            (config.self_dir / "impressions.md").write_text("impressions text", encoding="utf-8")
+            config.background_path.write_text("<!-- hidden -->\nrecall text", encoding="utf-8")
+            (config.background_path.parent / ".recall_dirty").touch()
+
+            system_context, user_prompt = build_plain_prompt_parts(config, "hello", source="favilla")
+
+            self.assertLess(system_context.index("constitution text"), system_context.index("# identity"))
+            self.assertLess(system_context.index("# identity"), system_context.index("# impressions"))
+            self.assertNotIn("[recall]", system_context)
+            self.assertEqual(user_prompt, "[recall]\nrecall text\n\n[wake:favilla] hello")
+            self.assertFalse((config.background_path.parent / ".recall_dirty").exists())
+
+    def test_api_tool_loop_executes_local_tool_and_sums_usage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self.make_config(Path(tmp))
+            client = ToolLoopClient()
+            runtime = ApiRuntime(config, client=client)
+
+            result = runtime.ask("list files", source="favilla", record=False, include_recall=False)
+
+            self.assertEqual(result.reply, "done")
+            self.assertEqual(result.tool_loops, 2)
+            self.assertEqual(result.usage["prompt_tokens"], 8)
+            self.assertEqual(result.usage["completion_tokens"], 3)
+            self.assertEqual(result.usage["prompt_tokens_details"]["cached_tokens"], 6)
+            self.assertIsNotNone(client.calls[0]["tools"])
+            self.assertEqual(client.calls[1]["messages"][-1]["role"], "tool")
 
 
 if __name__ == "__main__":
