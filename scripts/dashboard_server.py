@@ -691,9 +691,9 @@ def _select_app_chat_backend(text: str, attachments: list[dict] | None = None) -
     lowered = text.lower()
     api_token = r"(?<![a-z0-9])api(?![a-z0-9])"
     cc_token = r"(?<![a-z0-9])cc(?![a-z0-9])|claude\s*code"
-    if re.search(rf"backend\s*(=|:|：)\s*{api_token}|(换|切|切换|转).{{0,8}}{api_token}|{api_token}.{{0,8}}(模式|后端|backend)", lowered):
+    if re.search(rf"backend\s*(=|:|：)\s*{api_token}|(换|切|切换|转|去|到|用|走).{{0,8}}{api_token}|{api_token}.{{0,8}}(模式|后端|backend)", lowered):
         return "api"
-    if re.search(rf"backend\s*(=|:|：)\s*({cc_token})|(换|切|切换|转).{{0,8}}({cc_token})|({cc_token}).{{0,8}}(模式|后端|backend)", lowered):
+    if re.search(rf"backend\s*(=|:|：)\s*({cc_token})|(换|切|切换|转|去|到|用|走).{{0,8}}({cc_token})|({cc_token}).{{0,8}}(模式|后端|backend)", lowered):
         return "cc"
     if re.search(r"(另一边|另一侧|另一端|切换过去|换过去|切过去)", lowered):
         return "cc"
