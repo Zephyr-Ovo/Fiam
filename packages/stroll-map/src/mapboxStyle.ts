@@ -1,5 +1,5 @@
 import type { Map as MapboxMap } from "mapbox-gl"
-import type { StrollMapMode, WeatherSnapshot } from "./types"
+import type { WeatherSnapshot } from "./types"
 
 export const standardStyleUrl = "mapbox://styles/mapbox/standard"
 
@@ -21,13 +21,13 @@ export function displayLightPreset(date = new Date()) {
   return preset
 }
 
-export function applyStandardConfig(map: MapboxMap, mode: StrollMapMode, weather: WeatherSnapshot) {
+export function applyStandardConfig(map: MapboxMap, weather: WeatherSnapshot) {
   setBasemapConfig(map, "lightPreset", displayLightPreset())
   setBasemapConfig(map, "showPointOfInterestLabels", false)
   setBasemapConfig(map, "showRoadLabels", false)
   setBasemapConfig(map, "showTransitLabels", false)
   setBasemapConfig(map, "showPlaceLabels", false)
-  setBasemapConfig(map, "show3dObjects", mode === "3d")
+  setBasemapConfig(map, "show3dObjects", false)
   setBasemapConfig(map, "showRain", weather.kind === "rain")
   setBasemapConfig(map, "showSnow", weather.kind === "snow")
   applyWeather(map, weather)

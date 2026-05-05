@@ -219,7 +219,7 @@ export default function Shell() {
           willChange: "transform",
         }}
       >
-        <Stroll onBack={() => { blurActiveInput(); leaveNativeFullscreen(); setPage("home") }} />
+        <Stroll active={isStroll} onBack={() => { blurActiveInput(); leaveNativeFullscreen(); setPage("home") }} />
       </div>
       <Settings open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </>

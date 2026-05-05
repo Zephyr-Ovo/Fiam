@@ -75,6 +75,9 @@
 - Mapbox logo/attribution controls are moved off-canvas with CSS, and the shared Mapbox component observes container resizes so expanded map mode repaints to the new full-screen bounds instead of only shifting position.
 - Tapping Stroll conversation bubbles hides the conversation stack; the small `^` chip restores it.
 - APK deploy should use GitHub Actions, not local Android tooling. `scripts/deploy_favilla.ps1` can dispatch `favilla-android.yml` with a local Mapbox public token input so the built APK uses the real Mapbox basemap without committing `.env.local`.
+- Stroll layout refinement: screen/camera and map expansion are separate in-surface controls. Conversation records are a root overlay above whichever surface is expanded; they auto-scroll to the newest row, can be scrolled back during the same Stroll, and clear when leaving the Stroll route. Bottom controls stay present; input flexes wider while Call is a compact send-sized action.
+- Stroll map is now pure 2D in `packages/stroll-map`: removed the old `2d|3d` mode prop, pitch/bearing branches, tail/footstep live-mode layers, and 3D basemap toggles. Current position is a standard pin, tapping it recenters/zooms like a navigation locate action, and pace color is fixed purple -> pink -> yellow -> red from walking through cycling speeds with faster transit clamped at red.
+- Map annotations now have shared structured contracts: photos merge into one dot within 20m via `buildPhotoAnnotations`, AI annotations render as white droplet emoji pins, and `StrollSpatialContext` is the intended AI input for route points, markers, weather/light, and nearby memories instead of relying on screenshots.
 
 ## Session 2026-04-30 — Hard Reset to React + Tailwind + shadcn
 

@@ -191,22 +191,94 @@ body {
 }
 
 .stroll-marker {
-  width: 34px;
-  height: 34px;
-  display: grid;
-  place-items: center;
-  border-radius: 999px;
-  background: rgba(250, 244, 229, 0.84);
-  box-shadow: 0 8px 22px -12px rgba(38, 48, 74, 0.72);
+  position: relative;
+  width: 30px;
+  height: 40px;
+  cursor: pointer;
+  filter: drop-shadow(0 8px 14px rgba(38, 48, 74, 0.34));
 }
 
 .stroll-marker::before {
   content: "";
-  width: 16px;
-  height: 20px;
-  border-radius: 10px 10px 8px 8px;
-  background: linear-gradient(180deg, #D99D92, #576E91);
-  box-shadow: 0 -9px 0 -4px #26304A;
+  position: absolute;
+  left: 50%;
+  top: 2px;
+  width: 28px;
+  height: 28px;
+  border: 2px solid #26304A;
+  border-radius: 50% 50% 50% 0;
+  background: #FAF4E5;
+  transform: translateX(-50%) rotate(-45deg);
+}
+
+.stroll-marker::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 10px;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #D99D92;
+  box-shadow: 0 0 0 3px rgba(217, 157, 146, 0.22);
+  transform: translateX(-50%);
+}
+
+.stroll-map-annotation {
+  position: relative;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  font-family: var(--font-sans);
+}
+
+.stroll-map-annotation--photo {
+  width: 15px;
+  height: 15px;
+  border-radius: 999px;
+  background: #FAF4E5;
+  border: 2px solid #D99D92;
+  box-shadow: 0 0 0 5px rgba(217, 157, 146, 0.18), 0 8px 18px -12px rgba(38, 48, 74, 0.68);
+}
+
+.stroll-map-annotation--photo[data-count]:not([data-count=""])::after {
+  content: attr(data-count);
+  position: absolute;
+  left: 8px;
+  top: -9px;
+  min-width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: #26304A;
+  color: #FAF4E5;
+  font-size: 9px;
+  line-height: 14px;
+  text-align: center;
+}
+
+.stroll-map-annotation--ai {
+  width: 34px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  color: #26304A;
+  font-size: 17px;
+  line-height: 1;
+  filter: drop-shadow(0 8px 14px rgba(38, 48, 74, 0.28));
+}
+
+.stroll-map-annotation--ai::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  left: 50%;
+  top: 1px;
+  width: 31px;
+  height: 31px;
+  border-radius: 50% 50% 50% 0;
+  background: rgba(255, 250, 243, 0.96);
+  border: 1px solid rgba(38, 48, 74, 0.22);
+  transform: translateX(-50%) rotate(-45deg);
 }
 
 @keyframes stroll-rain-fall {

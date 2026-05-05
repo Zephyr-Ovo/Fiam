@@ -2,8 +2,9 @@ import { Camera, ChevronUp, Maximize2, Minimize2, Pause, Phone, Radio, Send, Squ
 import { useEffect, useRef, useState } from "react"
 import { ConfirmModal } from "../components/ConfirmModal"
 import { StrollMapView } from "@stroll-map/StrollMapView"
+import { buildPhotoAnnotations, createAiEmojiAnnotation } from "@stroll-map/annotations"
 import { sampleTrack } from "@stroll-map/sampleTrack"
-import type { StrollMapLabel, WeatherSnapshot } from "@stroll-map/types"
+import type { StrollMapAnnotation, StrollMapLabel, WeatherSnapshot } from "@stroll-map/types"
 import { fetchWeatherSnapshot } from "@stroll-map/weather"
 
 const INK = "#26304A"
@@ -33,24 +34,25 @@ const LAYOUT = {
   switchHeight: 32,
   mapTop: -5,
   mapFade: 0,
-  chatX: 26,
-  chatBottom: 86,
-  chatWidth: 172,
+  chatX: 22,
+  chatBottom: 112,
+  chatWidth: 258,
   bubbleRadius: 14,
   composerBottom: 0,
-  composerInset: 24,
-  composerHeight: 34,
-  composerGap: 16,
-  callWidth: 60,
-  callRecordGap: 6,
-  callRecordWidth: 98,
-  foldWidth: 60,
+  composerInset: 18,
+  composerHeight: 36,
+  composerGap: 8,
+  callWidth: 36,
+  callRecordWidth: 92,
+  foldWidth: 42,
+  expandButtonInset: 12,
 } as const
 
 type CallRecordingState = "idle" | "recording" | "paused"
 
 type Props = {
   onBack: () => void
+  active: boolean
 }
 
 const chatter = [
@@ -65,7 +67,15 @@ const mapLabels: StrollMapLabel[] = [
   { id: "slick", lng: sampleTrack[12].lng, lat: sampleTrack[12].lat, text: "slick paving", tone: "current" },
 ]
 
-export function Stroll({ onBack }: Props) {
+const mapAnnotations: StrollMapAnnotation[] = [
+  ...buildPhotoAnnotations([
+    { id: "flower-a", lng: sampleTrack[8].lng, lat: sampleTrack[8].lat, takenAt: Date.now(), source: "phone" },
+    { id: "flower-b", lng: sampleTrack[8].lng + 0.00008, lat: sampleTrack[8].lat + 0.00004, takenAt: Date.now(), source: "phone" },
+  ]),
+  createAiEmojiAnnotation({ id: "ai-slick", lng: sampleTrack[12].lng, lat: sampleTrack[12].lat, emoji: "⚠️", text: "slick paving" }),
+]
+
+export function Stroll({ onBack, active }: Props) {
   const [confirmEnd, setConfirmEnd] = useState(false)
   const [callActive, setCallActive] = useState(false)
   const [callRecordingState, setCallRecordingState] = useState<CallRecordingState>("idle")
@@ -74,9 +84,12 @@ export function Stroll({ onBack }: Props) {
   const [recording, setRecording] = useState(false)
   const [mediaMode, setMediaMode] = useState<"live" | "photo">("live")
   const [conversationOpen, setConversationOpen] = useState(true)
+  const [conversationLines, setConversationLines] = useState(chatter)
+  const [screenExpanded, setScreenExpanded] = useState(false)
   const [mapExpanded, setMapExpanded] = useState(false)
   const [weather, setWeather] = useState<WeatherSnapshot>({ kind: "clear", intensity: 0.24, source: "fallback" })
   const foldStartYRef = useRef<number | null>(null)
+  const wasActiveRef = useRef(active)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -85,6 +98,11 @@ export function Stroll({ onBack }: Props) {
       .catch(() => setWeather({ kind: "clear", intensity: 0.24, source: "fallback" }))
     return () => controller.abort()
   }, [])
+
+  useEffect(() => {
+    if (wasActiveRef.current && !active) resetStrollSession()
+    wasActiveRef.current = active
+  }, [active])
 
   useEffect(() => {
     if (callRecordingState !== "recording") return
@@ -124,9 +142,26 @@ export function Stroll({ onBack }: Props) {
     setCallRecordingSeconds(0)
   }
 
+  function resetStrollSession() {
+    setConversationLines([])
+    setConversationOpen(true)
+    setScreenExpanded(false)
+    setMapExpanded(false)
+    setCallActive(false)
+    setCallRecordingState("idle")
+    setCallRecordingSeconds(0)
+    setSavedCallRecording(null)
+    setRecording(false)
+  }
+
+  function closeStroll() {
+    resetStrollSession()
+    onBack()
+  }
+
   function foldHome() {
     foldStartYRef.current = null
-    onBack()
+    closeStroll()
   }
 
   function onFoldPointerMove(e: React.PointerEvent<HTMLButtonElement>) {
@@ -155,20 +190,26 @@ export function Stroll({ onBack }: Props) {
             Stroll
           </span>
         </div>
-        <button
-          type="button"
-          onClick={() => setMapExpanded((expanded) => !expanded)}
-          className="grid h-12 w-12 place-items-center border-0 bg-transparent p-0"
-          style={{ color: INK }}
-          aria-label={mapExpanded ? "Shrink map" : "Expand map"}
-        >
-          {mapExpanded ? <Minimize2 className="h-[17px] w-[17px]" strokeWidth={1.7} /> : <Maximize2 className="h-[17px] w-[17px]" strokeWidth={1.7} />}
-        </button>
+        <div className="h-8 w-8" aria-hidden="true" />
       </header>
 
-      <section className="relative z-10" style={{ marginTop: LAYOUT.cameraTop, paddingLeft: LAYOUT.cameraInset, paddingRight: LAYOUT.cameraInset, opacity: mapExpanded ? 0 : 1, pointerEvents: mapExpanded ? "none" : "auto" }}>
+      <section
+        className={screenExpanded ? "absolute" : "relative z-10"}
+        style={screenExpanded
+          ? {
+              inset: 0,
+              zIndex: 18,
+              paddingLeft: LAYOUT.cameraInset,
+              paddingRight: LAYOUT.cameraInset,
+              paddingTop: "calc(env(safe-area-inset-top) + 54px)",
+              paddingBottom: "calc(env(safe-area-inset-bottom) + 80px)",
+              opacity: mapExpanded ? 0 : 1,
+              pointerEvents: mapExpanded ? "none" : "auto",
+            }
+          : { marginTop: LAYOUT.cameraTop, paddingLeft: LAYOUT.cameraInset, paddingRight: LAYOUT.cameraInset, opacity: mapExpanded ? 0 : 1, pointerEvents: mapExpanded ? "none" : "auto" }}
+      >
         <div
-          className="relative aspect-[4/3] w-full overflow-hidden"
+          className={`relative w-full overflow-hidden ${screenExpanded ? "h-full" : "aspect-[4/3]"}`}
           style={{
             borderRadius: LAYOUT.cameraRadius,
             background:
@@ -185,10 +226,18 @@ export function Stroll({ onBack }: Props) {
             <Video className="h-3.5 w-3.5" strokeWidth={1.8} />
             <span className="text-[11px] font-medium uppercase tracking-[0.18em]">live</span>
           </div>
+          <SurfaceExpandButton
+            expanded={screenExpanded}
+            label={screenExpanded ? "Shrink screen" : "Expand screen"}
+            onClick={() => {
+              setScreenExpanded((expanded) => !expanded)
+              setMapExpanded(false)
+            }}
+          />
         </div>
       </section>
 
-      <section className="relative z-20 px-4" style={{ height: LAYOUT.bridgeHeight, marginTop: LAYOUT.bridgeTop, opacity: mapExpanded ? 0 : 1, pointerEvents: mapExpanded ? "none" : "auto" }}>
+      <section className="relative z-20 px-4" style={{ height: LAYOUT.bridgeHeight, marginTop: LAYOUT.bridgeTop, opacity: mapExpanded || screenExpanded ? 0 : 1, pointerEvents: mapExpanded || screenExpanded ? "none" : "auto" }}>
         <div
           className="absolute grid place-items-center rounded-full"
           style={{
@@ -213,18 +262,26 @@ export function Stroll({ onBack }: Props) {
         className="overflow-hidden"
         style={mapExpanded
           ? { position: "absolute", inset: 0, zIndex: 18, marginTop: 0 }
-          : { position: "relative", minHeight: 0, flex: "1 1 0%", marginTop: LAYOUT.mapTop }}
+          : { position: "relative", minHeight: 0, flex: "1 1 0%", marginTop: LAYOUT.mapTop, opacity: screenExpanded ? 0 : 1, pointerEvents: screenExpanded ? "none" : "auto" }}
       >
-        <MapPanel weather={weather} />
+        <MapPanel
+          weather={weather}
+          expanded={mapExpanded}
+          onToggleExpand={() => {
+            setMapExpanded((expanded) => !expanded)
+            setScreenExpanded(false)
+          }}
+        />
         <div className="pointer-events-none absolute inset-x-0 top-0" style={{ height: LAYOUT.mapFade, background: "linear-gradient(180deg, rgba(225,212,204,0.88) 0%, rgba(225,212,204,0.38) 46%, transparent 100%)" }} />
-        <ConversationLayer bottom={mapExpanded ? 150 : LAYOUT.chatBottom} open={conversationOpen} onHide={() => setConversationOpen(false)} onShow={() => setConversationOpen(true)} />
       </section>
 
-      <div className="absolute inset-x-0 z-20 pb-[calc(env(safe-area-inset-bottom)+10px)] pt-4" style={{ bottom: LAYOUT.composerBottom, background: "transparent" }}>
-        <div className="relative" style={{ height: LAYOUT.composerHeight }}>
+      <ConversationLayer lines={conversationLines} bottom={LAYOUT.chatBottom} open={conversationOpen} onHide={() => setConversationOpen(false)} onShow={() => setConversationOpen(true)} />
+
+      <div className="absolute inset-x-0 z-30 pb-[calc(env(safe-area-inset-bottom)+10px)] pt-3" style={{ bottom: LAYOUT.composerBottom, background: "transparent" }}>
+        <div className="flex items-center" style={{ height: LAYOUT.composerHeight, gap: LAYOUT.composerGap, paddingLeft: LAYOUT.composerInset, paddingRight: LAYOUT.composerInset }}>
           {callActive ? (
             <>
-              <div className="absolute flex min-w-0 items-center gap-2 rounded-[12px] px-2.5" style={{ left: LAYOUT.chatX, width: LAYOUT.chatWidth, height: LAYOUT.composerHeight, background: "rgba(38,48,74,0.60)", border: `1px solid rgba(217,157,146,0.42)`, color: "rgba(255,250,243,0.9)", backdropFilter: "blur(10px)", fontFamily: "var(--font-sans)" }}>
+              <div className="flex min-w-0 flex-1 items-center gap-2 rounded-[12px] px-2.5" style={{ height: LAYOUT.composerHeight, background: "rgba(38,48,74,0.60)", border: `1px solid rgba(217,157,146,0.42)`, color: "rgba(255,250,243,0.9)", backdropFilter: "blur(10px)", fontFamily: "var(--font-sans)" }}>
                 <span className="shrink-0 text-[12px] tabular-nums" style={{ color: "rgba(255,250,243,0.82)" }}>00:42</span>
                 <WaveBars count={8} active />
                 <button type="button" onClick={endCall} className="grid h-6 w-6 shrink-0 place-items-center rounded-[8px]" style={{ background: "rgba(166,75,79,0.9)", color: "#FFF7EF" }} aria-label="Hang up">
@@ -242,7 +299,7 @@ export function Stroll({ onBack }: Props) {
             </>
           ) : (
             <>
-              <div className="absolute flex min-w-0 items-center gap-2 rounded-[12px] px-2.5" style={{ left: LAYOUT.chatX, width: LAYOUT.chatWidth, height: LAYOUT.composerHeight, background: recording ? "rgba(38,48,74,0.55)" : GLASS, border: `1px solid ${recording ? "rgba(217,157,146,0.46)" : GLASS_BORDER}`, color: "rgba(255,250,243,0.74)", backdropFilter: "blur(10px)" }}>
+              <div className="flex min-w-0 flex-1 items-center gap-2 rounded-[12px] px-2.5" style={{ height: LAYOUT.composerHeight, background: recording ? "rgba(38,48,74,0.55)" : GLASS, border: `1px solid ${recording ? "rgba(217,157,146,0.46)" : GLASS_BORDER}`, color: "rgba(255,250,243,0.74)", backdropFilter: "blur(10px)" }}>
                 <button
                   type="button"
                   className="grid h-6 w-6 shrink-0 place-items-center rounded-[8px]"
@@ -269,15 +326,15 @@ export function Stroll({ onBack }: Props) {
                   </>
                 )}
               </div>
-              <button type="button" className="absolute grid place-items-center rounded-[12px]" style={{ left: LAYOUT.chatX + LAYOUT.chatWidth + LAYOUT.composerGap, width: LAYOUT.callWidth, height: LAYOUT.composerHeight, background: "rgba(244,214,204,0.9)", color: INK, border: "1px solid rgba(255,250,243,0.32)", boxShadow: "0 8px 20px -16px rgba(1,3,1,0.72)" }} aria-label="Start call" onClick={startCall}>
+              <button type="button" className="grid shrink-0 place-items-center rounded-[14px]" style={{ width: LAYOUT.callWidth, height: LAYOUT.composerHeight, background: "rgba(244,214,204,0.9)", color: INK, border: "1px solid rgba(255,250,243,0.32)", boxShadow: "0 8px 20px -16px rgba(1,3,1,0.72)" }} aria-label="Start call" onClick={startCall}>
                 <Phone className="h-4 w-4" strokeWidth={1.9} />
               </button>
             </>
           )}
           <button
             type="button"
-            className="absolute grid place-items-center rounded-[12px] text-[14px] font-medium"
-            style={{ right: LAYOUT.composerInset, width: LAYOUT.foldWidth, height: LAYOUT.composerHeight, background: "rgba(38,48,74,0.82)", color: "#F4D6CC", fontFamily: "var(--font-sans)" }}
+            className="grid shrink-0 place-items-center rounded-[12px] text-[14px] font-medium"
+            style={{ width: LAYOUT.foldWidth, height: LAYOUT.composerHeight, background: "rgba(38,48,74,0.82)", color: "#F4D6CC", fontFamily: "var(--font-sans)" }}
             aria-label="Pause and fold Stroll"
             onPointerDown={(e) => {
               foldStartYRef.current = e.clientY
@@ -299,7 +356,7 @@ export function Stroll({ onBack }: Props) {
         cancelLabel="Cancel"
         confirmLabel="End"
         onCancel={() => setConfirmEnd(false)}
-        onConfirm={() => { setConfirmEnd(false); onBack() }}
+        onConfirm={() => { setConfirmEnd(false); closeStroll() }}
       />
     </div>
   )
@@ -318,7 +375,7 @@ function ExitStrollIcon() {
 function CallRecordingControl({ state, seconds, savedFileName, onRecord, onPause, onStop }: { state: CallRecordingState; seconds: number; savedFileName: string | null; onRecord: () => void; onPause: () => void; onStop: () => void }) {
   const isRecording = state !== "idle"
   return (
-    <div className="absolute flex items-center justify-center gap-1 rounded-[12px] px-1.5" style={{ left: LAYOUT.chatX + LAYOUT.chatWidth + LAYOUT.callRecordGap, width: isRecording ? LAYOUT.callRecordWidth : 34, height: LAYOUT.composerHeight, background: isRecording ? GLASS : "transparent", border: isRecording ? `1px solid ${GLASS_BORDER}` : "1px solid transparent", color: isRecording ? "rgba(255,250,243,0.9)" : INK, backdropFilter: isRecording ? "blur(10px)" : undefined, fontFamily: "var(--font-sans)", boxShadow: savedFileName && !isRecording ? "0 0 0 2px rgba(217,157,146,0.26) inset" : undefined }} aria-label={isRecording ? "Call recording controls" : "Record call"}>
+    <div className="flex shrink-0 items-center justify-center gap-1 rounded-[12px] px-1.5" style={{ width: isRecording ? LAYOUT.callRecordWidth : LAYOUT.callWidth, height: LAYOUT.composerHeight, background: isRecording ? GLASS : "transparent", border: isRecording ? `1px solid ${GLASS_BORDER}` : "1px solid transparent", color: isRecording ? "rgba(255,250,243,0.9)" : INK, backdropFilter: isRecording ? "blur(10px)" : undefined, fontFamily: "var(--font-sans)", boxShadow: savedFileName && !isRecording ? "0 0 0 2px rgba(217,157,146,0.26) inset" : undefined }} aria-label={isRecording ? "Call recording controls" : "Record call"}>
       {state === "idle" ? (
         <button type="button" className="grid h-8 w-8 place-items-center rounded-full border-0 bg-transparent p-0" aria-label="Record call" title={savedFileName ?? undefined} onClick={onRecord}>
           <span className="h-3.5 w-3.5 rounded-full" style={{ background: "#C74A4F", boxShadow: "0 0 0 4px rgba(199,74,79,0.16)" }} />
@@ -380,13 +437,24 @@ function WeatherCurtain({ weather }: { weather: WeatherSnapshot }) {
   )
 }
 
-function ConversationLayer({ bottom, open, onHide, onShow }: { bottom: number; open: boolean; onHide: () => void; onShow: () => void }) {
+function ConversationLayer({ lines, bottom, open, onHide, onShow }: { lines: typeof chatter; bottom: number; open: boolean; onHide: () => void; onShow: () => void }) {
+  const scrollerRef = useRef<HTMLDivElement | null>(null)
+  const pointerStartRef = useRef<{ x: number; y: number } | null>(null)
+  const pointerMovedRef = useRef(false)
+
+  useEffect(() => {
+    if (!open) return
+    const scroller = scrollerRef.current
+    if (!scroller) return
+    scroller.scrollTo({ top: scroller.scrollHeight })
+  }, [lines.length, open])
+
   if (!open) {
     return (
       <button
         type="button"
         className="absolute grid h-7 w-10 place-items-center rounded-[11px] border-0 p-0"
-        style={{ bottom: bottom + 3, left: LAYOUT.chatX, background: GLASS, color: "rgba(255,250,243,0.86)", border: `1px solid ${GLASS_BORDER}`, backdropFilter: "blur(10px)" }}
+        style={{ bottom: bottom + 3, left: LAYOUT.chatX, zIndex: 25, background: GLASS, color: "rgba(255,250,243,0.86)", border: `1px solid ${GLASS_BORDER}`, backdropFilter: "blur(10px)" }}
         aria-label="Show stroll conversation"
         onClick={onShow}
       >
@@ -395,15 +463,40 @@ function ConversationLayer({ bottom, open, onHide, onShow }: { bottom: number; o
     )
   }
 
+  if (lines.length === 0) return null
+
   return (
-    <button type="button" aria-label="Hide stroll conversation" onClick={onHide} className="absolute flex flex-col gap-1 border-0 bg-transparent p-0 text-left" style={{ bottom, left: LAYOUT.chatX, width: LAYOUT.chatWidth }}>
-      {chatter.map((line) => (
-        <div key={`${line.name}-${line.text}`} className="w-fit px-2 py-1 text-[12px] leading-[1.3]" style={{ maxWidth: LAYOUT.chatWidth, borderRadius: LAYOUT.bubbleRadius, background: GLASS, border: `1px solid ${GLASS_BORDER}`, color: "rgba(255,250,243,0.9)", fontFamily: "var(--font-sans)", backdropFilter: "blur(10px)", boxShadow: "0 8px 24px -18px rgba(1,3,1,0.75)" }}>
+    <div
+      ref={scrollerRef}
+      role="button"
+      tabIndex={0}
+      aria-label="Hide stroll conversation"
+      className="absolute flex flex-col gap-1 overflow-y-auto p-0 text-left"
+      style={{ bottom, left: LAYOUT.chatX, zIndex: 25, width: LAYOUT.chatWidth, maxHeight: "min(42dvh, 260px)", overscrollBehavior: "contain" }}
+      onPointerDown={(event) => {
+        pointerStartRef.current = { x: event.clientX, y: event.clientY }
+        pointerMovedRef.current = false
+      }}
+      onPointerMove={(event) => {
+        const start = pointerStartRef.current
+        if (!start) return
+        if (Math.abs(event.clientX - start.x) + Math.abs(event.clientY - start.y) > 8) pointerMovedRef.current = true
+      }}
+      onPointerUp={() => {
+        if (!pointerMovedRef.current) onHide()
+        pointerStartRef.current = null
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") onHide()
+      }}
+    >
+      {lines.map((line) => (
+        <div key={`${line.name}-${line.text}`} className="w-fit shrink-0 px-2 py-1 text-[12px] leading-[1.3]" style={{ maxWidth: LAYOUT.chatWidth, borderRadius: LAYOUT.bubbleRadius, background: GLASS, border: `1px solid ${GLASS_BORDER}`, color: "rgba(255,250,243,0.9)", fontFamily: "var(--font-sans)", backdropFilter: "blur(10px)", boxShadow: "0 8px 24px -18px rgba(1,3,1,0.75)" }}>
           <span className="font-medium" style={{ color: "#F4D6CC" }}>{line.name}</span>
           <span> {line.text}</span>
         </div>
       ))}
-    </button>
+    </div>
   )
 }
 
@@ -438,15 +531,30 @@ function WaveBars({ count, active }: { count: number; active: boolean }) {
   )
 }
 
-function MapPanel({ weather }: { weather: WeatherSnapshot }) {
+function SurfaceExpandButton({ expanded, label, onClick }: { expanded: boolean; label: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="absolute grid h-9 w-9 place-items-center rounded-[12px] border-0 p-0"
+      style={{ right: LAYOUT.expandButtonInset, top: LAYOUT.expandButtonInset, zIndex: 12, background: "rgba(250,244,229,0.74)", color: INK, backdropFilter: "blur(10px)", boxShadow: "0 10px 22px -16px rgba(1,3,1,0.72)" }}
+      aria-label={label}
+    >
+      {expanded ? <Minimize2 className="h-4 w-4" strokeWidth={1.8} /> : <Maximize2 className="h-4 w-4" strokeWidth={1.8} />}
+    </button>
+  )
+}
+
+function MapPanel({ weather, expanded, onToggleExpand }: { weather: WeatherSnapshot; expanded: boolean; onToggleExpand: () => void }) {
   return (
     <div className="absolute inset-0 overflow-hidden" style={{ background: "#A3B9C9" }}>
       {MAPBOX_TOKEN ? (
-        <StrollMapView token={MAPBOX_TOKEN} track={sampleTrack} labels={mapLabels} mode="2d" weather={weather} coordinateCorrection="gcj02" />
+        <StrollMapView token={MAPBOX_TOKEN} track={sampleTrack} labels={mapLabels} annotations={mapAnnotations} weather={weather} coordinateCorrection="gcj02" />
       ) : (
         <StrollMapFallback />
       )}
       <div className="pointer-events-none absolute inset-0" style={{ background: "linear-gradient(180deg, rgba(250,244,229,0.14), rgba(244,214,204,0.06) 48%, rgba(163,185,201,0.04))", mixBlendMode: "soft-light" }} />
+      <SurfaceExpandButton expanded={expanded} label={expanded ? "Shrink map" : "Expand map"} onClick={onToggleExpand} />
     </div>
   )
 }
@@ -467,16 +575,17 @@ function StrollMapFallback() {
         <path d="M54 430 C 94 332, 164 276, 254 248 C 326 226, 378 178, 436 112" fill="none" stroke="rgba(134,87,123,0.36)" strokeWidth="3" strokeLinecap="round" />
         <defs>
           <linearGradient id="strollRouteGradient" x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0" stopColor="#506D99" />
-            <stop offset="0.52" stopColor="#108B7F" />
-            <stop offset="1" stopColor="#E94F37" />
+            <stop offset="0" stopColor="#6E45D9" />
+            <stop offset="0.34" stopColor="#EA5AA9" />
+            <stop offset="0.68" stopColor="#F3C84B" />
+            <stop offset="1" stopColor="#E23B3B" />
           </linearGradient>
         </defs>
       </svg>
       <span className="absolute left-[22%] top-[63%] rounded-full px-2 py-0.5 text-[10px]" style={{ background: "rgba(250,244,229,0.68)", color: INK, fontFamily: "var(--font-sans)" }}>Start</span>
       <span className="absolute left-[49%] top-[43%] rounded-full px-2 py-0.5 text-[10px]" style={{ background: "rgba(250,244,229,0.68)", color: INK, fontFamily: "var(--font-sans)" }}>Limen</span>
       <span className="absolute left-[65%] top-[28%] rounded-full px-2 py-0.5 text-[10px]" style={{ background: "rgba(250,244,229,0.68)", color: INK, fontFamily: "var(--font-sans)" }}>Now</span>
-      <div className="absolute left-[53%] top-[42%] h-4 w-4 rounded-full" style={{ background: PEACH, border: "3px solid rgba(250,244,229,0.94)", boxShadow: "0 0 0 5px rgba(237,171,152,0.28)" }} />
+      <div className="stroll-marker absolute left-[53%] top-[42%]" />
     </div>
   )
 }

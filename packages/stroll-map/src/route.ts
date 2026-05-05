@@ -3,9 +3,13 @@ import { toRenderCoordinate } from "./coordinates"
 import type { CoordinateCorrection, RenderTrackPoint, StrollTrackPoint } from "./types"
 
 const earthRadiusM = 6_371_000
-const lowSpeedColor = "#506D99"
-const cruiseSpeedColor = "#108B7F"
-const highSpeedColor = "#E94F37"
+const cyclingSpeedCapMps = 6.8
+const speedStops = [
+  { speedMps: 0, color: "#6E45D9" },
+  { speedMps: 1.7, color: "#EA5AA9" },
+  { speedMps: 4.1, color: "#F3C84B" },
+  { speedMps: cyclingSpeedCapMps, color: "#E23B3B" },
+]
 
 export function normalizeTrack(track: StrollTrackPoint[], correction: CoordinateCorrection): RenderTrackPoint[] {
   if (track.length === 0) return []
@@ -75,10 +79,9 @@ export function buildFootstepFeatures(points: RenderTrackPoint[], tailPointCount
 
 export function buildSpeedGradient(points: RenderTrackPoint[]) {
   if (points.length < 2) {
-    return ["interpolate", ["linear"], ["line-progress"], 0, cruiseSpeedColor, 1, highSpeedColor]
+    return ["interpolate", ["linear"], ["line-progress"], 0, speedStops[0].color, 0.34, speedStops[1].color, 0.68, speedStops[2].color, 1, speedStops[3].color]
   }
 
-  const maxSpeedMps = Math.max(...points.map((point) => point.speedMps), 1)
   const stops: Array<number | string> = []
   let lastProgress = 0
 
@@ -86,7 +89,7 @@ export function buildSpeedGradient(points: RenderTrackPoint[]) {
     const rawProgress = index === points.length - 1 ? 1 : point.progress
     const progress = index === 0 ? 0 : Math.min(1, Math.max(rawProgress, lastProgress + 0.001))
     lastProgress = progress
-    stops.push(progress, speedColor(point.speedMps, maxSpeedMps))
+    stops.push(progress, speedColor(point.speedMps))
   })
 
   return ["interpolate", ["linear"], ["line-progress"], ...stops]
@@ -116,7 +119,7 @@ function deriveSpeed(point: StrollTrackPoint, previous?: StrollTrackPoint, next?
   return distanceMeters(point, anchor) / durationSeconds
 }
 
-function distanceMeters(first: Pick<StrollTrackPoint, "lng" | "lat">, second: Pick<StrollTrackPoint, "lng" | "lat">) {
+export function distanceMeters(first: Pick<StrollTrackPoint, "lng" | "lat">, second: Pick<StrollTrackPoint, "lng" | "lat">) {
   const firstLatRad = degreesToRadians(first.lat)
   const secondLatRad = degreesToRadians(second.lat)
   const latDeltaRad = degreesToRadians(second.lat - first.lat)
@@ -132,9 +135,28 @@ function degreesToRadians(degrees: number) {
   return (degrees * Math.PI) / 180
 }
 
-function speedColor(speedMps: number, maxSpeedMps: number) {
-  const normalized = Math.max(0, Math.min(1, speedMps / maxSpeedMps))
-  if (normalized < 0.52) return lowSpeedColor
-  if (normalized < 0.76) return cruiseSpeedColor
-  return highSpeedColor
+function speedColor(speedMps: number) {
+  const clampedSpeed = Math.max(0, Math.min(cyclingSpeedCapMps, speedMps))
+  const upperIndex = speedStops.findIndex((stop) => clampedSpeed <= stop.speedMps)
+  if (upperIndex <= 0) return speedStops[0].color
+  const lowerStop = speedStops[upperIndex - 1]
+  const upperStop = speedStops[upperIndex]
+  const ratio = (clampedSpeed - lowerStop.speedMps) / Math.max(upperStop.speedMps - lowerStop.speedMps, 0.001)
+  return mixHexColor(lowerStop.color, upperStop.color, ratio)
+}
+
+function mixHexColor(firstColor: string, secondColor: string, ratio: number) {
+  const firstRgb = hexToRgb(firstColor)
+  const secondRgb = hexToRgb(secondColor)
+  const mixed = firstRgb.map((channel, index) => Math.round(channel + (secondRgb[index] - channel) * ratio))
+  return `#${mixed.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`
+}
+
+function hexToRgb(color: string): [number, number, number] {
+  const normalized = color.replace("#", "")
+  return [
+    Number.parseInt(normalized.slice(0, 2), 16),
+    Number.parseInt(normalized.slice(2, 4), 16),
+    Number.parseInt(normalized.slice(4, 6), 16),
+  ]
 }
