@@ -40,12 +40,17 @@ export function StrollMapView({ token, track, labels = [], annotations = [], wea
   const annotationMarkersRef = useRef<mapboxgl.Marker[]>([])
   const fittedRef = useRef(false)
   const initialWeatherRef = useRef(weather)
+  const latestWeatherRef = useRef(weather)
   const renderPoints = useMemo(() => normalizeTrack(track, coordinateCorrection), [track, coordinateCorrection])
   const latestMapStateRef = useRef({ renderPoints, labels, annotations, coordinateCorrection, onAnnotationClick })
 
   useEffect(() => {
     latestMapStateRef.current = { renderPoints, labels, annotations, coordinateCorrection, onAnnotationClick }
   }, [renderPoints, labels, annotations, coordinateCorrection, onAnnotationClick])
+
+  useEffect(() => {
+    latestWeatherRef.current = weather
+  }, [weather])
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return
@@ -109,6 +114,15 @@ export function StrollMapView({ token, track, labels = [], annotations = [], wea
     const observer = new ResizeObserver(() => mapRef.current?.resize())
     observer.observe(container)
     return () => observer.disconnect()
+  }, [])
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const map = mapRef.current
+      if (!map || !map.isStyleLoaded()) return
+      applyStandardConfig(map, latestWeatherRef.current)
+    }, 60_000)
+    return () => window.clearInterval(timer)
   }, [])
 
   useEffect(() => {
