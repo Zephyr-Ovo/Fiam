@@ -429,6 +429,13 @@ def execute_tool_call(config: "FiamConfig", name: str, raw_args: str) -> str:
         args = json.loads(raw_args) if raw_args else {}
     except json.JSONDecodeError as exc:
         return f"error: invalid JSON arguments ({exc})"
+    # Some models (e.g. deepseek via openrouter) double-encode args as a JSON
+    # string. Unwrap one extra layer if needed.
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except json.JSONDecodeError:
+            pass
     if not isinstance(args, dict):
         return "error: arguments must be a JSON object"
     try:
