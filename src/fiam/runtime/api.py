@@ -54,6 +54,7 @@ class ApiRuntimeResult:
     dispatched: int = 0
     raw: dict[str, Any] = field(default_factory=dict)
     tool_loops: int = 0
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _merge_usage(total: dict[str, Any], usage: dict[str, Any]) -> None:
@@ -469,6 +470,7 @@ class ApiRuntime:
         tools = TOOL_SCHEMAS if tools_enabled and not has_image_input else None
         max_loops = max(1, int(getattr(self.config, "api_tools_max_loops", 10)))
 
+        executed_calls: list[dict[str, Any]] = []
         loops = 0
         completion: ApiCompletion | None = None
         while True:
@@ -498,6 +500,13 @@ class ApiRuntime:
                 result = execute_tool_call(self.config, name, raw_args)
                 if record:
                     self._record_tool_action(name, raw_args, result, source=source)
+                executed_calls.append({
+                    "id": str(call.get("id") or ""),
+                    "name": name,
+                    "arguments": raw_args,
+                    "result_preview": (result or "")[:300],
+                    "loop": loops,
+                })
                 messages.append({
                     "role": "tool",
                     "tool_call_id": str(call.get("id") or ""),
@@ -532,6 +541,7 @@ class ApiRuntime:
             dispatched=dispatched,
             raw=completion.raw,
             tool_loops=loops,
+            tool_calls=executed_calls,
         )
 
     def _describe_images(self, user_text: str, image_blocks: list[dict[str, Any]], usage_total: dict[str, Any]) -> str:

@@ -2374,6 +2374,27 @@ def _run_api_favilla_chat(*, text: str, source: str, attachments: list | None = 
         cost_usd=api_cost,
     )
     actions_list: list[dict] = []
+    # Surface api tool invocations (Step 6 schema)
+    api_tool_calls = list(getattr(result, "tool_calls", None) or [])
+    api_tool_calls_summary: list[dict] = []
+    for call in api_tool_calls:
+        if not isinstance(call, dict):
+            continue
+        name = str(call.get("name") or "")
+        api_tool_calls_summary.append({
+            "tool_name": name,
+            "tool_id": call.get("id") or "",
+            "input_summary": str(call.get("arguments") or "")[:300],
+            "loop": call.get("loop"),
+        })
+        actions_list.append({
+            "kind": "api_tool",
+            "tool_name": name,
+            "tool_id": call.get("id") or "",
+            "arguments": str(call.get("arguments") or "")[:300],
+            "result_preview": call.get("result_preview") or "",
+            "loop": call.get("loop"),
+        })
     for todo in queued_todos or []:
         actions_list.append({"kind": "queued_todo", **(todo if isinstance(todo, dict) else {"text": str(todo)})})
     for hold_item in queued_holds or []:
@@ -2401,7 +2422,7 @@ def _run_api_favilla_chat(*, text: str, source: str, attachments: list | None = 
         "queued_holds": queued_holds,
         "carry_over": carry_over,
         # Step 6: structured fields for transcript
-        "tool_calls_summary": [],  # api tool invocations are not exposed yet
+        "tool_calls_summary": api_tool_calls_summary,
         "actions_list": actions_list,
         "metrics": metrics,
     }
