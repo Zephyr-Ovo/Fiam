@@ -554,7 +554,13 @@ def _append_transcript(config, source: str, message: dict) -> dict:
         "role": str(message.get("role") or "ai"),
         "t": int(message.get("t") or int(time.time() // 60)),
     }
-    for key in ("text", "raw_text", "runtime", "attachments", "thinking", "thinkingLocked", "segments", "hold", "divider", "recallUsed", "error"):
+    for key in (
+        "text", "raw_text", "runtime",
+        "attachments", "thinking", "thinkingLocked", "segments", "hold",
+        "divider", "recallUsed", "error",
+        # Step 6: extended schema
+        "tool_calls_summary", "actions", "presence", "metrics", "meta",
+    ):
         if key in message and message[key] not in (None, [], ""):
             record[key] = message[key]
     with path.open("a", encoding="utf-8") as fh:

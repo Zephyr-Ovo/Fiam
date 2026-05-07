@@ -1207,13 +1207,89 @@ def _append_transcript(source: str, message: dict) -> dict:
         "role": str(message.get("role") or "ai"),
         "t": int(message.get("t") or now_min),
     }
-    for key in ("text", "raw_text", "runtime", "attachments", "thinking", "thinkingLocked", "segments", "hold", "divider", "recallUsed", "error"):
+    for key in (
+        "text", "raw_text", "runtime",
+        "attachments", "thinking", "thinkingLocked", "segments", "hold",
+        "divider", "recallUsed", "error",
+        # Step 6: extended schema
+        "tool_calls_summary", "actions", "presence", "metrics", "meta",
+    ):
         if key in message and message[key] not in (None, [], ""):
             record[key] = message[key]
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, ensure_ascii=False) + "\n")
     _append_carryover(source, record)
     return record
+
+
+def _normalize_metrics(
+    *,
+    runtime: str,
+    model: str,
+    usage: dict | None,
+    latency_ms: int | None = None,
+    cost_usd=None,
+) -> dict:
+    """Project provider-specific usage into a unified metrics dict.
+
+    Handles OpenAI (prompt_tokens/completion_tokens, prompt_tokens_details.cached_tokens),
+    Anthropic (input_tokens/output_tokens/cache_read_input_tokens/cache_creation_input_tokens),
+    and DeepSeek (prompt_cache_hit_tokens) usage shapes. Unknown shape → store as raw_usage only.
+    """
+    out: dict = {
+        "runtime": runtime,
+        "model": str(model or ""),
+    }
+    if latency_ms is not None:
+        out["latency_ms"] = int(latency_ms)
+    if cost_usd is not None:
+        try:
+            out["cost_usd"] = float(cost_usd)
+        except (TypeError, ValueError):
+            pass
+    if isinstance(usage, dict) and usage:
+        out["raw_usage"] = usage
+        # Unify token names
+        tok_in = usage.get("prompt_tokens") or usage.get("input_tokens")
+        tok_out = usage.get("completion_tokens") or usage.get("output_tokens")
+        if tok_in is not None:
+            try: out["tokens_in"] = int(tok_in)
+            except (TypeError, ValueError): pass
+        if tok_out is not None:
+            try: out["tokens_out"] = int(tok_out)
+            except (TypeError, ValueError): pass
+        # Cache fields (provider-specific)
+        cache_read = (
+            usage.get("cache_read_input_tokens")
+            or (usage.get("prompt_tokens_details") or {}).get("cached_tokens")
+            or usage.get("prompt_cache_hit_tokens")
+        )
+        if cache_read is not None:
+            try: out["tokens_cache_read"] = int(cache_read)
+            except (TypeError, ValueError): pass
+        cache_creation = usage.get("cache_creation_input_tokens")
+        if cache_creation is not None:
+            try: out["tokens_cache_creation"] = int(cache_creation)
+            except (TypeError, ValueError): pass
+    return out
+
+
+def _current_presence(scene: str = "") -> dict:
+    """Best-effort snapshot of user/ai status + scene for transcript record."""
+    out: dict = {}
+    if scene:
+        out["scene"] = scene
+    try:
+        if _CONFIG and _CONFIG.ai_state_path.exists():
+            data = json.loads(_CONFIG.ai_state_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                if data.get("ai_status"):
+                    out["ai"] = str(data.get("ai_status"))
+                if data.get("user_status"):
+                    out["user"] = str(data.get("user_status"))
+    except (OSError, json.JSONDecodeError):
+        pass
+    return out
 
 
 def _append_carryover(source: str, record: dict) -> None:
@@ -1496,6 +1572,7 @@ def _favilla_chat_send(payload: dict) -> dict:
         "raw_text": user_text,
         "runtime": runtime,
         "attachments": _history_attachments(safe_attachments),
+        "presence": _current_presence(scene=f"user@{source}"),
     })
     _append_transcript(source, {
         "role": "ai",
@@ -1506,6 +1583,10 @@ def _favilla_chat_send(payload: dict) -> dict:
         "thinkingLocked": bool(result.get("thoughts_locked")),
         "segments": result.get("segments") or [],
         "hold": result.get("hold"),
+        "tool_calls_summary": result.get("tool_calls_summary") or [],
+        "actions": result.get("actions_list") or [],
+        "metrics": result.get("metrics") or {},
+        "presence": _current_presence(scene=f"ai@{source}"),
     })
     if stroll_context is not None:
         result["stroll_context"] = stroll_context
@@ -2093,6 +2174,40 @@ def _run_cc_favilla_chat(*, text: str, source: str, attachments: list | None = N
         summary = "holding this for later" if queued_holds else "holding this reply"
         thoughts = [{"kind": "think", "text": summary, "summary": summary, "source": "marker", "locked": True, "icon": "Clock3"}]
         segments = [{"type": "thought", "summary": summary, "source": "marker", "locked": True, "icon": "Clock3"}]
+    # Step 6: enrich segments with tool_use / tool_result events from cc stream-json
+    enriched_segments = list(segments)
+    for action in action_events or []:
+        tool_id = str(action.get("tool_use_id") or "")
+        tool_name = str(action.get("tool_name") or "tool")
+        if action.get("input_summary"):
+            enriched_segments.append({
+                "type": "tool_use",
+                "tool_use_id": tool_id,
+                "tool_name": tool_name,
+                "input_summary": str(action.get("input_summary") or ""),
+            })
+        if action.get("result_summary") or action.get("is_error"):
+            enriched_segments.append({
+                "type": "tool_result",
+                "tool_use_id": tool_id,
+                "tool_name": tool_name,
+                "result_summary": str(action.get("result_summary") or ""),
+                "is_error": bool(action.get("is_error")),
+            })
+    metrics = _normalize_metrics(
+        runtime="cc",
+        model=str(data.get("model") or _CONFIG.cc_model or ""),
+        usage=data.get("usage") if isinstance(data.get("usage"), dict) else None,
+        latency_ms=int(data.get("duration_ms") or 0) or None,
+        cost_usd=data.get("total_cost_usd"),
+    )
+    actions_list: list[dict] = []
+    for todo in queued_todos or []:
+        actions_list.append({"kind": "queued_todo", **(todo if isinstance(todo, dict) else {"text": str(todo)})})
+    for hold_item in queued_holds or []:
+        actions_list.append({"kind": "queued_hold", **(hold_item if isinstance(hold_item, dict) else {"text": str(hold_item)})})
+    if carry_over:
+        actions_list.append({"kind": "carry_over", **(carry_over if isinstance(carry_over, dict) else {"value": str(carry_over)})})
     _record_cc_app_turn(prompt_text, cleaned_reply, source, action_events=action_events, session_id=session_id)
     return {
         "ok": True,
@@ -2105,12 +2220,16 @@ def _run_cc_favilla_chat(*, text: str, source: str, attachments: list | None = N
         "cost_usd": data.get("total_cost_usd", 0),
         "thoughts": thoughts,
         "thoughts_locked": thoughts_locked,
-        "segments": segments,
+        "segments": enriched_segments,
         "hold": hold,
         "queued_todos": queued_todos,
         "queued_holds": queued_holds,
         "carry_over": carry_over,
         "actions": action_events,
+        # Step 6: structured fields for transcript
+        "tool_calls_summary": action_events or [],
+        "actions_list": actions_list,
+        "metrics": metrics,
     }
 
 def _record_cc_app_turn(user_text: str, assistant_reply: str, source: str, *, action_events: list[dict] | None = None, session_id: str = "") -> None:
@@ -2225,7 +2344,9 @@ def _run_api_favilla_chat(*, text: str, source: str, attachments: list | None = 
     recent = _recent_conversation_for_app(source)
     if recent:
         extras = f"{extras}\n\n{recent}"
+    api_started_at = time.time()
     result = runtime.ask(api_text, source=source, extra_context=extras, image_attachments=attachments or [])
+    api_latency_ms = int((time.time() - api_started_at) * 1000)
     raw_reply = str(result.reply or "")
     reply, queued_todos, queued_holds, immediate_hold, carry_over = _apply_app_control_markers(
         result.reply,
@@ -2241,6 +2362,20 @@ def _run_api_favilla_chat(*, text: str, source: str, attachments: list | None = 
         summary = "holding this for later" if queued_holds else "holding this reply"
         thoughts = [{"kind": "think", "text": summary, "summary": summary, "source": "marker", "locked": True, "icon": "Clock3"}]
         segments = [{"type": "thought", "summary": summary, "source": "marker", "locked": True, "icon": "Clock3"}]
+    metrics = _normalize_metrics(
+        runtime="api",
+        model=result.model,
+        usage=result.usage if isinstance(result.usage, dict) else None,
+        latency_ms=api_latency_ms,
+        cost_usd=None,  # API-side cost requires per-model rate table; deferred
+    )
+    actions_list: list[dict] = []
+    for todo in queued_todos or []:
+        actions_list.append({"kind": "queued_todo", **(todo if isinstance(todo, dict) else {"text": str(todo)})})
+    for hold_item in queued_holds or []:
+        actions_list.append({"kind": "queued_hold", **(hold_item if isinstance(hold_item, dict) else {"text": str(hold_item)})})
+    if carry_over:
+        actions_list.append({"kind": "carry_over", **(carry_over if isinstance(carry_over, dict) else {"value": str(carry_over)})})
     return {
         "ok": True,
         "runtime": "api",
@@ -2261,6 +2396,10 @@ def _run_api_favilla_chat(*, text: str, source: str, attachments: list | None = 
         "queued_todos": queued_todos,
         "queued_holds": queued_holds,
         "carry_over": carry_over,
+        # Step 6: structured fields for transcript
+        "tool_calls_summary": [],  # api tool invocations are not exposed yet
+        "actions_list": actions_list,
+        "metrics": metrics,
     }
 
 
