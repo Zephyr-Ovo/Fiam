@@ -40,11 +40,11 @@ def log_cost(config: FiamConfig, cost_usd: float, session_id: str = "",
 
 
 def daily_spend(config: FiamConfig) -> float:
-    """Sum cost_usd for entries from today (UTC)."""
+    """Sum cost_usd for entries from today in the project timezone."""
     path = _cost_log_path(config)
     if not path.exists():
         return 0.0
-    today = datetime.now(timezone.utc).date()
+    today = config.now_local().date()
     total = 0.0
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
@@ -53,7 +53,7 @@ def daily_spend(config: FiamConfig) -> float:
         try:
             entry = json.loads(line)
             ts = datetime.fromisoformat(entry["ts"])
-            if ts.date() == today:
+            if config.ensure_timezone(ts).astimezone(config.project_tz()).date() == today:
                 total += entry.get("cost_usd", 0.0)
         except (json.JSONDecodeError, KeyError, ValueError):
             continue
@@ -82,11 +82,11 @@ def recent_spend(config: FiamConfig, hours: int = 1) -> float:
 
 
 def wake_count_today(config: FiamConfig) -> int:
-    """Count number of wakes today (UTC)."""
+    """Count number of wakes today in the project timezone."""
     path = _cost_log_path(config)
     if not path.exists():
         return 0
-    today = datetime.now(timezone.utc).date()
+    today = config.now_local().date()
     count = 0
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
@@ -95,7 +95,7 @@ def wake_count_today(config: FiamConfig) -> int:
         try:
             entry = json.loads(line)
             ts = datetime.fromisoformat(entry["ts"])
-            if ts.date() == today:
+            if config.ensure_timezone(ts).astimezone(config.project_tz()).date() == today:
                 count += 1
         except (json.JSONDecodeError, KeyError, ValueError):
             continue

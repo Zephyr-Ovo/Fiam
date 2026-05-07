@@ -58,13 +58,22 @@ def main() -> None:
     sub_status = subparsers.add_parser("status", help="Show daemon status and memory stats")
     sub_status.set_defaults(func=_cmd_status)
 
+    # debug profile
+    sub_debug = subparsers.add_parser("debug", help="View or toggle the runtime debug profile")
+    sub_debug.add_argument("action", nargs="?", choices=("status", "on", "off"), default="status",
+                           help="Debug profile action")
+    sub_debug.add_argument("--restart", action="store_true", default=False,
+                           help="Restart live services after toggling on Linux")
+    sub_debug.set_defaults(func=_cmd_debug)
+
     # find-sessions (debug)
     sub_find = subparsers.add_parser("find-sessions", help="List JSONL files (debug)")
     add_common(sub_find)
     sub_find.set_defaults(func=_cmd_find_sessions)
 
-    # clean (reset store)
-    sub_clean = subparsers.add_parser("clean", help="Reset store to factory-fresh state")
+    # clean / clear (reset generated state)
+    sub_clean = subparsers.add_parser("clean", aliases=["clear"], help="Reset generated state to a whiteboard test state")
+    add_common(sub_clean)
     sub_clean.add_argument("-y", "--yes", action="store_true", default=False,
                            help="Skip confirmation prompt")
     sub_clean.set_defaults(func=_cmd_clean)
@@ -130,6 +139,10 @@ def _cmd_stop(args):
 def _cmd_status(args):
     from fiam_lib.daemon import cmd_status
     cmd_status(args)
+
+def _cmd_debug(args):
+    from fiam_lib.debug_mode import cmd_debug
+    cmd_debug(args)
 
 def _cmd_find_sessions(args):
     from fiam_lib.maintenance import cmd_find_sessions

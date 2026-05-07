@@ -1,16 +1,15 @@
 """
-Outbox dispatcher — delivers AI's messages via Telegram or Email.
+Outbox dispatcher — delivers AI's messages via Email.
 
 The AI writes Markdown files to home/outbox/ with YAML frontmatter:
 
     ---
     to: zephyr
-    via: telegram        # telegram | email
+    via: email
     priority: normal     # normal | urgent
     ---
 
     Message body here...
-    [sticker:猫咪哭]        ← optional sticker tag, sent as TG sticker
 
 This module watches outbox/ and dispatches each file, then moves it
 to outbox/sent/. It never touches the AI's conversation or CC session.
@@ -23,12 +22,9 @@ import os
 import imaplib
 import email as email_mod
 from email.utils import parsedate_to_datetime
-import re
 import shutil
 import smtplib
 import time
-import urllib.request
-import urllib.error
 from datetime import datetime
 from email.mime.text import MIMEText
 from pathlib import Path
@@ -36,7 +32,8 @@ from pathlib import Path
 import frontmatter
 
 from fiam.config import FiamConfig
-from fiam_lib.scheduler import WAKE_RE, SLEEP_RE, extract_wake_tags, append_to_schedule
+from fiam_lib.todo import append_to_todo, extract_scheduled_items
+from fiam.markers import strip_xml_markers
 
 
 # ------------------------------------------------------------------
@@ -60,16 +57,6 @@ def _resolve_contact(name: str, config: FiamConfig) -> str:
         pass
     return ""
 
-
-def _extract_stickers(text: str, config: FiamConfig) -> tuple[str, list[dict]]:
-    """Strip [sticker:名称] tags from text. Stickers are no longer dispatched."""
-    cleaned = re.sub(r"\[sticker:([^\]]+)\]", "", text).strip()
-    return cleaned, []
-
-
-# ------------------------------------------------------------------
-# Email
-# ------------------------------------------------------------------
 
 def _email_send(
     smtp_host: str, smtp_port: int,
@@ -107,30 +94,20 @@ def _email_send(
 def dispatch_file(path: Path, config: FiamConfig) -> bool:
     """Read a single outbox file, dispatch it, return True on success."""
     post = frontmatter.load(str(path))
-    via = post.metadata.get("via", "telegram")
+    via = post.metadata.get("via", "email")
     body = post.content.strip()
     if not body:
         return False
 
-    # Extract <<WAKE:...>> tags before sending — save to schedule, strip from body
-    wake_tags = extract_wake_tags(body)
-    if wake_tags:
-        n = append_to_schedule(wake_tags, config)
-        print(f"[postman] scheduler +{n} wake(s) from {path.name}")
-    body = WAKE_RE.sub("", body).strip()
-    # Strip stray <<SLEEP:...>> from outbox bodies (it's a daemon meta-marker,
-    # not user-facing text — leaving it in TG/email would leak internals).
-    body = SLEEP_RE.sub("", body).strip()
+    later_todos = extract_scheduled_items(body, config)
+    if later_todos:
+        added = append_to_todo(later_todos, config)
+        print(f"[postman] todo +{added} item(s) from {path.name}")
+    body = strip_xml_markers(body, {"wake", "todo", "sleep", "mute", "notify"})
     if not body:
-        return True  # Only had WAKE/SLEEP tags, nothing to send
+        return True  # Only had control markers, nothing to send
 
-    if via == "telegram":
-        # Telegram channel removed. Files marked `via: telegram` are silently
-        # dropped; convert them to `via: email` (or another channel) to send.
-        print(f"[postman] telegram channel removed, skipping {path.name}")
-        return False
-
-    elif via == "email":
+    if via == "email":
         subject = str(post.metadata.get("subject", f"From {config.ai_name}"))
         from_addr = config.email_from
         to_field = str(post.metadata.get("to", "")).strip()

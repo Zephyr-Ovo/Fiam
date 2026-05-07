@@ -94,3 +94,7 @@ dashboard/payload_test.json
 
 # Local API/CC probe samples
 .tmp_*.json
+
+# scratch / external clones
+btw/
+.tmp_extract.py

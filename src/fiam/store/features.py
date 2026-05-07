@@ -29,7 +29,7 @@ class FeatureRecord:
     key: str
     vector_idx: int
     t: str
-    source: str
+    scene: str
     text_hash: str
     model_id: str
     dim: int
@@ -45,7 +45,7 @@ class FeatureRecord:
             key=str(data["key"]),
             vector_idx=int(data["vector_idx"]),
             t=str(data.get("t", "")),
-            source=str(data.get("source", "")),
+            scene=str(data.get("scene") or data.get("source") or ""),
             text_hash=str(data.get("text_hash", "")),
             model_id=str(data.get("model_id", "")),
             dim=int(data.get("dim", 0)),
@@ -150,7 +150,7 @@ class FeatureStore:
             key=key,
             vector_idx=next_idx,
             t=beat.t.isoformat(),
-            source=beat.source,
+            scene=beat.scene,
             text_hash=text_hash,
             model_id=model_id,
             dim=int(row.shape[1]),

@@ -24,6 +24,10 @@ _FIELDS = [
     ("narrative", "llm_model",         "narrative_llm_model",   "LLM model",                     "str"),
     ("narrative", "llm_base_url",      "narrative_llm_base_url","LLM base URL",                  "str"),
     ("narrative", "llm_api_key_env",   "narrative_llm_api_key_env","LLM API key env var",        "str"),
+    ("app",       "cot_summary_enabled","app_cot_summary_enabled","CoT summary enabled",        "bool"),
+    ("app",       "cot_summary_model",  "app_cot_summary_model", "CoT summary model",            "str"),
+    ("app",       "cot_summary_base_url","app_cot_summary_base_url","CoT summary base URL",      "str"),
+    ("app",       "cot_summary_api_key_env","app_cot_summary_api_key_env","CoT summary API key env var","str"),
     ("daemon",    "idle_timeout_minutes","idle_timeout_minutes", "Idle timeout (minutes)",       "int"),
     ("daemon",    "poll_interval_seconds","poll_interval_seconds","Poll interval (seconds)",     "int"),
 ]

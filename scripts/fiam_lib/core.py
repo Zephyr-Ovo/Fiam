@@ -68,6 +68,7 @@ def _build_config(args: argparse.Namespace | None = None) -> "FiamConfig":
         if getattr(args, "user_name", None):
             config.user_name = args.user_name
 
+    config.apply_debug_overrides()
     config.ensure_dirs()
     return config
 
