@@ -2362,12 +2362,16 @@ def _run_api_favilla_chat(*, text: str, source: str, attachments: list | None = 
         summary = "holding this for later" if queued_holds else "holding this reply"
         thoughts = [{"kind": "think", "text": summary, "summary": summary, "source": "marker", "locked": True, "icon": "Clock3"}]
         segments = [{"type": "thought", "summary": summary, "source": "marker", "locked": True, "icon": "Clock3"}]
+    # OpenRouter conveniently returns usage.cost; other providers may not.
+    api_cost = None
+    if isinstance(result.usage, dict):
+        api_cost = result.usage.get("cost") or (result.usage.get("cost_details") or {}).get("upstream_inference_cost")
     metrics = _normalize_metrics(
         runtime="api",
         model=result.model,
         usage=result.usage if isinstance(result.usage, dict) else None,
         latency_ms=api_latency_ms,
-        cost_usd=None,  # API-side cost requires per-model rate table; deferred
+        cost_usd=api_cost,
     )
     actions_list: list[dict] = []
     for todo in queued_todos or []:
