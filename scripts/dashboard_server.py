@@ -1092,7 +1092,7 @@ def _run_cc_studio_edit(prompt: str) -> dict:
         "claude", "-p", user_prompt,
         "--output-format", "json",
         "--max-turns", "4",
-        "--setting-sources", "user",
+        "--setting-sources", "user,project,local",
         "--exclude-dynamic-system-prompt-sections",
         "--permission-mode", "bypassPermissions",
     ]
@@ -1965,7 +1965,7 @@ def _run_cc_favilla_chat(*, text: str, source: str, attachments: list | None = N
         "--output-format", "stream-json",
         "--verbose",
         "--max-turns", "10",
-        "--setting-sources", "user",
+        "--setting-sources", "user,project,local",
         "--exclude-dynamic-system-prompt-sections",
         "--permission-mode", "bypassPermissions",
     ]
