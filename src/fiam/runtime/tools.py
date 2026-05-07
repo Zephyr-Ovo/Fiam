@@ -337,7 +337,7 @@ def _grep_files(home: Path, args: dict[str, Any]) -> str:
     return json.dumps(results, ensure_ascii=False)
 
 
-def _schedule_wake(home: Path, args: dict[str, Any]) -> str:
+def _schedule_wake(home: Path, args: dict[str, Any], default_tz: Any = None) -> str:
     at_raw = str(args["at"]).strip()
     kind = str(args["kind"]).strip().lower()
     reason = str(args.get("reason") or "").strip()
@@ -358,7 +358,8 @@ def _schedule_wake(home: Path, args: dict[str, Any]) -> str:
         except ValueError as exc:
             raise ToolError("at must be ISO timestamp or 'YYYY-MM-DD HH:MM'") from exc
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        # naive timestamps are interpreted in the project timezone (per schema)
+        parsed = parsed.replace(tzinfo=default_tz or timezone.utc)
     if parsed <= datetime.now(timezone.utc):
         raise ToolError("at must be in the future")
     path = home / "self" / "todo.jsonl"
@@ -431,6 +432,13 @@ def execute_tool_call(config: "FiamConfig", name: str, raw_args: str) -> str:
     if not isinstance(args, dict):
         return "error: arguments must be a JSON object"
     try:
+        if name == "schedule_wake":
+            tzinfo = None
+            try:
+                tzinfo = config.project_tz()
+            except Exception:
+                tzinfo = None
+            return _schedule_wake(config.home_path, args, default_tz=tzinfo)
         return handler(config.home_path, args)
     except ToolError as exc:
         return f"error: {exc}"
