@@ -473,7 +473,7 @@ def _wake_held_reply(config, entry: dict, conductor=None) -> bool:
     reply = strip_xml_markers(reply, {"wake", "todo", "sleep", "mute", "notify"}).strip()
     if hold_tags or immediate_hold:
         summary = "holding this for later" if hold_tags else "holding this reply"
-        _append_app_history(config, source, {
+        _append_transcript(config, source, {
             "role": "ai",
             "thinking": [{"kind": "think", "text": summary, "summary": summary, "source": "marker", "locked": True, "icon": "Clock3"}],
             "thinkingLocked": True,
@@ -494,9 +494,10 @@ def _wake_held_reply(config, entry: dict, conductor=None) -> bool:
     append_final_to_hold(config, hold_id, final_text)
 
     parsed = parse_app_cot(final_text, config)
-    _append_app_history(config, source, {
+    _append_transcript(config, source, {
         "role": "ai",
         "text": parsed.reply,
+        "raw_text": final_text,
         "thinking": parsed.thoughts,
         "thinkingLocked": parsed.locked,
         "segments": parsed.segments,
@@ -544,21 +545,25 @@ def _run_claude_json(config, message: str, *, tag: str) -> tuple[bool, dict | No
     return True, data
 
 
-def _append_app_history(config, source: str, message: dict) -> dict:
+def _append_transcript(config, source: str, message: dict) -> dict:
     clean_source = re.sub(r"[^A-Za-z0-9_-]+", "_", (source or "favilla").strip().lower()).strip("_") or "favilla"
-    path = config.home_path / "app_history" / f"{clean_source}.jsonl"
+    path = config.home_path / "transcript" / f"{clean_source}.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     record = {
         "id": str(message.get("id") or f"srv-{int(time.time() * 1000)}"),
         "role": str(message.get("role") or "ai"),
         "t": int(message.get("t") or int(time.time() // 60)),
     }
-    for key in ("text", "attachments", "thinking", "thinkingLocked", "segments", "hold", "divider", "recallUsed", "error"):
+    for key in ("text", "raw_text", "runtime", "attachments", "thinking", "thinkingLocked", "segments", "hold", "divider", "recallUsed", "error"):
         if key in message and message[key] not in (None, [], ""):
             record[key] = message[key]
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, ensure_ascii=False) + "\n")
     return record
+
+
+# Backward-compat alias
+_append_app_history = _append_transcript
 
 
 def _extract_and_dispatch(config, text: str, conductor) -> int:

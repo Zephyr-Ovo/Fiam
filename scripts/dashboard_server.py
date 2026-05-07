@@ -1141,13 +1141,15 @@ def _favilla_studio_edit(payload: dict) -> dict:
         raise ValueError("Studio edit runtime must be auto, api, or cc")
     prompt = _studio_edit_prompt(payload)
     result = _run_studio_edit_model(prompt, runtime)
-    _append_app_history("studio", {
+    _append_transcript("studio", {
         "role": "user",
         "text": f"Studio edit request: {instruction[:500]}",
+        "runtime": runtime,
     })
-    _append_app_history("studio", {
+    _append_transcript("studio", {
         "role": "ai",
         "text": f"Studio edit script: {result.get('summary', '')}",
+        "runtime": runtime,
     })
     return {"ok": True, **result}
 
@@ -1173,13 +1175,17 @@ def _select_favilla_chat_runtime(text: str, attachments: list[dict] | None = Non
     return "cc" if any(term in lowered for term in cc_terms) else "api"
 
 
-def _app_history_source(source: str) -> str:
+def _transcript_source(source: str) -> str:
     clean = re.sub(r"[^A-Za-z0-9_-]+", "_", (source or "chat").strip().lower()).strip("_")
     return clean or "chat"
 
 
-def _app_history_path(source: str = "chat") -> Path:
-    return _CONFIG.home_path / "app_history" / f"{_app_history_source(source)}.jsonl"
+def _transcript_path(source: str = "chat") -> Path:
+    return _CONFIG.home_path / "transcript" / f"{_transcript_source(source)}.jsonl"
+
+
+def _legacy_app_history_path(source: str = "chat") -> Path:
+    return _CONFIG.home_path / "app_history" / f"{_transcript_source(source)}.jsonl"
 
 
 def _history_attachments(attachments: list[dict]) -> list[dict]:
@@ -1196,8 +1202,8 @@ def _history_attachments(attachments: list[dict]) -> list[dict]:
     return out
 
 
-def _append_app_history(source: str, message: dict) -> dict:
-    path = _app_history_path(source)
+def _append_transcript(source: str, message: dict) -> dict:
+    path = _transcript_path(source)
     path.parent.mkdir(parents=True, exist_ok=True)
     now_min = int(time.time() // 60)
     record = {
@@ -1205,7 +1211,7 @@ def _append_app_history(source: str, message: dict) -> dict:
         "role": str(message.get("role") or "ai"),
         "t": int(message.get("t") or now_min),
     }
-    for key in ("text", "attachments", "thinking", "thinkingLocked", "segments", "hold", "divider", "recallUsed", "error"):
+    for key in ("text", "raw_text", "runtime", "attachments", "thinking", "thinkingLocked", "segments", "hold", "divider", "recallUsed", "error"):
         if key in message and message[key] not in (None, [], ""):
             record[key] = message[key]
     with path.open("a", encoding="utf-8") as fh:
@@ -1213,12 +1219,23 @@ def _append_app_history(source: str, message: dict) -> dict:
     return record
 
 
+# Backward-compat alias (callers being migrated may still use the old name)
+_append_app_history = _append_transcript
+
+
 def _favilla_history(source: str = "chat", limit: int = 200) -> dict:
-    path = _app_history_path(source)
-    if not path.exists():
+    new_path = _transcript_path(source)
+    legacy_path = _legacy_app_history_path(source)
+    cap = max(1, min(1000, limit))
+    lines: list[str] = []
+    if legacy_path.exists():
+        lines.extend(legacy_path.read_text(encoding="utf-8").splitlines())
+    if new_path.exists():
+        lines.extend(new_path.read_text(encoding="utf-8").splitlines())
+    if not lines:
         return {"ok": True, "messages": []}
     messages = []
-    for line in path.read_text(encoding="utf-8").splitlines()[-max(1, min(1000, limit)):]:
+    for line in lines[-cap:]:
         line = line.strip()
         if not line:
             continue
@@ -1238,9 +1255,11 @@ def _favilla_history_append(payload: dict) -> dict:
     if not isinstance(attachments, list):
         attachments = []
     safe_attachments = _validate_app_attachments(attachments)
-    record = _append_app_history(source, {
+    text_in = str(payload.get("text") or "")
+    record = _append_transcript(source, {
         "role": role,
-        "text": str(payload.get("text") or ""),
+        "text": text_in,
+        "raw_text": str(payload.get("raw_text") or text_in),
         "attachments": _history_attachments(safe_attachments),
     })
     return {"ok": True, "message": record}
@@ -1265,9 +1284,10 @@ def _favilla_stroll_record(payload: dict) -> dict:
     record = add_spatial_record(_CONFIG, payload)
     text = str(record.get("text") or "").strip()
     if text:
-        _append_app_history("stroll", {
+        _append_transcript("stroll", {
             "role": "user" if record.get("origin") == "user" else "ai",
             "text": text,
+            "raw_text": text,
         })
     return {"ok": True, "record": record}
 
@@ -1460,15 +1480,17 @@ def _favilla_chat_send(payload: dict) -> dict:
                     continue
             cleaned_segments.append(segment)
         result["segments"] = cleaned_segments
-    _append_app_history(source, {
+    _append_transcript(source, {
         "role": "user",
         "text": user_text,
+        "raw_text": user_text,
         "runtime": runtime,
         "attachments": _history_attachments(safe_attachments),
     })
-    _append_app_history(source, {
+    _append_transcript(source, {
         "role": "ai",
         "text": result.get("reply", ""),
+        "raw_text": result.get("raw_reply", result.get("reply", "")),
         "runtime": runtime,
         "thinking": result.get("thoughts") or [],
         "thinkingLocked": bool(result.get("thoughts_locked")),
@@ -1665,7 +1687,7 @@ def _favilla_chat_cut(payload: dict) -> dict:
     with cut_path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record) + "\n")
     source = str(payload.get("source") or "chat")
-    _append_app_history(source, {
+    _append_transcript(source, {
         "role": "ai",
         "divider": {"kind": "scissor", "label": "cut"},
     })
@@ -1995,6 +2017,7 @@ def _run_cc_favilla_chat(*, text: str, source: str, attachments: list | None = N
         _save_app_active_session(session_id)
 
     reply = str(data.get("result") or "").strip()
+    raw_reply = reply
     reply, queued_todos, queued_holds, immediate_hold, carry_over = _apply_app_control_markers(
         reply,
         source=source,
@@ -2014,6 +2037,7 @@ def _run_cc_favilla_chat(*, text: str, source: str, attachments: list | None = N
         "ok": True,
         "runtime": "cc",
         "reply": cleaned_reply,
+        "raw_reply": raw_reply,
         "recall": pending_recall,
         "session_id": session_id,
         "subtype": data.get("subtype"),
@@ -2137,6 +2161,7 @@ def _run_api_favilla_chat(*, text: str, source: str, attachments: list | None = 
         lines.append("")
         api_text = "\n".join(lines) + text
     result = runtime.ask(api_text, source=source, extra_context=_app_runtime_context(), image_attachments=attachments or [])
+    raw_reply = str(result.reply or "")
     reply, queued_todos, queued_holds, immediate_hold, carry_over = _apply_app_control_markers(
         result.reply,
         source=source,
@@ -2155,6 +2180,7 @@ def _run_api_favilla_chat(*, text: str, source: str, attachments: list | None = 
         "ok": True,
         "runtime": "api",
         "reply": cleaned_reply,
+        "raw_reply": raw_reply,
         "recall": _pending_recall_for_app(),
         "session_id": "",
         "subtype": None,
@@ -2590,14 +2616,14 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 self._serve_json({"error": str(e)}, status=500)
             return
 
-        if path in ("/favilla/chat/history", "/favilla/stroll/history"):
+        if path in ("/favilla/chat/history", "/favilla/stroll/history", "/favilla/chat/transcript", "/favilla/stroll/transcript"):
             if not _ingest_token_ok(self):
                 self._serve_json({"error": "unauthorized"}, status=401)
                 return
             from urllib.parse import parse_qs, urlparse
 
             query = parse_qs(urlparse(raw).query)
-            source = "stroll" if path == "/favilla/stroll/history" else (query.get("source") or ["chat"])[0]
+            source = "stroll" if path in ("/favilla/stroll/history", "/favilla/stroll/transcript") else (query.get("source") or ["chat"])[0]
             try:
                 limit = int((query.get("limit") or ["200"])[0])
             except ValueError:
@@ -2825,7 +2851,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._serve_json(result)
             return
 
-        if path in ("/favilla/chat/history", "/favilla/stroll/history"):
+        if path in ("/favilla/chat/history", "/favilla/stroll/history", "/favilla/chat/transcript", "/favilla/stroll/transcript"):
             if not _ingest_token_ok(self):
                 self._serve_json({"error": "unauthorized"}, status=401)
                 return
@@ -2843,7 +2869,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 self._serve_json({"error": f"bad json: {e}"}, status=400)
                 return
             try:
-                if path == "/favilla/stroll/history":
+                if path in ("/favilla/stroll/history", "/favilla/stroll/transcript"):
                     payload["source"] = "stroll"
                 result = _favilla_history_append(payload)
             except ValueError as e:
