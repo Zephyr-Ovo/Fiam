@@ -33,6 +33,15 @@ export default defineConfig(({ mode }) => {
             })
           },
         },
+        '/favilla': {
+          target,
+          changeOrigin: true,
+          configure: (proxy) => {
+            proxy.on('proxyReq', (proxyReq) => {
+              if (token) proxyReq.setHeader('X-Fiam-Token', token)
+            })
+          },
+        },
       },
     },
   }

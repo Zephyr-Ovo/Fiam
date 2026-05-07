@@ -20,7 +20,7 @@ param(
     [string]$Device = "OVOJUWYD4HIZYHKZ",
     [string]$Pkg = "cc.fiet.favilla",
     [string]$ServerHost = "fiet.cc",
-    [string]$Token = $env:FIAM_TOKEN,
+    [string]$Token = $env:FIAM_INGEST_TOKEN,
     [int]$ShotIdx = 0,
     [string]$ShotDir = "logs\favilla-e2e",
     [switch]$DryRun,
@@ -29,7 +29,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-if (-not $Token) { $Token = "504395e7f033c36d5367dad5b1238ddb7c38e59bffb29c94336df80a06256c5b" }
+if (-not $Token) { throw "FIAM_INGEST_TOKEN is required for Favilla ADB smoke tests" }
 
 $null = New-Item -ItemType Directory -Force -Path $ShotDir
 

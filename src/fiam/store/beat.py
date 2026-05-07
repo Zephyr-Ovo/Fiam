@@ -2,7 +2,7 @@
 Beat — the atomic entry of fiam's narrative stream (flow.jsonl).
 
 A beat represents one unit of information entering fiam's awareness,
-regardless of source (CC dialogue, tool action, TG message, etc.).
+regardless of source (CC dialogue, tool action, email, etc.).
 
 flow.jsonl is append-only, one JSON object per line.
 """
@@ -17,17 +17,17 @@ from typing import Any, Literal
 
 # Beat scenes are open-ended (plugins can add receive scenes). Format is
 # "<actor>@<scene>" — examples: user@favilla, ai@favilla, ai@think,
-# external@tg, system@schedule. No "console" scene exists (the dashboard is
+# external@email, system@schedule. No "console" scene exists (the dashboard is
 # view-only). Old "source"-style values may still appear in legacy data.
 BeatScene = str
 KNOWN_BEAT_SCENES: set[str] = {
-    "user@favilla", "user@stroll", "user@tg", "user@email", "user@studio",
-    "ai@favilla", "ai@stroll", "ai@think", "ai@action", "ai@email", "ai@tg",
-    "external@tg", "external@email", "system@schedule",
+    "user@favilla", "user@stroll", "user@email", "user@studio",
+    "ai@favilla", "ai@stroll", "ai@think", "ai@action", "ai@email",
+    "external@email", "system@schedule",
 }
 
 # Status enums
-UserStatus = Literal["tg", "cc", "away", "together"]
+UserStatus = Literal["cc", "away", "together"]
 AiStatus = Literal["online", "sleep", "busy", "together", "block", "mute", "notify"]
 
 

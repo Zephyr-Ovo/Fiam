@@ -196,7 +196,7 @@ Favilla 默认**不**向 Zephyr 显示你的内部 thinking。可见性由你决
 - 用标准工具操作：`Read` 某个文件 → 看完后 `Bash mv notifications/inbox/<file> notifications/archive/`
 - 这是 Maildir 思路：文件系统就是状态机，inbox = 未读，archive = 已读，没有额外 API
 
-立即唤醒的通道（如 favilla、tg）走原来的 wake 路径，不进 `notifications/`。
+立即唤醒的通道（如 favilla）走原来的 wake 路径，不进 `notifications/`。
 
 ---
 

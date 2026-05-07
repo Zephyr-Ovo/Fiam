@@ -20,7 +20,7 @@ http://fiet.cc, http://www.fiet.cc {
 	# @blocked not remote_ip 1.2.3.4 5.6.7.8
 	# respond @blocked 403
 
-	@protected not path /api/capture /api/app/* /api/wearable/*
+	@protected not path /api/capture /api/app/* /api/wearable/* /favilla/*
 	basic_auth @protected {
 		iris  $2a$14$REPLACE_WITH_HASH_FROM_caddy_hash_password
 		ai    $2a$14$REPLACE_WITH_HASH_FROM_caddy_hash_password
@@ -33,6 +33,11 @@ http://fiet.cc, http://www.fiet.cc {
 		reverse_proxy 127.0.0.1:8766 {
 			header_up X-Forwarded-User {http.auth.user.id}
 		}
+	}
+
+	# /favilla/* → Python dashboard_server.py on localhost:8766
+	handle /favilla/* {
+		reverse_proxy 127.0.0.1:8766
 	}
 
 	# Everything else → static SvelteKit build

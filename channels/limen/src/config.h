@@ -13,35 +13,22 @@
 #define WIFI_PASS "your-pass"
 #endif
 
-// ---- Fiam API ----
-#ifndef FIAM_BASE_URL
-#define FIAM_BASE_URL "https://fiet.cc"
+// ---- Local device API ----
+#ifndef LIMEN_DEVICE_ID
+#define LIMEN_DEVICE_ID "limen-xiao"
 #endif
-#ifndef FIAM_HOST_HEADER
-#define FIAM_HOST_HEADER ""
-#endif
-#ifndef FIAM_FIXED_IP
-#define FIAM_FIXED_IP ""
-#endif
-#ifndef FIAM_FIXED_IP_ALT
-#define FIAM_FIXED_IP_ALT ""
-#endif
-#ifndef FIAM_DNS_CHECK_HOST
-#define FIAM_DNS_CHECK_HOST "fiet.cc"
-#endif
-#define CAPTURE_PATH "/api/capture"
-#define WEARABLE_REPLY_PATH "/api/wearable/reply"
-
-// Auth token — same as FIAM_INGEST_TOKEN on ISP
-#ifndef FIAM_TOKEN
-#define FIAM_TOKEN "changeme"
+#ifndef LIMEN_HTTP_PORT
+#define LIMEN_HTTP_PORT 80
 #endif
 
 // ---- Hardware ----
 #define SENSE_SD_CS_PIN 21   // Pull HIGH to disable Sense SD, free SPI for display
-#define CAMERA_FRAME_SIZE FRAMESIZE_VGA  // 640x480, good balance of quality vs upload speed
+#define CAMERA_FRAME_SIZE FRAMESIZE_VGA  // 640x480, sharper phone preview
 
 // ---- Behavior ----
-#define CAPTURE_INTERVAL_MS  0       // Camera/touch are deferred; screen-only today.
-#define DISPLAY_POLL_INTERVAL_MS 3000 // Poll display queue every 3s
-#define DISPLAY_TIMEOUT_MS  30000    // Dim screen after 30s idle
+#define WIFI_RETRY_INTERVAL_MS 10000
+#define STREAM_FRAME_DELAY_MS 180
+#define STREAM_MAX_MS 30000
+#define DISPLAY_IDLE_OFF_MS 90000
+#define TOUCH_RESET_WINDOW_MS 7000
+#define TOUCH_RESET_TAPS 3

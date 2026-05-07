@@ -21,10 +21,9 @@
 	const sourceColors: Record<string, string> = {
 		cc: 'var(--color-blue)',
 		action: 'var(--color-peach)',
-		tg: 'var(--color-green)',
 		email: 'var(--color-yellow)',
 		favilla: 'var(--color-pink)',
-		schedule: 'var(--color-teal)'
+		todo: 'var(--color-teal)'
 	};
 
 	const edgeTypeColors: Record<string, string> = {

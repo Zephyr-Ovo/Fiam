@@ -4,7 +4,9 @@
 
 > **2026-04-24 更新**：信道层已从「daemon 直接轮询外部 API」迁移为「MQTT 总线 + 独立 bridge 进程」拓扑。topic 规范：`fiam/receive/<source>` 入站、`fiam/dispatch/<target>` 出站；broker 为 Mosquitto，绑 `127.0.0.1:1883`。详见 [DEVLOG.md](DEVLOG.md) 中「2026-04-24 MQTT 总线落地」一节。
 
-> **2026-04-25 更新**：新增 plugin registry + marker registry。功能性接入统一由 `plugins/<id>/plugin.toml` 描述，可通过 `fiam plugin enable/disable <id>` 开关；出站 marker 从硬编码 TG/Email 改为泛化 `[→target:recipient]`，由 manifest 的 `dispatch_targets` 解析。
+> **2026-04-25 更新**：新增 plugin registry + marker registry。功能性接入统一由 `plugins/<id>/plugin.toml` 描述，可通过 `fiam plugin enable/disable <id>` 开关；出站 marker 改为泛化 `[→target:recipient]`，由 manifest 的 `dispatch_targets` 解析。
+
+> **2026-05-05 更新**：旧 bot chat 路由已完全退休；当前 live channel 以 email、Favilla/app、Limen/XIAO 为准。
 
 ## 1. 核心架构逻辑设计
 系统摒弃了单一的“对话循环”模型，采用**双态驱动模型**：
@@ -18,7 +20,7 @@
 ### 2.1 流量路由与枢纽 (Conductor)
 **路径**：`src/fiam/conductor.py`
 无状态信息枢纽（Hub）。
-- **逻辑关联**：所有来自频道的输入（TG、Email）和 LLM 输出（CC JSONL 日志）均由 `Conductor` 接收。
+- **逻辑关联**：所有来自频道的输入（Email、Favilla/app、Limen/XIAO）和 LLM 输出（CC JSONL 日志）均由 `Conductor` 接收。
 - **业务职责**：
   - 写入源流日志 `flow.jsonl`（beat 概念）。
   - 调用 Embedding 引擎并把 beat 级冻结向量写入 `store/features/`。
@@ -43,22 +45,22 @@
   - **算法**：接收当前滑动向量窗口（Seed 种子），映射到矩阵中最接近的事件，沿节点边权重传导概率。
   - 不使用 Top-K 和 MMR。命中概率（大于 0.4）高的事件写入 `recall.md`。
 
-### 2.4 主循环与调度器 (Daemon & Scheduler)
-**路径**：`scripts/fiam_lib/daemon.py`, `scheduler.py`
+### 2.4 主循环与 todo 队列 (Daemon & Todo)
+**路径**：`scripts/fiam_lib/daemon.py`, `todo.py`
 系统的绝对控制中心与生命周期管理者。
 - **Daemon**：
   - 代码唯一的真实 Event Loop。**订阅** MQTT `fiam/receive/+`（不再轮询），唤醒 CC（通过 `claude -p` 命令系统子进程），决定外部交互时机（交互拦截或记录 `pending_external.txt`）。
   - 维护唤醒生命周期，提取 `CC` jsonl 中的 `WAKE/SLEEP` tag，触发唤醒与长期休眠流程。
-- **Scheduler**：
-  - 日程任务维护队列（`schedule.jsonl`），带有指数退避（Backoff）、过期归档与最大尝试次数控制。
+- **Todo queue**：
+  - 稍后任务维护队列（`todo.jsonl`），带有指数退避（Backoff）、过期归档与最大尝试次数控制。
 
 ### 2.5 下游通信管道 (Bus + Bridges + Postman)
 **路径**：`src/fiam/bus.py`, `src/fiam/plugins.py`, `src/fiam/markers.py`, `scripts/bridges/`, `scripts/fiam_lib/postman.py`, `plugins/`, `channels/`
 - **MQTT 总线 (Bus)**：薄封装 paho-mqtt，统一 `fiam/receive/<source>` 入站 / `fiam/dispatch/<target>` 出站 topic。QoS 1 + persistent session，daemon 重启不丢消息。
 - **Plugin registry**：扫描 `plugins/*/plugin.toml`，决定 source/target 是否启用，以及 marker alias 到 dispatch topic 的解析。禁用插件后 daemon 入站、Conductor 出站与 bridge 运行时都会跳过对应能力。
-- **Marker registry**：解析 AI 输出中的 `[→target:recipient]`，不再在 daemon 中硬编码 `tg|email`。
-- **独立 Bridge 进程**：`bridge_tg.py` / `bridge_email.py` 各自 systemd 管理：拉远端 API → 发 `fiam/receive/<source>`；订 `fiam/dispatch/<target>` → 调 postman 实际投递。daemon 不再持有任何外部 API 凭证或 socket。
-- **外发投递机制 (Postman)**：仍是底层协议库（TG `sendMessage`、SMTP），现仅由 bridge 调用，不被 daemon 直接持有。
+- **Marker registry**：解析 AI 输出中的 `[→target:recipient]`，不再在 daemon 中硬编码 channel。
+- **独立 Bridge 进程**：`bridge_email.py` 由 systemd 管理：拉远端 API → 发 `fiam/receive/<source>`；订 `fiam/dispatch/<target>` → 调 postman 实际投递。daemon 不再持有任何外部 API 凭证或 socket。
+- **外发投递机制 (Postman)**：仍是底层邮件协议库（SMTP/IMAP），现仅由 bridge 调用，不被 daemon 直接持有。
 - **Outbox 历史路径**：`outbox/*.md` 仍由 `outbox.sh` hook 写入（CC 侧），后续会由 conductor 转译成 `fiam/dispatch/*` 消息。
 
 ### 2.6 LLM 介入与 Hook 钩子体系 (Hooks Adapter)

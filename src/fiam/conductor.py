@@ -38,7 +38,7 @@ class Conductor:
     """Stateless information hub: receive → flow + embed + segment + store.
 
     Two entry points:
-      - ``receive()``    — external messages (TG, email, favilla, ...)
+      - ``receive()``    — external messages (email, favilla, ...)
       - ``receive_cc()`` — Claude Code JSONL delta
 
     One exit:
@@ -209,7 +209,7 @@ class Conductor:
         if not scene or "@" in scene:
             return scene
         # Plugin/external inbound channels
-        if scene in {"tg", "email"}:
+        if scene in {"email"}:
             return f"external@{scene}"
         # Scheduler / device triggers
         if scene in {"schedule", "limen", "xiao", "ring"}:
@@ -343,7 +343,7 @@ class Conductor:
         """Send outbound message via MQTT to the appropriate channel bridge.
 
         Publishes to ``fiam/dispatch/<target>``. The target bridge process
-        (bridge_tg, bridge_email, ...) subscribes and performs the actual
+        (bridge_email, ...) subscribes and performs the actual
         delivery. Conductor knows nothing about tokens, SMTP, or APIs.
 
         Returns True if the publish was accepted by the bus.

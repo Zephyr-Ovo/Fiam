@@ -14,15 +14,14 @@ export type AppConfig = {
   userName: string
   /** Background image URL (imported asset or remote URL). */
   bg: string
-  /** API base for backend (proxied via vite dev server). */
+  /** API base for the Favilla server (proxied via vite dev server). */
   apiBase: string
-  /** Auth token for backend. */
+  /** Auth token for the Favilla server. */
   ingestToken: string
-  /** OpenRouter API key (sk-or-...). Sent to backend as X-OpenRouter-Key when set;
-   *  backend falls back to its own env var if empty. */
-  openrouterKey: string
-  /** Default backend used by sendChat: "auto" | "cc" | "api". */
-  defaultBackend: "auto" | "cc" | "api"
+  /** Local Limen/XIAO HTTP base URL, e.g. http://192.168.39.19. */
+  limenBaseUrl: string
+  /** Default runtime used by sendChat: "auto" | "cc" | "api". */
+  defaultRuntime: "auto" | "cc" | "api"
 }
 
 const defaults: AppConfig = {
@@ -31,8 +30,8 @@ const defaults: AppConfig = {
   bg: bgDefault,
   apiBase: (import.meta.env.VITE_API_BASE as string) ?? (import.meta.env.VITE_API_TARGET as string) ?? "",
   ingestToken: (import.meta.env.VITE_INGEST_TOKEN as string) ?? "",
-  openrouterKey: (import.meta.env.VITE_OPENROUTER_KEY as string) ?? "",
-  defaultBackend: "auto",
+  limenBaseUrl: (import.meta.env.VITE_LIMEN_BASE_URL as string) ?? "",
+  defaultRuntime: "auto",
 }
 
 const STORAGE_KEY = "favilla:config"

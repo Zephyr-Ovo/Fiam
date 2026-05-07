@@ -1,11 +1,11 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import { api, type Status, type StateSnapshot, type EventRow, type ScheduleRow } from '$lib/api';
+	import { api, type Status, type StateSnapshot, type EventRow, type TodoRow } from '$lib/api';
 
 	let status = $state<Status | null>(null);
 	let emotion = $state<StateSnapshot | null>(null);
 	let recentEvents = $state<EventRow[]>([]);
-	let upcoming = $state<ScheduleRow[]>([]);
+	let upcoming = $state<TodoRow[]>([]);
 	let err = $state<string | null>(null);
 	let timer: ReturnType<typeof setInterval>;
 
@@ -15,7 +15,7 @@
 				api.status(),
 				api.state().catch(() => null),
 				api.events(10),
-				api.schedule().catch(() => [])
+				api.todo().catch(() => [])
 			]);
 			status = s;
 			emotion = e;
@@ -99,23 +99,23 @@
 		{/if}
 	</div>
 
-	<!-- Upcoming wakes -->
+	<!-- Upcoming todo -->
 	<div class="bg-[var(--color-mantle)] border border-[var(--color-surface0)] p-3">
 		<h2 class="text-xs uppercase tracking-wide text-[var(--color-subtext0)] mb-2">
 			Upcoming ({upcoming.length})
 		</h2>
 		{#if upcoming.length}
 			<ul class="text-xs font-mono space-y-1">
-				{#each upcoming as w}
+				{#each upcoming as item}
 					<li class="flex gap-2">
-						<span class="text-[var(--color-sapphire)]">{w.wake_at.slice(5, 16)}</span>
-						<span class="text-[var(--color-overlay1)]">{w.type}</span>
-						<span class="truncate">{w.reason}</span>
+						<span class="text-[var(--color-sapphire)]">{item.at.slice(5, 16)}</span>
+						<span class="text-[var(--color-overlay1)]">{item.type}</span>
+						<span class="truncate">{item.reason}</span>
 					</li>
 				{/each}
 			</ul>
 		{:else}
-			<p class="text-xs text-[var(--color-overlay0)]">no pending wakes</p>
+			<p class="text-xs text-[var(--color-overlay0)]">no pending todos</p>
 		{/if}
 	</div>
 

@@ -116,15 +116,14 @@ export function Settings({ open, onClose }: Props) {
           secret
         />
         <Field
-          label="OpenRouter key"
-          value={draft.openrouterKey}
-          onChange={(v) => setDraft({ ...draft, openrouterKey: v })}
-          placeholder="sk-or-v1-..."
-          secret
+          label="Limen URL"
+          value={draft.limenBaseUrl}
+          onChange={(v) => setDraft({ ...draft, limenBaseUrl: v })}
+          placeholder="http://192.168.39.19"
         />
-        <BackendField
-          value={draft.defaultBackend}
-          onChange={(v) => setDraft({ ...draft, defaultBackend: v })}
+        <RuntimeField
+          value={draft.defaultRuntime}
+          onChange={(v) => setDraft({ ...draft, defaultRuntime: v })}
         />
 
         <div className="mt-5 flex justify-end gap-2">
@@ -157,12 +156,12 @@ export function Settings({ open, onClose }: Props) {
   )
 }
 
-function BackendField({
+function RuntimeField({
   value,
   onChange,
 }: {
-  value: AppConfig["defaultBackend"]
-  onChange: (v: AppConfig["defaultBackend"]) => void
+  value: AppConfig["defaultRuntime"]
+  onChange: (v: AppConfig["defaultRuntime"]) => void
 }) {
   return (
     <div className="block" style={{ paddingTop: 8, paddingBottom: 8 }}>
@@ -170,26 +169,26 @@ function BackendField({
         className="text-[10.5px] uppercase tracking-[0.08em]"
         style={{ color: "rgba(63, 47, 41, 0.55)" }}
       >
-        Backend
+        Runtime
       </div>
       <div
         className="mt-1 grid grid-cols-3 gap-1 rounded-full p-1"
         style={{ background: "rgba(63, 47, 41, 0.09)" }}
       >
-        {(["auto", "api", "cc"] as const).map((backend) => {
-          const active = value === backend
+        {(["auto", "api", "cc"] as const).map((runtime) => {
+          const active = value === runtime
           return (
             <button
-              key={backend}
+              key={runtime}
               type="button"
-              onClick={() => onChange(backend)}
+              onClick={() => onChange(runtime)}
               className="rounded-full px-3 py-1.5 text-[13px] font-medium transition-colors"
               style={{
                 color: active ? "#fff" : "rgba(63, 47, 41, 0.68)",
                 background: active ? "var(--color-cocoa)" : "transparent",
               }}
             >
-              {backend === "auto" ? "AI" : backend.toUpperCase()}
+              {runtime === "auto" ? "AI" : runtime.toUpperCase()}
             </button>
           )
         })}

@@ -12,6 +12,60 @@
 **Backend Settings**：`AI` = server auto-router（同一个 AI 身份可按任务在 API/CC 能力面间切换）；`API`/`CC` = 用户手动强制本轮请求后端，AI 仍应理解这是 transport/capability surface，不是身份变化。
 **Settings**：背景 `rgba(0,0,0,0.45)` 纯变暗不模糊；卡片 `backdrop-filter: blur(20px)` + `rgba(255,250,243,0.55)` 半透明磨砂；居中固定，CSS-only fade 120ms。
 
+## Session 2026-05-06 — BTW Dashboard/Studio mainline wiring
+
+- Dashboard and Studio were moved into `channels/favilla/app` from the BTW prototype folders with the original UI/style preserved. Do not redesign these pages while wiring functionality; keep visual changes to compatibility fixes only.
+- Added server-backed Favilla Dashboard summary at `GET /favilla/dashboard`, using the ingest token and combining Fiam status/health, recent pool events, todo queue, chat digest, and Stroll digest. Colmi ring metrics remain placeholder-only until a mainline BLE/Colmi backend exists.
+- Added server-backed Studio state at `GET/POST /favilla/studio`, stored under `home_path/app_studio/state.json`. The app loads this state on mount and debounced-saves files, active note content, active file, and timeline to the server; it is not phone-local-only.
+- Vite dev now proxies both `/api` and `/favilla` to `VITE_API_TARGET`/`127.0.0.1:8766` so local development can use the same relative Favilla endpoints.
+- ISP Caddy now bypasses basic auth for `/favilla/*` and reverse-proxies it to the dashboard server; public CORS preflight for `/favilla/studio` returns 204 and live public reads for `/favilla/dashboard` + `/favilla/studio` return `ok: true`.
+- Verification: `py_compile scripts/dashboard_server.py`, `npm --prefix channels/favilla/app run build`, VS Code diagnostics, browser smoke for Dashboard open/back plus Studio open/file drawer/back, ISP dashboard restart, public CORS preflight, and public endpoint reads passed.
+
+## Session 2026-05-06 — Stroll marker details + Studio/Dashboard linkage
+
+- Stroll map annotations now keep spatial record metadata: emoji/text, source/origin, place kind, distance/radius, attachment URL, and created/updated timestamps. Clicking an AI marker opens a detail card with emoji, description, date, place/source, distance, and photo/attachment context.
+- Dashboard now consumes backend `studio` and `locations` digests. AI/human ratio, emoji calendar, and creative footprint include Studio timeline activity plus Stroll spatial records, so location-linked writing shows up beside walk markers.
+- Studio now persists per-file contents and richer timeline events. Manual edits, new notes, AI edit requests, suggested edit scripts, and applied AI edits are recorded with file, unit count, timestamp, and optional browser location.
+- Studio AI editing uses command scripts, not whole-document replacement. Backend `/favilla/studio/edit` asks API/CC for JSON operations (`replace`, `insert_after`, `insert_before`, `delete`, `append`, `prepend`), and the frontend applies them locally so timeline/attribution can say what changed. User decision: Studio edits do not enter Flow yet; they only update Studio state/timeline and `app_history/studio.jsonl`.
+- Verification: focused Python suite `tests.test_app_runtime_router tests.test_stroll_store tests.test_api_runtime` passed (26 tests); `npm --prefix channels/favilla/app run build` passed; VS Code diagnostics are clean. Local browser smoke on a temporary 8767 server verified Stroll marker popup emoji/date/place/source/distance, Dashboard Studio/location summaries, and Studio AI edit generate/apply/timeline behavior with a stubbed edit response.
+- Real Studio model smoke on temporary 8767 passed: instruction `AAA -> AABA` returned one `replace` command (`target=AAA`, `text=AABA`) via API model `anthropic/claude-3-5-haiku`, cost about `$0.001772`. Smoke `app_history/studio.jsonl` rows were removed afterward.
+
+## Session 2026-05-06 — Limen/XIAO camera execution
+
+- Stroll action XML now includes `view_camera` alongside `capture_photo`, `set_limen_screen`, and `refresh_nearby`.
+- Settings no longer collects OpenRouter/API keys. API runtime keys live in server/local environment variables; the app only keeps Favilla API token/base plus `Limen URL` for the local XIAO device.
+- Added a Limen local client for `GET /health`, `GET /stream`, `GET /capture`, and `POST /screen`.
+- Stroll Live shows the Limen MJPEG stream; Photo shows the latest still. AI `capture_photo` captures from XIAO, uploads through `/favilla/upload`, writes a Stroll `photo` record with emoji/description/location metadata, and sends the uploaded image back to AI as an attachment for review.
+- AI `set_limen_screen` mirrors short text to XIAO `/screen`; the small round Limen preview in Stroll mirrors the latest requested screen content.
+- Mainline `channels/limen` firmware is now local camera/screen HTTP instead of server polling. Touch reset is three taps within seven seconds while awake; a sleeping display's first touch only wakes the screen.
+
+## Session 2026-05-06 — Todo / held reply protocol cleanup
+
+- App-facing hold metadata is now `hold.queued`, matching backend `held_reply` todos. The old queue naming should not reappear in Favilla types or server responses.
+- Backend carry-over is a one-hop API ↔ CC transfer for the same AI identity; app history stores only the final visible reply.
+- Verification: `npm run build` passed in `channels/favilla/app`; Python app-backend tests cover API→CC and CC→API carry-over routing.
+
+## Session 2026-05-06 — Stroll source foundation
+
+- Stroll now has real Favilla source routes instead of static-only UI: `/favilla/stroll/send`, `/favilla/stroll/history`, `/favilla/stroll/nearby`, `/favilla/stroll/records`, and `/favilla/stroll/action-result`.
+- Server-side spatial records are point-only and stored under `home_path/stroll/`; nearby lookup uses rough 50m cells for archive selection, then true-distance <=50m filtering.
+- Stroll send injects current location/cell/place/nearby records as private runtime context only for source `stroll`; stored Stroll history remains clean user/AI chat text.
+- The Stroll page now loads source history, watches phone geolocation while active, sends text through the Stroll route with context, writes user/AI point notes, and renders nearby photo/note records as map annotations.
+- Verification: focused Python suite `tests.test_app_runtime_router tests.test_markers tests.test_api_runtime tests.test_stroll_store` passed; `npm --prefix channels/favilla/app run build` passed with existing chunk-size/plugin-timing warnings.
+- ISP real runtime verification: after surgical sync, Python focused suite passed remotely; direct Stroll send smoke passed on both `runtime=api` and `runtime=cc`. Smoke rows were removed from Stroll app history and flow, and the smoke CC active session was cleared. Live HTTP `/favilla/stroll/history` and `/favilla/stroll/nearby` returned `ok: true` after dashboard restart. Claude Code is ISP-only (`ssh isp`, `/usr/bin/claude`); do not use local Windows Claude Code for Favilla runtime validation.
+- AI map marking is active: API and CC can emit hidden `<stroll_record kind="marker" text="..." />` markers, which the server stores as Stroll spatial records and strips from the visible reply/history. Real ISP marker smoke passed for both runtimes and `/favilla/stroll/nearby` read the written markers back; smoke artifacts were removed afterward.
+- Rough place semantics are active when Mapbox is available: `StrollMapView` samples features around the current point and reports `road`/`green`/`building`/`water`/`unknown` into Stroll context.
+- Stroll tool/action XML is active: API and CC can emit hidden `<stroll_action type="capture_photo" />`, `<stroll_action type="set_limen_screen" />`, and `<stroll_action type="refresh_nearby" />`. The server strips XML from visible text, queues actions, and returns `stroll_actions`; the app renders compact tool rows with Camera/Monitor/Refresh icons, refreshes nearby records immediately, and best-effort reports action results. Hardware execution remains deferred while the phone/Limen device is absent.
+- Real ISP three-action smoke passed for both API and CC: marker + all three actions returned, raw XML absent from visible replies, action statuses queued, and smoke history/spatial/action/flow rows were cleaned. Web preview on local Vite `5175` used routed mock Stroll responses; Playwright confirmed the three action rows (`photo request queued`, `Limen screen queued`, `nearby refreshed`) render without breaking the Stroll conversation stack. Build still passes with existing chunk/plugin warnings.
+
+## Session 2026-05-06 — Figma Streamline icon cache
+
+- Cached Figma node `71:1291` from `favilla-v2` locally under `channels/favilla/docs/figma/`: full metadata XML, board screenshot PNG, and selected-node manifest.
+- Selected 43 likely Favilla action icons for Home/Studio/Chat. 42 nodes are verified SVG-exportable; `magic-wand` is present in metadata but Figma reports no visible exportable layers.
+- Recovered 34 complete SVG files from two selected MCP output batches before the 20KB tool truncation point into `channels/favilla/assets/icons/streamline/`. Use `docs/figma/favilla-v2-icons-71-1291.selection.json` as the full node index.
+- Copied the recovered SVG set into Favilla app public assets and wired Chat thinking/task rows to infer more specific icons from step icon/summary/text/result/source. Keep user-approved custom controls (recall/hourglass) unchanged.
+- Verification: `npm --prefix channels/favilla/app run build` passed; local Vite preview served the Streamline SVG paths used by the Chat thinking/task rail.
+
 ## Session 2026-05-04 — Persistent chat + phone smoke
 
 - Commit `21959c6` built by GitHub Actions run #53 and installed on phone `OVOJUWYD4HIZYHKZ`; old package signature mismatch required uninstall + reinstall.
@@ -41,7 +95,7 @@
 - Disabled per-tap Capacitor native haptics bridge; it caused visible first-tap jank on controls. Browser vibration remains best-effort.
 - Confirm modal remembers the largest screen height so soft-keyboard viewport shrink is less likely to recenter the dialog into the keyboard-free area.
 - App prompt no longer injects concrete recent upload rows every turn. Backend context only tells AI where `uploads/manifest.jsonl` lives and to inspect files only when relevant.
-- Live constitution updated: Favilla is the primary direct channel, Telegram/TG is retired history, and `AI` means auto routing across API/CC surfaces.
+- Live constitution updated: Favilla is the primary direct channel, and `AI` means auto routing across API/CC surfaces.
 
 ## Session 2026-05-04 — Keyboard focus + backend proof pass
 
@@ -49,7 +103,7 @@
 - Added a document-level stale-focus release: if Android WebView leaves the textarea focused after the soft keyboard is already hidden, the next non-textarea pointerdown blurs it so controls cannot resurrect the keyboard.
 - Chat auto-scroll is pinned only while the user is already at the live tail. If the user scrolls up with the keyboard open, thinking-chain expand/collapse must preserve keyboard state and must not snap the list back to the bottom.
 - Auto-router no longer treats generic `api`/`backend` mentions as CC work. Explicit `backend=api`, `backend: api`, API/CC mode phrases, short `去/到/用/走 api|cc` phrases, and `另一边/切换过去` phrases are handled directly.
-- New app history rows record the actual selected `backend` for both user and AI messages. Backend prompt context now treats `[app:... backend=api|cc]` as authoritative and repeats that TG routing tags are retired.
+- New app history rows record the actual selected `backend` for both user and AI messages. Backend prompt context now treats `[app:... backend=api|cc]` as authoritative.
 
 ## Session 2026-05-04 — Stroll first layout
 

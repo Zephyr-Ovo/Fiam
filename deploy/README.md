@@ -82,10 +82,9 @@ mosquitto_sub -h 127.0.0.1 -t 'fiam/#' -v &
 mosquitto_pub -h 127.0.0.1 -t 'fiam/receive/test' -m '{"text":"hi","source":"test"}'
 
 # Install the channel bridges
-sudo cp ~/fiam-code/deploy/fiam-bridge-tg.service /etc/systemd/system/
 sudo cp ~/fiam-code/deploy/fiam-bridge-email.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now fiam-bridge-tg fiam-bridge-email
+sudo systemctl enable --now fiam-bridge-email
 
 # Start the daemon — it subscribes to fiam/receive/+ instead of channel polling
 sudo cp ~/fiam-code/deploy/fiam-daemon.service /etc/systemd/system/
@@ -100,8 +99,8 @@ sudo systemctl enable --now fiam-daemon
 | `fiam/receive/<source>`     | inbound   | `{text, source, from_name, t, ...meta}`           |
 | `fiam/dispatch/<target>`    | outbound  | `{text, recipient}`                               |
 
-Sources currently in use: `tg`, `email`, `favilla`.
-Targets currently in use: `tg`, `email`.
+Sources currently in use: `email`, `favilla`.
+Targets currently in use: `email`.
 
 ## Update deployment
 
@@ -115,6 +114,6 @@ sudo systemctl restart fiam-dashboard   # only if backend changed
 ## Access
 
 - https://fiet.cc — Cloudflare TLS, Caddy basic auth
-- `/api/capture`, `/api/app/*`, and `/api/wearable/*` bypass Caddy basic auth and are protected by `FIAM_INGEST_TOKEN`
+- `/api/capture`, `/api/app/*`, `/api/wearable/*`, and `/favilla/*` bypass Caddy basic auth and are protected by `FIAM_INGEST_TOKEN`
 - backend decides role from `X-Forwarded-User` (set by Caddy from auth user id)
 - roles: `Zephyr` / `ai` / `fiet` (everyone else → `anon`, blocked by Caddy)

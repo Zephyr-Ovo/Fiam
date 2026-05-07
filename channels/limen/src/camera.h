@@ -46,7 +46,7 @@ bool cameraInit() {
     config.pixel_format = PIXFORMAT_JPEG;
     config.grab_mode    = CAMERA_GRAB_LATEST;
     config.fb_location  = CAMERA_FB_IN_PSRAM;
-    config.jpeg_quality = 12;
+    config.jpeg_quality = 8;
     config.fb_count     = 2;
     config.frame_size   = CAMERA_FRAME_SIZE;
 

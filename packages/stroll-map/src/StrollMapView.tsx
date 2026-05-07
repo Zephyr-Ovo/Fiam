@@ -16,6 +16,8 @@ import { toRenderCoordinate } from "./coordinates"
 import { applyStandardConfig, displayLightPreset, quietDefaultMapLayers, removeDefaultLabelLayers, standardStyleUrl } from "./mapboxStyle"
 import type { CoordinateCorrection, StrollMapAnnotation, StrollMapLabel, StrollTrackPoint, WeatherSnapshot } from "./types"
 
+type PlaceKind = "road" | "green" | "building" | "water" | "unknown"
+
 const routeSourceId = "stroll-route"
 const labelSourceId = "stroll-custom-labels"
 const routeGlowLayerId = "stroll-route-glow"
@@ -31,9 +33,10 @@ type Props = {
   weather: WeatherSnapshot
   coordinateCorrection: CoordinateCorrection
   onAnnotationClick?: (annotation: StrollMapAnnotation) => void
+  onPlaceKindChange?: (placeKind: PlaceKind) => void
 }
 
-export function StrollMapView({ token, track, labels = [], annotations = [], weather, coordinateCorrection, onAnnotationClick }: Props) {
+export function StrollMapView({ token, track, labels = [], annotations = [], weather, coordinateCorrection, onAnnotationClick, onPlaceKindChange }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<MapboxMap | null>(null)
   const markerRef = useRef<mapboxgl.Marker | null>(null)
@@ -42,11 +45,11 @@ export function StrollMapView({ token, track, labels = [], annotations = [], wea
   const initialWeatherRef = useRef(weather)
   const latestWeatherRef = useRef(weather)
   const renderPoints = useMemo(() => normalizeTrack(track, coordinateCorrection), [track, coordinateCorrection])
-  const latestMapStateRef = useRef({ renderPoints, labels, annotations, coordinateCorrection, onAnnotationClick })
+  const latestMapStateRef = useRef({ renderPoints, labels, annotations, coordinateCorrection, onAnnotationClick, onPlaceKindChange })
 
   useEffect(() => {
-    latestMapStateRef.current = { renderPoints, labels, annotations, coordinateCorrection, onAnnotationClick }
-  }, [renderPoints, labels, annotations, coordinateCorrection, onAnnotationClick])
+    latestMapStateRef.current = { renderPoints, labels, annotations, coordinateCorrection, onAnnotationClick, onPlaceKindChange }
+  }, [renderPoints, labels, annotations, coordinateCorrection, onAnnotationClick, onPlaceKindChange])
 
   useEffect(() => {
     latestWeatherRef.current = weather
@@ -96,6 +99,7 @@ export function StrollMapView({ token, track, labels = [], annotations = [], wea
       updateMapData(map, latest.renderPoints, latest.labels, latest.coordinateCorrection)
       renderAnnotationMarkers(map, annotationMarkersRef, latest.annotations, latest.coordinateCorrection, latest.onAnnotationClick)
       fitRouteOnce(map, latest.renderPoints, fittedRef)
+      reportPlaceKind(map, latest.renderPoints, latest.onPlaceKindChange)
     })
 
     return () => {
@@ -130,7 +134,8 @@ export function StrollMapView({ token, track, labels = [], annotations = [], wea
     if (!map || !map.isStyleLoaded()) return
     updateMapData(map, renderPoints, labels, coordinateCorrection)
     fitRouteOnce(map, renderPoints, fittedRef)
-  }, [renderPoints, labels, coordinateCorrection])
+    reportPlaceKind(map, renderPoints, onPlaceKindChange)
+  }, [renderPoints, labels, coordinateCorrection, onPlaceKindChange])
 
   useEffect(() => {
     const map = mapRef.current
@@ -314,6 +319,37 @@ function focusCurrentLocation(map: MapboxMap | null, coordinate: [number, number
     duration: 620,
     essential: true,
   })
+}
+
+function reportPlaceKind(
+  map: MapboxMap,
+  points: ReturnType<typeof normalizeTrack>,
+  onPlaceKindChange?: (placeKind: PlaceKind) => void,
+) {
+  if (!onPlaceKindChange) return
+  const currentPoint = points[points.length - 1]
+  if (!currentPoint) return
+  const screenPoint = map.project(currentPoint.coordinate)
+  const features = map.queryRenderedFeatures([
+    [screenPoint.x - 10, screenPoint.y - 10],
+    [screenPoint.x + 10, screenPoint.y + 10],
+  ])
+  onPlaceKindChange(classifyPlaceKind(features))
+}
+
+function classifyPlaceKind(features: Array<{ layer?: { id?: string }; sourceLayer?: string; properties?: Record<string, unknown> | null }>): PlaceKind {
+  const haystack = features.map((feature) => {
+    const props = feature.properties || {}
+    return [feature.layer?.id, feature.sourceLayer, props.class, props.type, props.kind, props.name]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase()
+  }).join(" ")
+  if (/water|river|lake|canal|ocean|sea/.test(haystack)) return "water"
+  if (/park|garden|grass|green|wood|forest|landcover|natural/.test(haystack)) return "green"
+  if (/building|structure/.test(haystack)) return "building"
+  if (/road|street|path|motorway|trunk|primary|secondary|tertiary/.test(haystack)) return "road"
+  return "unknown"
 }
 
 function renderAnnotationMarkers(

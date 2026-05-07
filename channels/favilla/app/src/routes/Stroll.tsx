@@ -1,11 +1,17 @@
-import { Camera, ChevronUp, Maximize2, Minimize2, Pause, Phone, Radio, Send, Square, Video } from "lucide-react"
-import { useEffect, useRef, useState } from "react"
+import { Camera, ChevronUp, Maximize2, Minimize2, Monitor, Pause, Phone, Radio, RefreshCw, Send, Square, Video } from "lucide-react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { ConfirmModal } from "../components/ConfirmModal"
 import { StrollMapView } from "@stroll-map/StrollMapView"
-import { buildPhotoAnnotations, createAiEmojiAnnotation } from "@stroll-map/annotations"
+import { buildPhotoAnnotations, createAiEmojiAnnotation, createSpatialRecordAnnotation } from "@stroll-map/annotations"
+import { loadStoredLiveTrack, saveStoredLiveTrack, positionToTrackPoint, appendLivePoint } from "@stroll-map/liveLocation"
+import { summarizeTrack } from "@stroll-map/route"
 import { sampleTrack } from "@stroll-map/sampleTrack"
-import type { StrollMapAnnotation, StrollMapLabel, WeatherSnapshot } from "@stroll-map/types"
+import { strollCellId } from "@stroll-map/spatial"
+import type { StrollMapAnnotation, StrollMapLabel, StrollPhotoMarkerInput, StrollSpatialContext, StrollSpatialRecord, StrollTrackPoint, WeatherSnapshot } from "@stroll-map/types"
 import { fetchWeatherSnapshot } from "@stroll-map/weather"
+import { appConfig } from "../config"
+import { fetchStrollHistory, fetchStrollNearby, reportStrollActionResult, sendStrollMessage, uploadFiles, writeStrollRecord, type ChatAttachment, type StoredChatMessage, type StrollClientAction } from "../lib/api"
+import { captureLimenPhoto, displayLimenScreenText, fetchLimenHealth, limenStreamUrl, normalizeLimenBaseUrl, sendLimenScreenText, type LimenHealthResponse, type LimenScreenContent } from "../lib/limen"
 
 const INK = "#26304A"
 const PAPER = "#DECBCD"
@@ -24,10 +30,10 @@ const LAYOUT = {
   cameraRadius: 4,
   bridgeTop: -40,
   bridgeHeight: 64,
-  xiaoX: 27,
-  xiaoY: -10,
-  xiaoSize: 74,
-  xiaoInner: 56,
+  limenX: 27,
+  limenY: -10,
+  limenSize: 74,
+  limenInner: 56,
   switchRight: 20,
   switchTop: 42,
   switchWidth: 118,
@@ -50,16 +56,21 @@ const LAYOUT = {
 
 type CallRecordingState = "idle" | "recording" | "paused"
 
+type ConversationLine = {
+  id: string
+  name: string
+  text: string
+  role: "user" | "ai"
+  actionType?: string
+  error?: boolean
+}
+
+type LimenConnectionState = "unknown" | "online" | "streaming" | "capturing" | "error"
+
 type Props = {
   onBack: () => void
   active: boolean
 }
-
-const chatter = [
-  { name: "Fiet", text: "light changed at the next crossing" },
-  { name: "you", text: "keep live, no photo yet" },
-  { name: "Fiet", text: "xiao is showing the walking face" },
-]
 
 const mapLabels: StrollMapLabel[] = [
   { id: "turn", lng: sampleTrack[3].lng, lat: sampleTrack[3].lat, text: "we turned here", tone: "start" },
@@ -72,7 +83,7 @@ const mapAnnotations: StrollMapAnnotation[] = [
     { id: "flower-a", lng: sampleTrack[8].lng, lat: sampleTrack[8].lat, takenAt: Date.now(), source: "phone" },
     { id: "flower-b", lng: sampleTrack[8].lng + 0.00008, lat: sampleTrack[8].lat + 0.00004, takenAt: Date.now(), source: "phone" },
   ]),
-  createAiEmojiAnnotation({ id: "ai-slick", lng: sampleTrack[12].lng, lat: sampleTrack[12].lat, emoji: "⚠️", text: "slick paving" }),
+  createAiEmojiAnnotation({ id: "ai-slick", lng: sampleTrack[12].lng, lat: sampleTrack[12].lat, emoji: "⚠️", text: "slick paving", createdAt: Date.now() }),
 ]
 
 export function Stroll({ onBack, active }: Props) {
@@ -83,13 +94,67 @@ export function Stroll({ onBack, active }: Props) {
   const [savedCallRecording, setSavedCallRecording] = useState<string | null>(null)
   const [recording, setRecording] = useState(false)
   const [mediaMode, setMediaMode] = useState<"live" | "photo">("live")
+  const [limenBaseUrl, setLimenBaseUrl] = useState(() => appConfig.limenBaseUrl || "")
+  const [limenHealth, setLimenHealth] = useState<LimenHealthResponse | null>(null)
+  const [limenConnection, setLimenConnection] = useState<LimenConnectionState>(limenBaseUrl ? "online" : "unknown")
+  const [limenError, setLimenError] = useState("")
+  const [streamKey, setStreamKey] = useState(0)
+  const [lastPhotoUrl, setLastPhotoUrl] = useState("")
+  const [screenContent, setScreenContent] = useState<LimenScreenContent>({ type: "status", text: "ready" })
   const [conversationOpen, setConversationOpen] = useState(true)
-  const [conversationLines, setConversationLines] = useState(chatter)
+  const [conversationLines, setConversationLines] = useState<ConversationLine[]>([])
+  const [draft, setDraft] = useState("")
+  const [sending, setSending] = useState(false)
+  const [liveTrack, setLiveTrack] = useState<StrollTrackPoint[]>(() => loadStoredLiveTrack())
+  const [nearbyRecords, setNearbyRecords] = useState<StrollSpatialRecord[]>([])
+  const [nearbyVersion, setNearbyVersion] = useState("")
+  const [placeKind, setPlaceKind] = useState<StrollSpatialContext["placeKind"]>("unknown")
   const [screenExpanded, setScreenExpanded] = useState(false)
   const [mapExpanded, setMapExpanded] = useState(false)
   const [weather, setWeather] = useState<WeatherSnapshot>({ kind: "clear", intensity: 0.24, source: "fallback" })
+  const [selectedAnnotation, setSelectedAnnotation] = useState<StrollMapAnnotation | null>(null)
   const foldStartYRef = useRef<number | null>(null)
   const wasActiveRef = useRef(active)
+  const lastPhotoUrlRef = useRef("")
+  const activeTrack = liveTrack.length ? liveTrack : sampleTrack
+  const currentPoint = activeTrack[activeTrack.length - 1]
+  const normalizedLimenBaseUrl = useMemo(() => normalizeLimenBaseUrl(limenBaseUrl), [limenBaseUrl])
+  const streamUrl = useMemo(() => normalizedLimenBaseUrl ? limenStreamUrl(normalizedLimenBaseUrl) : "", [normalizedLimenBaseUrl])
+
+  const dynamicAnnotations = useMemo(() => {
+    const photos: StrollPhotoMarkerInput[] = nearbyRecords
+      .filter((record) => record.kind === "photo" && record.attachment)
+      .map((record) => ({
+        id: record.attachment?.id || record.id,
+        lng: record.lng,
+        lat: record.lat,
+        url: record.attachment?.url,
+        thumbUrl: record.attachment?.thumbUrl,
+        takenAt: record.attachment?.takenAt || record.createdAt,
+        source: record.attachment?.source === "limen" || record.attachment?.source === "replay" ? record.attachment.source : "phone",
+      }))
+    const photoIds = new Set(nearbyRecords.filter((record) => record.kind === "photo" && record.attachment).map((record) => record.id))
+    const richPhotoAnnotations = buildPhotoAnnotations(photos).map((annotation) => ({
+      ...annotation,
+      text: annotation.count && annotation.count > 1 ? `${annotation.count} photos` : "Limen photo",
+    }))
+    const richRecords = nearbyRecords
+      .filter((record) => !photoIds.has(record.id))
+      .filter((record) => record.text || record.emoji || record.attachment)
+      .map(createSpatialRecordAnnotation)
+    return [...mapAnnotations, ...richPhotoAnnotations, ...richRecords]
+  }, [nearbyRecords])
+
+  const dynamicLabels = useMemo(() => [
+    ...mapLabels,
+    ...nearbyRecords.slice(0, 4).filter((record) => record.text).map((record) => ({
+      id: `nearby-${record.id}`,
+      lng: record.lng,
+      lat: record.lat,
+      text: String(record.text).slice(0, 28),
+      tone: record.origin === "ai" ? "note" as const : "current" as const,
+    })),
+  ], [nearbyRecords])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -103,6 +168,65 @@ export function Stroll({ onBack, active }: Props) {
     if (wasActiveRef.current && !active) resetStrollSession()
     wasActiveRef.current = active
   }, [active])
+
+  useEffect(() => {
+    const onConfigChange = () => setLimenBaseUrl(appConfig.limenBaseUrl || "")
+    window.addEventListener("favilla:config-changed", onConfigChange)
+    return () => window.removeEventListener("favilla:config-changed", onConfigChange)
+  }, [])
+
+  useEffect(() => () => {
+    if (lastPhotoUrlRef.current) URL.revokeObjectURL(lastPhotoUrlRef.current)
+  }, [])
+
+  useEffect(() => {
+    if (!active || !normalizedLimenBaseUrl) return
+    void refreshLimenHealth()
+  }, [active, normalizedLimenBaseUrl])
+
+  useEffect(() => {
+    if (!active) return
+    let cancelled = false
+    setLiveTrack((track) => track.length ? track : loadStoredLiveTrack())
+    fetchStrollHistory().then((history) => {
+      if (cancelled || !history.ok) return
+      setConversationLines(historyToLines(history.messages || []))
+    })
+    return () => { cancelled = true }
+  }, [active])
+
+  useEffect(() => {
+    if (!active || !("geolocation" in navigator)) return
+    const watchId = navigator.geolocation.watchPosition(
+      (position) => {
+        const point = positionToTrackPoint(position)
+        setLiveTrack((track) => {
+          const next = appendLivePoint(track.length ? track : loadStoredLiveTrack(), point)
+          saveStoredLiveTrack(next)
+          return next
+        })
+      },
+      () => undefined,
+      { enableHighAccuracy: true, maximumAge: 10_000, timeout: 12_000 },
+    )
+    return () => navigator.geolocation.clearWatch(watchId)
+  }, [active])
+
+  useEffect(() => {
+    if (!active || !currentPoint) return
+    let cancelled = false
+    fetchStrollNearby(currentPoint, 50).then((nearby) => {
+      if (cancelled || !nearby.ok) return
+      setNearbyRecords(nearby.records || [])
+      setNearbyVersion(nearby.contextVersion || "")
+    })
+    return () => { cancelled = true }
+  }, [active, currentPoint?.id, currentPoint?.lng, currentPoint?.lat])
+
+  useEffect(() => {
+    if (!selectedAnnotation) return
+    if (!dynamicAnnotations.some((annotation) => annotation.id === selectedAnnotation.id)) setSelectedAnnotation(null)
+  }, [dynamicAnnotations, selectedAnnotation])
 
   useEffect(() => {
     if (callRecordingState !== "recording") return
@@ -144,6 +268,8 @@ export function Stroll({ onBack, active }: Props) {
 
   function resetStrollSession() {
     setConversationLines([])
+    setDraft("")
+    setSending(false)
     setConversationOpen(true)
     setScreenExpanded(false)
     setMapExpanded(false)
@@ -152,6 +278,250 @@ export function Stroll({ onBack, active }: Props) {
     setCallRecordingSeconds(0)
     setSavedCallRecording(null)
     setRecording(false)
+  }
+
+  async function refreshLimenHealth() {
+    if (!normalizedLimenBaseUrl) {
+      setLimenConnection("unknown")
+      setLimenHealth(null)
+      return null
+    }
+    try {
+      const health = await fetchLimenHealth(normalizedLimenBaseUrl)
+      setLimenHealth(health)
+      setLimenConnection(mediaMode === "live" ? "streaming" : "online")
+      setLimenError("")
+      return health
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setLimenConnection("error")
+      setLimenError(message)
+      return null
+    }
+  }
+
+  function changeMediaMode(nextMode: "live" | "photo") {
+    setMediaMode(nextMode)
+    if (nextMode === "live") {
+      setStreamKey((key) => key + 1)
+      setLimenConnection(normalizedLimenBaseUrl ? "streaming" : "unknown")
+    }
+  }
+
+  function buildContext(): StrollSpatialContext {
+    const summary = summarizeTrack(activeTrack)
+    return {
+      current: currentPoint ? { ...currentPoint, cellId: strollCellId(currentPoint), placeKind } : undefined,
+      route: {
+        points: activeTrack.slice(-80),
+        distanceKm: summary.distanceKm,
+        averageSpeedKmh: summary.averageSpeedKmh,
+      },
+      annotations: dynamicAnnotations,
+      nearbyMemories: nearbyRecords.map((record) => ({
+        id: record.id,
+        lng: record.lng,
+        lat: record.lat,
+        radiusM: record.radiusM,
+        cellId: record.cellId,
+        distanceM: record.distanceM,
+        bearingDeg: record.bearingDeg,
+        placeKind: record.placeKind,
+        title: record.text || record.kind,
+        lastSeenAt: record.updatedAt,
+        sourceIds: [record.id],
+        origin: record.origin,
+      })),
+      spatialRecords: nearbyRecords,
+      cellId: currentPoint ? strollCellId(currentPoint) : undefined,
+      placeKind,
+      contextVersion: nearbyVersion,
+      weather,
+      lightPreset: localLightPreset(),
+    }
+  }
+
+  async function sendDraft() {
+    const text = draft.trim()
+    if (!text || sending) return
+    const id = `local-${Date.now()}`
+    setDraft("")
+    setSending(true)
+    setConversationOpen(true)
+    setConversationLines((lines) => [...lines, { id, name: appConfig.userName || "you", text, role: "user" }])
+    if (currentPoint) {
+      void writeStrollRecord({ kind: "note", origin: "user", lng: currentPoint.lng, lat: currentPoint.lat, text, placeKind: "unknown" }).catch(() => undefined)
+    }
+    try {
+      const result = await sendStrollMessage(text, buildContext())
+      if (!result.ok) {
+        setConversationLines((lines) => [...lines, { id: `err-${Date.now()}`, name: appConfig.aiName || "Favilla", text: result.error || "Stroll failed", role: "ai", error: true }])
+        return
+      }
+      const reply = result.reply || ""
+      typeAiReply(reply)
+      if (result.stroll_records?.length) {
+        setNearbyRecords((records) => mergeRecords(records, result.stroll_records || []))
+      }
+      if (result.stroll_actions?.length) {
+        await handleStrollActions(result.stroll_actions)
+      }
+      if (currentPoint && reply) {
+        void writeStrollRecord({ kind: "note", origin: "ai", lng: currentPoint.lng, lat: currentPoint.lat, text: reply.slice(0, 500), placeKind: "unknown" }).catch(() => undefined)
+      }
+    } finally {
+      setSending(false)
+    }
+  }
+
+  function typeAiReply(fullText: string) {
+    const id = `ai-${Date.now()}`
+    const chars = Array.from(fullText)
+    let count = 0
+    setConversationLines((lines) => [...lines, { id, name: appConfig.aiName || "Favilla", text: "", role: "ai" }])
+    const timer = window.setInterval(() => {
+      count = Math.min(chars.length, count + 3)
+      const nextText = chars.slice(0, count).join("")
+      setConversationLines((lines) => lines.map((line) => line.id === id ? { ...line, text: nextText } : line))
+      if (count >= chars.length) window.clearInterval(timer)
+    }, 34)
+  }
+
+  async function handleStrollActions(actions: StrollClientAction[]) {
+    for (const action of actions) {
+      if (action.type === "view_camera") {
+        await executeViewCameraAction(action)
+        continue
+      }
+      if (action.type === "capture_photo") {
+        await executeCapturePhotoAction(action)
+        continue
+      }
+      if (action.type === "set_limen_screen") {
+        await executeSetLimenScreenAction(action)
+        continue
+      }
+      if (action.type === "refresh_nearby" && currentPoint) {
+        const nearby = await fetchStrollNearby(currentPoint, 50).catch((error) => ({ ok: false, records: [], contextVersion: "", error: error instanceof Error ? error.message : "refresh failed" }))
+        if (nearby.ok) {
+          setNearbyRecords(nearby.records || [])
+          setNearbyVersion(nearby.contextVersion || "")
+        }
+        appendActionLine(action, nearby.ok ? "nearby refreshed" : nearby.error || "refresh failed", !nearby.ok)
+        void reportStrollActionResult({ actionId: action.id, type: action.type, status: nearby.ok ? "ok" : "error", error: nearby.error }).catch(() => undefined)
+        continue
+      }
+      appendActionLine(action, "action queued")
+      void reportStrollActionResult({ actionId: action.id, type: action.type, status: "queued", note: "received by Stroll web preview; hardware execution waits for device" }).catch(() => undefined)
+    }
+  }
+
+  async function executeViewCameraAction(action: StrollClientAction) {
+    changeMediaMode("live")
+    const health = await refreshLimenHealth()
+    const ok = Boolean(health?.ok && streamUrl)
+    appendActionLine(action, ok ? "camera live opened" : limenError || "Limen camera unavailable", !ok)
+    void reportStrollActionResult({ actionId: action.id, type: action.type, status: ok ? "ok" : "error", error: ok ? undefined : limenError || "missing Limen URL" }).catch(() => undefined)
+  }
+
+  async function executeSetLimenScreenAction(action: StrollClientAction) {
+    const content = actionScreenContent(action)
+    setScreenContent(content)
+    if (!normalizedLimenBaseUrl) {
+      appendActionLine(action, "Limen URL missing", true)
+      void reportStrollActionResult({ actionId: action.id, type: action.type, status: "error", error: "missing Limen URL" }).catch(() => undefined)
+      return
+    }
+    try {
+      await sendLimenScreenText(normalizedLimenBaseUrl, content)
+      appendActionLine(action, "Limen screen updated")
+      void reportStrollActionResult({ actionId: action.id, type: action.type, status: "ok", text: displayLimenScreenText(content) }).catch(() => undefined)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setLimenError(message)
+      setLimenConnection("error")
+      appendActionLine(action, message, true)
+      void reportStrollActionResult({ actionId: action.id, type: action.type, status: "error", error: message }).catch(() => undefined)
+    }
+  }
+
+  async function executeCapturePhotoAction(action: StrollClientAction) {
+    if (!normalizedLimenBaseUrl) {
+      appendActionLine(action, "Limen URL missing", true)
+      void reportStrollActionResult({ actionId: action.id, type: action.type, status: "error", error: "missing Limen URL" }).catch(() => undefined)
+      return
+    }
+    changeMediaMode("photo")
+    setLimenConnection("capturing")
+    try {
+      const file = await captureLimenPhoto(normalizedLimenBaseUrl)
+      if (lastPhotoUrlRef.current) URL.revokeObjectURL(lastPhotoUrlRef.current)
+      const nextPhotoUrl = URL.createObjectURL(file)
+      lastPhotoUrlRef.current = nextPhotoUrl
+      setLastPhotoUrl(nextPhotoUrl)
+      setLimenConnection("online")
+
+      const upload = await uploadFiles([file])
+      if (!upload.ok || !upload.files?.length) throw new Error(upload.error || "photo upload failed")
+      const attachment = upload.files[0]
+      await recordLimenPhotoMarker(action, attachment)
+      appendActionLine(action, "photo captured and sent")
+      void reportStrollActionResult({ actionId: action.id, type: action.type, status: "ok", attachment }).catch(() => undefined)
+      await sendLimenPhotoToAi(action, upload.files)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setLimenError(message)
+      setLimenConnection("error")
+      appendActionLine(action, message, true)
+      void reportStrollActionResult({ actionId: action.id, type: action.type, status: "error", error: message }).catch(() => undefined)
+    }
+  }
+
+  async function recordLimenPhotoMarker(action: StrollClientAction, attachment: ChatAttachment) {
+    if (!currentPoint) return
+    const payload = action.payload || {}
+    const description = String(payload.text || payload.reason || "Limen photo").slice(0, 90)
+    const emoji = String(payload.emoji || "camera").slice(0, 20)
+    const result = await writeStrollRecord({
+      kind: "photo",
+      origin: "limen",
+      lng: currentPoint.lng,
+      lat: currentPoint.lat,
+      text: description,
+      emoji,
+      placeKind,
+      attachment: {
+        id: attachment.path || attachment.name,
+        url: attachment.path,
+        takenAt: Date.now(),
+        source: "limen",
+      },
+    }).catch(() => null)
+    const record = result?.ok ? result.record : undefined
+    if (record) setNearbyRecords((records) => mergeRecords(records, [record]))
+  }
+
+  async function sendLimenPhotoToAi(action: StrollClientAction, attachments: ChatAttachment[]) {
+    const payload = action.payload || {}
+    const reason = String(payload.reason || "look at the captured wearable camera photo").slice(0, 160)
+    const result = await sendStrollMessage(`[limen camera] ${reason}`, buildContext(), attachments)
+    if (!result.ok) {
+      appendActionLine(action, result.error || "photo sent, AI review failed", true)
+      return
+    }
+    if (result.reply) typeAiReply(result.reply)
+    if (result.stroll_records?.length) setNearbyRecords((records) => mergeRecords(records, result.stroll_records || []))
+  }
+
+  function actionScreenContent(action: StrollClientAction): LimenScreenContent {
+    const payload = action.payload || {}
+    const text = String(payload.text || payload.message || payload.reason || payload.emoji || "ready")
+    const emoji = String(payload.emoji || "")
+    return { type: text ? "message" : "emoji", text, emoji }
+  }
+
+  function appendActionLine(action: StrollClientAction, text: string, error = false) {
+    setConversationLines((lines) => [...lines, { id: `action-${action.id}`, name: "tool", text, role: "ai", actionType: action.type, error }])
   }
 
   function closeStroll() {
@@ -222,9 +592,22 @@ export function Stroll({ onBack, active }: Props) {
               "linear-gradient(90deg, rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(0deg, rgba(255,255,255,0.12) 1px, transparent 1px)",
             backgroundSize: "34px 34px",
           }} />
+          {mediaMode === "live" && streamUrl ? (
+            <img
+              key={streamKey}
+              src={streamUrl}
+              alt="Limen live preview"
+              className="absolute inset-0 h-full w-full object-cover"
+              onLoad={() => setLimenConnection("streaming")}
+              onError={() => { setLimenConnection("error"); setLimenError("Limen stream failed") }}
+            />
+          ) : mediaMode === "photo" && lastPhotoUrl ? (
+            <img src={lastPhotoUrl} alt="Last Limen capture" className="absolute inset-0 h-full w-full object-cover" />
+          ) : null}
           <div className="absolute left-4 top-4 flex items-center gap-2 rounded-full px-3 py-1.5" style={{ background: "rgba(1,3,1,0.36)", color: "#fff" }}>
-            <Video className="h-3.5 w-3.5" strokeWidth={1.8} />
-            <span className="text-[11px] font-medium uppercase tracking-[0.18em]">live</span>
+            {mediaMode === "live" ? <Video className="h-3.5 w-3.5" strokeWidth={1.8} /> : <Camera className="h-3.5 w-3.5" strokeWidth={1.8} />}
+            <span className="text-[11px] font-medium uppercase tracking-[0.18em]">{mediaMode}</span>
+            <span className="max-w-[118px] truncate text-[10px] opacity-75">{limenConnection === "error" ? limenError : limenHealth?.ip || (normalizedLimenBaseUrl ? "ready" : "set url")}</span>
           </div>
           <SurfaceExpandButton
             expanded={screenExpanded}
@@ -241,20 +624,20 @@ export function Stroll({ onBack, active }: Props) {
         <div
           className="absolute grid place-items-center rounded-full"
           style={{
-            left: LAYOUT.xiaoX,
-            top: LAYOUT.xiaoY,
-            width: LAYOUT.xiaoSize,
-            height: LAYOUT.xiaoSize,
+            left: LAYOUT.limenX,
+            top: LAYOUT.limenY,
+            width: LAYOUT.limenSize,
+            height: LAYOUT.limenSize,
             background: `radial-gradient(circle at 38% 32%, #CBE8E9, ${WATER} 42%, ${BLUE} 100%)`,
             border: "3px solid rgba(255,255,255,0.72)",
             boxShadow: "0 14px 34px -14px rgba(1,3,1,0.72)",
           }}
-          aria-label="Xiao screen preview"
+          aria-label="Limen screen preview"
         >
-          <div className="rounded-full" style={{ width: LAYOUT.xiaoInner, height: LAYOUT.xiaoInner, background: "rgba(30,40,67,0.82)", boxShadow: `0 -9px 0 ${PEACH} inset` }} />
+          <div className="grid place-items-center rounded-full px-2 text-center text-[10px] leading-tight" style={{ width: LAYOUT.limenInner, height: LAYOUT.limenInner, background: "rgba(30,40,67,0.82)", color: "rgba(255,250,243,0.92)", boxShadow: `0 -9px 0 ${PEACH} inset`, fontFamily: "var(--font-sans)" }}>{displayLimenScreenText(screenContent)}</div>
         </div>
         <div className="absolute" style={{ right: LAYOUT.switchRight, top: LAYOUT.switchTop }}>
-          <ModeSwitch mode={mediaMode} width={LAYOUT.switchWidth} height={LAYOUT.switchHeight} onChange={() => setMediaMode((mode) => (mode === "live" ? "photo" : "live"))} />
+          <ModeSwitch mode={mediaMode} width={LAYOUT.switchWidth} height={LAYOUT.switchHeight} onChange={() => changeMediaMode(mediaMode === "live" ? "photo" : "live")} />
         </div>
       </section>
 
@@ -267,11 +650,17 @@ export function Stroll({ onBack, active }: Props) {
         <MapPanel
           weather={weather}
           expanded={mapExpanded}
+          track={activeTrack}
+          labels={dynamicLabels}
+          annotations={dynamicAnnotations}
+          onPlaceKindChange={setPlaceKind}
+          onAnnotationClick={setSelectedAnnotation}
           onToggleExpand={() => {
             setMapExpanded((expanded) => !expanded)
             setScreenExpanded(false)
           }}
         />
+        <AnnotationDetail annotation={selectedAnnotation} onClose={() => setSelectedAnnotation(null)} />
         <div className="pointer-events-none absolute inset-x-0 top-0" style={{ height: LAYOUT.mapFade, background: "linear-gradient(180deg, rgba(225,212,204,0.88) 0%, rgba(225,212,204,0.38) 46%, transparent 100%)" }} />
       </section>
 
@@ -319,8 +708,21 @@ export function Stroll({ onBack, active }: Props) {
                   </div>
                 ) : (
                   <>
-                    <input className="min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-[rgba(255,250,243,0.62)]" style={{ fontFamily: "var(--font-sans)" }} placeholder="Say…" />
-                    <button type="button" className="grid h-6 w-6 place-items-center rounded-full" style={{ background: "rgba(244,214,204,0.92)", color: INK }} aria-label="Send stroll message">
+                    <input
+                      className="min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-[rgba(255,250,243,0.62)] disabled:opacity-60"
+                      style={{ fontFamily: "var(--font-sans)" }}
+                      placeholder="Say…"
+                      value={draft}
+                      disabled={sending}
+                      onChange={(event) => setDraft(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault()
+                          void sendDraft()
+                        }
+                      }}
+                    />
+                    <button type="button" className="grid h-6 w-6 place-items-center rounded-full disabled:opacity-45" style={{ background: "rgba(244,214,204,0.92)", color: INK }} aria-label="Send stroll message" disabled={sending || !draft.trim()} onClick={() => { void sendDraft() }}>
                       <Send className="h-3.5 w-3.5" strokeWidth={1.8} />
                     </button>
                   </>
@@ -437,7 +839,7 @@ function WeatherCurtain({ weather }: { weather: WeatherSnapshot }) {
   )
 }
 
-function ConversationLayer({ lines, bottom, open, onHide, onShow }: { lines: typeof chatter; bottom: number; open: boolean; onHide: () => void; onShow: () => void }) {
+function ConversationLayer({ lines, bottom, open, onHide, onShow }: { lines: ConversationLine[]; bottom: number; open: boolean; onHide: () => void; onShow: () => void }) {
   const scrollerRef = useRef<HTMLDivElement | null>(null)
   const pointerStartRef = useRef<{ x: number; y: number } | null>(null)
   const pointerMovedRef = useRef(false)
@@ -491,13 +893,23 @@ function ConversationLayer({ lines, bottom, open, onHide, onShow }: { lines: typ
       }}
     >
       {lines.map((line) => (
-        <div key={`${line.name}-${line.text}`} className="w-fit shrink-0 px-2 py-1 text-[12px] leading-[1.3]" style={{ maxWidth: LAYOUT.chatWidth, borderRadius: LAYOUT.bubbleRadius, background: GLASS, border: `1px solid ${GLASS_BORDER}`, color: "rgba(255,250,243,0.9)", fontFamily: "var(--font-sans)", backdropFilter: "blur(10px)", boxShadow: "0 8px 24px -18px rgba(1,3,1,0.75)" }}>
-          <span className="font-medium" style={{ color: "#F4D6CC" }}>{line.name}</span>
+        <div key={line.id} className="w-fit shrink-0 px-2 py-1 text-[12px] leading-[1.3]" style={{ maxWidth: LAYOUT.chatWidth, borderRadius: LAYOUT.bubbleRadius, background: line.error ? "rgba(166,75,79,0.72)" : GLASS, border: `1px solid ${GLASS_BORDER}`, color: "rgba(255,250,243,0.9)", fontFamily: "var(--font-sans)", backdropFilter: "blur(10px)", boxShadow: "0 8px 24px -18px rgba(1,3,1,0.75)" }}>
+          <span className="inline-flex items-center gap-1 font-medium" style={{ color: line.role === "user" ? "#CBE8E9" : "#F4D6CC" }}>
+            {line.actionType ? <StrollActionIcon type={line.actionType} /> : null}{line.name}
+          </span>
           <span> {line.text}</span>
         </div>
       ))}
     </div>
   )
+}
+
+function StrollActionIcon({ type }: { type: string }) {
+  if (type === "view_camera") return <Video className="h-3 w-3" strokeWidth={1.8} />
+  if (type === "capture_photo") return <Camera className="h-3 w-3" strokeWidth={1.8} />
+  if (type === "set_limen_screen") return <Monitor className="h-3 w-3" strokeWidth={1.8} />
+  if (type === "refresh_nearby") return <RefreshCw className="h-3 w-3" strokeWidth={1.8} />
+  return <Radio className="h-3 w-3" strokeWidth={1.8} />
 }
 
 function ModeSwitch({ mode, width, height, onChange }: { mode: "live" | "photo"; width: number; height: number; onChange: () => void }) {
@@ -545,11 +957,50 @@ function SurfaceExpandButton({ expanded, label, onClick }: { expanded: boolean; 
   )
 }
 
-function MapPanel({ weather, expanded, onToggleExpand }: { weather: WeatherSnapshot; expanded: boolean; onToggleExpand: () => void }) {
+function AnnotationDetail({ annotation, onClose }: { annotation: StrollMapAnnotation | null; onClose: () => void }) {
+  if (!annotation) return null
+  const date = formatAnnotationDate(annotation.updatedAt || annotation.createdAt || annotation.photos?.[0]?.takenAt)
+  const source = annotation.origin || annotation.source
+  const attachment = annotation.attachment || annotation.photos?.[0]
+  return (
+    <div className="absolute left-4 right-4 top-4 z-20 rounded-[14px] px-3 py-2.5" style={{ background: "rgba(38,48,74,0.78)", color: "rgba(255,250,243,0.94)", border: `1px solid ${GLASS_BORDER}`, backdropFilter: "blur(14px)", boxShadow: "0 18px 34px -22px rgba(1,3,1,0.8)", fontFamily: "var(--font-sans)" }}>
+      <div className="flex items-start gap-2">
+        <div className="grid h-9 w-9 shrink-0 place-items-center rounded-[12px] text-[19px]" style={{ background: "rgba(255,250,243,0.14)", color: "#FFF7EF" }}>
+          {annotation.emoji || (annotation.kind === "photo" ? "📷" : "✦")}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0 text-[13px] font-medium leading-snug">{annotation.text || (annotation.kind === "photo" ? "Photo marker" : "AI marker")}</div>
+            <button type="button" onClick={onClose} className="grid h-6 w-6 shrink-0 place-items-center rounded-[8px] border-0 p-0" style={{ background: "rgba(255,250,243,0.12)", color: "rgba(255,250,243,0.82)" }} aria-label="Close marker detail">×</button>
+          </div>
+          <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] uppercase tracking-[0.12em]" style={{ color: "rgba(255,250,243,0.62)" }}>
+            {date ? <span>{date}</span> : null}
+            {annotation.placeKind ? <span>{annotation.placeKind}</span> : null}
+            {source ? <span>{source}</span> : null}
+            {typeof annotation.distanceM === "number" ? <span>{Math.round(annotation.distanceM)}m</span> : null}
+            {annotation.count && annotation.count > 1 ? <span>{annotation.count} photos</span> : null}
+          </div>
+          {attachment?.url ? <div className="mt-1 truncate text-[11px]" style={{ color: "rgba(255,250,243,0.72)" }}>{attachment.url}</div> : null}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function formatAnnotationDate(value?: number) {
+  if (!value) return ""
+  try {
+    return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(value))
+  } catch {
+    return ""
+  }
+}
+
+function MapPanel({ weather, expanded, track, labels, annotations, onPlaceKindChange, onAnnotationClick, onToggleExpand }: { weather: WeatherSnapshot; expanded: boolean; track: StrollTrackPoint[]; labels: StrollMapLabel[]; annotations: StrollMapAnnotation[]; onPlaceKindChange: (placeKind: NonNullable<StrollSpatialContext["placeKind"]>) => void; onAnnotationClick: (annotation: StrollMapAnnotation) => void; onToggleExpand: () => void }) {
   return (
     <div className="absolute inset-0 overflow-hidden" style={{ background: "#A3B9C9" }}>
       {MAPBOX_TOKEN ? (
-        <StrollMapView token={MAPBOX_TOKEN} track={sampleTrack} labels={mapLabels} annotations={mapAnnotations} weather={weather} coordinateCorrection="gcj02" />
+        <StrollMapView token={MAPBOX_TOKEN} track={track} labels={labels} annotations={annotations} weather={weather} coordinateCorrection="gcj02" onPlaceKindChange={onPlaceKindChange} onAnnotationClick={onAnnotationClick} />
       ) : (
         <StrollMapFallback />
       )}
@@ -588,4 +1039,31 @@ function StrollMapFallback() {
       <div className="stroll-marker absolute left-[53%] top-[42%]" />
     </div>
   )
+}
+
+function historyToLines(messages: StoredChatMessage[]): ConversationLine[] {
+  return messages
+    .filter((message) => message.text && (message.role === "user" || message.role === "ai"))
+    .map((message) => ({
+      id: message.id,
+      name: message.role === "user" ? appConfig.userName || "you" : appConfig.aiName || "Favilla",
+      text: String(message.text),
+      role: message.role,
+      error: Boolean(message.error),
+    }))
+}
+
+function localLightPreset(): StrollSpatialContext["lightPreset"] {
+  const hour = new Date().getHours()
+  if (hour < 6) return "night"
+  if (hour < 9) return "dawn"
+  if (hour < 17) return "day"
+  if (hour < 20) return "dusk"
+  return "night"
+}
+
+function mergeRecords(existing: StrollSpatialRecord[], incoming: StrollSpatialRecord[]) {
+  const byId = new Map(existing.map((record) => [record.id, record]))
+  incoming.forEach((record) => byId.set(record.id, record))
+  return Array.from(byId.values()).sort((a, b) => (b.updatedAt || b.createdAt) - (a.updatedAt || a.createdAt))
 }

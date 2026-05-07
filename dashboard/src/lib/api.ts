@@ -42,8 +42,8 @@ export interface EventRow {
 	preview: string;
 }
 
-export interface ScheduleRow {
-	wake_at: string;
+export interface TodoRow {
+	at: string;
 	type: string;
 	reason: string;
 }
@@ -82,7 +82,18 @@ export interface PoolEventDetail {
 }
 
 export interface FlowPayload {
-	beats: { t: string; text: string; source: string; user: string; ai: string; meta?: Record<string, unknown> }[];
+	beats: {
+		t: string;
+		text: string;
+		// New schema: scene = "<actor>@<channel>"; runtime = "cc"|"api"|...
+		scene?: string;
+		runtime?: string | null;
+		// Legacy fallback (old rows pre-rename)
+		source?: string;
+		meta?: Record<string, unknown>;
+		user: string;
+		ai: string;
+	}[];
 	offset: number;
 	total: number;
 }
@@ -143,7 +154,7 @@ export const api = {
 	status: () => j<Status>('/status'),
 	events: (limit = 50) => j<EventRow[]>(`/events?limit=${limit}`),
 	event: (id: string) => j<EventDetail>(`/event/${encodeURIComponent(id)}`),
-	schedule: () => j<ScheduleRow[]>('/schedule'),
+	todo: () => j<TodoRow[]>('/todo'),
 	state: () => j<StateSnapshot>('/state'),
 	config: () => j<RuntimeConfig>('/config'),
 	setMemoryMode: (memory_mode: 'manual' | 'auto') =>

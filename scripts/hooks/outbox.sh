@@ -2,7 +2,6 @@
 # fiam hook: Stop -> extract outbound message markers from assistant response
 #
 # The AI can include markers like:
-#   [->tg:Zephyr] message text here
 #   [->email:Zephyr] message text here
 #
 # This hook reads the stop_hook_data from stdin, extracts the last
@@ -53,14 +52,14 @@ home = os.environ.get('CLAUDE_PROJECT_DIR', '.')
 outbox = os.path.join(home, 'outbox')
 
 # Pattern: [->channel:recipient] followed by text until next marker or end
-pattern = r'\[→(tg|telegram|email):([^\]]+)\]\s*(.+?)(?=\[→(?:tg|telegram|email):|$)'
+pattern = r'\[→(email):([^\]]+)\]\s*(.+?)(?=\[→(?:email):|$)'
 matches = re.findall(pattern, text, re.DOTALL)
 
 for i, (channel, recipient, body) in enumerate(matches):
     body = body.strip()
     if not body:
         continue
-    via = 'telegram' if channel in ('tg', 'telegram') else 'email'
+    via = 'email'
     ts = datetime.now().strftime('%m%d_%H%M%S')
     fname = f'auto_{ts}_{i:02d}.md'
     content = f'---\nto: {recipient.strip()}\nvia: {via}\npriority: normal\n---\n\n{body}\n'

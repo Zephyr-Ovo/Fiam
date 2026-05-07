@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { api, type FlowPayload } from '$lib/api';
+	type Beat = FlowPayload['beats'][number];
 
 	let beats = $state<FlowPayload['beats']>([]);
 	let total = $state(0);
@@ -10,32 +11,74 @@
 	let container = $state<HTMLDivElement | undefined>();
 	let pollTimer: ReturnType<typeof setInterval> | null = null;
 
-	const sourceColors: Record<string, string> = {
-		cc: 'var(--color-blue)',
+	// Color by actor (left of @) — secondary tint by channel (right of @).
+	const actorColors: Record<string, string> = {
+		user: 'var(--color-pink)',
+		ai: 'var(--color-blue)',
+		external: 'var(--color-yellow)',
+		system: 'var(--color-lavender)'
+	};
+	const channelColors: Record<string, string> = {
+		think: 'var(--color-mauve)',
 		action: 'var(--color-peach)',
-		tg: 'var(--color-green)',
-		email: 'var(--color-yellow)',
 		favilla: 'var(--color-pink)',
-		schedule: 'var(--color-teal)'
+		stroll: 'var(--color-sapphire)',
+		email: 'var(--color-yellow)',
+		schedule: 'var(--color-lavender)',
+		studio: 'var(--color-maroon)',
+		console: 'var(--color-mauve)' // legacy old rows
+	};
+	const runtimeColors: Record<string, string> = {
+		cc: 'var(--color-blue)',
+		api: 'var(--color-green)',
+		claude: 'var(--color-blue)',
+		gemini: 'var(--color-teal)'
 	};
 
-	function fmtTime(iso: string): string {
-		try {
-			const d = new Date(iso);
-			return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-		} catch {
-			return iso.slice(11, 19);
-		}
+	function getScene(beat: Beat): string {
+		return (beat.scene ?? beat.source ?? '').toString();
+	}
+	function getActor(beat: Beat): string {
+		const s = getScene(beat);
+		return s.includes('@') ? s.split('@', 1)[0] : '';
+	}
+	function getChannel(beat: Beat): string {
+		const s = getScene(beat);
+		return s.includes('@') ? s.split('@').slice(1).join('@') : s;
+	}
+	function colorForScene(beat: Beat): string {
+		const ch = getChannel(beat);
+		if (ch && channelColors[ch]) return channelColors[ch];
+		const actor = getActor(beat);
+		if (actor && actorColors[actor]) return actorColors[actor];
+		return 'var(--color-subtext0)';
+	}
+	function colorForRuntime(rt: string): string {
+		return runtimeColors[rt] ?? 'var(--color-overlay1)';
 	}
 
-	function isThinking(beat: FlowPayload['beats'][number]): boolean {
-		return beat.meta?.kind === 'thinking';
+	function isThinking(beat: Beat): boolean {
+		return getScene(beat) === 'ai@think' || (beat.meta as any)?.kind === 'thinking';
 	}
 
 	function thinkingTitle(text: string): string {
 		const idx = text.indexOf('我想：');
 		const body = idx >= 0 ? text.slice(0, idx + 3) : 'thinking';
 		return body.length > 80 ? body.slice(0, 77) + '…' : body;
+	}
+
+	const TIME_FMT = new Intl.DateTimeFormat('zh-CN', {
+		timeZone: 'Asia/Shanghai',
+		hour: '2-digit',
+		minute: '2-digit',
+		hour12: false
+	});
+	function fmtTime(iso: string): string {
+		try {
+			return TIME_FMT.format(new Date(iso));
+		} catch {
+			return iso.slice(11, 16);
+		}
 	}
 
 	async function load() {
@@ -53,6 +96,17 @@
 			err = (e as Error).message;
 			loading = false;
 		}
+	}
+
+	function legendItems(): { label: string; color: string }[] {
+		const seen = new Map<string, string>();
+		for (const b of beats) {
+			const s = getScene(b);
+			if (s) seen.set(s, colorForScene(b));
+			const rt = b.runtime;
+			if (rt) seen.set(`runtime:${rt}`, colorForRuntime(rt));
+		}
+		return [...seen].map(([label, color]) => ({ label, color }));
 	}
 
 	onMount(async () => {
@@ -89,19 +143,27 @@
 			class="flex-1 overflow-y-auto border border-[var(--color-surface0)] rounded bg-[var(--color-mantle)] p-3 font-mono text-sm space-y-1"
 		>
 			{#each beats as beat}
-				<div class="flex gap-2 leading-relaxed">
-					<span class="text-[var(--color-overlay0)] whitespace-nowrap shrink-0 text-xs mt-0.5">
-						{fmtTime(beat.t)}
-					</span>
-					<span
-						class="text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap shrink-0 self-start"
-						style="color:{sourceColors[beat.source] ?? 'var(--color-subtext0)'};
-							   border:1px solid {sourceColors[beat.source] ?? 'var(--color-surface1)'}"
-					>
-						{beat.source}
-					</span>
+				{@const sceneStr = getScene(beat)}
+				{@const sceneColor = colorForScene(beat)}
+				<div class="leading-relaxed border border-[var(--color-surface0)] rounded p-2 bg-[var(--color-base)]/30">
+					<div class="flex items-start gap-2 flex-wrap text-[10px]">
+						<span class="text-[var(--color-overlay0)] whitespace-nowrap shrink-0 text-xs mt-0.5">
+							{fmtTime(beat.t)}
+						</span>
+						<span
+							class="px-1.5 py-0.5 rounded border break-all"
+							style="color:{sceneColor}; border-color:{sceneColor}"
+						>{sceneStr || '?'}</span>
+						{#if beat.runtime}
+							<span
+								class="px-1.5 py-0.5 rounded border break-all"
+								style="color:{colorForRuntime(beat.runtime)}; border-color:{colorForRuntime(beat.runtime)}"
+							>{beat.runtime}</span>
+						{/if}
+						<span class="px-1.5 py-0.5 rounded border border-[var(--color-surface1)] text-[var(--color-overlay1)]">ai={beat.ai}</span>
+					</div>
 					{#if isThinking(beat)}
-						<details class="min-w-0 flex-1 text-[var(--color-text)]">
+						<details class="mt-2 min-w-0 text-[var(--color-text)]">
 							<summary class="cursor-pointer text-[var(--color-mauve)] break-all">
 								{thinkingTitle(beat.text)}
 							</summary>
@@ -110,9 +172,9 @@
 							</div>
 						</details>
 					{:else}
-						<span class="text-[var(--color-text)] break-all">
-							{beat.text.length > 300 ? beat.text.slice(0, 297) + '…' : beat.text}
-						</span>
+						<div class="mt-2 text-[var(--color-text)] whitespace-pre-wrap break-words min-w-0">
+							{beat.text}
+						</div>
 					{/if}
 				</div>
 			{/each}
@@ -122,12 +184,12 @@
 		</div>
 	{/if}
 
-	<!-- Source legend -->
-	<div class="flex gap-3 mt-2 text-[10px] font-mono text-[var(--color-subtext0)]">
-		{#each Object.entries(sourceColors) as [src, color]}
+	<!-- Scene legend -->
+	<div class="flex gap-3 mt-2 text-[10px] font-mono text-[var(--color-subtext0)] flex-wrap">
+		{#each legendItems() as item}
 			<span class="flex items-center gap-1">
-				<span class="inline-block w-2 h-2 rounded-full" style="background:{color}"></span>
-				{src}
+				<span class="inline-block w-2 h-2 rounded-full" style="background:{item.color}"></span>
+				{item.label}
 			</span>
 		{/each}
 	</div>

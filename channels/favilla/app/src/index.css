@@ -47,6 +47,9 @@
   --color-cream: #FAF4E5;
   --color-sage: #C7C3B0;
   --color-sage-deep: #8a8674;
+  --color-thread: rgba(102, 78, 68, 0.16);
+  --color-lead: rgba(63, 47, 41, 0.58);
+  --color-accent: #B08B7F;
 
   --color-paper: #FAF4E5;
   --color-ink: #3f2f29;
@@ -130,6 +133,45 @@ body {
   border-left: 2px solid var(--color-dusty);
   color: var(--color-cocoa);
   font-style: italic;
+}
+
+.ProseMirror {
+  outline: none;
+  min-height: 100%;
+}
+.ProseMirror p.is-editor-empty:first-child::before {
+  color: var(--color-lead);
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
+.ProseMirror h1 { font-size: 1.8em; font-weight: 600; margin-bottom: 0.5em; letter-spacing: -0.02em; }
+.ProseMirror h2 { font-size: 1.4em; font-weight: 600; margin-top: 1.2em; margin-bottom: 0.5em; }
+.ProseMirror p { margin-bottom: 0.8em; line-height: 1.6; }
+.ProseMirror ul { list-style-type: disc; padding-left: 1.5em; margin-bottom: 1em; }
+.ProseMirror ol { list-style-type: decimal; padding-left: 1.5em; margin-bottom: 1em; }
+.ProseMirror li { margin-bottom: 0.25em; }
+.ProseMirror blockquote { border-left: 3px solid var(--color-accent); padding-left: 1em; color: var(--color-lead); font-style: italic; }
+.ProseMirror strong { font-weight: 600; color: var(--color-ink); }
+.ProseMirror [data-author] {
+  position: relative;
+}
+.ProseMirror [data-author]::after {
+  content: "— " attr(data-author);
+  display: inline-block;
+  font-size: 0.8rem;
+  color: var(--color-lead);
+  opacity: 0.6;
+  margin-left: 8px;
+  font-style: italic;
+  font-weight: normal;
+  user-select: none;
+}
+.ProseMirror blockquote[data-author]::after {
+  display: block;
+  text-align: right;
+  margin-top: 0.5rem;
 }
 
 /* Slim, no-arrow scrollbar for the composer textarea */

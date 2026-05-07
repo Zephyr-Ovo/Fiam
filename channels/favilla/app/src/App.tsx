@@ -19,13 +19,14 @@ import {
   Check,
   Share2,
 } from "lucide-react"
+import { DynamicIcon, iconNames, type IconName } from "lucide-react/dynamic"
 import { LockIcon } from "./components/LockIcon"
 import { RecallIcon } from "./components/RecallIcon"
 import { HourglassIcon } from "./components/HourglassIcon"
 import { ConfirmModal } from "./components/ConfirmModal"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
-import { fetchChatHistory, recordChatMessage, sendChat, uploadFiles, recallNow, cutFlow, processFlow, type ChatAttachment } from "./lib/api"
+import { fetchChatHistory, recordChatMessage, sendChat, uploadFiles, recallNow, cutFlow, processFlow, type ChatAttachment, type ChatSegment } from "./lib/api"
 import { appConfig, saveConfig } from "./config"
 
 // Module-level set of bubble ids whose entrance animation has already played.
@@ -40,8 +41,11 @@ type Attachment =
 type ThinkStep = {
   kind: "think" | "search" | "check" | "native"
   text: string
+  summary?: string
   result?: string
   source?: "marker" | "native"
+  locked?: boolean
+  icon?: string
 }
 
 type Msg = {
@@ -53,6 +57,8 @@ type Msg = {
   attachments?: Attachment[]
   thinking?: ThinkStep[]
   thinkingLocked?: boolean
+  segments?: ChatSegment[]
+  hold?: { queued?: number; immediate?: boolean }
   /** Non-bubble divider rendered in place of a chat bubble. */
   divider?: { kind: "scissor" | "recall"; label?: string }
   /** True if recall was armed when this user message was sent. Renders 🌠. */
@@ -361,14 +367,171 @@ function Attachments({ list, isUser }: { list: Attachment[]; isUser: boolean }) 
 }
 
 // ---------- Thinking chain (Claude-style) ----------
-function ThinkIcon({ kind }: { kind: ThinkStep["kind"] }) {
-  const Icon =
-    kind === "search" ? Search : kind === "check" ? CheckCircle2 : Brain
-  return <Icon className="h-3.5 w-3.5" strokeWidth={1.6} />
+const LUCIDE_ICON_NAMES = new Set<string>(iconNames)
+const STREAMLINE_THINK_ICONS = new Set([
+  "attachment",
+  "bookmark",
+  "bookmark-tag",
+  "calendar",
+  "calendar-check",
+  "calendar-heart",
+  "chat-message",
+  "clipboard",
+  "clipboard-check",
+  "clock",
+  "dashboard",
+  "dashboard-gauge",
+  "download",
+  "file-text",
+  "folder",
+  "folder-add",
+  "fountain-pen",
+  "heart",
+  "home",
+  "home-simple",
+  "menu",
+  "menu-dots",
+  "note",
+  "pen",
+  "pencil",
+  "pin",
+  "quill",
+  "settings",
+  "share",
+  "sliders",
+  "user-profile",
+  "write",
+  "write-paper",
+])
+
+const EXPLICIT_STREAMLINE_ICON: Record<string, string> = {
+  alarmclock: "clock",
+  bookmark: "bookmark",
+  calendar: "calendar",
+  calendarcheck: "calendar-check",
+  check: "clipboard-check",
+  checkcircle: "clipboard-check",
+  checkcircle2: "clipboard-check",
+  circlecheck: "clipboard-check",
+  clipboard: "clipboard",
+  clipboardcheck: "clipboard-check",
+  clock: "clock",
+  clock3: "clock",
+  download: "download",
+  edit: "write-paper",
+  file: "file-text",
+  filetext: "file-text",
+  folder: "folder",
+  folderplus: "folder-add",
+  heart: "heart",
+  home: "home",
+  locatefixed: "pin",
+  mappin: "pin",
+  messagecircle: "chat-message",
+  messagesquare: "chat-message",
+  note: "note",
+  notebook: "note",
+  paperclip: "attachment",
+  pen: "pen",
+  pencil: "pencil",
+  pin: "pin",
+  searchcheck: "clipboard-check",
+  sendto: "share",
+  settings: "settings",
+  share: "share",
+  share2: "share",
+  slidershorizontal: "sliders",
+  squarepen: "write-paper",
+  user: "user-profile",
+  userround: "user-profile",
+  wrench: "settings",
+}
+
+const STREAMLINE_KEYWORD_RULES: Array<{ pattern: RegExp; slug: string }> = [
+  { pattern: /\b(read|open|file|document|text|markdown|json|csv|log)\b|文件|文档|日志|读取|查看/, slug: "file-text" },
+  { pattern: /\b(list|dir|folder|tree|workspace)\b|目录|文件夹|列表/, slug: "folder" },
+  { pattern: /\b(grep|search|find|query|lookup|scan)\b|搜索|检索|查找|寻找/, slug: "file-text" },
+  { pattern: /\b(write|edit|patch|update|modify|note|draft)\b|写|编辑|修改|记录|笔记|草稿/, slug: "write-paper" },
+  { pattern: /\b(todo|task|plan|checklist|queue|verify|test|build|pass|done)\b|待办|任务|计划|清单|验证|测试|构建|完成/, slug: "clipboard-check" },
+  { pattern: /\b(time|clock|later|hold|wait|sleep|calendar|date)\b|时间|稍后|等待|日历|提醒/, slug: "clock" },
+  { pattern: /\b(config|setting|preference|option|control)\b|设置|配置|选项|控制/, slug: "settings" },
+  { pattern: /\b(api|dashboard|status|health|metric)\b|状态|面板|仪表/, slug: "dashboard-gauge" },
+  { pattern: /\b(upload|attach|attachment|image|photo)\b|上传|附件|图片|照片/, slug: "attachment" },
+  { pattern: /\b(stroll|map|marker|pin|place|nearby|location|coordinate)\b|地图|标记|地点|附近|位置|坐标/, slug: "pin" },
+  { pattern: /\b(share|export|handoff|carry)\b|分享|导出|转交|交接/, slug: "share" },
+  { pattern: /\b(chat|message|reply|conversation)\b|聊天|消息|回复|对话/, slug: "chat-message" },
+  { pattern: /\b(memory|favorite|save|bookmark)\b|记忆|收藏|保存/, slug: "bookmark" },
+]
+
+function dynamicIconName(icon?: string): IconName | "" {
+  const clean = (icon || "").replace(/[^A-Za-z0-9]/g, "")
+  if (!clean) return ""
+  const kebab = clean
+    .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
+    .replace(/([A-Za-z])([0-9])/g, "$1-$2")
+    .toLowerCase()
+  return LUCIDE_ICON_NAMES.has(kebab) ? (kebab as IconName) : ""
+}
+
+function compactIconKey(value?: string) {
+  return (value || "").replace(/[^A-Za-z0-9]/g, "").toLowerCase()
+}
+
+function inferStreamlineIcon(step: ThinkStep): string {
+  const explicit = EXPLICIT_STREAMLINE_ICON[compactIconKey(step.icon)]
+  if (explicit && STREAMLINE_THINK_ICONS.has(explicit)) return explicit
+  const haystack = [step.icon, step.summary, step.text, step.result, step.source]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase()
+  for (const rule of STREAMLINE_KEYWORD_RULES) {
+    if (rule.pattern.test(haystack) && STREAMLINE_THINK_ICONS.has(rule.slug)) return rule.slug
+  }
+  if (step.source === "native") return "settings"
+  return ""
+}
+
+function fallbackThinkIcon(step: ThinkStep) {
+  const haystack = [step.icon, step.summary, step.text, step.result].filter(Boolean).join(" ").toLowerCase()
+  if (step.kind === "search" || /\b(grep|search|find|query|lookup|scan)\b|搜索|检索|查找|寻找/.test(haystack)) return Search
+  if (step.kind === "check" || /\b(check|verify|test|build|pass|done)\b|检查|验证|测试|构建|完成/.test(haystack)) return CheckCircle2
+  return Brain
+}
+
+function StreamlineThinkIcon({ slug }: { slug: string }) {
+  const url = `/icons/streamline/${slug}.svg`
+  return (
+    <span
+      aria-hidden="true"
+      className="block h-3.5 w-3.5"
+      style={{
+        backgroundColor: "currentColor",
+        maskImage: `url(${url})`,
+        maskPosition: "center",
+        maskRepeat: "no-repeat",
+        maskSize: "contain",
+        WebkitMaskImage: `url(${url})`,
+        WebkitMaskPosition: "center",
+        WebkitMaskRepeat: "no-repeat",
+        WebkitMaskSize: "contain",
+      }}
+    />
+  )
+}
+
+function ThinkIcon({ step }: { step: ThinkStep }) {
+  const streamlineSlug = inferStreamlineIcon(step)
+  if (streamlineSlug) return <StreamlineThinkIcon slug={streamlineSlug} />
+  const dynamicName = dynamicIconName(step.icon)
+  const Fallback = fallbackThinkIcon(step)
+  const fallback = <Fallback className="h-3.5 w-3.5" strokeWidth={1.6} />
+  if (!dynamicName) return fallback
+  return <DynamicIcon name={dynamicName} className="h-3.5 w-3.5" strokeWidth={1.6} fallback={() => fallback} />
 }
 
 function ThinkingChain({ steps, locked, peerName }: { steps: ThinkStep[]; locked?: boolean; peerName?: string }) {
   const [open, setOpen] = useState(false)
+  const summary = steps.find((step) => step.summary || step.text)?.summary || steps.find((step) => step.text)?.text
   if (locked) {
     return (
       <div className="w-full">
@@ -376,7 +539,7 @@ function ThinkingChain({ steps, locked, peerName }: { steps: ThinkStep[]; locked
           className="mb-2 inline-flex items-center gap-1 text-[12px]"
           style={{ color: "rgba(63,47,41,0.45)", fontFamily: "var(--font-sans)" }}
         >
-          <span>{(peerName || "Fiet")} thought silently</span>
+          <span>{summary || `${peerName || "AI"} thought silently`}</span>
           <LockIcon className="h-3.5 w-3" strokeWidth={1} />
         </div>
       </div>
@@ -397,7 +560,7 @@ function ThinkingChain({ steps, locked, peerName }: { steps: ThinkStep[]; locked
           fontFamily: "var(--font-sans)",
         }}
       >
-        <span>{open ? "Hide thinking" : "Show thinking"}</span>
+        <span>{open ? "Hide thinking" : (summary || "Show thinking")}</span>
         <ChevronRight
           className={`h-3 w-3 transition-transform ${open ? "rotate-90" : ""}`}
           strokeWidth={2}
@@ -423,7 +586,7 @@ function ThinkingChain({ steps, locked, peerName }: { steps: ThinkStep[]; locked
                         className="grid h-4 w-4 place-items-center"
                         style={{ color: "rgba(63,47,41,0.6)" }}
                       >
-                        <ThinkIcon kind={s.kind} />
+                        <ThinkIcon step={s} />
                       </div>
                       {!isLast && (
                         <span
@@ -508,6 +671,18 @@ function ErrorNote({ text }: { text: string }) {
   )
 }
 
+function stepFromSegment(segment: Extract<ChatSegment, { type: "thought" }>): ThinkStep {
+  return {
+    kind: segment.kind || "think",
+    text: segment.text || segment.summary || "",
+    summary: segment.summary,
+    result: segment.result,
+    source: segment.source,
+    locked: segment.locked,
+    icon: segment.icon,
+  }
+}
+
 function Bubble({
   msg,
   peerName,
@@ -532,6 +707,10 @@ function Bubble({
   const fileAttachments = (msg.attachments ?? []).filter(
     (a) => a.kind !== "voice",
   )
+  const orderedSegments = !isUser ? (msg.segments || []).filter((segment) => {
+    if (segment.type === "text") return !!segment.text
+    return !!(segment.text || segment.summary)
+  }) : []
   // Only animate the FIRST time we see this message id; on re-render skip
   // entrance entirely (no jank scrolling/switching tabs back to chat).
   const wasSeen = SEEN_BUBBLE_IDS.has(msg.id)
@@ -552,12 +731,13 @@ function Bubble({
           (isUser ||
             !!msg.text ||
             !!msg.thinkingLocked ||
+            orderedSegments.length > 0 ||
             (msg.thinking?.length ?? 0) > 0 ||
             (msg.attachments?.length ?? 0) > 0) && (
             <NameTag>{isUser ? (appConfig.userName || "you") : peerName}</NameTag>
           )}
 
-        {!isUser && (msg.thinkingLocked || (msg.thinking && msg.thinking.length > 0)) && (
+        {!isUser && orderedSegments.length === 0 && (msg.thinkingLocked || (msg.thinking && msg.thinking.length > 0)) && (
           <ThinkingChain steps={msg.thinking || []} locked={msg.thinkingLocked} peerName={peerName} />
         )}
 
@@ -565,7 +745,29 @@ function Bubble({
           <Attachments list={voiceAttachments} isUser={isUser} />
         )}
 
-        {msg.text && (
+        {orderedSegments.length > 0 ? (
+          orderedSegments.map((segment, index) =>
+            segment.type === "text" ? (
+              <BubbleBody
+                key={`${msg.id}-seg-${index}`}
+                text={segment.text}
+                isUser={isUser}
+                recallUsed={!!msg.recallUsed && index === 0}
+                selectionMode={!!selectionMode}
+                selected={!!selected}
+                onSelect={onSelect}
+                onLongSelect={onLongSelect}
+              />
+            ) : (
+              <ThinkingChain
+                key={`${msg.id}-seg-${index}`}
+                steps={[stepFromSegment(segment)]}
+                locked={msg.thinkingLocked || !!segment.locked}
+                peerName={peerName}
+              />
+            ),
+          )
+        ) : msg.text ? (
           <BubbleBody
             text={msg.text}
             isUser={isUser}
@@ -575,7 +777,7 @@ function Bubble({
             onSelect={onSelect}
             onLongSelect={onLongSelect}
           />
-        )}
+        ) : null}
 
         {fileAttachments.length > 0 && (
           <Attachments list={fileAttachments} isUser={isUser} />
@@ -932,12 +1134,29 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
     }
   }
 
-  function streamReply(aiId: string, full: string, thoughts: ThinkStep[], locked: boolean) {
+  function streamReply(aiId: string, full: string, thoughts: ThinkStep[], locked: boolean, segments?: ChatSegment[], hold?: Msg["hold"]) {
+    if (segments && segments.length > 0) {
+      setMessages((m) =>
+        m.map((x) =>
+          x.id === aiId
+            ? {
+                ...x,
+                text: full,
+                thinking: thoughts.length > 0 ? thoughts : undefined,
+                thinkingLocked: locked,
+                segments,
+                hold,
+              }
+            : x,
+        ),
+      )
+      return
+    }
     if (!full) {
       setMessages((m) =>
         m.map((x) =>
           x.id === aiId
-            ? { ...x, text: full, thinking: thoughts.length > 0 ? thoughts : undefined, thinkingLocked: locked }
+            ? { ...x, text: full, thinking: thoughts.length > 0 ? thoughts : undefined, thinkingLocked: locked, hold }
             : x,
         ),
       )
@@ -957,6 +1176,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                 text: shown,
                 thinking: thoughts.length > 0 ? thoughts : undefined,
                 thinkingLocked: locked,
+                hold,
               }
             : x,
         ),
@@ -1013,7 +1233,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
 
   useEffect(() => {
     let cancelled = false
-    fetchChatHistory("favilla")
+    fetchChatHistory("chat")
       .then((res) => {
         if (cancelled || !res.ok || !res.messages) return
         setMessages(res.messages.map((msg) => ({
@@ -1033,7 +1253,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
   // Scissor (剪刀) = cut. Drops a divider marker server-side (instant).
   // Hourglass single-tap = toggle recall armed (light up/off).
   //   When armed and the next message goes out, the server runs recall first.
-  // Hourglass long-press 1.2s = confirm dialog → /api/app/process (DS pipeline).
+  // Hourglass long-press 1.2s = confirm dialog -> /favilla/chat/process (DS pipeline).
   //   sealBusy=true for the whole DS round-trip; sand animation + Send disabled.
   const [sealBusy, setSealBusy] = useState(false)
   const [recallArmed, setRecallArmed] = useState(false)
@@ -1175,7 +1395,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
       }
 
       const combinedText = items.map((x) => x.text).filter(Boolean).join("\n\n")
-      const res = await sendChat(combinedText || "(see attached file)", "favilla", attachments)
+      const res = await sendChat(combinedText || "(see attached file)", "chat", attachments)
       if (!res.ok) {
         setMessages((m) =>
           m.map((x) =>
@@ -1189,12 +1409,15 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
       const thoughts: ThinkStep[] = (res.thoughts || []).map((t) => ({
         kind: t.kind || "think",
         text: t.text,
+        summary: t.summary,
         result: t.result,
         source: t.source,
+        locked: t.locked,
+        icon: t.icon,
       }))
       const locked = !!res.thoughts_locked
       const full = res.reply || ""
-      streamReply(aiId, full, thoughts, locked)
+      streamReply(aiId, full, thoughts, locked, res.segments, res.hold)
       // Tell Shell to set the home unread dot if user isn't on chat.
       try {
         window.dispatchEvent(

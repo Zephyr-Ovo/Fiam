@@ -3,13 +3,15 @@ import App from "./App"
 import { Home, type HomeTarget } from "./routes/Home"
 import { Settings } from "./routes/Settings"
 import { Stroll } from "./routes/Stroll"
+import { Dashboard } from "./routes/Dashboard"
+import { Studio } from "./routes/Studio"
 import { appConfig } from "./config"
 import { installGlobalTapHaptics } from "./lib/haptics"
 import { App as CapApp } from "@capacitor/app"
 import { LocalNotifications } from "@capacitor/local-notifications"
 import { StatusBar } from "@capacitor/status-bar"
 
-type Page = "home" | "chat" | "stroll"
+type Page = "home" | "chat" | "stroll" | "dashboard" | "studio"
 
 /**
  * On real device (Capacitor) or any narrow viewport we drop the desktop
@@ -166,6 +168,16 @@ export default function Shell() {
       setPage("stroll")
       return
     }
+    if (t === "dashboard") {
+      leaveNativeFullscreen()
+      setPage("dashboard")
+      return
+    }
+    if (t === "reading") {
+      leaveNativeFullscreen()
+      setPage("studio")
+      return
+    }
     // eslint-disable-next-line no-console
     console.info("[home] target not yet wired:", t)
   }
@@ -177,10 +189,14 @@ export default function Shell() {
   // dominant source of the "paints in waves" lag).
   const isChat = page === "chat"
   const isStroll = page === "stroll"
+  const isDashboard = page === "dashboard"
+  const isStudio = page === "studio"
   const homeTransform = isChat
     ? "translate3d(-12%,0,0)"
     : isStroll
       ? "translate3d(0,7%,0)"
+      : isDashboard || isStudio
+        ? "translate3d(-12%,0,0)"
       : "translate3d(0,0,0)"
   const strollTransform = isStroll
     ? "translate3d(0,0,0)"
@@ -220,6 +236,28 @@ export default function Shell() {
         }}
       >
         <Stroll active={isStroll} onBack={() => { blurActiveInput(); leaveNativeFullscreen(); setPage("home") }} />
+      </div>
+      <div
+        className="absolute inset-0 h-full w-full"
+        style={{
+          transform: isDashboard ? "translate3d(0,0,0)" : "translate3d(100%,0,0)",
+          transition: slide,
+          pointerEvents: isDashboard ? "auto" : "none",
+          willChange: "transform",
+        }}
+      >
+        <Dashboard onBack={() => { blurActiveInput(); leaveNativeFullscreen(); setPage("home") }} />
+      </div>
+      <div
+        className="absolute inset-0 h-full w-full"
+        style={{
+          transform: isStudio ? "translate3d(0,0,0)" : "translate3d(100%,0,0)",
+          transition: slide,
+          pointerEvents: isStudio ? "auto" : "none",
+          willChange: "transform",
+        }}
+      >
+        <Studio onBack={() => { blurActiveInput(); leaveNativeFullscreen(); setPage("home") }} />
       </div>
       <Settings open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </>

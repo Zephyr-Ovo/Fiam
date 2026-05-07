@@ -3,7 +3,7 @@ name = "Self app / web client"
 enabled = false
 status = "planned_primary"
 kind = "client"
-description = "Primary future phone/web route replacing most Telegram and Favilla usage."
+description = "Primary future phone/web route replacing the Favilla mobile shell."
 transports = ["http", "websocket", "mqtt_bridge"]
 capabilities = ["chat", "capture_text", "push_notification", "manual_annotation"]
 receive_sources = ["app", "webapp"]
@@ -12,7 +12,7 @@ entrypoint = "dashboard"
 auth = "Tailscale for private use; Cloudflare Access or device token for public use"
 latency = "HTTP/WebSocket is usually sub-second; mobile push delivery depends on platform"
 env = []
-replaces = ["tg", "favilla"]
+replaces = ["favilla"]
 notes = [
   "Web/PWA first; package native only when OS capabilities are required."
 ]

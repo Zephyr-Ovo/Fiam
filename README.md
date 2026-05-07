@@ -13,7 +13,7 @@ Claude Code session
   │                     └── auto mode: drift + Gorge + Pool + recall
        │
        └── Hooks ◄──── inject recall as additionalContext
-                 ├──── dispatch outbound messages (TG/email)
+                 ├──── dispatch outbound messages (email/app)
                  └──── boot summary on session start
 ```
 
@@ -39,11 +39,11 @@ Claude Code session
 
 ### Beat sources
 
-`cc` (dialogue) · `action` (tool use and image descriptions) · `tg` · `email` · `favilla` (Android) · `limen`/`xiao` (wearable) · `schedule`
+`cc` (dialogue) · `action` (tool use and image descriptions) · `email` · `favilla` (Android) · `limen`/`xiao` (wearable) · `todo`
 
 ### Functional plugins
 
-Optional integrations are registered by `plugins/<id>/plugin.toml`. Infrastructure such as dashboard, git diff, flow, Pool, and recall is not treated as a plugin. Inbound messages go through `fiam/receive/<source>`; outbound AI markers such as `[→tg:Zephyr] ...` are resolved through enabled plugin `dispatch_targets` and published to `fiam/dispatch/<target>`. See [docs/plugin_protocol.md](docs/plugin_protocol.md).
+Optional integrations are registered by `plugins/<id>/plugin.toml`. Infrastructure such as dashboard, git diff, flow, Pool, and recall is not treated as a plugin. Inbound messages go through `fiam/receive/<source>`; outbound AI markers such as `[→email:Zephyr] ...` are resolved through enabled plugin `dispatch_targets` and published to `fiam/dispatch/<target>`. See [docs/plugin_protocol.md](docs/plugin_protocol.md).
 
 ### Mobile and wearable surfaces
 
@@ -59,7 +59,7 @@ Optional integrations are registered by `plugins/<id>/plugin.toml`. Infrastructu
 - **Real-time segmentation** — optional auto mode where Gorge watches beat embeddings and fires event cuts
 - **Drift detection** — auto mode only: adjacent beat cosine below threshold → recall hook fires
 - **Graph spreading activation** — seed from sliding vector, propagate along edges, weight multiplication, probabilistic fire
-- **Multi-channel** — Telegram, email, Favilla (Android share intent), ActivityWatch
+- **Multi-channel** — email, Favilla (Android share intent), ActivityWatch
 - **Web console** — SvelteKit 5 dashboard (Catppuccin dark), 3D force-directed graph with edge editing, event CRUD, flow viewer
 - **Hook-mediated injection** — 4 CC hooks (UserPromptSubmit, Stop, SessionStart, PostCompact)
 - **Lightweight deploy** — ML deps optional (`pip install -e ".[ml]"`); ISP runs without torch, embedding via remote API
@@ -102,8 +102,8 @@ scripts/
   fiam_lib/
     daemon.py              # Main event loop + CC session management
     maintenance.py         # clean + find-sessions
-    postman.py             # TG/email protocol helpers
-    scheduler.py           # Scheduled tasks (wake cycles)
+    postman.py             # Email protocol helper
+    todo.py                # Delayed todo queue
 
 dashboard/                 # SvelteKit 5 + Svelte runes + Tailwind 4
   src/routes/graph/        # 3D force-directed graph (Canvas 2D)
@@ -118,12 +118,11 @@ scripts/hooks/             # CC hook scripts
   compact.sh               # archive summaries (PostCompact)
 
 channels/
-  tg/stickers/             # TG sticker index
   favilla/                 # Android text capture app
   limen/                   # ESP32 wearable device
 
 plugins/                   # optional functional integration manifests
-  tg/ email/ favilla/ xiao/ app/ voice-call/ device-control/ ring/ mcp/
+  email/ favilla/ xiao/ app/ voice-call/ device-control/ ring/ mcp/
 ```
 
 ## Commands
@@ -134,7 +133,10 @@ plugins/                   # optional functional integration manifests
 | `fiam start` | Start daemon (monitors sessions, subscribes MQTT ingress) |
 | `fiam stop` | Graceful shutdown |
 | `fiam status` | Show store counts + daemon state |
-| `fiam clean` | Reset generated store data |
+| `fiam debug` | Show backend debug profile overrides |
+| `fiam debug on --restart` | Enable debug profile and restart live Linux services |
+| `fiam debug off --restart` | Disable debug profile and restart live Linux services |
+| `fiam clean` / `fiam clear` | Reset generated runtime state to a blank testing whiteboard while preserving config, code, and instruction files |
 | `fiam find-sessions` | Debug Claude Code JSONL session paths |
 | `fiam plugin list` | List functional plugin manifests |
 | `fiam plugin show <id>` | Show one plugin's topics, capabilities, auth, and latency notes |
@@ -145,11 +147,14 @@ plugins/                   # optional functional integration manifests
 Copy `fiam.toml.example` → `fiam.toml` (or run `fiam init`).
 
 Key settings:
+- `timezone`: project-local IANA timezone for AI-visible local time, upload date folders, daily limits, and naive todo times; stored event timestamps remain UTC
 - `embedding_backend`: `local` / `remote` — local HuggingFace or remote API
 - `embedding_dim`: 1024 (bge-m3 default)
 - `idle_timeout_minutes`: inactivity before post-session processing
-- `tg_chat_id` / `email_*`: multi-channel settings
+- `email_*`: email channel settings (SMTP/IMAP)
 - `[conductor]` section: `memory_mode` (`manual` / `auto`), gorge window, confirm count, drift threshold
+- `[app]` section: Favilla chat backend default, manual recall freshness, and DeepSeek-compatible CoT summary settings
+- `[debug]` section: temporary backend test-loop overrides for idle/poll intervals, memory mode, tool loop cap, and app defaults
 - `[graph]` section: DeepSeek-compatible edge model and API key env (`FIAM_GRAPH_API_KEY` by default)
 
 ## License

@@ -2,6 +2,10 @@ export type WeatherKind = "clear" | "rain" | "snow"
 
 export type CoordinateCorrection = "gcj02" | "none"
 
+export type StrollPlaceKind = "road" | "green" | "building" | "water" | "unknown"
+
+export type StrollOrigin = "user" | "ai" | "phone" | "limen" | "replay"
+
 export type StrollTrackPoint = {
   id?: string
   lng: number
@@ -10,7 +14,9 @@ export type StrollTrackPoint = {
   speed?: number
   accuracy?: number
   heading?: number
-  source?: "phone" | "limen" | "replay"
+  source?: Extract<StrollOrigin, "phone" | "limen" | "replay">
+  cellId?: string
+  placeKind?: StrollPlaceKind
 }
 
 export type RenderTrackPoint = StrollTrackPoint & {
@@ -40,7 +46,7 @@ export type StrollPhotoRef = {
   url?: string
   thumbUrl?: string
   takenAt?: number
-  source?: "phone" | "limen" | "replay"
+  source?: Extract<StrollOrigin, "phone" | "limen" | "replay">
 }
 
 export type StrollPhotoMarkerInput = StrollPhotoRef & {
@@ -58,7 +64,35 @@ export type StrollMapAnnotation = {
   photos?: StrollPhotoRef[]
   count?: number
   mergedRadiusM?: number
-  source?: "user" | "ai" | "limen" | "replay"
+  source?: StrollOrigin
+  recordKind?: StrollSpatialRecordKind
+  placeKind?: StrollPlaceKind
+  origin?: StrollOrigin
+  distanceM?: number
+  radiusM?: number
+  createdAt?: number
+  updatedAt?: number
+  attachment?: StrollPhotoRef
+}
+
+export type StrollSpatialRecordKind = "note" | "photo" | "marker" | "action"
+
+export type StrollSpatialRecord = {
+  id: string
+  kind: StrollSpatialRecordKind
+  lng: number
+  lat: number
+  cellId: string
+  radiusM: number
+  distanceM?: number
+  bearingDeg?: number
+  placeKind: StrollPlaceKind
+  origin: StrollOrigin
+  text?: string
+  emoji?: string
+  attachment?: StrollPhotoRef
+  createdAt: number
+  updatedAt: number
 }
 
 export type StrollNearbyMemory = {
@@ -66,9 +100,14 @@ export type StrollNearbyMemory = {
   lng: number
   lat: number
   radiusM: number
+  cellId?: string
+  distanceM?: number
+  bearingDeg?: number
+  placeKind?: StrollPlaceKind
   title: string
   lastSeenAt?: number
   sourceIds?: string[]
+  origin?: StrollOrigin
 }
 
 export type StrollSpatialContext = {
@@ -80,6 +119,10 @@ export type StrollSpatialContext = {
   }
   annotations: StrollMapAnnotation[]
   nearbyMemories?: StrollNearbyMemory[]
+  spatialRecords?: StrollSpatialRecord[]
+  cellId?: string
+  placeKind?: StrollPlaceKind
+  contextVersion?: string
   weather?: WeatherSnapshot
   lightPreset?: "dawn" | "day" | "dusk" | "night"
 }

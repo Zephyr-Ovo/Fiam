@@ -1,66 +1,93 @@
 // Limen — Claude's physical perception anchor
 // XIAO ESP32S3 Sense + Round Display for XIAO
 //
-// Phase 1 screen-only: poll fiam display queue → render message / kaomoji / emoji
+// Local camera/screen peripheral: Favilla can view /stream, capture /capture,
+// and mirror AI text to /screen.
 
 #include <Arduino.h>
+#include <WiFi.h>
 #include "config.h"
-#include "network.h"
 #include "display.h"
+#include "camera.h"
+#include "limen_server.h"
+#include "touch.h"
 
-static unsigned long lastPoll = 0;
 static unsigned long lastWifiAttempt = 0;
+
+bool wifiConnect() {
+    WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);
+    WiFi.begin(WIFI_SSID, WIFI_PASS);
+    Serial.print("[wifi] connecting");
+
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 40) {
+        delay(500);
+        Serial.print(".");
+        attempts++;
+    }
+
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.printf("\n[wifi] connected, IP: %s RSSI=%d\n",
+            WiFi.localIP().toString().c_str(),
+            WiFi.RSSI()
+        );
+        return true;
+    }
+
+    Serial.println("\n[wifi] FAILED");
+    return false;
+}
 
 bool ensureWifi(unsigned long now) {
     if (WiFi.status() == WL_CONNECTED) return true;
-    if (now - lastWifiAttempt < 10000) return false;
+    if (now - lastWifiAttempt < WIFI_RETRY_INTERVAL_MS) return false;
     lastWifiAttempt = now;
-    displayStatus("WiFi", "retrying...");
+    displayStatus("WiFi", "retrying");
     return wifiConnect();
 }
 
 void setup() {
     Serial.begin(115200);
     delay(1000);
-    Serial.println("\n=== Limen starting ===");
+    Serial.println("\n=== Limen camera starting ===");
 
-    // Disable Sense onboard SD card CS to free SPI for display
+    // Disable Sense onboard SD card CS to free SPI for the round display.
     pinMode(SENSE_SD_CS_PIN, OUTPUT);
     digitalWrite(SENSE_SD_CS_PIN, HIGH);
 
-    // Init display
     displayInit();
-    displayStatus("Limen", "starting...");
+    touchInit();
+    displayStatus("limen", "starting");
 
-    // Connect WiFi
-    displayStatus("WiFi", "connecting...");
+    displayStatus("WiFi", "connecting");
     if (!wifiConnect()) {
-        displayStatus("WiFi", "FAIL");
+        displayStatus("WiFi", "failed", "check hotspot");
         lastWifiAttempt = millis();
         return;
     }
 
-    displayStatus("Screen ready", WiFi.localIP().toString().c_str());
-    delay(2000);
+    displayStatus("camera", "starting");
+    if (!cameraInit()) {
+        displayStatus("camera", "failed");
+        return;
+    }
+
+    limenServerBegin();
+    displayNetwork(WiFi.localIP().toString());
 }
 
 void loop() {
     unsigned long now = millis();
 
     if (!ensureWifi(now)) {
-        delay(250);
+        displayTick(now);
+        delay(100);
         return;
     }
 
-    if (now - lastPoll >= DISPLAY_POLL_INTERVAL_MS) {
-        lastPoll = now;
-        DisplayCommand cmd = pollDisplayCommand();
-        if (cmd.hasMessage && cmd.text.length() > 0) {
-            Serial.printf("[display] %s: %s\n", cmd.type.c_str(), cmd.text.c_str());
-            displayCommand(cmd);
-            Serial.println("[display] done");
-        }
-    }
-
-    delay(100);
+    limenServerLoop();
+    touchLoop();
+    displayTick(now);
+    delay(2);
 }

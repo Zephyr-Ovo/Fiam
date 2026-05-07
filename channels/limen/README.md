@@ -1,6 +1,6 @@
 # Limen
 
-Limen is the XIAO ESP32S3 wearable surface for Fiam. The current goal is modest on purpose: let the AI put messages, emoji, and kaomoji on the round screen reliably before camera/touch/audio are added.
+Limen is the XIAO ESP32S3 wearable surface for Fiam. The current target is a local Stroll camera/screen peripheral: Favilla can view the live camera, capture a still photo, and let the AI mirror short text onto the round display.
 
 ## Hardware
 
@@ -14,17 +14,18 @@ Current bench state:
 - External antenna should be attached before mobile/hotspot field testing; WiFi stability is poor without it.
 - The display coin cell is RTC backup, not required for screen polling.
 - The 40300 LiPo should wait until polarity/connector/charging path are confirmed.
-- Camera and touch are intentionally not connected in the active firmware path yet.
+- Camera and touch are active in the local HTTP firmware path.
 
 ## What it does
 
-Current screen-first build:
+Current local camera build:
 
 1. Connects to WiFi
-2. Polls fiam `/api/wearable/reply`
-3. Displays `message`, `kaomoji`, or `emoji` commands on the round screen
+2. Serves `GET /health`, `GET /stream`, `GET /capture`, and `POST /screen`
+3. Displays AI text, emoji/face tokens, status, and capture/stream state on the round screen
+4. Sleeps the display backlight after idle; network and camera stay available for Favilla actions
 
-Camera, touch, STT, and TTS are deferred. Audio input should initially come through the phone/Bluetooth headset path, not the XIAO, because Android has stable mic permissions, codecs, network, and provider SDK options. XIAO audio can be revisited after screen/network are stable.
+Audio input should initially come through the phone/Bluetooth headset path, not the XIAO, because Android has stable mic permissions, codecs, network, and provider SDK options. XIAO audio can be revisited after screen/network are stable.
 
 ## Build
 
@@ -39,43 +40,42 @@ pio device monitor       # serial log
 
 ## Config
 
-Create `src/secrets.local.h` locally, or override these macros via build flags:
-- WiFi SSID/password
-- `FIAM_BASE_URL` (default `https://fiet.cc`)
-- optional `FIAM_HOST_HEADER` for fixed-IP HTTPS fallbacks
-- optional `FIAM_FIXED_IP` when device DNS cannot resolve the backend
-- optional `FIAM_FIXED_IP_ALT` to rotate Cloudflare IPs on failures
-- HTTP fixed-IP fallback can use `FIAM_BASE_URL` plus `FIAM_HOST_HEADER` without `FIAM_FIXED_IP`
-- `FIAM_TOKEN` (same ingest token used by Favilla)
+Set these environment variables before building:
 
-`src/secrets.local.h` is git-ignored.
+- `LIMEN_WIFI_SSID`
+- `LIMEN_WIFI_PASS`
+- optional `LIMEN_DEVICE_ID` via build flag if needed
+
+Runtime keys/tokens stay in local/server environment variables. The XIAO local camera firmware does not embed `FIAM_INGEST_TOKEN`.
 
 ## Network Strategy
 
-Direct XIAO -> public `https://fiet.cc` polling works only intermittently on the current route; DNS/TLS through Cloudflare is fragile on ESP32S3 + hotspot/mobile paths. Prefer one of these paths:
+Direct XIAO -> public `https://fiet.cc` polling is no longer the first target for Stroll. Prefer one of these paths:
 
 1. XIAO talks to the phone on hotspot LAN; Favilla relays to Fiam over the phone's proxy/mobile route.
 2. XIAO talks to a lightweight private broker/API reachable through Tailscale or another stable private network.
 3. If the server moves, place the broker/API close to the phone's LA exit path and keep the ESP32 protocol simple.
 
-For realtime screen updates, keep the device protocol tiny: short HTTP polling now, MQTT/WebSocket/UDP relay later if the phone bridge is added.
+For realtime screen updates, keep the device protocol tiny: local HTTP now, MQTT/WebSocket/UDP relay later if the phone bridge is added.
 
 ## Architecture
 
 ```
-Claude response ──[→xiao:screen]──► daemon/conductor ──MQTT──► dashboard queue                                                                   │
-Limen (XIAO) ◄────────────── WiFi GET /api/wearable/reply ◄────────┘
+AI hidden Stroll action ──► Favilla Stroll ──► http://<xiao-ip>/screen|capture|stream
 ```
 
-Screen command examples:
+Local API:
 
 ```text
-[→xiao:screen] message:I'm here.
-[→xiao:screen] kaomoji:(^-^)
-[→xiao:screen] emoji:spark
+GET  http://<xiao-ip>/health
+GET  http://<xiao-ip>/stream
+GET  http://<xiao-ip>/capture
+POST http://<xiao-ip>/screen  {"text":"ready"}
 ```
 
-Limen is a standalone client. It does not run Python or Fiam code. All intelligence lives on the server/phone side; the wearable displays compact commands and eventually contributes sensor context.
+Touch reset is deliberately hard to trigger: tap the round display three times within seven seconds. A sleeping display wakes on the first touch and does not count that touch as reset intent.
+
+Limen is a standalone client. It does not run Python or Fiam code. All intelligence lives on the server/phone side; the wearable displays compact commands and contributes camera context.
 
 ## Name
 

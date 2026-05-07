@@ -1,8 +1,9 @@
-// API client for fiam dashboard backend.
+// API client for the Favilla server.
 // Reads apiBase + token from appConfig (Settings page) at CALL TIME, falling
 // back to build-time env (VITE_API_BASE / VITE_INGEST_TOKEN) for dev / proxy.
 
 import { appConfig } from "../config"
+import type { StrollSpatialContext, StrollSpatialRecord, StrollTrackPoint } from "@stroll-map/types"
 
 function getBase(): string {
   // appConfig.apiBase wins; trim trailing slash so we always do `${base}/api/...`.
@@ -22,16 +23,28 @@ function authHeaders(): Record<string, string> {
   return h
 }
 
-function orKey(): string {
-  return (appConfig.openrouterKey || "").trim()
-}
-
 export type ChatThought = {
   kind: "think" | "search" | "check" | "native"
   text: string
+  summary?: string
   result?: string
   source: "marker" | "native"
+  locked?: boolean
+  icon?: string
 }
+
+export type ChatSegment =
+  | { type: "text"; text: string }
+  | {
+      type: "thought"
+      kind?: "think" | "search" | "check" | "native"
+      text?: string
+      summary?: string
+      result?: string
+      source?: "marker" | "native"
+      locked?: boolean
+      icon?: string
+    }
 
 export type ChatAttachment = {
   path: string
@@ -48,6 +61,8 @@ export type StoredChatMessage = {
   attachments?: Array<{ kind: "voice" | "file" | "image"; name: string; size?: string | number; path?: string; mime?: string }>
   thinking?: ChatThought[]
   thinkingLocked?: boolean
+  segments?: ChatSegment[]
+  hold?: { queued?: number; immediate?: boolean }
   divider?: { kind: "scissor" | "recall"; label?: string }
   recallUsed?: boolean
   error?: boolean
@@ -55,16 +70,23 @@ export type StoredChatMessage = {
 
 export type ChatResponse = {
   ok: boolean
-  backend?: "cc" | "api"
+  runtime?: "cc" | "api"
   reply: string
   thoughts?: ChatThought[]
   thoughts_locked?: boolean
+  segments?: ChatSegment[]
+  hold?: { queued?: number; immediate?: boolean }
   session_id?: string
   cost_usd?: number
   model?: string
   recall?: unknown
+  stroll_context?: StrollSpatialContext
+  stroll_records?: StrollSpatialRecord[]
+  stroll_actions?: StrollClientAction[]
   error?: string
 }
+
+export type StrollClientAction = { id: string; type: string; status: string; payload?: Record<string, unknown> }
 
 export type UploadResponse = {
   ok: boolean
@@ -76,6 +98,117 @@ export type HistoryResponse = {
   ok: boolean
   messages?: StoredChatMessage[]
   error?: string
+}
+
+export type StrollRecordResponse = {
+  ok: boolean
+  record?: StrollSpatialRecord
+  error?: string
+}
+
+export type StrollNearbyResponse = {
+  ok: boolean
+  records?: StrollSpatialRecord[]
+  contextVersion?: string
+  error?: string
+}
+
+export type DashboardDayBucket = {
+  turns: number
+  user_words: number
+  ai_words: number
+  emoji?: string
+}
+
+export type DashboardHistoryDigest = {
+  turns: number
+  user_turns: number
+  ai_turns: number
+  words: number
+  user_words: number
+  ai_words: number
+  by_day: Record<string, DashboardDayBucket>
+  content_units?: number
+  events?: Array<Record<string, unknown>>
+}
+
+export type DashboardLocationBucket = {
+  name: string
+  words: number
+  percent: number
+  count?: number
+  emoji?: string
+  latest_at?: string | number
+  placeKind?: string
+}
+
+export type DashboardSummary = {
+  ok: boolean
+  status?: {
+    daemon?: string
+    events?: number
+    embeddings?: number
+    flow_beats?: number
+    thinking_beats?: number
+    interaction_beats?: number
+    home?: string
+  }
+  health?: {
+    daemon?: string
+    pending_todos?: number
+    retry_todos?: number
+    budget_ok?: boolean
+    last_pipeline_error?: string | null
+  }
+  events?: Array<{ id: string; time?: string; preview?: string; access_count?: number }>
+  todos?: Array<{ at: string; type?: string; reason?: string }>
+  chat?: DashboardHistoryDigest
+  stroll?: DashboardHistoryDigest
+  studio?: DashboardHistoryDigest
+  locations?: DashboardLocationBucket[]
+  error?: string
+}
+
+export type StudioWorkspaceState = {
+  version?: number
+  updated_at?: string
+  files: unknown[]
+  activeFileId: string
+  activeNoteContent: string
+  fileContents?: Record<string, string>
+  timeline: unknown[]
+}
+
+export type StudioStateResponse = {
+  ok: boolean
+  state?: StudioWorkspaceState | null
+  error?: string
+}
+
+export type StudioEditCommand = {
+  op: "replace" | "insert_after" | "insert_before" | "delete" | "append" | "prepend"
+  target?: string
+  text?: string
+  note?: string
+}
+
+export type StudioEditResponse = {
+  ok: boolean
+  summary?: string
+  author?: string
+  edits?: StudioEditCommand[]
+  runtime?: "api" | "cc"
+  model?: string
+  error?: string
+}
+
+export type StudioEditRequest = {
+  instruction: string
+  content: string
+  fileId?: string
+  fileName?: string
+  runtime?: "auto" | "api" | "cc"
+  location?: Record<string, unknown>
 }
 
 function fileToBase64(file: File): Promise<string> {
@@ -101,7 +234,7 @@ export async function uploadFiles(files: File[]): Promise<UploadResponse> {
       })),
     ),
   }
-  const res = await fetch(`${getBase()}/api/app/upload`, {
+  const res = await fetch(`${getBase()}/favilla/upload`, {
     method: "POST",
     headers: authHeaders(),
     body: JSON.stringify(payload),
@@ -113,16 +246,14 @@ export async function uploadFiles(files: File[]): Promise<UploadResponse> {
 
 export async function sendChat(
   text: string,
-  source = "favilla",
+  source = "chat",
   attachments: ChatAttachment[] = [],
-  backend: "auto" | "cc" | "api" = appConfig.defaultBackend,
+  runtime: "auto" | "cc" | "api" = appConfig.defaultRuntime,
 ): Promise<ChatResponse> {
-  const body: Record<string, unknown> = { text, source, backend, attachments }
-  const ork = orKey()
-  if (ork) body.openrouter_key = ork
+  const body: Record<string, unknown> = { text, source, runtime, attachments }
   // eslint-disable-next-line no-console
-  console.log("[api] sendChat ->", `${getBase()}/api/app/chat`, { hasToken: !!getToken(), hasOR: !!ork })
-  const res = await fetch(`${getBase()}/api/app/chat`, {
+  console.log("[api] sendChat ->", `${getBase()}/favilla/chat/send`, { hasToken: !!getToken() })
+  const res = await fetch(`${getBase()}/favilla/chat/send`, {
     method: "POST",
     headers: authHeaders(),
     body: JSON.stringify(body),
@@ -134,9 +265,26 @@ export async function sendChat(
   return data as ChatResponse
 }
 
-export async function fetchChatHistory(source = "favilla", limit = 300): Promise<HistoryResponse> {
+export async function sendStrollMessage(
+  text: string,
+  context: StrollSpatialContext,
+  attachments: ChatAttachment[] = [],
+  runtime: "auto" | "cc" | "api" = appConfig.defaultRuntime,
+): Promise<ChatResponse> {
+  const body: Record<string, unknown> = { text, source: "stroll", runtime, attachments, stroll_context: context }
+  const res = await fetch(`${getBase()}/favilla/stroll/send`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify(body),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) return { ok: false, reply: "", error: data.error || `HTTP ${res.status}` }
+  return data as ChatResponse
+}
+
+export async function fetchChatHistory(source = "chat", limit = 300): Promise<HistoryResponse> {
   const params = new URLSearchParams({ source, limit: String(limit) })
-  const res = await fetch(`${getBase()}/api/app/history?${params.toString()}`, {
+  const res = await fetch(`${getBase()}/favilla/chat/history?${params.toString()}`, {
     method: "GET",
     headers: authHeaders(),
   })
@@ -145,8 +293,110 @@ export async function fetchChatHistory(source = "favilla", limit = 300): Promise
   return data as HistoryResponse
 }
 
-export async function recordChatMessage(message: Omit<StoredChatMessage, "id" | "t">, source = "favilla") {
-  const res = await fetch(`${getBase()}/api/app/history`, {
+export async function fetchStrollHistory(limit = 300): Promise<HistoryResponse> {
+  const params = new URLSearchParams({ limit: String(limit) })
+  const res = await fetch(`${getBase()}/favilla/stroll/history?${params.toString()}`, {
+    method: "GET",
+    headers: authHeaders(),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) return { ok: false, error: data.error || `HTTP ${res.status}` }
+  return data as HistoryResponse
+}
+
+export async function fetchStrollNearby(current: Pick<StrollTrackPoint, "lng" | "lat">, radiusM = 50, changedSince = 0): Promise<StrollNearbyResponse> {
+  const params = new URLSearchParams({ lng: String(current.lng), lat: String(current.lat), radiusM: String(radiusM), changedSince: String(changedSince) })
+  const res = await fetch(`${getBase()}/favilla/stroll/nearby?${params.toString()}`, {
+    method: "GET",
+    headers: authHeaders(),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) return { ok: false, error: data.error || `HTTP ${res.status}` }
+  return data as StrollNearbyResponse
+}
+
+export async function writeStrollRecord(record: Omit<Partial<StrollSpatialRecord>, "createdAt" | "updatedAt"> & Pick<StrollSpatialRecord, "lng" | "lat" | "kind" | "origin">): Promise<StrollRecordResponse> {
+  const res = await fetch(`${getBase()}/favilla/stroll/records`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify(record),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) return { ok: false, error: data.error || `HTTP ${res.status}` }
+  return data as StrollRecordResponse
+}
+
+export async function reportStrollActionResult(payload: Record<string, unknown>) {
+  const res = await fetch(`${getBase()}/favilla/stroll/action-result`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify(payload),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) return { ok: false, error: data.error || `HTTP ${res.status}` }
+  return data as { ok: boolean; action?: unknown; error?: string }
+}
+
+export async function fetchDashboardSummary(): Promise<DashboardSummary> {
+  try {
+    const res = await fetch(`${getBase()}/favilla/dashboard`, {
+      method: "GET",
+      headers: authHeaders(),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) return { ok: false, error: data.error || `HTTP ${res.status}` }
+    return data as DashboardSummary
+  } catch (e) {
+    return { ok: false, error: String(e) }
+  }
+}
+
+export async function fetchStudioState(): Promise<StudioStateResponse> {
+  try {
+    const res = await fetch(`${getBase()}/favilla/studio`, {
+      method: "GET",
+      headers: authHeaders(),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) return { ok: false, error: data.error || `HTTP ${res.status}` }
+    return data as StudioStateResponse
+  } catch (e) {
+    return { ok: false, error: String(e) }
+  }
+}
+
+export async function saveStudioState(state: StudioWorkspaceState): Promise<StudioStateResponse> {
+  try {
+    const res = await fetch(`${getBase()}/favilla/studio`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ state }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) return { ok: false, error: data.error || `HTTP ${res.status}` }
+    return data as StudioStateResponse
+  } catch (e) {
+    return { ok: false, error: String(e) }
+  }
+}
+
+export async function requestStudioEdit(payload: StudioEditRequest): Promise<StudioEditResponse> {
+  try {
+    const res = await fetch(`${getBase()}/favilla/studio/edit`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify(payload),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) return { ok: false, error: data.error || `HTTP ${res.status}` }
+    return data as StudioEditResponse
+  } catch (e) {
+    return { ok: false, error: String(e) }
+  }
+}
+
+export async function recordChatMessage(message: Omit<StoredChatMessage, "id" | "t">, source = "chat") {
+  const res = await fetch(`${getBase()}/favilla/chat/history`, {
     method: "POST",
     headers: authHeaders(),
     body: JSON.stringify({ source, ...message }),
@@ -164,8 +414,8 @@ export async function recordChatMessage(message: Omit<StoredChatMessage, "id" | 
 //             previous cut into one event (compute embedding, write fingerprint,
 //             ask DS for graph edges, name it). Async-heavy; UI fires & forgets.
 //
-// Both endpoints are stubs at the moment — backend wiring comes after the
-// CC-path beat ingestion fix. UI calls them anyway so the contract is fixed.
+// The server records both API and CC Chat turns into flow/features, so
+// process/recall can see turns across runtime switches.
 
 export type MemoryOpResponse = { ok: boolean; error?: string; [k: string]: unknown }
 
@@ -174,7 +424,7 @@ async function postMemoryOp(path: string, body: object = {}): Promise<MemoryOpRe
     const res = await fetch(`${getBase()}${path}`, {
       method: "POST",
       headers: authHeaders(),
-      body: JSON.stringify({ source: "favilla", ...body }),
+      body: JSON.stringify({ source: "chat", ...body }),
     })
     const data = await res.json().catch(() => ({}))
     if (!res.ok) return { ok: false, error: data.error || `HTTP ${res.status}` }
@@ -185,14 +435,14 @@ async function postMemoryOp(path: string, body: object = {}): Promise<MemoryOpRe
 }
 
 export function recallNow() {
-  return postMemoryOp("/api/app/recall")
+  return postMemoryOp("/favilla/chat/recall")
 }
 
 // cutFlow: drop a divider marker into the unprocessed flow. The next
 //          processFlow() call will use these markers to split beats into
 //          multiple events. Cutting alone does NOT trigger DS work.
 export function cutFlow() {
-  return postMemoryOp("/api/app/cut")
+  return postMemoryOp("/favilla/chat/cut")
 }
 
 // processFlow: ask the server to seal all unprocessed beats into events
@@ -200,10 +450,10 @@ export function cutFlow() {
 //              resolves only when DS is done. UI should disable Send and
 //              show the hourglass animation while this is in flight.
 export function processFlow() {
-  return postMemoryOp("/api/app/process")
+  return postMemoryOp("/favilla/chat/process")
 }
 
 // Back-compat alias.
 export function sealEvent() {
-  return postMemoryOp("/api/app/process")
+  return postMemoryOp("/favilla/chat/process")
 }

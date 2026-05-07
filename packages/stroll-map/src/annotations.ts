@@ -1,5 +1,5 @@
 import { distanceMeters } from "./route"
-import type { StrollMapAnnotation, StrollPhotoMarkerInput, StrollPhotoRef } from "./types"
+import type { StrollMapAnnotation, StrollPhotoMarkerInput, StrollPhotoRef, StrollSpatialRecord } from "./types"
 
 export const defaultPhotoMergeRadiusM = 20
 
@@ -36,6 +36,7 @@ export function buildPhotoAnnotations(photos: StrollPhotoMarkerInput[], radiusM 
       count: refs.length,
       mergedRadiusM: radiusM,
       source: "user",
+      createdAt: Math.max(...refs.map((ref) => ref.takenAt || 0).filter(Boolean), 0) || undefined,
     }
   })
 }
@@ -45,5 +46,49 @@ export function createAiEmojiAnnotation(input: Omit<StrollMapAnnotation, "kind" 
     ...input,
     kind: "ai",
     source: "ai",
+  }
+}
+
+export function createSpatialRecordAnnotation(record: StrollSpatialRecord): StrollMapAnnotation {
+  if (record.kind === "photo") {
+    const attachmentSource = record.attachment?.source
+    const source = attachmentSource === "phone" || attachmentSource === "limen" || attachmentSource === "replay" ? attachmentSource : undefined
+    const photo = record.attachment ? { ...record.attachment, takenAt: record.attachment.takenAt || record.createdAt, source } : undefined
+    return {
+      id: record.id,
+      kind: "photo",
+      lng: record.lng,
+      lat: record.lat,
+      text: record.text,
+      emoji: record.emoji,
+      photos: photo ? [photo] : [],
+      count: photo ? 1 : undefined,
+      source: record.origin,
+      recordKind: record.kind,
+      placeKind: record.placeKind,
+      origin: record.origin,
+      distanceM: record.distanceM,
+      radiusM: record.radiusM,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+      attachment: record.attachment,
+    }
+  }
+  return {
+    id: record.id,
+    kind: "ai",
+    lng: record.lng,
+    lat: record.lat,
+    text: record.text,
+    emoji: record.emoji || "✦",
+    source: record.origin,
+    recordKind: record.kind,
+    placeKind: record.placeKind,
+    origin: record.origin,
+    distanceM: record.distanceM,
+    radiusM: record.radiusM,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    attachment: record.attachment,
   }
 }

@@ -1,0 +1,211 @@
+{
+  "source": "https://www.figma.com/design/TfPKdejmmDQVs7WMyfpERj/favilla-v2?node-id=71-1291",
+  "node": "71:1291",
+  "note": "Recovered complete SVG objects from selected Figma MCP output batches before the 20KB truncation point. See docs/figma/favilla-v2-icons-71-1291.selection.json for the full selected node index.",
+  "icons": [
+    {
+      "slug": "attachment",
+      "id": "71:1473",
+      "name": "interface-edit-attachment-1--attachment-link-paperclip-unlink--Streamline-Core",
+      "file": "attachment.svg"
+    },
+    {
+      "slug": "attachment-alt",
+      "id": "71:1475",
+      "name": "interface-edit-attachment-2--attachment-link-paperclip-unlink--Streamline-Core",
+      "file": "attachment-alt.svg"
+    },
+    {
+      "slug": "bookmark",
+      "id": "71:2412",
+      "name": "interface-bookmark--bookmarks-tags-favorite--Streamline-Core",
+      "file": "bookmark.svg"
+    },
+    {
+      "slug": "bookmark-tag",
+      "id": "71:2418",
+      "name": "interface-bookmark-tag--tags-bookmark-favorite--Streamline-Core",
+      "file": "bookmark-tag.svg"
+    },
+    {
+      "slug": "calendar",
+      "id": "71:1326",
+      "name": "interface-calendar--blank-calendar-date-day-month--Streamline-Core",
+      "file": "calendar.svg"
+    },
+    {
+      "slug": "calendar-check",
+      "id": "71:1349",
+      "name": "interface-calendar-check--approve-calendar-check-date-day-month-success--Streamline-Core",
+      "file": "calendar-check.svg"
+    },
+    {
+      "slug": "calendar-heart",
+      "id": "71:1403",
+      "name": "interface-calendar-heart--calendar-date-day-favorite-heart-like-month--Streamline-Core",
+      "file": "calendar-heart.svg"
+    },
+    {
+      "slug": "chat-message",
+      "id": "71:2705",
+      "name": "interface-help-question-message--bubble-help-mark-message-query-question-speech--Streamline-Core",
+      "file": "chat-message.svg"
+    },
+    {
+      "slug": "clipboard",
+      "id": "71:1986",
+      "name": "interface-file-clipboard--work-plain-clipboard-task-list-company-office--Streamline-Core",
+      "file": "clipboard.svg"
+    },
+    {
+      "slug": "clipboard-check",
+      "id": "71:2003",
+      "name": "interface-file-clipboard-check--checkmark-edit-task-edition-checklist-check-success-clipboard-form--Streamline-Core",
+      "file": "clipboard-check.svg"
+    },
+    {
+      "slug": "clock",
+      "id": "71:2284",
+      "name": "interface-time-clock-circle--clock-loading-measure-time-circle--Streamline-Core",
+      "file": "clock.svg"
+    },
+    {
+      "slug": "dashboard",
+      "id": "71:2564",
+      "name": "interface-dashboard-layout-3--app-application-dashboard-home-layout--Streamline-Core",
+      "file": "dashboard.svg"
+    },
+    {
+      "slug": "dashboard-gauge",
+      "id": "71:2135",
+      "name": "interface-setting-gauge-dashboard-1--bar-speed-test-loading-dashboard-internet-gauge-progress--Streamline-Core",
+      "file": "dashboard-gauge.svg"
+    },
+    {
+      "slug": "download",
+      "id": "71:3000",
+      "name": "interface-download-box-1--arrow-box-down-download-internet-network-server-upload--Streamline-Core",
+      "file": "download.svg"
+    },
+    {
+      "slug": "file-text",
+      "id": "71:2078",
+      "name": "Interface-file-text--text-common-file--Streamline-Core",
+      "file": "file-text.svg"
+    },
+    {
+      "slug": "folder",
+      "id": "71:2091",
+      "name": "interface-folder--empty-folder--Streamline-Core",
+      "file": "folder.svg"
+    },
+    {
+      "slug": "folder-add",
+      "id": "71:2093",
+      "name": "interface-folder-add--add-folder-plus--Streamline-Core",
+      "file": "folder-add.svg"
+    },
+    {
+      "slug": "fountain-pen",
+      "id": "71:1798",
+      "name": "interface-edit-pen-2--content-creation-edit-fountain-pen-write--Streamline-Core",
+      "file": "fountain-pen.svg"
+    },
+    {
+      "slug": "heart",
+      "id": "71:2439",
+      "name": "interface-favorite-heart--reward-social-rating-media-heart-it-like-favorite-love--Streamline-Core",
+      "file": "heart.svg"
+    },
+    {
+      "slug": "home",
+      "id": "71:2452",
+      "name": "interface-home-2--door-entrance-home-house-map-roof-round--Streamline-Core",
+      "file": "home.svg"
+    },
+    {
+      "slug": "home-simple",
+      "id": "71:2450",
+      "name": "interface-home-1--home-house-map-roof--Streamline-Core",
+      "file": "home-simple.svg"
+    },
+    {
+      "slug": "menu",
+      "id": "71:2157",
+      "name": "interface-setting-menu-2--button-parallel-horizontal-lines-menu-navigation-staggered-three-hamburger--Streamline-Core",
+      "file": "menu.svg"
+    },
+    {
+      "slug": "menu-dots",
+      "id": "71:2166",
+      "name": "interface-setting-menu-horizontal--navigation-dots-three-circle-button-horizontal-menu--Streamline-Core",
+      "file": "menu-dots.svg"
+    },
+    {
+      "slug": "note",
+      "id": "71:2074",
+      "name": "interface-file-sticky-note--empty-common-file--Streamline-Core",
+      "file": "note.svg"
+    },
+    {
+      "slug": "pen",
+      "id": "71:1793",
+      "name": "interface-edit-pen-1--content-creation-edit-pen-write--Streamline-Core",
+      "file": "pen.svg"
+    },
+    {
+      "slug": "pencil",
+      "id": "71:1810",
+      "name": "interface-edit-pencil--change-edit-modify-pencil-write-writing--Streamline-Core",
+      "file": "pencil.svg"
+    },
+    {
+      "slug": "pin",
+      "id": "71:1816",
+      "name": "interface-edit-pin-1--pin-push-thumbtack--Streamline-Core",
+      "file": "pin.svg"
+    },
+    {
+      "slug": "quill",
+      "id": "71:1836",
+      "name": "interface-edit-quill--change-edit-feather-modify-quill-write-writing--Streamline-Core",
+      "file": "quill.svg"
+    },
+    {
+      "slug": "settings",
+      "id": "71:2133",
+      "name": "interface-setting-cog--work-loading-cog-gear-settings-machine--Streamline-Core",
+      "file": "settings.svg"
+    },
+    {
+      "slug": "share",
+      "id": "71:2728",
+      "name": "interface-share--share-transmit--Streamline-Core",
+      "file": "share.svg"
+    },
+    {
+      "slug": "sliders",
+      "id": "71:2216",
+      "name": "interface-setting-slider-horizontal--adjustment-adjust-controls-fader-horizontal-settings-slider--Streamline-Core",
+      "file": "sliders.svg"
+    },
+    {
+      "slug": "user-profile",
+      "id": "71:2528",
+      "name": "interface-user-profile-focus--close-geometric-human-person-profile-focus-user--Streamline-Core",
+      "file": "user-profile.svg"
+    },
+    {
+      "slug": "write",
+      "id": "71:1936",
+      "name": "interface-edit-write-1--edit-edition-form-pen-text-write--Streamline-Core",
+      "file": "write.svg"
+    },
+    {
+      "slug": "write-paper",
+      "id": "71:1940",
+      "name": "interface-edit-write-2--change-document-edit-modify-paper-pencil-write-writing--Streamline-Core",
+      "file": "write-paper.svg"
+    }
+  ]
+}

@@ -4,8 +4,8 @@ Conductor / daemon / bridges all talk through this module.
 The bus replaces per-channel polling with publish/subscribe.
 
 Topic layout (locked 2026-04-24):
-    fiam/receive/<source>     ← inbound from external (tg, email, favilla, limen, ...)
-    fiam/dispatch/<target>    ← outbound from conductor (tg, email, cc, dashboard, ...)
+    fiam/receive/<source>     ← inbound from external (email, favilla, limen, ...)
+    fiam/dispatch/<target>    ← outbound from conductor (email, cc, dashboard, ...)
 
 Reliability: QoS 1 + persistent sessions. The broker (Mosquitto) is
 expected to be reachable on 127.0.0.1:1883 with no auth.

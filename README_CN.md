@@ -13,7 +13,7 @@ Claude Code session
       │                     └── auto: drift + Gorge + Pool + recall
        │
        └── Hooks ◄──── 注入 recall 到 additionalContext
-                 ├──── 发送外部消息 (TG/邮件)
+                 ├──── 发送外部消息（邮件/app）
                  └──── session 启动时注入日报
 ```
 
@@ -39,13 +39,13 @@ Claude Code session
 
 ### Beat 来源
 
-`cc`（对话）· `action`（工具调用和图片描述）· `tg` · `email` · `favilla`（Android）· `limen`/`xiao`（可穿戴）· `schedule`
+`cc`（对话）· `action`（工具调用和图片描述）· `email` · `favilla`（Android）· `limen`/`xiao`（可穿戴）· `todo`
 
 ### 功能插件协议
 
-功能性入口统一用 `plugins/<id>/plugin.toml` 注册；基础设施（dashboard、网页、git diff、flow、Pool、recall）不作为插件单位。入站统一发布到 `fiam/receive/<source>`，出站统一由 AI marker（如 `[→tg:Zephyr] ...`）解析到 `fiam/dispatch/<target>`。禁用某项功能时改 manifest 的 `enabled = false`，daemon、Conductor、bridge 都会按该开关跳过收发。
+功能性入口统一用 `plugins/<id>/plugin.toml` 注册；基础设施（dashboard、网页、git diff、flow、Pool、recall）不作为插件单位。入站统一发布到 `fiam/receive/<source>`，出站统一由 AI marker（如 `[→email:Zephyr] ...`）解析到 `fiam/dispatch/<target>`。禁用某项功能时改 manifest 的 `enabled = false`，daemon、Conductor、bridge 都会按该开关跳过收发。
 
-当前 manifests：`tg`、`email`、`favilla`、`xiao`、`app`、`voice-call`、`device-control`、`ring`、`mcp`。详细协议见 [docs/plugin_protocol.md](docs/plugin_protocol.md)。
+当前 manifests：`email`、`favilla`、`xiao`、`app`、`voice-call`、`device-control`、`ring`、`mcp`。详细协议见 [docs/plugin_protocol.md](docs/plugin_protocol.md)。
 
 ### 手机与可穿戴入口
 
@@ -61,7 +61,7 @@ Claude Code session
 - **实时事件切分** — auto 模式中 Gorge 监听 beat 嵌入流，通过 TextTiling 深度 + 峰谷确认触发事件切割
 - **语义漂移检测** — auto 模式中相邻 beat 余弦相似度低于阈值 → recall hook 触发
 - **图扩散激活检索** — 从滑动向量找种子节点，沿边传播、权重连乘、概率激发
-- **多通道** — Telegram、邮件、Favilla（Android 分享意图）、ActivityWatch
+- **多通道** — 邮件、Favilla（Android 分享意图）、ActivityWatch
 - **Web 控制台** — SvelteKit 5 仪表盘（Catppuccin 深色主题），3D 力导向图谱 + 边编辑，事件 CRUD，flow 查看器
 - **Hook 注入** — 4 个 CC hook（UserPromptSubmit, Stop, SessionStart, PostCompact）
 - **轻量部署** — ML 依赖可选（`pip install -e ".[ml]"`）；ISP 无 GPU，嵌入走远程 API
@@ -105,8 +105,8 @@ scripts/
   fiam_lib/
     daemon.py              # 主事件循环 + CC session 管理
     maintenance.py         # clean + find-sessions
-    postman.py             # TG/邮件协议 helper
-    scheduler.py           # 定时任务
+    postman.py             # 邮件协议 helper
+    todo.py                # 稍后任务队列
 
 dashboard/                 # SvelteKit 5 + Svelte runes + Tailwind 4
   src/routes/graph/        # 3D 力导向图谱（Canvas 2D）
@@ -120,12 +120,11 @@ scripts/hooks/             # CC hook 脚本
   compact.sh               # 归档摘要 (PostCompact)
 
 channels/
-  tg/stickers/             # TG 表情包索引
   favilla/                 # Android 信息采集 app
   limen/                   # ESP32 可穿戴设备
 
 plugins/                   # 功能插件 manifest（可接入/禁用）
-  tg/ email/ favilla/ xiao/ app/ voice-call/ device-control/ ring/ mcp/
+  email/ favilla/ xiao/ app/ voice-call/ device-control/ ring/ mcp/
 ```
 
 ## 命令
@@ -146,7 +145,7 @@ plugins/                   # 功能插件 manifest（可接入/禁用）
 
 复制 `fiam.toml.example` → `fiam.toml`（或运行 `fiam init`）。
 
-关键项：`[conductor].memory_mode = "manual"` 表示标注期只写 flow + 冻结向量；`"auto"` 才运行 drift/Gorge/Pool/recall 自动链路。DeepSeek 边建议复用 `[graph]` 配置，默认读取 `FIAM_GRAPH_API_KEY`。
+关键项：`timezone = "Asia/Shanghai"` 是项目本地时间，用于 AI 可见 local 时间、上传日期目录、日预算/今日统计和无时区 todo 时间；事件存储仍保持 UTC。`[conductor].memory_mode = "manual"` 表示标注期只写 flow + 冻结向量；`"auto"` 才运行 drift/Gorge/Pool/recall 自动链路。`[app]` 里配置 Favilla 后端和 CoT summary 的 DeepSeek-compatible API；DeepSeek 边建议复用 `[graph]` 配置，默认读取 `FIAM_GRAPH_API_KEY`。
 
 ## 部署拓扑
 
