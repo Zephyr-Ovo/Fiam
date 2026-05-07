@@ -1816,6 +1816,57 @@ def _app_runtime_context() -> str:
     ])
 
 
+def _recent_conversation_for_app(source: str, *, max_n: int = 12, max_chars: int = 4000) -> str:
+    """Read transcript tail for the given source as a block for api context.
+
+    Returns formatted lines like:
+        [recent_conversation source=chat]
+        2026-05-07T14:00 user@chat (api): hello
+        2026-05-07T14:00 ai@chat (api): hi there
+        ...
+
+    Cross-source merge is intentionally NOT done here: chat ↔ stroll keep
+    separate threads. Returns "" if no transcript.
+    """
+    if not _CONFIG:
+        return ""
+    path = _transcript_path(source)
+    if not path.exists():
+        return ""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    records = []
+    for line in lines[-(max_n * 2):]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    if not records:
+        return ""
+    rendered: list[str] = [f"[recent_conversation source={source}]"]
+    rendered.append("# This is the recent transcript on this surface (raw, includes XML markers). Use it as conversational context; do not echo XML markers back.")
+    for rec in records[-max_n:]:
+        role = str(rec.get("role") or "ai")
+        rt = str(rec.get("runtime") or "")
+        rt_tag = f" ({rt})" if rt else ""
+        ts = int(rec.get("t") or 0)
+        body = str(rec.get("raw_text") or rec.get("text") or "").strip()
+        if not body:
+            continue
+        rendered.append(f"{ts} {role}@{source}{rt_tag}: {body}")
+    block = "\n".join(rendered)
+    if len(block) > max_chars:
+        block = block[-max_chars:]
+        # Re-anchor with a header so the model still recognises the block
+        block = f"[recent_conversation source={source} truncated]\n...{block}"
+    return block
+
+
 def _parse_cot(reply: str) -> tuple[str, list[dict], bool, list[dict]]:
     """Strip <<COT:*>> markers from reply.
 
@@ -2170,7 +2221,11 @@ def _run_api_favilla_chat(*, text: str, source: str, attachments: list | None = 
             lines.append(f"- {a['path']}  (name={a['name']!r}, mime={mime})")
         lines.append("")
         api_text = "\n".join(lines) + text
-    result = runtime.ask(api_text, source=source, extra_context=_app_runtime_context(), image_attachments=attachments or [])
+    extras = _app_runtime_context()
+    recent = _recent_conversation_for_app(source)
+    if recent:
+        extras = f"{extras}\n\n{recent}"
+    result = runtime.ask(api_text, source=source, extra_context=extras, image_attachments=attachments or [])
     raw_reply = str(result.reply or "")
     reply, queued_todos, queued_holds, immediate_hold, carry_over = _apply_app_control_markers(
         result.reply,
