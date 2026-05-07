@@ -32,6 +32,7 @@ class PluginManifest:
     env: tuple[str, ...]
     replaces: tuple[str, ...]
     notes: tuple[str, ...]
+    auto_wake: bool
     path: Path
     raw: dict[str, Any] = field(repr=False, compare=False)
 
@@ -84,6 +85,7 @@ def load_plugin_manifest(manifest_path: Path) -> PluginManifest:
         env=_tuple(raw.get("env")),
         replaces=_tuple(raw.get("replaces")),
         notes=_tuple(raw.get("notes")),
+        auto_wake=bool(raw.get("auto_wake", True)),
         path=manifest_path.parent,
         raw=raw,
     )
@@ -116,6 +118,17 @@ def plugin_for_dispatch(config_or_path: Any, target: str) -> PluginManifest | No
 def is_receive_enabled(config_or_path: Any, source: str, *, default: bool = True) -> bool:
     plugin = plugin_for_receive(config_or_path, source)
     return default if plugin is None else plugin.enabled
+
+
+def auto_wake_for_source(config_or_path: Any, source: str, *, default: bool = True) -> bool:
+    """Return whether `source` should immediately wake the AI.
+
+    Lazy channels (auto_wake=false) only land in flow.jsonl + notifications/inbox/
+    and wait for AI to look on its own time.
+    Sources without a matching plugin manifest fall back to `default`.
+    """
+    plugin = plugin_for_receive(config_or_path, source)
+    return default if plugin is None else plugin.auto_wake
 
 
 def is_dispatch_enabled(config_or_path: Any, target: str, *, default: bool = True) -> bool:

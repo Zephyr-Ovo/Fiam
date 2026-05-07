@@ -40,22 +40,36 @@ def normalize_beat(beat: dict, *, config: Any, cc_lookup: dict[str, str] | None 
 
 def _speaker_for_beat(beat: dict, *, config: Any, cc_lookup: dict[str, str]) -> str:
     text = str(beat.get("text") or "").strip()
-    source = str(beat.get("source") or "").strip().lower()
-    meta = beat.get("meta") or {}
+    # Accept both new "scene" and legacy "source" fields. Strip the actor
+    # prefix so legacy "user@favilla" / new bare "favilla" both resolve.
+    raw_scene = str(beat.get("scene") or beat.get("source") or "").strip().lower()
+    scene_tail = raw_scene.split("@", 1)[-1] if "@" in raw_scene else raw_scene
+    actor = raw_scene.split("@", 1)[0] if "@" in raw_scene else ""
     user_label = _label(getattr(config, "user_name", ""), "zephyr")
     ai_label = _label(getattr(config, "ai_name", ""), "ai")
 
-    if source in {"action", "dispatch", "schedule", "limen", "xiao", "ring"}:
-        return ai_label if source in {"action", "dispatch"} else source
-    if source in {"favilla", "app", "webapp"}:
+    if scene_tail == "action" or actor == "ai" and scene_tail == "action":
+        return ""
+    if actor == "ai":
+        return ai_label
+    if actor == "user":
         return user_label
-    if source in {"tg", "email"}:
-        return _label(meta.get("from_name") or source, source)
-    if source == "cc":
-        if text.startswith("[wake:") or text.startswith("[app:"):
+    if actor == "external":
+        return scene_tail or "external"
+    if actor == "system":
+        return scene_tail or "system"
+    # Legacy bare values
+    if raw_scene in {"dispatch", "todo", "limen", "xiao", "ring"}:
+        return ai_label if raw_scene == "dispatch" else raw_scene
+    if raw_scene in {"favilla", "app", "webapp", "stroll"}:
+        return user_label
+    if raw_scene == "email":
+        return raw_scene
+    if raw_scene == "cc":
+        if text.startswith("[app:"):
             return user_label
         return cc_lookup.get(text) or "cc"
-    return _label(meta.get("speaker") or meta.get("from_name") or source, source or user_label)
+    return raw_scene or user_label
 
 
 def _cc_role_lookup(config: Any) -> dict[str, str]:

@@ -307,8 +307,8 @@ class ClaudeCodeAdapter:
                 if text and not _is_system_message(text):
                     entries.append((order, Beat(
                         t=_parse_ts(ts),
-                        text=_speaker_text(user_label, text),
-                        source="cc",
+                        text=text,
+                        scene="cc",
                         user=user_status,
                         ai=ai_status,
                     )))
@@ -368,38 +368,35 @@ class ClaudeCodeAdapter:
             if tools:
                 tool_text = "; ".join(tools)
                 entries.append((asst_order[mid], Beat(
-                    t=t, text=_speaker_text(ai_label, f"做了：{tool_text}"), source="action",
-                    user=user_status, ai=ai_status,
+                    t=t, text=tool_text, scene="ai@action",
+                    user=user_status, ai=ai_status, runtime="cc",
                 )))
 
-            # Thinking blocks are part of AI activity, but remain structured in
-            # meta so UI can collapse/expand them separately from normal speech.
+            # Thinking blocks are part of AI activity.
             if thinking:
                 entries.append((asst_order[mid], Beat(
                     t=t,
-                    text=_speaker_text(ai_label, f"我想：{thinking}"),
-                    source="cc",
+                    text=thinking,
+                    scene="ai@think",
                     user=user_status,
                     ai=ai_status,
-                    meta={"kind": "thinking"},
+                    runtime="cc",
                 )))
 
-            # Routed messages → dispatch beats. Target/recipient are metadata;
-            # text stays clean for embedding and manual cut annotation.
+            # Routed messages → dispatch beats keyed by target channel.
             for marker in routed:
                 entries.append((asst_order[mid], Beat(
                     t=t,
-                    text=_speaker_text(ai_label, f"对 {marker.recipient} 说：{marker.body}"),
-                    source="dispatch",
-                    user=user_status, ai=ai_status,
-                    meta={"target": marker.channel, "recipient": marker.recipient},
+                    text=marker.body.strip(),
+                    scene=f"ai@{marker.channel}",
+                    user=user_status, ai=ai_status, runtime="cc",
                 )))
 
             # Remaining CC dialogue text (after stripping routed parts)
             if remaining.strip():
                 entries.append((asst_order[mid], Beat(
-                    t=t, text=_speaker_text(ai_label, remaining.strip()), source="cc",
-                    user=user_status, ai=ai_status,
+                    t=t, text=remaining.strip(), scene="cc",
+                    user=user_status, ai=ai_status, runtime="cc",
                 )))
 
         entries.sort(key=lambda e: e[0])

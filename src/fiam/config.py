@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import tomllib
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 # ------------------------------------------------------------------
@@ -60,6 +62,7 @@ class FiamConfig:
     # ------------------------------------------------------------------
     ai_name: str = ""
     user_name: str = ""
+    timezone: str = "Asia/Shanghai"
 
     # ------------------------------------------------------------------
     # Language profile  ("zh" | "en" | "multi")
@@ -180,6 +183,7 @@ class FiamConfig:
     idle_timeout_minutes: int = 30      # minutes of no JSONL activity → trigger processing
     poll_interval_seconds: int = 30     # how often to check JSONL mtime
     email_poll_interval: int = 600      # seconds between email inbox polls (used by bridge_email)
+    events_per_session: int = 10        # rotate CC session after N wake events
 
     # ------------------------------------------------------------------
     # MQTT bus (Mosquitto)
@@ -219,11 +223,35 @@ class FiamConfig:
     api_timeout_seconds: int = 60
     api_tools_enabled: bool = True     # enable text-editor + read tools (function calling)
     api_tools_max_loops: int = 10      # safety cap on tool-call iterations
+    api_fallback_provider: str = ""
+    api_fallback_model: str = ""
+    api_fallback_base_url: str = ""
+    api_fallback_key_env: str = ""
+
+    # ------------------------------------------------------------------
+    # Favilla app runtime defaults
+    # ------------------------------------------------------------------
+    app_default_runtime: str = "auto"          # "auto" | "api" | "cc"
+    app_recall_include_recent: bool = True     # manual app recall can see freshly processed test events
+    app_cot_summary_enabled: bool = True
+    app_cot_summary_model: str = "deepseek-chat"
+    app_cot_summary_base_url: str = "https://api.deepseek.com"
+    app_cot_summary_api_key_env: str = "FIAM_COT_SUMMARY_API_KEY"
 
     # ------------------------------------------------------------------
     # Features
     # ------------------------------------------------------------------
     git_enabled: bool = True
+
+    # ------------------------------------------------------------------
+    # Debug profile overrides (applied when debug_mode is true)
+    # ------------------------------------------------------------------
+    debug_idle_timeout_minutes: int = 3
+    debug_poll_interval_seconds: int = 5
+    debug_memory_mode: str = "manual"
+    debug_api_tools_max_loops: int = 12
+    debug_app_default_runtime: str = "auto"
+    debug_app_recall_include_recent: bool = True
 
     def __post_init__(self) -> None:
         """Apply language profile defaults for unset model fields."""
@@ -238,6 +266,38 @@ class FiamConfig:
             self.embedding_model = str(profile["embedding"])
         if not self.embedding_dim:
             self.embedding_dim = int(profile["embedding_dim"])
+
+    def apply_debug_overrides(self) -> None:
+        if not self.debug_mode:
+            return
+        if self.debug_idle_timeout_minutes > 0:
+            self.idle_timeout_minutes = int(self.debug_idle_timeout_minutes)
+        if self.debug_poll_interval_seconds > 0:
+            self.poll_interval_seconds = int(self.debug_poll_interval_seconds)
+        if self.debug_memory_mode in {"manual", "auto"}:
+            self.memory_mode = self.debug_memory_mode
+        if self.debug_api_tools_max_loops > 0:
+            self.api_tools_max_loops = int(self.debug_api_tools_max_loops)
+        if self.debug_app_default_runtime in {"auto", "api", "cc"}:
+            self.app_default_runtime = self.debug_app_default_runtime
+        self.app_recall_include_recent = bool(self.debug_app_recall_include_recent)
+
+    def project_tz(self):
+        try:
+            return ZoneInfo(self.timezone or "UTC")
+        except ZoneInfoNotFoundError:
+            return timezone.utc
+
+    def now_utc(self) -> datetime:
+        return datetime.now(timezone.utc)
+
+    def now_local(self) -> datetime:
+        return self.now_utc().astimezone(self.project_tz())
+
+    def ensure_timezone(self, dt: datetime) -> datetime:
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=self.project_tz())
+        return dt
 
 
     # ------------------------------------------------------------------
@@ -341,6 +401,16 @@ class FiamConfig:
         return self.home_path / "inbox"
 
     @property
+    def notifications_inbox_dir(self) -> Path:
+        """Lazy-channel notifications waiting for AI to peek (Maildir-style)."""
+        return self.home_path / "notifications" / "inbox"
+
+    @property
+    def notifications_archive_dir(self) -> Path:
+        """Lazy-channel notifications AI has read (mv'd from inbox)."""
+        return self.home_path / "notifications" / "archive"
+
+    @property
     def pending_external_path(self) -> Path:
         """Pre-formatted external messages waiting for CC delivery (Conductor-prepared)."""
         return self.home_path / "pending_external.txt"
@@ -379,8 +449,8 @@ class FiamConfig:
         return self.home_path / "world"
 
     @property
-    def schedule_path(self) -> Path:
-        return self.self_dir / "schedule.jsonl"
+    def todo_path(self) -> Path:
+        return self.self_dir / "todo.jsonl"
 
     # ------------------------------------------------------------------
     # Directory creation
@@ -402,6 +472,8 @@ class FiamConfig:
             self.outbox_dir,
             self.outbox_sent_dir,
             self.inbox_dir,
+            self.notifications_inbox_dir,
+            self.notifications_archive_dir,
             self.world_dir,
         ):
             d.mkdir(parents=True, exist_ok=True)
@@ -422,6 +494,7 @@ class FiamConfig:
             f'home_paths = [{paths_list}]',
             f'ai_name = "{self.ai_name}"',
             f'user_name = "{self.user_name}"',
+            f'timezone = "{self.timezone}"',
             f'language_profile = "{self.language_profile}"',
             "",
             "[models]",
@@ -454,6 +527,7 @@ class FiamConfig:
             f"idle_timeout_minutes = {self.idle_timeout_minutes}",
             f"poll_interval_seconds = {self.poll_interval_seconds}",
             f"email_poll_interval = {self.email_poll_interval}",
+            f"events_per_session = {self.events_per_session}",
             "",
             "[api]",
             f'provider = "{self.api_provider}"',
@@ -465,6 +539,29 @@ class FiamConfig:
             f"timeout_seconds = {self.api_timeout_seconds}",
             f"tools_enabled = {str(self.api_tools_enabled).lower()}",
             f"tools_max_loops = {self.api_tools_max_loops}",
+            "",
+            "[api.fallback]",
+            f'provider = "{self.api_fallback_provider}"',
+            f'model = "{self.api_fallback_model}"',
+            f'base_url = "{self.api_fallback_base_url}"',
+            f'api_key_env = "{self.api_fallback_key_env}"',
+            "",
+            "[app]",
+            f'default_runtime = "{self.app_default_runtime}"',
+            f"recall_include_recent = {str(self.app_recall_include_recent).lower()}",
+            f"cot_summary_enabled = {str(self.app_cot_summary_enabled).lower()}",
+            f'cot_summary_model = "{self.app_cot_summary_model}"',
+            f'cot_summary_base_url = "{self.app_cot_summary_base_url}"',
+            f'cot_summary_api_key_env = "{self.app_cot_summary_api_key_env}"',
+            "",
+            "[debug]",
+            f"enabled = {str(self.debug_mode).lower()}",
+            f"idle_timeout_minutes = {self.debug_idle_timeout_minutes}",
+            f"poll_interval_seconds = {self.debug_poll_interval_seconds}",
+            f'memory_mode = "{self.debug_memory_mode}"',
+            f"api_tools_max_loops = {self.debug_api_tools_max_loops}",
+            f'app_default_runtime = "{self.debug_app_default_runtime}"',
+            f"app_recall_include_recent = {str(self.debug_app_recall_include_recent).lower()}",
             "",
             "[conductor]",
             f'memory_mode = "{self.memory_mode}"',
@@ -529,22 +626,26 @@ class FiamConfig:
         narrative = raw.get("narrative", {})
         daemon = raw.get("daemon", {})
         api = raw.get("api", {})
+        app = raw.get("app", {})
+        debug = raw.get("debug", {})
         features = raw.get("features", {})
         comm = raw.get("communication", raw.get("comms", {}))
         graph = raw.get("graph", {})
         conductor_cfg = raw.get("conductor", {})
         mqtt_cfg = raw.get("mqtt", {})
         vision = raw.get("vision", {})
+        api_fallback = api.get("fallback", {}) if isinstance(api.get("fallback", {}), dict) else {}
         voice = raw.get("voice", {})
         stt = voice.get("stt", {}) if isinstance(voice, dict) else {}
         tts = voice.get("tts", {}) if isinstance(voice, dict) else {}
 
-        return cls(
+        config = cls(
             home_path=home_path,
             home_paths=home_paths,
             code_path=code_path,
             ai_name=raw.get("ai_name", ""),
             user_name=raw.get("user_name", ""),
+            timezone=raw.get("timezone", cls.timezone),
             language_profile=raw.get("language_profile", "multi"),
             # Models
             embedding_model=models.get("embedding",
@@ -596,6 +697,7 @@ class FiamConfig:
             daily_budget_usd=daemon.get("daily_budget_usd", cls.daily_budget_usd),
             cc_model=daemon.get("cc_model", cls.cc_model),
             cc_disallowed_tools=daemon.get("cc_disallowed_tools", cls.cc_disallowed_tools),
+            events_per_session=daemon.get("events_per_session", cls.events_per_session),
             # API runtime
             api_provider=api.get("provider", cls.api_provider),
             api_model=api.get("model", cls.api_model),
@@ -606,6 +708,25 @@ class FiamConfig:
             api_timeout_seconds=api.get("timeout_seconds", cls.api_timeout_seconds),
             api_tools_enabled=api.get("tools_enabled", cls.api_tools_enabled),
             api_tools_max_loops=api.get("tools_max_loops", cls.api_tools_max_loops),
+            api_fallback_provider=api_fallback.get("provider", cls.api_fallback_provider),
+            api_fallback_model=api_fallback.get("model", cls.api_fallback_model),
+            api_fallback_base_url=api_fallback.get("base_url", cls.api_fallback_base_url),
+            api_fallback_key_env=api_fallback.get("api_key_env", cls.api_fallback_key_env),
+            # Favilla app runtime
+            app_default_runtime=app.get("default_runtime", cls.app_default_runtime),
+            app_recall_include_recent=app.get("recall_include_recent", cls.app_recall_include_recent),
+            app_cot_summary_enabled=app.get("cot_summary_enabled", cls.app_cot_summary_enabled),
+            app_cot_summary_model=app.get("cot_summary_model", cls.app_cot_summary_model),
+            app_cot_summary_base_url=app.get("cot_summary_base_url", cls.app_cot_summary_base_url),
+            app_cot_summary_api_key_env=app.get("cot_summary_api_key_env", cls.app_cot_summary_api_key_env),
+            # Debug profile
+            debug_mode=debug.get("enabled", cls.debug_mode),
+            debug_idle_timeout_minutes=debug.get("idle_timeout_minutes", cls.debug_idle_timeout_minutes),
+            debug_poll_interval_seconds=debug.get("poll_interval_seconds", cls.debug_poll_interval_seconds),
+            debug_memory_mode=debug.get("memory_mode", cls.debug_memory_mode),
+            debug_api_tools_max_loops=debug.get("api_tools_max_loops", cls.debug_api_tools_max_loops),
+            debug_app_default_runtime=debug.get("app_default_runtime", cls.debug_app_default_runtime),
+            debug_app_recall_include_recent=debug.get("app_recall_include_recent", cls.debug_app_recall_include_recent),
             # MQTT
             mqtt_host=mqtt_cfg.get("host", cls.mqtt_host),
             mqtt_port=mqtt_cfg.get("port", cls.mqtt_port),
@@ -636,3 +757,5 @@ class FiamConfig:
             email_smtp_host=comm.get("email_smtp_host", ""),
             email_smtp_port=comm.get("email_smtp_port", cls.email_smtp_port),
         )
+        config.apply_debug_overrides()
+        return config

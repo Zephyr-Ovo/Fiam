@@ -14,7 +14,7 @@ Tool surface (deliberately small, mirrors editor primitives):
 - ``create_file(path, content)``      — create new file, fail if exists
 - ``git_diff(path?, since?)``         — git diff inside home_path
 - ``grep_files(path, query)``         — search text files under a path
-- ``schedule_wake(wake_at, type, reason)`` — append a wake to self/schedule.jsonl
+- ``schedule_wake(at, kind, reason?)`` — append a wake/todo entry to self/todo.jsonl
 - ``set_ai_state(state, until?, reason?)`` — update self/ai_state.json
 
 The ``remember`` action is intentionally NOT a separate tool: editing
@@ -43,7 +43,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read the entire contents of a UTF-8 text file inside your home directory.",
+            "description": "Read the entire contents of a UTF-8 text file inside your home directory. This cannot inspect image or binary files.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -155,15 +155,20 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "schedule_wake",
-            "description": "Append a future wake reminder to self/schedule.jsonl.",
+            "description": (
+                "Append a future wake to self/todo.jsonl. Use kind='wake' for a "
+                "bare time-only reminder (no description \u2013 you'll re-read your "
+                "session memory when you wake up); use kind='todo' to attach a "
+                "short note describing what you wanted to do at that time."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "wake_at": {"type": "string", "description": "ISO timestamp with timezone."},
-                    "type": {"type": "string", "enum": ["private", "notify", "seek", "check"]},
-                    "reason": {"type": "string"},
+                    "at": {"type": "string", "description": "ISO timestamp with timezone, or 'YYYY-MM-DD HH:MM' (project timezone)."},
+                    "kind": {"type": "string", "enum": ["wake", "todo"]},
+                    "reason": {"type": "string", "description": "Required when kind='todo'. Ignored when kind='wake'."},
                 },
-                "required": ["wake_at", "type", "reason"],
+                "required": ["at", "kind"],
             },
         },
     },
@@ -218,7 +223,10 @@ def _read_file(home: Path, args: dict[str, Any]) -> str:
     path = _resolve(home, args["path"])
     if not path.is_file():
         raise ToolError(f"not a file: {args['path']}")
-    return path.read_text(encoding="utf-8")
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return "error: file is binary or not UTF-8 text; read_file cannot inspect image/binary contents"
 
 
 def _list_dir(home: Path, args: dict[str, Any]) -> str:
@@ -330,27 +338,35 @@ def _grep_files(home: Path, args: dict[str, Any]) -> str:
 
 
 def _schedule_wake(home: Path, args: dict[str, Any]) -> str:
-    wake_at_raw = str(args["wake_at"]).strip()
-    wake_type = str(args["type"]).strip().lower()
-    reason = str(args["reason"]).strip()
-    if wake_type not in {"private", "notify", "seek", "check"}:
-        raise ToolError("type must be private, notify, seek, or check")
-    if not reason:
-        raise ToolError("reason is required")
-    try:
-        wake_at = datetime.fromisoformat(wake_at_raw)
-    except ValueError as exc:
-        raise ToolError("wake_at must be an ISO timestamp") from exc
-    if wake_at.tzinfo is None:
-        wake_at = wake_at.replace(tzinfo=timezone.utc)
-    if wake_at <= datetime.now(timezone.utc):
-        raise ToolError("wake_at must be in the future")
-    path = home / "self" / "schedule.jsonl"
+    at_raw = str(args["at"]).strip()
+    kind = str(args["kind"]).strip().lower()
+    reason = str(args.get("reason") or "").strip()
+    if kind not in {"wake", "todo"}:
+        raise ToolError("kind must be 'wake' or 'todo'")
+    if kind == "todo" and not reason:
+        raise ToolError("reason is required when kind='todo'")
+    parsed: datetime | None = None
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
+        try:
+            parsed = datetime.strptime(at_raw, fmt)
+            break
+        except ValueError:
+            continue
+    if parsed is None:
+        try:
+            parsed = datetime.fromisoformat(at_raw.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ToolError("at must be ISO timestamp or 'YYYY-MM-DD HH:MM'") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    if parsed <= datetime.now(timezone.utc):
+        raise ToolError("at must be in the future")
+    path = home / "self" / "todo.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     record = {
-        "wake_at": wake_at.isoformat(),
-        "type": wake_type,
-        "reason": reason,
+        "at": parsed.isoformat(),
+        "kind": kind,
+        "reason": reason if kind == "todo" else "",
         "created": datetime.now(timezone.utc).isoformat(),
     }
     with path.open("a", encoding="utf-8") as fh:

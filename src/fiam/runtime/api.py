@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, Protocol
 
 import numpy as np
@@ -64,6 +66,111 @@ def _merge_usage(total: dict[str, Any], usage: dict[str, Any]) -> None:
                 _merge_usage(nested, value)
 
 
+def _image_attachment_blocks(config, attachments: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    if not attachments:
+        return []
+    home = Path(config.home_path).resolve()
+    blocks: list[dict[str, Any]] = []
+    for att in attachments:
+        if not isinstance(att, dict):
+            continue
+        mime = str(att.get("mime") or "").strip().lower()
+        if not mime.startswith("image/"):
+            continue
+        raw_path = str(att.get("path") or "").strip()
+        if not raw_path:
+            continue
+        try:
+            path = Path(raw_path).resolve()
+            path.relative_to(home)
+        except (OSError, ValueError):
+            continue
+        if not path.is_file():
+            continue
+        try:
+            data = path.read_bytes()
+        except OSError:
+            continue
+        if len(data) > 8 * 1024 * 1024:
+            continue
+        encoded = base64.b64encode(data).decode("ascii")
+        blocks.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:{mime};base64,{encoded}"},
+        })
+    return blocks
+
+
+def _attach_image_blocks_to_last_user_message(messages: list[dict[str, Any]], blocks: list[dict[str, Any]]) -> bool:
+    if not blocks or not messages:
+        return False
+    user_message = messages[-1]
+    if user_message.get("role") != "user":
+        return False
+    content = user_message.get("content")
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        text = "\n".join(str(block.get("text") or "") for block in content if isinstance(block, dict)).strip()
+    else:
+        text = ""
+    user_message["content"] = [{"type": "text", "text": text}, *blocks]
+    return True
+
+
+def _attach_images_to_last_user_message(config, messages: list[dict[str, Any]], attachments: list[dict[str, Any]] | None) -> bool:
+    return _attach_image_blocks_to_last_user_message(messages, _image_attachment_blocks(config, attachments))
+
+
+def _append_image_description_to_last_user_message(messages: list[dict[str, Any]], description: str) -> None:
+    if not messages:
+        return
+    user_message = messages[-1]
+    if user_message.get("role") != "user":
+        return
+    addition = f"\n\n[image description fallback]\n{description.strip()}"
+    content = user_message.get("content")
+    if isinstance(content, str):
+        user_message["content"] = content + addition
+    elif isinstance(content, list):
+        user_message["content"] = [*content, {"type": "text", "text": addition.strip()}]
+    else:
+        user_message["content"] = addition.strip()
+
+
+def _model_supports_images(model: str) -> bool:
+    name = (model or "").lower()
+    markers = (
+        "gpt-4o",
+        "gpt-4.1",
+        "gpt-4.5",
+        "gemini",
+        "claude-3",
+        "qwen-vl",
+        "qwen2-vl",
+        "qwen2.5-vl",
+        "pixtral",
+        "vision",
+        "vl-",
+        "llava",
+    )
+    return any(marker in name for marker in markers)
+
+
+def _vision_api_config(config):
+    return replace(
+        config,
+        api_provider=getattr(config, "vision_provider", "openai_compatible"),
+        api_model=getattr(config, "vision_model", ""),
+        api_base_url=getattr(config, "vision_base_url", "") or getattr(config, "api_base_url", ""),
+        api_key_env=getattr(config, "vision_api_key_env", "") or getattr(config, "api_key_env", ""),
+        api_fallback_provider="",
+        api_fallback_model="",
+        api_fallback_base_url="",
+        api_fallback_key_env="",
+    )
+
+
 class OpenAICompatibleClient:
     """Tiny OpenAI-compatible chat completions client."""
 
@@ -110,11 +217,7 @@ class OpenAICompatibleClient:
         }
         if tools:
             body["tools"] = tools
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}",
-            **self.extra_headers,
-        }
+        headers = self._headers()
         request = urllib.request.Request(
             f"{self.base_url}/chat/completions",
             data=json.dumps(body).encode("utf-8"),
@@ -146,6 +249,158 @@ class OpenAICompatibleClient:
             finish_reason=str(choice.get("finish_reason") or ""),
         )
 
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}",
+            **self.extra_headers,
+        }
+
+
+class GoogleOpenAICompatibleClient(OpenAICompatibleClient):
+    """Google Gemini API through the OpenAI-compatible endpoint."""
+
+    @classmethod
+    def from_config(cls, config) -> "GoogleOpenAICompatibleClient":
+        key_env = config.api_key_env or "GEMINI_API_KEY"
+        api_key = os.environ.get(key_env, "").strip()
+        if not api_key:
+            raise RuntimeError(f"Missing env var: {key_env}")
+        base_url = str(config.api_base_url or "").strip() or "https://generativelanguage.googleapis.com/v1beta/openai"
+        return cls(base_url=base_url, api_key=api_key, timeout=config.api_timeout_seconds)
+
+
+class VertexOpenAICompatibleClient(OpenAICompatibleClient):
+    """OpenAI-compatible Vertex AI Gemini client using service-account OAuth."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        credentials,
+        timeout: int = 60,
+        extra_headers: dict[str, str] | None = None,
+    ) -> None:
+        super().__init__(base_url=base_url, api_key="", timeout=timeout, extra_headers=extra_headers)
+        self.credentials = credentials
+
+    @classmethod
+    def from_config(cls, config) -> "VertexOpenAICompatibleClient":
+        try:
+            from google.auth.transport.requests import Request
+            from google.oauth2 import service_account
+        except ImportError as exc:
+            raise RuntimeError("Vertex API provider requires package: google-auth") from exc
+
+        key_env = config.api_key_env or "GOOGLE_APPLICATION_CREDENTIALS"
+        key_path = os.environ.get(key_env, "").strip()
+        if not key_path:
+            raise RuntimeError(f"Missing env var: {key_env}")
+        credentials = service_account.Credentials.from_service_account_file(
+            key_path,
+            scopes=["https://www.googleapis.com/auth/cloud-platform"],
+        )
+        info = json.loads(Path(key_path).read_text(encoding="utf-8"))
+        project = (
+            os.environ.get("GOOGLE_CLOUD_PROJECT", "").strip()
+            or os.environ.get("VERTEX_PROJECT", "").strip()
+            or str(info.get("project_id") or "").strip()
+        )
+        if not project:
+            raise RuntimeError("Missing Google Cloud project id")
+        location = (
+            os.environ.get("GOOGLE_CLOUD_LOCATION", "").strip()
+            or os.environ.get("VERTEX_LOCATION", "").strip()
+            or "us-central1"
+        )
+        base_url = str(config.api_base_url or "").strip().rstrip("/")
+        if not base_url or "openrouter.ai" in base_url:
+            base_url = (
+                f"https://{location}-aiplatform.googleapis.com/v1/"
+                f"projects/{project}/locations/{location}/endpoints/openapi"
+            )
+        return cls(base_url=base_url, credentials=credentials, timeout=config.api_timeout_seconds)
+
+    def _headers(self) -> dict[str, str]:
+        try:
+            from google.auth.transport.requests import Request
+        except ImportError as exc:
+            raise RuntimeError("Vertex API provider requires package: google-auth") from exc
+        if not self.credentials.valid:
+            self.credentials.refresh(Request())
+        return {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.credentials.token}",
+            **self.extra_headers,
+        }
+
+
+class FallbackApiClient:
+    def __init__(self, primary: ApiClient, fallback: ApiClient, *, fallback_model: str) -> None:
+        self.primary = primary
+        self.fallback = fallback
+        self.fallback_model = fallback_model
+
+    def complete(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        model: str,
+        temperature: float,
+        max_tokens: int,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> ApiCompletion:
+        try:
+            return self.primary.complete(
+                messages=messages,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                tools=tools,
+            )
+        except Exception as primary_exc:
+            try:
+                return self.fallback.complete(
+                    messages=messages,
+                    model=self.fallback_model or model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    tools=tools,
+                )
+            except Exception as fallback_exc:
+                raise RuntimeError(f"Primary API failed: {primary_exc}; fallback API failed: {fallback_exc}") from fallback_exc
+
+
+def _single_api_client_from_config(config) -> ApiClient:
+    provider = str(getattr(config, "api_provider", "openai_compatible") or "").lower()
+    if provider in {"google", "google_openai", "google_ai", "gemini", "gemini_openai"}:
+        return GoogleOpenAICompatibleClient.from_config(config)
+    if provider in {"vertex", "vertex_openai", "google_vertex", "google_vertex_openai"}:
+        return VertexOpenAICompatibleClient.from_config(config)
+    return OpenAICompatibleClient.from_config(config)
+
+
+def _fallback_api_config(config):
+    provider = str(getattr(config, "api_fallback_provider", "") or "").strip()
+    if not provider:
+        return None
+    return replace(
+        config,
+        api_provider=provider,
+        api_model=getattr(config, "api_fallback_model", "") or getattr(config, "api_model", ""),
+        api_base_url=getattr(config, "api_fallback_base_url", ""),
+        api_key_env=getattr(config, "api_fallback_key_env", "") or getattr(config, "api_key_env", ""),
+    )
+
+
+def _api_client_from_config(config) -> ApiClient:
+    primary = _single_api_client_from_config(config)
+    fallback_config = _fallback_api_config(config)
+    if fallback_config is None:
+        return primary
+    fallback = _single_api_client_from_config(fallback_config)
+    return FallbackApiClient(primary, fallback, fallback_model=fallback_config.api_model)
+
 
 class ApiRuntime:
     """Fiam-compatible runtime backed by an OpenAI-compatible API."""
@@ -158,9 +413,11 @@ class ApiRuntime:
         conductor=None,
         dispatcher: Callable[[str, str, str], bool] | None = None,
         recall_refresher: Callable[[np.ndarray], int] | None = None,
+        vision_client: ApiClient | None = None,
     ) -> None:
         self.config = config
-        self.client = client or OpenAICompatibleClient.from_config(config)
+        self.client = client or _api_client_from_config(config)
+        self.vision_client = vision_client
         self.conductor = conductor
         self.dispatcher = dispatcher
         self.recall_refresher = recall_refresher
@@ -177,6 +434,7 @@ class ApiRuntime:
         record: bool = True,
         include_recall: bool = True,
         extra_context: str = "",
+        image_attachments: list[dict[str, Any]] | None = None,
     ) -> ApiRuntimeResult:
         clean = text.strip()
         if not clean:
@@ -194,19 +452,30 @@ class ApiRuntime:
             consume_recall_dirty=True,
             extra_context=extra_context,
         )
+        model = self.config.api_model
+        usage_total: dict[str, Any] = {}
+        image_blocks = _image_attachment_blocks(self.config, image_attachments)
+        image_model_override = os.environ.get("FIAM_API_IMAGE_MODEL", "").strip()
+        has_image_input = False
+        if image_blocks:
+            if image_model_override or _model_supports_images(model):
+                has_image_input = _attach_image_blocks_to_last_user_message(messages, image_blocks)
+                model = image_model_override or model
+            else:
+                description = self._describe_images(clean, image_blocks, usage_total)
+                _append_image_description_to_last_user_message(messages, description)
 
         tools_enabled = bool(getattr(self.config, "api_tools_enabled", False))
-        tools = TOOL_SCHEMAS if tools_enabled else None
+        tools = TOOL_SCHEMAS if tools_enabled and not has_image_input else None
         max_loops = max(1, int(getattr(self.config, "api_tools_max_loops", 10)))
 
         loops = 0
-        usage_total: dict[str, Any] = {}
         completion: ApiCompletion | None = None
         while True:
             loops += 1
             completion = self.client.complete(
                 messages=messages,
-                model=self.config.api_model,
+                model=model,
                 temperature=self.config.api_temperature,
                 max_tokens=self.config.api_max_tokens,
                 tools=tools,
@@ -228,7 +497,7 @@ class ApiRuntime:
                 raw_args = str(fn.get("arguments") or "{}")
                 result = execute_tool_call(self.config, name, raw_args)
                 if record:
-                    self._record_tool_action(name, raw_args, result)
+                    self._record_tool_action(name, raw_args, result, source=source)
                 messages.append({
                     "role": "tool",
                     "tool_call_id": str(call.get("id") or ""),
@@ -239,7 +508,7 @@ class ApiRuntime:
                 # Force one final no-tools call so the model emits a user-facing reply.
                 completion = self.client.complete(
                     messages=messages,
-                    model=self.config.api_model,
+                    model=model,
                     temperature=self.config.api_temperature,
                     max_tokens=self.config.api_max_tokens,
                     tools=None,
@@ -251,7 +520,7 @@ class ApiRuntime:
         reply_text = completion.text or "(empty reply)"
         dispatched = self._dispatch(reply_text)
         if record:
-            self._record_assistant(reply_text, source="api")
+            self._record_assistant(reply_text, source=source)
 
         return ApiRuntimeResult(
             ok=True,
@@ -265,18 +534,44 @@ class ApiRuntime:
             tool_loops=loops,
         )
 
+    def _describe_images(self, user_text: str, image_blocks: list[dict[str, Any]], usage_total: dict[str, Any]) -> str:
+        vision_config = _vision_api_config(self.config)
+        vision_client = self.vision_client or _api_client_from_config(vision_config)
+        messages = [
+            {
+                "role": "system",
+                "content": "You describe images for Fiam before a text-only model continues the task. Be concise, factual, and include visible text, objects, place cues, and dates if present. Reply in the user's language.",
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": f"Describe these images for the next model. User request: {user_text}"},
+                    *image_blocks,
+                ],
+            },
+        ]
+        completion = vision_client.complete(
+            messages=messages,
+            model=vision_config.api_model,
+            temperature=0.0,
+            max_tokens=min(int(getattr(self.config, "api_max_tokens", 1024)), 1024),
+            tools=None,
+        )
+        _merge_usage(usage_total, completion.usage)
+        return completion.text or "(no image description)"
+
     def _record_user(self, text: str, *, source: str) -> int:
         if self.conductor is None:
             return 0
-        meta = {"runtime": "api", "input_source": source, "role": "user"}
+        from fiam.runtime.turns import scene_for_user
+        scene = scene_for_user(source)
         beat = user_beat(
             text,
             t=datetime.now(timezone.utc),
-            source="api",
+            scene=scene,
             user_status=self.conductor.user_status,
             ai_status=self.conductor.ai_status,
             user_name=getattr(self.config, "user_name", "") or "zephyr",
-            meta=meta,
         )
         self.conductor._ingest_beat(beat)
         vec = getattr(self.conductor, "last_ingested_vector", None)
@@ -287,30 +582,31 @@ class ApiRuntime:
     def _record_assistant(self, text: str, *, source: str) -> None:
         if self.conductor is None:
             return
-        meta = {"runtime": "api", "role": "assistant"}
+        from fiam.runtime.turns import scene_for_ai
+        scene = scene_for_ai(source)
         for beat in assistant_text_beats(
             text,
             t=datetime.now(timezone.utc),
-            source=source,
+            scene=scene,
             user_status=self.conductor.user_status,
             ai_status=self.conductor.ai_status,
             ai_name=getattr(self.config, "ai_name", "") or "ai",
-            meta=meta,
+            runtime="api",
         ):
             self.conductor._ingest_beat(beat)
 
-    def _record_tool_action(self, name: str, raw_args: str, result: str) -> None:
+    def _record_tool_action(self, name: str, raw_args: str, result: str, *, source: str) -> None:
         if self.conductor is None:
             return
-        summary = result.replace("\n", " ")[:300]
-        text = f"api tool {name}({raw_args[:300]}) -> {summary}"
+        args_summary = raw_args.replace("\n", " ")[:300]
+        text = f"action: {name}" + (f" — {args_summary}" if args_summary else "")
         self.conductor._ingest_beat(Beat(
             t=datetime.now(timezone.utc),
             text=text,
-            source="action",
+            scene="ai@action",
             user=self.conductor.user_status,
             ai=self.conductor.ai_status,
-            meta={"runtime": "api", "tool": name},
+            runtime="api",
         ))
 
     def _dispatch(self, text: str) -> int:

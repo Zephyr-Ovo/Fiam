@@ -4,7 +4,7 @@ Layout:
     [system 1] constitution.md       (cache_control if non-empty)
     [system 2] self/*.md combined    (cache_control if non-empty)
     [system 3] [recall] + extras     (no cache, churn-prone)
-    [user]    [wake:source] text
+    [user]    [source:from_name] text
 
 cache_control uses the OpenAI-compatible structured-blocks form. Providers
 that don't support prefix caching (e.g. DeepSeek, Gemini) silently ignore
@@ -68,6 +68,14 @@ def build_api_messages(
         messages.append(_system_block(self_context, cache=True))
 
     # system 3 — recall + extras (churn-prone, no cache)
+    # Channel context: tells the model which surface this message came from,
+    # without polluting the persisted user text in flow.jsonl. Emitted as a
+    # standalone system block so the recall-routing in build_plain_prompt_parts
+    # still sees pure "[recall]\n..." prefix.
+    from fiam.runtime.turns import channel_for_source
+    channel = channel_for_source(source)
+    if channel:
+        messages.append(_system_block(f"[context]\nuser_channel={channel}", cache=False))
     dynamic_parts: list[str] = []
     if include_recall:
         recall = load_recall_context(config, consume_dirty=consume_recall_dirty)
@@ -79,7 +87,7 @@ def build_api_messages(
         messages.append(_system_block("\n\n".join(dynamic_parts), cache=False))
 
     messages.append(
-        {"role": "user", "content": f"[wake:{source}] {user_text.strip()}"}
+        {"role": "user", "content": user_text.strip()}
     )
     return messages
 

@@ -3,6 +3,7 @@ name = "XIAO / Limen peripheral"
 enabled = true
 status = "screen_proto"
 kind = "device"
+auto_wake = false
 description = "Independent ESP32/XIAO physical peripheral for sensing or tiny interactions."
 transports = ["mqtt", "wifi"]
 capabilities = ["device_screen", "device_signal", "ambient_capture"]

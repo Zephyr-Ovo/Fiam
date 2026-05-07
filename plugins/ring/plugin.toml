@@ -3,6 +3,7 @@ name = "Smart ring"
 enabled = false
 status = "planned"
 kind = "device"
+auto_wake = false
 description = "Wearable biomarker or gesture stream from a smart ring."
 transports = ["vendor_api_or_ble_gateway", "mqtt"]
 capabilities = ["biometric_signal", "gesture_signal", "ambient_state"]

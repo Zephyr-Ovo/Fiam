@@ -37,7 +37,8 @@ from fiam_lib.jsonl import (
     _save_cursor,
 )
 from fiam_lib.postman import sweep_outbox
-from fiam_lib.scheduler import extract_wake_tags, extract_sleep_tag, append_to_schedule, load_due
+from fiam_lib.todo import extract_scheduled_items, extract_state_tag, append_to_todo, load_due
+from fiam_lib.app_markers import extract_hold_markers, parse_app_cot
 from fiam_lib.cost import log_cost, check_budget
 from fiam_lib.ui import _console, _flow, _ANIM_IDLE, _ANIM_ACTIVE, _animated_sleep
 
@@ -70,7 +71,7 @@ def _save_ai_state(
     state = state if state in _AI_STATES else "notify"
     data = {
         "state": state,
-        "since": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "since": config.now_local().isoformat(),
     }
     if reason:
         data["reason"] = reason
@@ -90,12 +91,10 @@ def _clear_ai_state(config) -> None:
     (config.self_dir / "comm_state.json").unlink(missing_ok=True)
 
 
-def _parse_state_time(raw: str):
+def _parse_state_time(config, raw: str):
     try:
         dt = datetime.fromisoformat(str(raw))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
+        return config.ensure_timezone(dt)
     except (TypeError, ValueError):
         return None
 
@@ -114,7 +113,7 @@ def _migrate_legacy_ai_state(config) -> dict | None:
                 "state": "sleep",
                 "until": until,
                 "reason": reason,
-                "since": str(data.get("since") or time.strftime("%Y-%m-%dT%H:%M:%S%z")),
+                "since": str(data.get("since") or config.now_local().isoformat()),
             }
             _write_ai_state(config, migrated)
             sleep_path.unlink(missing_ok=True)
@@ -131,7 +130,7 @@ def _migrate_legacy_ai_state(config) -> dict | None:
             migrated = {
                 "state": state,
                 "reason": str(data.get("reason") or ""),
-                "since": str(data.get("since") or time.strftime("%Y-%m-%dT%H:%M:%S%z")),
+                "since": str(data.get("since") or config.now_local().isoformat()),
             }
             _write_ai_state(config, migrated)
             comm_path.unlink(missing_ok=True)
@@ -160,7 +159,7 @@ def _load_ai_state(config) -> dict:
 
     expires_at = data.get("expires_at")
     if expires_at:
-        dt = _parse_state_time(expires_at)
+        dt = _parse_state_time(config, expires_at)
         if dt is None or datetime.now(timezone.utc) >= dt:
             _clear_ai_state(config)
             return _default_ai_state()
@@ -169,7 +168,7 @@ def _load_ai_state(config) -> dict:
         until = str(data.get("until", ""))
         if until == "open":
             return data
-        dt = _parse_state_time(until)
+        dt = _parse_state_time(config, until)
         if dt is None or datetime.now(timezone.utc) >= dt:
             _clear_ai_state(config)
             return _default_ai_state()
@@ -200,15 +199,30 @@ def _load_active_session(config) -> dict | None:
     return None
 
 
-def _save_active_session(config, session_id: str) -> None:
-    """Write active_session.json with current session_id and timestamp."""
+def _save_active_session(config, session_id: str, events_count: int = 0) -> None:
+    """Write active_session.json with current session_id, timestamp and event counter."""
     path = config.active_session_path
     path.parent.mkdir(parents=True, exist_ok=True)
     data = {
         "session_id": session_id,
-        "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "started_at": config.now_local().isoformat(),
+        "events_count": int(events_count),
     }
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def _increment_session_events(config) -> int:
+    """Bump events_count on the active session and return the new value.
+
+    No-op (returns 0) if there is no active session.
+    """
+    session = _load_active_session(config)
+    if not session:
+        return 0
+    new_count = int(session.get("events_count", 0) or 0) + 1
+    session["events_count"] = new_count
+    config.active_session_path.write_text(json.dumps(session, indent=2), encoding="utf-8")
+    return new_count
 
 
 def _retire_session(config, reason: str = "error") -> None:
@@ -218,7 +232,7 @@ def _retire_session(config, reason: str = "error") -> None:
         return
     retired_dir = config.self_dir / "retired"
     retired_dir.mkdir(parents=True, exist_ok=True)
-    ts = time.strftime("%Y-%m-%d_%H%M%S")
+    ts = config.now_local().strftime("%Y-%m-%d_%H%M%S")
     archive = retired_dir / f"{ts}_{reason}.json"
     archive.write_text(json.dumps(session, indent=2), encoding="utf-8")
     config.active_session_path.unlink(missing_ok=True)
@@ -276,8 +290,8 @@ def _is_interactive(config) -> bool:
         return False
 
 
-def _wake_session(config, message: str, tag: str = "tg", conductor=None) -> bool:
-    """Send a message to Fiet via `claude -p --resume <id>`.
+def _wake_session(config, message: str, tag: str = "inbox", conductor=None) -> bool:
+    """Send a message to the AI runtime via `claude -p --resume <id>`.
 
     If no active session exists, creates a new session and saves its ID.
     Returns True if the message was sent successfully.
@@ -287,7 +301,7 @@ def _wake_session(config, message: str, tag: str = "tg", conductor=None) -> bool
     resuming = session is not None
 
     cmd = [
-        "claude", "-p", f"[wake:{tag}] {message}",
+        "claude", "-p", message,
         "--output-format", "json",
         "--max-turns", "10",
     ]
@@ -357,22 +371,39 @@ def _wake_session(config, message: str, tag: str = "tg", conductor=None) -> bool
             response_text = data.get("result", "")
             if response_text:
                 _extract_and_dispatch(config, response_text, conductor)
-                # Extract WAKE tags for scheduler
-                wake_tags = extract_wake_tags(response_text)
-                if wake_tags:
-                    n = append_to_schedule(wake_tags, config)
-                    _plog.info("scheduler  +%d wake(s) queued", n)
-                    _console.print(f"  [dim]└ scheduler +{n} wake(s)[/dim]")
-                # Extract SLEEP tag → persist + retire session
-                sleep_tag = extract_sleep_tag(response_text)
-                if sleep_tag:
-                    _save_sleep_state(config, sleep_tag["sleeping_until"], sleep_tag["reason"])
-                    _retire_session(config, reason="sleep")
-                    until_label = sleep_tag["sleeping_until"]
-                    if until_label != "open":
-                        until_label = until_label[:16].replace("T", " ")
-                    _plog.info("AI sleep  until=%s reason=%s", until_label, sleep_tag["reason"])
-                    _console.print(f"  [dim]└ 💤 sleep until {until_label}[/dim]")
+                later_todos = extract_scheduled_items(response_text, config)
+                if later_todos:
+                    added = append_to_todo(later_todos, config)
+                    _plog.info("todo  +%d item(s) queued", added)
+                    _console.print(f"  [dim]└ todo +{added} item(s)[/dim]")
+                state_tag = extract_state_tag(response_text, config)
+                if state_tag:
+                    state = state_tag["state"]
+                    if state == "sleep":
+                        _save_sleep_state(config, state_tag["sleeping_until"], state_tag.get("reason", ""))
+                        until_label = state_tag["sleeping_until"]
+                        if until_label != "open":
+                            until_label = until_label[:16].replace("T", " ")
+                        _plog.info("AI sleep  until=%s reason=%s", until_label, state_tag.get("reason", ""))
+                        _console.print(f"  [dim]└ 💤 sleep until {until_label}[/dim]")
+                    else:
+                        _save_ai_state(
+                            config,
+                            state,
+                            until=str(state_tag.get("until") or ""),
+                            reason=str(state_tag.get("reason") or ""),
+                        )
+                        _plog.info("AI state  state=%s reason=%s", state, state_tag.get("reason", ""))
+
+        # Bump per-session event counter and rotate if we've hit the cap
+        # (skip if sleep already retired the session above)
+        if _load_active_session(config) is not None:
+            new_count = _increment_session_events(config)
+            cap = max(1, int(getattr(config, "events_per_session", 10)))
+            if new_count >= cap:
+                _retire_session(config, reason="rotated")
+                _plog.info("session rotated after %d events (cap=%d)", new_count, cap)
+                _console.print(f"  [dim]└ session rotated ({new_count}/{cap})[/dim]")
 
         return True
     except subprocess.TimeoutExpired:
@@ -381,6 +412,153 @@ def _wake_session(config, message: str, tag: str = "tg", conductor=None) -> bool
     except FileNotFoundError:
         _console.print(f"  [red]claude not found[/]")
         return False
+
+
+def _wake_held_reply(config, entry: dict, conductor=None) -> bool:
+    """Resolve a delayed Favilla chat HOLD and append the final reply to app history."""
+    from fiam.holds import append_final_to_hold, hold_record_from_entry
+    from fiam.markers import parse_final_markers, strip_xml_markers
+
+    hold = hold_record_from_entry(config, entry)
+    source = str(hold.get("source") or "chat")
+    original = str(hold.get("user_text") or "").strip()
+    reason = str(hold.get("reason") or "continue held Favilla chat reply").strip()
+    draft = str(hold.get("draft") or "").strip()
+    hold_id = str(hold.get("hold_id") or hold.get("id") or "").strip()
+    attachments = hold.get("attachments") if isinstance(hold.get("attachments"), list) else []
+    prompt = (
+        "[held_reply:favilla] Continue a delayed Favilla chat reply now.\n"
+        "The previous draft was intentionally held and was not shown to the user.\n"
+        "Write one final user-facing reply for Favilla inside <final>...</final>.\n"
+        "Text outside <final> is private and will not be shown to the user.\n"
+        "Do not mention internal queue mechanics.\n"
+        "Use <<COT:show>>...<<COT:end>> for short visible state notes, and <<COT:lock>> if the turn should stay private.\n"
+        "Only emit another <hold until=\"ISO_TIME\" reason=\"brief reason\">draft</hold> if it truly still needs more time.\n\n"
+        f"Hold reason: {reason}\n\n"
+        f"Original user message:\n{original or '(empty)'}\n\n"
+        f"Held draft:\n{draft or '(empty)'}"
+    )
+    ok, data = _run_claude_json(config, prompt, tag="favilla")
+    if not ok or not data:
+        return False
+    raw = str(data.get("result") or "").strip()
+    if not raw:
+        return False
+
+    reply, hold_tags, immediate_hold = extract_hold_markers(
+        raw,
+        config,
+        source=source,
+        runtime="cc",
+        user_text=original,
+        attachments=attachments,
+    )
+    if hold_tags:
+        append_to_todo(hold_tags, config)
+    later_todos = extract_scheduled_items(reply, config)
+    if later_todos:
+        append_to_todo(later_todos, config)
+    state_tag = extract_state_tag(reply, config)
+    if state_tag:
+        if state_tag["state"] == "sleep":
+            _save_sleep_state(config, state_tag["sleeping_until"], state_tag.get("reason", ""))
+        else:
+            _save_ai_state(
+                config,
+                state_tag["state"],
+                until=str(state_tag.get("until") or ""),
+                reason=str(state_tag.get("reason") or ""),
+            )
+
+    reply = strip_xml_markers(reply, {"wake", "todo", "sleep", "mute", "notify"}).strip()
+    if hold_tags or immediate_hold:
+        summary = "holding this for later" if hold_tags else "holding this reply"
+        _append_app_history(config, source, {
+            "role": "ai",
+            "thinking": [{"kind": "think", "text": summary, "summary": summary, "source": "marker", "locked": True, "icon": "Clock3"}],
+            "thinkingLocked": True,
+            "segments": [{"type": "thought", "summary": summary, "source": "marker", "locked": True, "icon": "Clock3"}],
+            "hold": {"queued": len(hold_tags), "immediate": immediate_hold},
+        })
+        return True
+
+    finals = parse_final_markers(reply)
+    if not finals:
+        _plog.warning("held_reply missing <final> hold_id=%s", hold_id or "?")
+        return False
+
+    final_text = "\n\n".join(marker.text for marker in finals).strip()
+    if not final_text:
+        _plog.warning("held_reply empty <final> hold_id=%s", hold_id or "?")
+        return False
+    append_final_to_hold(config, hold_id, final_text)
+
+    parsed = parse_app_cot(final_text, config)
+    _append_app_history(config, source, {
+        "role": "ai",
+        "text": parsed.reply,
+        "thinking": parsed.thoughts,
+        "thinkingLocked": parsed.locked,
+        "segments": parsed.segments,
+    })
+    return True
+
+
+def _run_claude_json(config, message: str, *, tag: str) -> tuple[bool, dict | None]:
+    session = _load_active_session(config)
+    resuming = session is not None
+    cmd = [
+        "claude", "-p", message,
+        "--output-format", "json",
+        "--max-turns", "10",
+    ]
+    if config.cc_model:
+        cmd.extend(["--model", config.cc_model])
+    if config.cc_disallowed_tools:
+        cmd.extend(["--disallowedTools"] + [t.strip() for t in config.cc_disallowed_tools.split(",") if t.strip()])
+    if resuming:
+        cmd.extend(["--resume", session["session_id"]])
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=180,
+            cwd=str(config.home_path),
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return False, None
+    try:
+        data = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        return False, None
+    if result.returncode != 0 and data.get("subtype") != "error_max_turns":
+        return False, data
+    if data and not resuming:
+        new_sid = data.get("session_id", "")
+        if new_sid:
+            _save_active_session(config, new_sid)
+    cost = data.get("total_cost_usd", 0)
+    if cost:
+        log_cost(config, cost, session_id=data.get("session_id", ""), tag=tag, turns=data.get("num_turns", 0))
+    return True, data
+
+
+def _append_app_history(config, source: str, message: dict) -> dict:
+    clean_source = re.sub(r"[^A-Za-z0-9_-]+", "_", (source or "favilla").strip().lower()).strip("_") or "favilla"
+    path = config.home_path / "app_history" / f"{clean_source}.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "id": str(message.get("id") or f"srv-{int(time.time() * 1000)}"),
+        "role": str(message.get("role") or "ai"),
+        "t": int(message.get("t") or int(time.time() // 60)),
+    }
+    for key in ("text", "attachments", "thinking", "thinkingLocked", "segments", "hold", "divider", "recallUsed", "error"):
+        if key in message and message[key] not in (None, [], ""):
+            record[key] = message[key]
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    return record
 
 
 def _extract_and_dispatch(config, text: str, conductor) -> int:
@@ -426,6 +604,13 @@ def cmd_start(args: argparse.Namespace) -> None:
     _fh.setFormatter(logging.Formatter("%(asctime)s  %(message)s", datefmt="%m-%d %H:%M:%S"))
     _plog.addHandler(_fh)
     _plog.info("─── daemon start (PID %d) ───", os.getpid())
+
+    def _project_time(fmt: str, timestamp: float | None = None) -> str:
+        if timestamp is None:
+            dt = config.now_utc()
+        else:
+            dt = datetime.fromtimestamp(timestamp, timezone.utc)
+        return dt.astimezone(config.project_tz()).strftime(fmt)
 
     # PID check
     existing_pid = _is_daemon_running(code_path)
@@ -589,8 +774,6 @@ def cmd_start(args: argparse.Namespace) -> None:
             _save_cursor(code_path, cursor)
 
     # Live recall: conductor fires on_drift → _refresh_recall (above)
-    # Regex to strip daemon wake signal tags from user text
-    _wake_tag_re = re.compile(r"\[wake:[^\]]*\]\s*")
 
     def _write_pending_external(config, msgs: list[dict]) -> None:
         """Append pre-formatted external messages for inject.sh hook delivery."""
@@ -602,12 +785,87 @@ def cmd_start(args: argparse.Namespace) -> None:
         with open(path, "a", encoding="utf-8") as f:
             f.write(formatted + "\n")
 
-    def _format_user_message(msgs: list[dict]) -> str:
-        """Format external messages for `claude -p` user field."""
+    def _format_user_message(msgs: list[dict], prefix: str = "") -> str:
+        """Format external messages for `claude -p` user field.
+
+        Optional ``prefix`` (typically a ``[context]...[/context]`` block built
+        by :func:`_build_wake_context`) is prepended verbatim.
+        """
         parts = []
         for m in msgs:
             parts.append(f"[{m['source']}:{m['from_name']}] {m['text']}")
-        return "\n\n".join(parts)
+        body = "\n\n".join(parts)
+        return f"{prefix}{body}" if prefix else body
+
+    def _build_wake_context(prior_sleep: dict | None, wake_trigger: str) -> str:
+        """Return a one-shot ``[context]`` prefix when waking from sleep.
+
+        ``prior_sleep`` is the ai_state dict captured before clearing sleep.
+        Returns ``""`` if there was no sleep state to announce.
+        """
+        if not prior_sleep or prior_sleep.get("state") != "sleep":
+            return ""
+        until = str(prior_sleep.get("until", "open") or "open")
+        reason = str(prior_sleep.get("reason", "") or "").strip()
+        lines = [
+            "[context]",
+            "last_state=sleep",
+            f"sleep_until_planned={until}",
+        ]
+        if reason:
+            lines.append(f"sleep_reason={reason}")
+        lines.append(f"wake_trigger={wake_trigger}")
+        unread = _count_notifications_inbox()
+        if unread > 0:
+            lines.append(f"notifications_inbox_unread={unread}")
+        lines.append("[/context]")
+        return "\n".join(lines) + "\n\n"
+
+    _NOTIF_SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+    def _slugify_for_filename(text: str, *, max_len: int = 40) -> str:
+        slug = _NOTIF_SLUG_RE.sub("-", text.lower()).strip("-")
+        return slug[:max_len] or "msg"
+
+    def _write_notification_file(msg: dict) -> Path | None:
+        """Drop a lazy-channel message as a markdown file in notifications/inbox/."""
+        try:
+            inbox = config.notifications_inbox_dir
+            inbox.mkdir(parents=True, exist_ok=True)
+            t = msg.get("t")
+            if isinstance(t, datetime):
+                ts_iso = t.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                ts_human = t.astimezone(timezone.utc).isoformat()
+            else:
+                now = datetime.now(timezone.utc)
+                ts_iso = now.strftime("%Y%m%dT%H%M%SZ")
+                ts_human = now.isoformat()
+            source = str(msg.get("source") or "unknown")
+            text = str(msg.get("text") or "").strip()
+            from_name = str(msg.get("from_name") or "")
+            summary = _slugify_for_filename(text.splitlines()[0] if text else source)
+            fname = f"{ts_iso}_{source}_{summary}.md"
+            path = inbox / fname
+            header = f"# {source}"
+            if from_name:
+                header += f" / {from_name}"
+            header += f"\n\nt: {ts_human}\nsource: {source}\n"
+            if from_name:
+                header += f"from: {from_name}\n"
+            path.write_text(f"{header}\n---\n\n{text}\n", encoding="utf-8")
+            return path
+        except Exception as e:
+            _plog.error("write notification file failed: %s", e)
+            return None
+
+    def _count_notifications_inbox() -> int:
+        try:
+            inbox = config.notifications_inbox_dir
+            if not inbox.is_dir():
+                return 0
+            return sum(1 for p in inbox.iterdir() if p.is_file() and not p.name.startswith("."))
+        except Exception:
+            return 0
 
     # ------------------------------------------------------------------
     # Beat ingestion via Conductor
@@ -689,7 +947,7 @@ def cmd_start(args: argparse.Namespace) -> None:
     def _log_action(action: str, detail: str = "", **extra) -> None:
         """Append an action entry to the state log ring buffer."""
         entry = {
-            "time": time.strftime("%H:%M:%S"),
+            "time": _project_time("%H:%M:%S"),
             "action": action,
             "detail": detail,
             **extra,
@@ -716,7 +974,7 @@ def cmd_start(args: argparse.Namespace) -> None:
                 "session": session.get("session_id", "")[:8] if session else None,
                 "conductor_beat_buf": len(_conductor._beat_buf),
                 "pool_events": len(_pool.load_events()),
-                "last_activity": time.strftime("%H:%M:%S", time.localtime(last_activity)) if last_activity else None,
+                "last_activity": _project_time("%H:%M:%S", last_activity) if last_activity else None,
                 "recent_actions": state_log[-20:],
             }
             state_path.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -744,7 +1002,7 @@ def cmd_start(args: argparse.Namespace) -> None:
         _write_daemon_state()
 
         # ── Inbound channels: drain MQTT queue (no polling here) ──
-        # Bridges (bridge_tg, bridge_email, dashboard /api/capture, ...) push
+        # Bridges (bridge_email, dashboard /api/capture, ...) push
         # messages onto fiam/receive/+; the bus thread enqueues them.
         all_msgs: list[dict] = []
         while True:
@@ -755,17 +1013,18 @@ def cmd_start(args: argparse.Namespace) -> None:
         if all_msgs:
             # Sort by msg timestamp so flow.jsonl reflects real-world order
             all_msgs.sort(key=lambda m: m.get("t") or datetime.min.replace(tzinfo=timezone.utc))
-            n_tg = sum(1 for m in all_msgs if m["source"] == "tg")
-            n_email = sum(1 for m in all_msgs if m["source"] == "email")
-            n_other = len(all_msgs) - n_tg - n_email
+            source_counts: dict[str, int] = {}
+            for msg in all_msgs:
+                source = str(msg.get("source") or "unknown")
+                source_counts[source] = source_counts.get(source, 0) + 1
+            source_summary = " ".join(f"{source}={count}" for source, count in sorted(source_counts.items()))
             try:
-                ts = time.strftime("%H:%M")
+                ts = _project_time("%H:%M")
                 _console.print(
                     f"  [dim]└[{ts}][/dim] [bold #7eb8f7]✉[/]  bus +{len(all_msgs)} "
-                    f"(tg={n_tg} email={n_email} other={n_other})"
+                    f"({source_summary})"
                 )
-                _plog.info("bus  total=+%d tg=+%d email=+%d other=+%d",
-                           len(all_msgs), n_tg, n_email, n_other)
+                _plog.info("bus  total=+%d %s", len(all_msgs), source_summary)
                 _log_action("bus", f"+{len(all_msgs)}")
 
                 ai_state = _load_ai_state(config)
@@ -787,62 +1046,103 @@ def cmd_start(args: argparse.Namespace) -> None:
                     except Exception as e:
                         _plog.error("conductor.receive failed: %s", e)
 
-                # Daemon decides CC delivery: ai_state > interactive > budget
-                ai_state = _load_ai_state(config)
-                ai_state_name = str(ai_state.get("state", "notify"))
-                sleeping = ai_state_name == "sleep"
-                sleep_until = str(ai_state.get("until", "open")) if sleeping else None
-                _plog.debug("ai_state=%s until=%s", ai_state_name, sleep_until)
-
-                if sleeping and sleep_until != "open":
-                    # Explicit sleep: queue, don't wake
-                    _plog.info("AI sleeping until %s — queuing inbox", sleep_until)
-                    _console.print(f"  [dim]💤 sleeping — queued for next wake[/dim]")
-                    _write_pending_external(config, all_msgs)
-                elif ai_state_name == "block":
-                    _plog.info("ai_state=block — in flow, delivery discarded")
-                    _console.print(f"  [dim]ai_state: block — recorded, no delivery[/dim]")
-                elif ai_state_name in {"mute", "busy"}:
-                    _plog.info("ai_state=%s — in flow, no wake", ai_state_name)
-                    _console.print(f"  [dim]ai_state: {ai_state_name} — queued for later[/dim]")
-                    _write_pending_external(config, all_msgs)
-                else:
-                    # Open sleep is auto-cleared by external arrival
-                    if sleeping and sleep_until == "open":
-                        _plog.info("AI open-sleep — external msg auto-wakes")
-                        _clear_sleep_state(config)
-                    # notify (default) — deliver to CC
-                    interactive = _is_interactive(config)
-                    _plog.debug("interactive=%s", interactive)
-                    if not interactive:
-                        budget_ok, budget_reason = check_budget(config)
-                        if not budget_ok:
-                            _plog.warning("budget exceeded — queuing: %s", budget_reason)
-                            _console.print(f"  [yellow]budget: {budget_reason}[/]")
-                            _write_pending_external(config, all_msgs)
-                        else:
-                            user_msg = _format_user_message(all_msgs)
-                            tag = "tg" if n_tg and not n_email else ("email" if n_email and not n_tg else "inbox")
-                            _plog.info("wake attempt  tag=%s msgs=%d", tag, len(all_msgs))
-                            ok = _wake_session(config, user_msg, tag=tag, conductor=_conductor)
-                            if ok:
-                                ts2 = time.strftime("%H:%M")
-                                _console.print(f"  [dim]└[{ts2}][/dim] [bold #a8f0e8]↗[/]  wake sent")
-                                _plog.info("wake OK")
-                            else:
-                                _plog.warning("wake FAILED, retrying...")
-                                ok2 = _wake_session(config, user_msg, tag=tag, conductor=_conductor)
-                                if not ok2:
-                                    _console.print(f"  [yellow]wake failed twice — messages queued[/]")
-                                    _plog.error("wake FAILED x2 — messages queued in pending")
-                                    _write_pending_external(config, all_msgs)
-                                    session = _load_active_session(config)
-                                    if session:
-                                        _retire_session(config, reason="wake_failed")
+                # ── Split by plugin auto_wake: lazy channels (email/ring/xiao)
+                # only land in flow.jsonl + notifications/inbox/ and wait for AI
+                # to peek; immediate channels follow the wake path. ──
+                from fiam.plugins import auto_wake_for_source
+                immediate_msgs: list[dict] = []
+                lazy_msgs: list[dict] = []
+                for msg in all_msgs:
+                    src = str(msg.get("source") or "unknown")
+                    if auto_wake_for_source(config, src, default=True):
+                        immediate_msgs.append(msg)
                     else:
-                        _console.print(f"  [dim]interactive — messages queued for hook[/dim]")
-                        _plog.info("interactive — queuing for hook delivery")
-                        _write_pending_external(config, all_msgs)
+                        lazy_msgs.append(msg)
+
+                if lazy_msgs:
+                    written = 0
+                    for msg in lazy_msgs:
+                        if _write_notification_file(msg) is not None:
+                            written += 1
+                    if written:
+                        ts_lz = _project_time("%H:%M")
+                        _console.print(
+                            f"  [dim]└[{ts_lz}][/dim] [dim #a08f7f]📬[/]  inbox +{written} (lazy)"
+                        )
+                        _plog.info("lazy notifications written: %d", written)
+
+                if not immediate_msgs:
+                    # All messages were lazy — done; no wake, no pending.
+                    pass
+                else:
+                    # Recompute counts/summary for immediate flow.
+                    source_counts = {}
+                    for msg in immediate_msgs:
+                        src = str(msg.get("source") or "unknown")
+                        source_counts[src] = source_counts.get(src, 0) + 1
+
+                    # Daemon decides CC delivery: ai_state > interactive > budget
+                    ai_state = _load_ai_state(config)
+                    ai_state_name = str(ai_state.get("state", "notify"))
+                    sleeping = ai_state_name == "sleep"
+                    sleep_until = str(ai_state.get("until", "open")) if sleeping else None
+                    _plog.debug("ai_state=%s until=%s", ai_state_name, sleep_until)
+
+                    if sleeping and sleep_until != "open":
+                        # Explicit sleep: queue, don't wake
+                        _plog.info("AI sleeping until %s — queuing inbox", sleep_until)
+                        _console.print(f"  [dim]💤 sleeping — queued for next wake[/dim]")
+                        _write_pending_external(config, immediate_msgs)
+                    elif ai_state_name == "block":
+                        _plog.info("ai_state=block — in flow, delivery discarded")
+                        _console.print(f"  [dim]ai_state: block — recorded, no delivery[/dim]")
+                    elif ai_state_name in {"mute", "busy"}:
+                        _plog.info("ai_state=%s — in flow, no wake", ai_state_name)
+                        _console.print(f"  [dim]ai_state: {ai_state_name} — queued for later[/dim]")
+                        _write_pending_external(config, immediate_msgs)
+                    else:
+                        # Open sleep is auto-cleared by external arrival
+                        prior_sleep_state = dict(ai_state) if sleeping else None
+                        if sleeping and sleep_until == "open":
+                            _plog.info("AI open-sleep — external msg auto-wakes")
+                            _clear_sleep_state(config)
+                        # notify (default) — deliver to CC
+                        interactive = _is_interactive(config)
+                        _plog.debug("interactive=%s", interactive)
+                        if not interactive:
+                            budget_ok, budget_reason = check_budget(config)
+                            if not budget_ok:
+                                _plog.warning("budget exceeded — queuing: %s", budget_reason)
+                                _console.print(f"  [yellow]budget: {budget_reason}[/]")
+                                _write_pending_external(config, immediate_msgs)
+                            else:
+                                sources_label = ",".join(sorted(source_counts)) or "unknown"
+                                wake_prefix = _build_wake_context(
+                                    prior_sleep_state,
+                                    f"external:{sources_label}",
+                                )
+                                user_msg = _format_user_message(immediate_msgs, prefix=wake_prefix)
+                                tag = next(iter(source_counts)) if len(source_counts) == 1 else "inbox"
+                                _plog.info("wake attempt  tag=%s msgs=%d", tag, len(immediate_msgs))
+                                ok = _wake_session(config, user_msg, tag=tag, conductor=_conductor)
+                                if ok:
+                                    ts2 = _project_time("%H:%M")
+                                    _console.print(f"  [dim]└[{ts2}][/dim] [bold #a8f0e8]↗[/]  wake sent")
+                                    _plog.info("wake OK")
+                                else:
+                                    _plog.warning("wake FAILED, retrying...")
+                                    ok2 = _wake_session(config, user_msg, tag=tag, conductor=_conductor)
+                                    if not ok2:
+                                        _console.print(f"  [yellow]wake failed twice — messages queued[/]")
+                                        _plog.error("wake FAILED x2 — messages queued in pending")
+                                        _write_pending_external(config, immediate_msgs)
+                                        session = _load_active_session(config)
+                                        if session:
+                                            _retire_session(config, reason="wake_failed")
+                        else:
+                            _console.print(f"  [dim]interactive — messages queued for hook[/dim]")
+                            _plog.info("interactive — queuing for hook delivery")
+                            _write_pending_external(config, immediate_msgs)
             except Exception as e:
                 _plog.error("inbox handling error: %s", e, exc_info=True)
                 if config.debug_mode:
@@ -877,51 +1177,68 @@ def cmd_start(args: argparse.Namespace) -> None:
             except Exception as e:
                 _plog.error("replay error: %s", e)
 
-        # ── Scheduler: check for due wakes ──
+        # ── Todo: check for due delayed work ──
         try:
-            from fiam_lib.scheduler import archive_stale, mark_fired
-            # Archive anything past grace window or max attempts.
+            from fiam_lib.todo import archive_stale, mark_done
             missed, failed = archive_stale(config)
             if missed or failed:
-                _plog.info("scheduler archived  missed=%d failed=%d", missed, failed)
+                _plog.info("todo archived  missed=%d failed=%d", missed, failed)
 
             due = load_due(config)
             for entry in due:
-                reason = entry.get("reason", "scheduled wake")
-                wake_type = entry.get("type", "check")
-                _plog.info("scheduler fire  type=%s reason=%s", wake_type, reason)
+                # New schema: kind="wake" (no description) or kind="todo" (with reason text).
+                # Tolerate legacy "type" field on old todo.jsonl entries.
+                kind = str(entry.get("kind") or entry.get("type") or "todo").lower()
+                if kind not in {"wake", "todo"}:
+                    kind = "todo"
+                reason = entry.get("reason", "") if kind == "todo" else ""
+                display = reason if kind == "todo" else "scheduled wake"
+                _plog.info("todo fire  kind=%s reason=%s", kind, reason)
 
-                # Budget check before scheduled wake.
-                # Defer (don't drop) so the wake retries once quota refreshes.
+                # Budget check before delayed work.
+                # Defer (don't drop) so the todo retries once quota refreshes.
                 budget_ok, budget_reason = check_budget(config)
                 if not budget_ok:
-                    _plog.warning("budget exceeded — deferring scheduled wake: %s", budget_reason)
-                    _console.print(f"  [yellow]⏰ {reason} — deferred ({budget_reason})[/]")
-                    mark_fired(entry, config, success=False)
+                    _plog.warning("budget exceeded — deferring todo: %s", budget_reason)
+                    _console.print(f"  [yellow]⏰ {display} — deferred ({budget_reason})[/]")
+                    mark_done(entry, config, success=False)
                     continue
 
-                _console.print(f"  [bold #e8c8ff]⏰[/] scheduled: {reason}")
+                _console.print(f"  [bold #e8c8ff]⏰[/] {kind}: {display}")
                 # Sleep gate: if AI is sleeping past this wake's time, skip.
-                # (mark_fired so it doesn't loop; AI's own sleep takes precedence)
+                # (mark_done so it doesn't loop; AI's own sleep takes precedence)
                 sleeping, sleep_until = _is_sleeping(config)
+                prior_sleep_state = None
                 if sleeping:
                     if sleep_until == "open":
-                        _plog.info("AI open-sleep — scheduled wake clears it")
+                        _plog.info("AI open-sleep — todo clears it")
+                        prior_sleep_state = dict(_load_ai_state(config))
                         _clear_sleep_state(config)
                     else:
-                        _plog.info("AI sleeping until %s — skipping scheduled wake", sleep_until)
-                        _console.print(f"  [dim]💤 still sleeping — wake skipped[/dim]")
-                        mark_fired(entry, config, success=True)
+                        _plog.info("AI sleeping until %s — skipping todo", sleep_until)
+                        _console.print(f"  [dim]💤 still sleeping — todo skipped[/dim]")
+                        mark_done(entry, config, success=True)
                         continue
-                ok = _wake_session(config, f"[scheduled:{wake_type}] {reason}", tag="sched", conductor=_conductor)
-                mark_fired(entry, config, success=ok)
+                if str(entry.get("action") or "") == "held_reply":
+                    ok = _wake_held_reply(config, entry, conductor=_conductor)
+                else:
+                    trigger_label = "scheduled" if kind == "wake" else f"todo:{reason[:40]}"
+                    body = "[scheduled wake]" if kind == "wake" else f"[todo] {reason}"
+                    todo_prefix = _build_wake_context(prior_sleep_state, trigger_label)
+                    ok = _wake_session(
+                        config,
+                        f"{todo_prefix}{body}",
+                        tag=kind,
+                        conductor=_conductor,
+                    )
+                mark_done(entry, config, success=ok)
                 if ok:
-                    _plog.info("scheduler wake OK")
+                    _plog.info("todo item OK")
                 else:
                     attempts = int(entry.get("attempts", 0)) + 1
-                    _plog.warning("scheduler wake FAILED  retry=%d", attempts)
+                    _plog.warning("todo item FAILED  retry=%d", attempts)
         except Exception as e:
-            _plog.error("scheduler error: %s", e, exc_info=True)
+            _plog.error("todo error: %s", e, exc_info=True)
 
         # Check JSONL directory for activity
         if not jsonl_dir.is_dir():
@@ -936,7 +1253,7 @@ def cmd_start(args: argparse.Namespace) -> None:
 
         if max_mtime > last_activity:
             if not active:
-                ts = time.strftime("%H:%M")
+                ts = _project_time("%H:%M")
                 _console.print(f"  [dim]└[{ts}][/dim] [bold #f7e08a]✦[/]  active")
                 _plog.info("jsonl ACTIVE")
                 active = True
@@ -956,7 +1273,7 @@ def cmd_start(args: argparse.Namespace) -> None:
 
         # Check idle timeout
         if active and (time.time() - last_activity) > idle_timeout:
-            ts = time.strftime("%H:%M")
+            ts = _project_time("%H:%M")
             _console.print(f"  [dim]└[{ts}][/dim] [bold #f7a8d0]⟳[/]  processing...")
             _plog.info("idle timeout → processing + auto-retire")
             _process_pending()
@@ -1064,7 +1381,7 @@ def cmd_status(args: argparse.Namespace) -> None:
             latest_mtime = max(v.get("mtime", 0) for v in cursor.values())
             if latest_mtime > 0:
                 from datetime import datetime
-                dt = datetime.fromtimestamp(latest_mtime).strftime("%Y-%m-%d %H:%M")
+                dt = datetime.fromtimestamp(latest_mtime, timezone.utc).astimezone(config.project_tz()).strftime("%Y-%m-%d %H:%M")
                 print(f"  last processed: {dt}")
     else:
         print("  (no fiam.toml — run 'fiam init')")

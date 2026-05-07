@@ -18,6 +18,39 @@ _ROUTED_BLOCK_RE = re.compile(
     re.DOTALL,
 )
 
+_CONTROL_MARKERS = {"later", "sleep", "mute", "notify", "carry_over", "hold", "final"}
+
+
+# Map raw HTTP `source` field values to known channel names. Keeps the wire
+# protocol stable while flow.jsonl scene stays in the small known set.
+_SOURCE_TO_CHANNEL = {
+    "chat": "favilla",
+    "favilla": "favilla",
+    "stroll": "stroll",
+    "studio": "favilla",
+    "app": "favilla",
+    "webapp": "favilla",
+}
+
+
+def channel_for_source(source: str) -> str:
+    s = (source or "").strip().lower()
+    return _SOURCE_TO_CHANNEL.get(s, s or "favilla")
+
+
+def scene_for_user(source: str) -> str:
+    s = (source or "").strip()
+    if "@" in s:
+        return s
+    return f"user@{channel_for_source(s)}"
+
+
+def scene_for_ai(source: str) -> str:
+    s = (source or "").strip()
+    if "@" in s:
+        return s
+    return f"ai@{channel_for_source(s)}"
+
 
 def parse_ts(ts_str: str) -> datetime:
     """Parse an ISO timestamp string, falling back to now()."""
@@ -55,20 +88,18 @@ def user_beat(
     text: str,
     *,
     t: datetime,
-    source: str,
+    scene: str,
     user_status: "UserStatus",
     ai_status: "AiStatus",
     user_name: str,
-    meta: dict | None = None,
 ) -> Beat:
-    """Build a user dialogue beat for a runtime source."""
+    """Build a user dialogue beat for a runtime scene."""
     return Beat(
         t=t,
-        text=speaker_text(speaker_label(user_name, "zephyr"), text),
-        source=source,
+        text=text.strip(),
+        scene=scene,
         user=user_status,
         ai=ai_status,
-        meta=meta or {},
     )
 
 
@@ -76,36 +107,36 @@ def assistant_text_beats(
     text: str,
     *,
     t: datetime,
-    source: str,
+    scene: str,
     user_status: "UserStatus",
     ai_status: "AiStatus",
     ai_name: str,
-    meta: dict | None = None,
+    runtime: str | None = None,
 ) -> list[Beat]:
     """Build assistant dialogue and dispatch beats from a text response."""
-    ai_label = speaker_label(ai_name, "ai")
-    base_meta = dict(meta or {})
     beats: list[Beat] = []
-    routed, remaining = split_routed_text(text)
+    from fiam.markers import strip_xml_markers
+
+    routed, remaining = split_routed_text(strip_xml_markers(text, _CONTROL_MARKERS))
 
     for marker in routed:
         beats.append(Beat(
             t=t,
-            text=speaker_text(ai_label, f"对 {marker.recipient} 说：{marker.body}"),
-            source="dispatch",
+            text=marker.body.strip(),
+            scene=f"ai@{marker.channel}",
             user=user_status,
             ai=ai_status,
-            meta={**base_meta, "target": marker.channel, "recipient": marker.recipient},
+            runtime=runtime,
         ))
 
     if remaining.strip():
         beats.append(Beat(
             t=t,
-            text=speaker_text(ai_label, remaining.strip()),
-            source=source,
+            text=remaining.strip(),
+            scene=scene,
             user=user_status,
             ai=ai_status,
-            meta=base_meta,
+            runtime=runtime,
         ))
 
     return beats

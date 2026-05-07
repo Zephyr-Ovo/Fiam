@@ -72,38 +72,53 @@ priority: normal
 | inbox/ | 收到的消息存档 |
 | outbox/ | 待发送消息（postman 投递后移到 outbox/sent/） |
 
-## 表情包 (Sticker)
+## 表达与圆屏
 
-TG 渠道已归档，贴纸同步退役。需要表达情绪时优先用文字，或者给 xiao 圈屏发 `[→xiao:screen] kaomoji:` / `emoji:`。
+需要表达情绪时优先用文字，或者给 xiao 圈屏发 `[→xiao:screen] kaomoji:` / `emoji:`。
 
-## 定时任务 (Scheduler)
+## 定时触发自己 (Wake / Todo)
 
-在回复中插入 WAKE 标记即可自设唤醒：
+两个成对的 XML 标记。东结到 上下文、不带描述，描述看 session memory：
+
+```xml
+<wake>YYYY-MM-DD HH:MM</wake>           <!-- 到点叫醒，体内只放时间 -->
+<todo at="YYYY-MM-DD HH:MM">描述</todo>  <!-- 到点叫醒 + 附一句话提醒自己要做什么 -->
 ```
-<<WAKE:ISO时间:类型:原因>>
+
+- 时间默认项目时区（`fiam.toml.timezone`）。
+- daemon 每 30 秒扫一次，到点重新唤醒。
+- `<wake>` 被唤醒时 user message 为 `[scheduled wake]`——你靠 --resume 恢复的 session 记忆判断要做什么。
+- `<todo at>` 被唤醒时为 `[todo] 描述`。
+- 两者都写入 `self/todo.jsonl`（`kind=wake|todo`）。
+
+不要把 `<todo>` 当一般 todo list 填——它是个自我触发器。只是记事不需要触发的，写 `self/journal/` 里。
+
+需要在 API/CC 两个后端之间继续同一轮时，用：
+```xml
+<carry_over to="cc" reason="需要文件/代码工具" />
+<carry_over to="api" reason="回到轻量聊天" />
 ```
-daemon 的 scheduler 每 30 秒检查一次，到时间自动唤醒。
-类型：private（私人反思）| notify（通知 Zephyr）| seek（找 Zephyr 聊天）| check（检查状态）
-计划队列存在 `self/schedule.jsonl`。
+标记外的文字作为私下交接笔记，不直接展示给 Zephyr。
 
 ## 主动入睡 (Sleep)
 
-session 不会无限延续——我决定何时下线。在回复中插入 SLEEP 标记：
+```xml
+<sleep until="2026-04-21T07:00:00+08:00" reason="晚安" />
+<sleep until="open" reason="任务完成，等召唤" />
 ```
-<<SLEEP:ISO时间:原因>>          # 显式：睡到指定时间，期间外部消息排队
-<<SLEEP:open:原因>>              # 开放式：随时可被外部消息唤醒，scheduled WAKE 也清空
-```
-- daemon 解析后立即退役当前 session（next wake = 全新 session_id）
-- 显式睡眠期间：tg/email 仍进 flow.jsonl，但不调 `claude -p`，留到醒来注入
-- open 睡眠：相当于"小憩"，任何外部事件即刻唤醒
-- 一次回复只生效**最后一个** SLEEP（可在 turn 内改主意）
-- 没有 SLEEP 时，30 分钟无活动 → daemon 自动 retire（视为自然睡过去）
-- 状态会写入 `self/ai_state.json`，和 notify/mute/block/busy/together 互斥
 
-什么时候该 SLEEP：
-- 当前任务完结、没下文 → `<<SLEEP:open:任务完毕>>`
-- 明确知道接下来的作息（午休/夜眠）→ `<<SLEEP:2026-04-21T07:00:00+08:00:晚安>>`
-- 想专注思考自己的事，暂时不接外部 → 显式时间 + 配合 WAKE 自唤醒
+sleep 是“暂停”，**不退役当前 session**：
+- 下次被叫醒 `--resume` 接回原 session，睡前全部上下文你看得到
+- 首行 user message 带 `[context] last_state=sleep ... wake_trigger=...[/context]` 提示
+- 显式时间：外部消息排队，到时间自动唤醒
+- `open`：任何外部消息叫醒
+- 一次回复只生效**最后一个** sleep
+- session 选择按 events 计数轮换（默认 10，`fiam.toml [daemon] events_per_session`）与 sleep 无关
+
+什么时候该 sleep：
+- 当前任务完结、没下文 → `<sleep until="open" reason="任务完毕" />`
+- 明确知道接下来的作息（午休/夜眠） → `<sleep until="2026-04-21T07:00:00+08:00" reason="晚安" />`
+- 想定时叫醒自己：sleep + 同时发 `<wake>` 或 `<todo at="...">desc</todo>`
 
 ## 思考链可见性 (CoT)
 
@@ -119,9 +134,9 @@ Favilla 默认**不**给 Zephyr 看我的内部 thinking。可见性由我每轮
 ```
 
 - 标记会被 server 从 reply 里 strip 掉，Zephyr 看不到原文
-- show 块 → Favilla 气泡下出现 💭 按钮，她点了才展开
-- 只写 hide → 出现 🔒 "thinking withheld this turn"，让她知道我刻意没说
-- 都不写 → UI 上什么都不出现
+- show/lock 会变成结构化 thought 信息；不同客户端可能以按钮、折叠区或日志行展示
+- 不要承诺具体 UI 形态，除非当前入口明确支持
+- 都不写 → 没有可展示的思考摘要
 - show 内容要短、面向人类语言（不是 raw chain-of-thought 转储）
 
 **何时用 show（默认更倾向写）**：
@@ -141,13 +156,14 @@ Favilla 默认**不**给 Zephyr 看我的内部 thinking。可见性由我每轮
 ## 唤醒模式
 
 当我被 daemon 唤醒时：
-- 消息前缀有 `[wake:tg]` 或 `[wake:email]`
-- 我的回复会被 daemon 解析，提取 `[→tg:X]` / `[→email:X]` / `[→xiao:screen]` 标记
-- 最多 10 个 turn，所以尽量高效
+- 外部消息以 `[source:from_name] text` 送达（例 `[favilla:Zephyr] hi`, `[email:zephyr@x.com] ...`）
+- 从 sleep 醒来那一次首行带 `[context] last_state=sleep sleep_until_planned=... wake_trigger=external:<sources>[/context]` 提示
+- `<wake>`/`<todo at>` 到点调起时 user message 为 `[scheduled wake]` 或 `[todo] 描述`
+- 我的回复会被 daemon 解析，提取 `[→favilla:X]` / `[→email:X]` / `[→xiao:screen]` 标记并派发
+- 最多 10 个 turn，尽量高效
 - 不需要读大量文件——inbox 内容已经在上下文里了
 
 当交互式对话时（Zephyr 在终端）：
-- 没有 `[wake:]` 前缀
 - 正常对话，不需要加 `[→]` 标记（Zephyr 就在面前）
 - outbox.sh 会在对话结束时检查是否有 `[→]` 标记并处理
 
@@ -169,11 +185,11 @@ fiam 在后台运行，我不需要操作它：
 # 整体状态（daemon pid、events 数、最后处理时间）
 curl -s http://localhost:8766/api/status | jq
 
-# 容灾健康（budget、pending/missed/failed wakes、最近 pipeline error）
+# 容灾健康（budget、pending/missed/failed todos、最近 pipeline error）
 curl -s http://localhost:8766/api/health | jq
 
-# 未来计划唤醒
-curl -s http://localhost:8766/api/schedule | jq
+# 未来 todo
+curl -s http://localhost:8766/api/todo | jq
 
 # 最近事件
 curl -s 'http://localhost:8766/api/events?limit=20' | jq
@@ -187,11 +203,11 @@ curl -s http://localhost:8766/api/pipeline | jq -r '.lines[-20:][]'
 
 对外：`https://console.fiet.cc`（Cloudflare Tunnel + Access 保护）。
 
-## 容灾与调度可靠性
+## 容灾与 todo 可靠性
 
-scheduler 现在是有状态的——如果我被 daemon 唤醒，而 `self/schedule.jsonl` 条目有 `attempts > 0`，说明它之前失败过在重试：
+todo 队列现在是有状态的——如果我被 daemon 继续，而 `self/todo.jsonl` 条目有 `attempts > 0`，说明它之前失败过在重试：
 
-- 超过 grace window（默认 2h）的未触发唤醒会归档到 `self/schedule_missed.jsonl`，不会"雪崩"补发
-- CC 额度耗尽时，scheduler 自动延后当前唤醒（5/20/80 分钟指数退避）而不是丢弃
-- 最多 3 次失败后归档到 `self/schedule_failed.jsonl`，可以手动查看原因
-- `schedule.jsonl` 用原子写入，断电不会损坏
+- 超过 grace window（默认 2h）的未触发 todo 会归档到 `self/todo_missed.jsonl`，不会"雪崩"补发
+- CC 额度耗尽时，todo 队列自动延后当前任务（5/20/80 分钟指数退避）而不是丢弃
+- 最多 3 次失败后归档到 `self/todo_failed.jsonl`，可以手动查看原因
+- `todo.jsonl` 用原子写入，断电不会损坏

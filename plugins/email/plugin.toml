@@ -3,6 +3,7 @@ name = "Email bridge"
 enabled = true
 status = "active"
 kind = "channel"
+auto_wake = false
 description = "Email ingress/egress through IMAP and SMTP helpers."
 transports = ["mqtt", "imap", "smtp"]
 capabilities = ["receive_text", "dispatch_text"]

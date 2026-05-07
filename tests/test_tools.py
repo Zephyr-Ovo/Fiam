@@ -8,12 +8,31 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 from fiam.runtime.tools import execute_tool_call
 
 
+class _Cfg(SimpleNamespace):
+    timezone: str = "Asia/Shanghai"
+
+    def project_tz(self):
+        return ZoneInfo(self.timezone)
+
+    def now_utc(self) -> datetime:
+        return datetime.now(timezone.utc)
+
+    def now_local(self) -> datetime:
+        return self.now_utc().astimezone(self.project_tz())
+
+    def ensure_timezone(self, dt: datetime) -> datetime:
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=self.project_tz())
+        return dt
+
+
 def _cfg(home: Path) -> SimpleNamespace:
-    return SimpleNamespace(home_path=home)
+    return _Cfg(home_path=home)
 
 
 class ToolsTest(unittest.TestCase):
@@ -53,6 +72,20 @@ class ToolsTest(unittest.TestCase):
             )
             self.assertTrue((home / "self" / "lessons.md").exists())
 
+            self.assertEqual(
+                "ok",
+                execute_tool_call(cfg, "write_file", json.dumps({
+                    "path": "notes/today.md", "content": "line one\n",
+                })),
+            )
+            self.assertEqual(
+                "ok",
+                execute_tool_call(cfg, "write_file", json.dumps({
+                    "path": "notes/today.md", "content": "line two\n", "mode": "append",
+                })),
+            )
+            self.assertEqual((home / "notes" / "today.md").read_text(encoding="utf-8"), "line one\nline two\n")
+
     def test_str_replace_unique_required(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
@@ -84,7 +117,7 @@ class ToolsTest(unittest.TestCase):
             out = execute_tool_call(_cfg(Path(tmp)), "rm_rf", "{}")
             self.assertEqual(out, "error: unknown tool 'rm_rf'")
 
-    def test_grep_schedule_and_state_tools(self) -> None:
+    def test_grep_todo_and_state_tools(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             cfg = _cfg(home)
@@ -100,14 +133,14 @@ class ToolsTest(unittest.TestCase):
             })))
             self.assertEqual(hits[0]["line"], 2)
 
-            wake_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
-            out = json.loads(execute_tool_call(cfg, "schedule_wake", json.dumps({
-                "wake_at": wake_at,
+            at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+            out = json.loads(execute_tool_call(cfg, "add_todo", json.dumps({
+                "at": at,
                 "type": "notify",
-                "reason": "test wake",
+                "reason": "test todo",
             })))
             self.assertTrue(out["ok"])
-            self.assertTrue((home / "self" / "schedule.jsonl").exists())
+            self.assertTrue((home / "self" / "todo.jsonl").exists())
 
             state = json.loads(execute_tool_call(cfg, "set_ai_state", json.dumps({
                 "state": "busy",
@@ -115,6 +148,41 @@ class ToolsTest(unittest.TestCase):
             })))
             self.assertEqual(state["state"], "busy")
             self.assertTrue((home / "self" / "ai_state.json").exists())
+
+            now = json.loads(execute_tool_call(cfg, "get_time", "{}"))
+            self.assertTrue(now["ok"])
+            self.assertIn("utc", now)
+            self.assertEqual(now["timezone"], "Asia/Shanghai")
+            self.assertTrue(now["local"].endswith("+08:00"))
+
+            naive_local = (
+                datetime.now(timezone.utc)
+                .astimezone(ZoneInfo("Asia/Shanghai"))
+                .replace(tzinfo=None, microsecond=0)
+                + timedelta(hours=1)
+            ).isoformat()
+            naive = json.loads(execute_tool_call(cfg, "add_todo", json.dumps({
+                "at": naive_local,
+                "type": "notify",
+                "reason": "naive local todo",
+            })))
+            self.assertTrue(naive["ok"])
+            self.assertTrue(naive["at"].endswith("+08:00"))
+
+            relative = json.loads(execute_tool_call(cfg, "add_todo", json.dumps({
+                "delay_minutes": 5,
+                "type": "check",
+                "reason": "relative todo",
+            })))
+            self.assertTrue(relative["ok"])
+            self.assertEqual(relative["type"], "check")
+
+            invalid = execute_tool_call(cfg, "add_todo", json.dumps({
+                "delay_minutes": 5,
+                "type": "seek",
+                "reason": "invalid todo type",
+            }))
+            self.assertIn("private, notify, or check", invalid)
 
 
 if __name__ == "__main__":

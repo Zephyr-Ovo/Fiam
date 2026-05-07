@@ -250,16 +250,15 @@ def write_claude_md(config: "FiamConfig") -> bool:
     template_path = config.code_path / "scripts" / "templates" / "CLAUDE.md"
     if template_path.exists():
         content = template_path.read_text(encoding="utf-8")
-        # Interpolate identity
-        content = content.replace("Fiet", config.ai_name, 1)
-        content = content.replace("Zephyr", config.user_name)
+        if config.ai_name:
+            content = content.replace("Fiet", config.ai_name, 1)
+        if config.user_name:
+            content = content.replace("Zephyr", config.user_name)
     else:
         # Minimal fallback
-        content = (
-            f"你叫{config.ai_name}。\n"
-            f"与你交谈的人叫{config.user_name}。\n\n"
-            "这是你的家。\n"
-        )
+        ai_line = f"你叫{config.ai_name}。\n" if config.ai_name else ""
+        user_line = f"与你交谈的人叫{config.user_name}。\n" if config.user_name else ""
+        content = ai_line + user_line + "\n这是你的家。\n"
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(content, encoding="utf-8")

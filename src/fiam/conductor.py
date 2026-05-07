@@ -29,7 +29,7 @@ from fiam.store.pool import Pool
 
 if TYPE_CHECKING:
     from fiam.retriever.embedder import Embedder
-    from fiam.store.beat import AiStatus, BeatSource, UserStatus
+    from fiam.store.beat import AiStatus, UserStatus
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +148,8 @@ class Conductor:
 
         # 3. Drift detection → fire callback (recall is caller's responsibility)
         if (self._last_vec is not None
-                and beat.source not in ("action",)
+                and beat.scene != "ai@action"
+                and beat.scene != "action"
                 and self._on_drift is not None):
             if detect_drift(self._last_vec, vec, self._drift_threshold):
                 try:
@@ -173,43 +174,60 @@ class Conductor:
 
     @staticmethod
     def _no_event_cut(beat: Beat) -> bool:
-        meta = beat.meta or {}
-        return bool(
-            meta.get("no_event_cut")
-            or meta.get("kind") == "interaction"
-            or meta.get("interaction")
-        )
+        # Reserved hook: no scene currently opts out of event-cut.
+        # If interaction-window scenes (readalong/call/game) reappear, list them here.
+        return False
 
     def receive(
         self,
         text: str,
-        source: "BeatSource",
+        scene: str,
         t: datetime | None = None,
         meta: dict | None = None,
     ) -> str | None:
-        """Receive an external message: create beat, process, return event_id or None."""
+        """Receive an external message: create beat, process, return event_id or None.
+
+        ``meta`` is an ad-hoc hint dict used only to derive the speaker label
+        when formatting ``text``; it is NOT persisted on the beat.
+        """
         if t is None:
             t = datetime.now(timezone.utc)
         meta = meta or {}
+        scene = self._normalize_scene(scene)
         beat = Beat(
             t=t,
-            text=self._format_external_text(text, source, meta),
-            source=source,
+            text=self._format_external_text(text, scene, meta),
+            scene=scene,
             user=self.user_status,
             ai=self.ai_status,
-            meta=meta,
         )
         return self._ingest_beat(beat)
 
-    def _format_external_text(self, text: str, source: str, meta: dict) -> str:
+    @staticmethod
+    def _normalize_scene(scene: str) -> str:
+        """Map legacy bare scene names to the new actor@channel format."""
+        if not scene or "@" in scene:
+            return scene
+        # Plugin/external inbound channels
+        if scene in {"tg", "email"}:
+            return f"external@{scene}"
+        # Scheduler / device triggers
+        if scene in {"schedule", "limen", "xiao", "ring"}:
+            return f"system@{scene}"
+        # Phone-app surfaces (user-originated)
+        if scene in {"favilla", "stroll", "app", "webapp"}:
+            return f"user@{scene}"
+        return scene
+
+    def _format_external_text(self, text: str, scene: str, meta: dict) -> str:
         speaker = str(meta.get("speaker") or "").strip()
         if not speaker:
-            if source in {"favilla", "app", "webapp"}:
+            if scene in {"favilla", "app", "webapp"} or scene.endswith("@favilla") or scene.endswith("@app"):
                 speaker = (self.config.user_name or "zephyr").strip()
-            elif source in {"schedule", "limen", "xiao", "ring"}:
-                speaker = source
+            elif scene in {"schedule", "limen", "xiao", "ring"} or scene.startswith("system@"):
+                speaker = scene.split("@", 1)[-1] or scene
             else:
-                speaker = str(meta.get("from_name") or source).strip()
+                speaker = str(meta.get("from_name") or scene).strip()
         clean = text.strip()
         if clean.startswith(f"{speaker}:") or clean.startswith(f"{speaker}："):
             return clean
