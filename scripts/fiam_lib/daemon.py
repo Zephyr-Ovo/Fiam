@@ -371,15 +371,20 @@ def _wake_session(config, message: str, tag: str = "inbox", conductor=None) -> b
                     except (json.JSONDecodeError, ValueError):
                         data = None
                     resuming = False
+                    # Save new session id from retry regardless of outcome
+                    if data:
+                        new_sid = data.get("session_id", "")
+                        if new_sid:
+                            _save_active_session(config, new_sid)
                     if result.returncode != 0:
-                        _plog.warning("wake retry FAILED stdout: %s", (result.stdout or "").strip()[:500])
-                        if result.stderr:
-                            _plog.warning("wake retry stderr: %s", result.stderr.strip()[:500])
-                        if data and not resuming:
-                            new_sid = data.get("session_id", "")
-                            if new_sid:
-                                _save_active_session(config, new_sid)
-                        return False
+                        if data and data.get("subtype") == "error_max_turns":
+                            _plog.warning("wake retry hit max_turns — partial success")
+                            _console.print(f"  [yellow]wake partial[/] (max_turns, retry)")
+                        else:
+                            _plog.warning("wake retry FAILED stdout: %s", (result.stdout or "").strip()[:500])
+                            if result.stderr:
+                                _plog.warning("wake retry stderr: %s", result.stderr.strip()[:500])
+                            return False
                 else:
                     _plog.warning("wake FAILED stdout: %s", result.stdout.strip()[:500])
                     _console.print(f"  [red]wake failed[/] (exit {result.returncode})")
