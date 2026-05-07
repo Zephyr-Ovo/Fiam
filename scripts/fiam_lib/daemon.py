@@ -562,10 +562,6 @@ def _append_transcript(config, source: str, message: dict) -> dict:
     return record
 
 
-# Backward-compat alias
-_append_app_history = _append_transcript
-
-
 def _extract_and_dispatch(config, text: str, conductor) -> int:
     """Extract [→channel:recipient] markers and dispatch via Conductor.
 

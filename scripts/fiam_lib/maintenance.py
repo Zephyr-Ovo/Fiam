@@ -165,7 +165,6 @@ def collect_clean_targets(code_path: Path, config=None) -> list[CleanTarget]:
         home = config.home_path
         for label, path in [
             ("app chat transcript", home / "transcript"),
-            ("app chat history (legacy)", home / "app_history"),
             ("uploaded test files", home / "uploads"),
             ("inbox queue", config.inbox_dir),
             ("outbox queue", config.outbox_dir),

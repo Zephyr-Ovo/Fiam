@@ -47,7 +47,6 @@ class MaintenanceCleanTest(unittest.TestCase):
                 config.flow_path,
                 config.annotation_state_path,
                 home / "transcript" / "favilla.jsonl",
-                home / "app_history" / "legacy.jsonl",
                 home / "uploads" / "manifest.jsonl",
                 config.background_path,
                 home / ".recall_dirty",
@@ -70,7 +69,7 @@ class MaintenanceCleanTest(unittest.TestCase):
 
             targets = maintenance.collect_clean_targets(code, config)
             labels = "\n".join(target.label for target in targets)
-            self.assertIn("app chat history", labels)
+            self.assertIn("app chat transcript", labels)
             self.assertIn("uploaded test files", labels)
             self.assertIn("pool events/vectors/edges", labels)
 

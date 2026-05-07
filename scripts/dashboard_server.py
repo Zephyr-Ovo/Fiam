@@ -1184,10 +1184,6 @@ def _transcript_path(source: str = "chat") -> Path:
     return _CONFIG.home_path / "transcript" / f"{_transcript_source(source)}.jsonl"
 
 
-def _legacy_app_history_path(source: str = "chat") -> Path:
-    return _CONFIG.home_path / "app_history" / f"{_transcript_source(source)}.jsonl"
-
-
 def _history_attachments(attachments: list[dict]) -> list[dict]:
     out = []
     for att in attachments:
@@ -1216,26 +1212,40 @@ def _append_transcript(source: str, message: dict) -> dict:
             record[key] = message[key]
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    _append_carryover(source, record)
     return record
 
 
-# Backward-compat alias (callers being migrated may still use the old name)
-_append_app_history = _append_transcript
+def _append_carryover(source: str, record: dict) -> None:
+    """Append non-cc turns to carryover.md so cc sees what it missed.
+
+    Carryover.md is a markdown side-channel consumed by the inject.sh hook
+    on the next cc UserPromptSubmit. Only turns whose runtime != "cc" are
+    appended; cc's own turns are already in its session resume state.
+    """
+    runtime = str(record.get("runtime") or "").strip().lower()
+    if runtime in {"", "cc"}:
+        return
+    text = str(record.get("raw_text") or record.get("text") or "").strip()
+    if not text:
+        return
+    role = str(record.get("role") or "ai")
+    ts = datetime.now(timezone.utc).isoformat()
+    home = _CONFIG.home_path
+    co_path = home / "carryover.md"
+    section = f"## {ts} {role}@{source} runtime={runtime}\n{text}\n\n"
+    with co_path.open("a", encoding="utf-8") as fh:
+        fh.write(section)
+    (home / ".carryover_dirty").touch()
 
 
 def _favilla_history(source: str = "chat", limit: int = 200) -> dict:
-    new_path = _transcript_path(source)
-    legacy_path = _legacy_app_history_path(source)
-    cap = max(1, min(1000, limit))
-    lines: list[str] = []
-    if legacy_path.exists():
-        lines.extend(legacy_path.read_text(encoding="utf-8").splitlines())
-    if new_path.exists():
-        lines.extend(new_path.read_text(encoding="utf-8").splitlines())
-    if not lines:
+    path = _transcript_path(source)
+    if not path.exists():
         return {"ok": True, "messages": []}
+    cap = max(1, min(1000, limit))
     messages = []
-    for line in lines[-cap:]:
+    for line in path.read_text(encoding="utf-8").splitlines()[-cap:]:
         line = line.strip()
         if not line:
             continue
@@ -2616,14 +2626,14 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 self._serve_json({"error": str(e)}, status=500)
             return
 
-        if path in ("/favilla/chat/history", "/favilla/stroll/history", "/favilla/chat/transcript", "/favilla/stroll/transcript"):
+        if path in ("/favilla/chat/transcript", "/favilla/stroll/transcript"):
             if not _ingest_token_ok(self):
                 self._serve_json({"error": "unauthorized"}, status=401)
                 return
             from urllib.parse import parse_qs, urlparse
 
             query = parse_qs(urlparse(raw).query)
-            source = "stroll" if path in ("/favilla/stroll/history", "/favilla/stroll/transcript") else (query.get("source") or ["chat"])[0]
+            source = "stroll" if path == "/favilla/stroll/transcript" else (query.get("source") or ["chat"])[0]
             try:
                 limit = int((query.get("limit") or ["200"])[0])
             except ValueError:
@@ -2851,7 +2861,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._serve_json(result)
             return
 
-        if path in ("/favilla/chat/history", "/favilla/stroll/history", "/favilla/chat/transcript", "/favilla/stroll/transcript"):
+        if path in ("/favilla/chat/transcript", "/favilla/stroll/transcript"):
             if not _ingest_token_ok(self):
                 self._serve_json({"error": "unauthorized"}, status=401)
                 return
@@ -2869,7 +2879,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 self._serve_json({"error": f"bad json: {e}"}, status=400)
                 return
             try:
-                if path in ("/favilla/stroll/history", "/favilla/stroll/transcript"):
+                if path == "/favilla/stroll/transcript":
                     payload["source"] = "stroll"
                 result = _favilla_history_append(payload)
             except ValueError as e:
