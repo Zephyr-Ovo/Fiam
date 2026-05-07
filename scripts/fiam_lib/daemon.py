@@ -348,15 +348,48 @@ def _wake_session(config, message: str, tag: str = "inbox", conductor=None) -> b
                 _plog.warning("wake hit max_turns — partial success")
                 _console.print(f"  [yellow]wake partial[/] (max_turns)")
             else:
-                _plog.warning("wake FAILED stdout: %s", result.stdout.strip()[:500])
-                _console.print(f"  [red]wake failed[/] (exit {result.returncode})")
-                # Still save session_id if we got one on a new session
-                if data and not resuming:
-                    new_sid = data.get("session_id", "")
-                    if new_sid:
-                        _save_active_session(config, new_sid)
-                        _plog.info("saved session from failed wake: %s", new_sid)
-                return False
+                # Stale session id (claude lost it) → clear & retry once without --resume
+                if resuming and "No conversation found with session ID" in (result.stderr or ""):
+                    _plog.info("wake retrying without stale --resume")
+                    try:
+                        config.active_session_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    cmd_retry = [c for c in cmd if c != "--resume" and c != session["session_id"]]
+                    # rebuild cleanly: drop the two consecutive items
+                    cmd_retry = list(cmd)
+                    if "--resume" in cmd_retry:
+                        idx = cmd_retry.index("--resume")
+                        del cmd_retry[idx:idx+2]
+                    result = subprocess.run(
+                        cmd_retry, capture_output=True, text=True,
+                        timeout=180, cwd=str(config.home_path),
+                    )
+                    _plog.info("wake retry exit=%d", result.returncode)
+                    try:
+                        data = json.loads(result.stdout)
+                    except (json.JSONDecodeError, ValueError):
+                        data = None
+                    resuming = False
+                    if result.returncode != 0:
+                        _plog.warning("wake retry FAILED stdout: %s", (result.stdout or "").strip()[:500])
+                        if result.stderr:
+                            _plog.warning("wake retry stderr: %s", result.stderr.strip()[:500])
+                        if data and not resuming:
+                            new_sid = data.get("session_id", "")
+                            if new_sid:
+                                _save_active_session(config, new_sid)
+                        return False
+                else:
+                    _plog.warning("wake FAILED stdout: %s", result.stdout.strip()[:500])
+                    _console.print(f"  [red]wake failed[/] (exit {result.returncode})")
+                    # Still save session_id if we got one on a new session
+                    if data and not resuming:
+                        new_sid = data.get("session_id", "")
+                        if new_sid:
+                            _save_active_session(config, new_sid)
+                            _plog.info("saved session from failed wake: %s", new_sid)
+                    return False
 
         # Save new session_id
         if data and not resuming:
