@@ -1749,7 +1749,6 @@ def _favilla_chat_recall(payload: dict) -> dict:
         _POOL,
         seed_vec,
         top_k=_CONFIG.recall_top_k,
-        shield_recent=not bool(include_recent),
     )
     return {"ok": True, "count": count, "path": str(_CONFIG.background_path)}
 
