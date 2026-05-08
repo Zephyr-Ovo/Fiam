@@ -1456,9 +1456,6 @@ def _stroll_tick_loop() -> None:
             now = _time.time()
             if now - last_tick < interval:
                 continue
-            if _load_app_active_session():
-                # Skip this tick — a chat is in flight.
-                continue
             location = state.get("location") if isinstance(state.get("location"), dict) else None
             payload = {
                 "source": "stroll",
