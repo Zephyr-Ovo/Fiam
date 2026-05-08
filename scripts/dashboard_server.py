@@ -1457,11 +1457,18 @@ def _stroll_tick_loop() -> None:
             if now - last_tick < interval:
                 continue
             location = state.get("location") if isinstance(state.get("location"), dict) else None
+            stroll_ctx: dict = {}
+            if location and "lat" in location and "lng" in location:
+                stroll_ctx["current"] = {
+                    "lat": location["lat"],
+                    "lng": location["lng"],
+                    "accuracy": location.get("accuracy"),
+                }
             payload = {
                 "source": "stroll",
                 "runtime": "api",
                 "text": f"[stroll_tick] 距上次 tick {int(now - last_tick)}s。看一下当前镜头/周围，决定要不要拍照、记录或给屏幕换图。",
-                "stroll_context": {"location": location} if location else {},
+                "stroll_context": stroll_ctx,
             }
             try:
                 _favilla_chat_send(payload)
