@@ -18,7 +18,7 @@ import sys
 import threading
 import time
 from datetime import datetime, timezone
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+from http.server import HTTPServer, ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from io import BytesIO
 
@@ -1366,6 +1366,7 @@ def _favilla_stroll_record(payload: dict) -> dict:
     if not _CONFIG:
         raise RuntimeError("config not loaded")
     from fiam_lib.stroll_store import add_spatial_record
+    from fiam_lib.stroll_events import get_bus
 
     record = add_spatial_record(_CONFIG, payload)
     text = str(record.get("text") or "").strip()
@@ -1375,6 +1376,7 @@ def _favilla_stroll_record(payload: dict) -> dict:
             "text": text,
             "raw_text": text,
         })
+    get_bus().publish("record", record)
     return {"ok": True, "record": record}
 
 
@@ -1382,8 +1384,10 @@ def _favilla_stroll_action_result(payload: dict) -> dict:
     if not _CONFIG:
         raise RuntimeError("config not loaded")
     from fiam_lib.stroll_store import record_action_result
+    from fiam_lib.stroll_events import get_bus
 
     record = record_action_result(_CONFIG, payload)
+    get_bus().publish("action_result", record)
     return {"ok": True, "action": record}
 
 
@@ -1421,6 +1425,13 @@ def _favilla_stroll_state_status() -> dict:
     from fiam_lib import stroll_state
 
     return {"ok": True, "state": stroll_state.get_state(_CONFIG)}
+
+
+def _format_sse(ev: dict) -> bytes:
+    """Render one bus event as an SSE frame: id/event/data lines + blank line."""
+    payload = json.dumps(ev.get("data") or {}, ensure_ascii=False)
+    out = f"id: {ev['id']}\nevent: {ev.get('event') or 'message'}\ndata: {payload}\n\n"
+    return out.encode("utf-8")
 
 
 def _validate_app_attachments(attachments: list) -> list[dict]:
@@ -1587,6 +1598,7 @@ def _favilla_chat_send(payload: dict) -> dict:
         result["carry_over_from"] = runtime
         runtime = target
     stroll_records: list[dict] = []
+    stroll_actions: list[dict] = []
     if source == "stroll":
         from fiam_lib.stroll_store import apply_spatial_record_markers, apply_stroll_action_markers, strip_spatial_record_markers, strip_stroll_action_markers
 
@@ -1628,8 +1640,22 @@ def _favilla_chat_send(payload: dict) -> dict:
         result["stroll_context"] = stroll_context
     if stroll_records:
         result["stroll_records"] = stroll_records
-    if source == "stroll" and locals().get("stroll_actions"):
+        try:
+            from fiam_lib.stroll_events import get_bus
+            bus = get_bus()
+            for rec in stroll_records:
+                bus.publish("record", rec)
+        except Exception:
+            logger.exception("stroll record publish failed")
+    if source == "stroll" and stroll_actions:
         result["stroll_actions"] = stroll_actions
+        try:
+            from fiam_lib.stroll_events import get_bus
+            bus = get_bus()
+            for act in stroll_actions:
+                bus.publish("action", act)
+        except Exception:
+            logger.exception("stroll action publish failed")
     result["runtime"] = runtime
     return result
 
@@ -2935,6 +2961,52 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 self._serve_json({"error": str(e)}, status=500)
             return
 
+        if path == "/favilla/stroll/events":
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            from urllib.parse import parse_qs, urlparse
+            from fiam_lib.stroll_events import get_bus
+
+            query = parse_qs(urlparse(raw).query)
+            last_id_header = self.headers.get("Last-Event-ID")
+            try:
+                last_id = int(last_id_header) if last_id_header else int((query.get("last_id") or ["0"])[0])
+            except ValueError:
+                last_id = 0
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "keep-alive")
+                self.send_header("X-Accel-Buffering", "no")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                bus = get_bus()
+                # Initial replay of any missed events.
+                for ev in bus.replay(last_id):
+                    self.wfile.write(_format_sse(ev))
+                    self.wfile.flush()
+                    last_id = ev["id"]
+                # Long-poll loop: 25s windows then heartbeat comment.
+                while True:
+                    got_any = False
+                    for ev in bus.subscribe(after_id=last_id, timeout=25.0):
+                        self.wfile.write(_format_sse(ev))
+                        self.wfile.flush()
+                        last_id = ev["id"]
+                        got_any = True
+                    if not got_any:
+                        # Heartbeat keeps proxies / mobile radios from killing the conn.
+                        self.wfile.write(b": ping\n\n")
+                        self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                return
+            except Exception:
+                logger.exception("Favilla Stroll SSE error")
+                return
+            return
+
         if path == "/api/wearable/reply":
             if not _ingest_token_ok(self):
                 self._serve_json({"error": "unauthorized"}, status=401)
@@ -3513,7 +3585,7 @@ def main():
     if not os.environ.get("FIAM_VIEW_TOKEN"):
         print("WARN: FIAM_VIEW_TOKEN not set — direct GET requests will return 401 unless proxied by Caddy auth.",
               file=sys.stderr)
-    server = HTTPServer((args.bind, args.port), DashboardHandler)
+    server = ThreadingHTTPServer((args.bind, args.port), DashboardHandler)
     print(f"Dashboard: http://{args.bind}:{args.port}/")
     try:
         server.serve_forever()
