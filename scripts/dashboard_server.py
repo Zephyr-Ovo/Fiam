@@ -1387,6 +1387,42 @@ def _favilla_stroll_action_result(payload: dict) -> dict:
     return {"ok": True, "action": record}
 
 
+def _favilla_stroll_state_start(payload: dict) -> dict:
+    if not _CONFIG:
+        raise RuntimeError("config not loaded")
+    from fiam_lib import stroll_state
+
+    data = stroll_state.start(_CONFIG, payload or {})
+    return {"ok": True, "state": data}
+
+
+def _favilla_stroll_state_heartbeat(payload: dict) -> dict:
+    if not _CONFIG:
+        raise RuntimeError("config not loaded")
+    from fiam_lib import stroll_state
+
+    data = stroll_state.heartbeat(_CONFIG, payload or {})
+    return {"ok": True, "state": data}
+
+
+def _favilla_stroll_state_stop(payload: dict) -> dict:
+    if not _CONFIG:
+        raise RuntimeError("config not loaded")
+    from fiam_lib import stroll_state
+
+    reason = str((payload or {}).get("reason") or "user_stop").strip() or "user_stop"
+    data = stroll_state.stop(_CONFIG, reason=reason)
+    return {"ok": True, "state": data}
+
+
+def _favilla_stroll_state_status() -> dict:
+    if not _CONFIG:
+        raise RuntimeError("config not loaded")
+    from fiam_lib import stroll_state
+
+    return {"ok": True, "state": stroll_state.get_state(_CONFIG)}
+
+
 def _validate_app_attachments(attachments: list) -> list[dict]:
     safe_attachments = []
     uploads_root = (_CONFIG.home_path / "uploads").resolve()
@@ -2888,6 +2924,17 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._serve_json(_favilla_chat_process_status())
             return
 
+        if path == "/favilla/stroll/state":
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            try:
+                self._serve_json(_favilla_stroll_state_status())
+            except Exception as e:
+                logger.exception("Favilla Stroll state error")
+                self._serve_json({"error": str(e)}, status=500)
+            return
+
         if path == "/api/wearable/reply":
             if not _ingest_token_ok(self):
                 self._serve_json({"error": "unauthorized"}, status=401)
@@ -3133,6 +3180,41 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return
             except Exception as e:
                 logger.exception("Favilla Stroll write error")
+                self._serve_json({"error": str(e)}, status=500)
+                return
+            self._serve_json(result)
+            return
+
+        if path in ("/favilla/stroll/start", "/favilla/stroll/heartbeat", "/favilla/stroll/stop"):
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = 0
+            payload: dict = {}
+            if length > 0:
+                if length > 64 * 1024:
+                    self._serve_json({"error": "bad length"}, status=400)
+                    return
+                try:
+                    payload = json.loads(self.rfile.read(length).decode("utf-8")) or {}
+                except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                    self._serve_json({"error": f"bad json: {e}"}, status=400)
+                    return
+            try:
+                if path == "/favilla/stroll/start":
+                    result = _favilla_stroll_state_start(payload)
+                elif path == "/favilla/stroll/heartbeat":
+                    result = _favilla_stroll_state_heartbeat(payload)
+                else:
+                    result = _favilla_stroll_state_stop(payload)
+            except ValueError as e:
+                self._serve_json({"error": str(e)}, status=400)
+                return
+            except Exception as e:
+                logger.exception("Favilla Stroll state op error")
                 self._serve_json({"error": str(e)}, status=500)
                 return
             self._serve_json(result)
