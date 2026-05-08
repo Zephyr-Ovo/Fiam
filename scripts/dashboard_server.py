@@ -1434,6 +1434,54 @@ def _format_sse(ev: dict) -> bytes:
     return out.encode("utf-8")
 
 
+_STROLL_TICK_CHECK_INTERVAL_S = 10.0
+
+
+def _stroll_tick_loop() -> None:
+    """Background tick: while a stroll is active, wake AI every interval_seconds."""
+    import time as _time
+
+    from fiam_lib import stroll_state
+
+    while True:
+        try:
+            _time.sleep(_STROLL_TICK_CHECK_INTERVAL_S)
+            if not _CONFIG:
+                continue
+            state = stroll_state.get_state(_CONFIG)
+            if not state.get("active"):
+                continue
+            interval = float(state.get("interval_seconds") or stroll_state.DEFAULT_TICK_INTERVAL_S)
+            last_tick = float(state.get("last_tick_at") or 0.0)
+            now = _time.time()
+            if now - last_tick < interval:
+                continue
+            if _load_app_active_session():
+                # Skip this tick — a chat is in flight.
+                continue
+            location = state.get("location") if isinstance(state.get("location"), dict) else None
+            payload = {
+                "source": "stroll",
+                "runtime": "api",
+                "text": f"[stroll_tick] 距上次 tick {int(now - last_tick)}s。看一下当前镜头/周围，决定要不要拍照、记录或给屏幕换图。",
+                "stroll_context": {"location": location} if location else {},
+            }
+            try:
+                _favilla_chat_send(payload)
+            except Exception:
+                logger.exception("stroll tick send failed")
+            stroll_state.mark_tick(_CONFIG, at=now)
+        except Exception:
+            logger.exception("stroll tick loop error")
+
+
+def _start_stroll_tick_thread() -> None:
+    import threading as _threading
+
+    t = _threading.Thread(target=_stroll_tick_loop, name="stroll-tick", daemon=True)
+    t.start()
+
+
 def _validate_app_attachments(attachments: list) -> list[dict]:
     safe_attachments = []
     uploads_root = (_CONFIG.home_path / "uploads").resolve()
@@ -3587,6 +3635,7 @@ def main():
               file=sys.stderr)
     server = ThreadingHTTPServer((args.bind, args.port), DashboardHandler)
     print(f"Dashboard: http://{args.bind}:{args.port}/")
+    _start_stroll_tick_thread()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
