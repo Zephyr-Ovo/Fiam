@@ -251,7 +251,7 @@ def build_context_block(config: FiamConfig, payload_context: dict[str, Any] | No
     context["spatialRecords"] = nearby.get("records", [])
     context["contextVersion"] = nearby.get("contextVersion", "")
     lines = ["[stroll_context]", f"cell={context.get('cellId', '')} place={context.get('placeKind', 'unknown')} version={context.get('contextVersion', '')}"]
-    lines.append('stroll_xml: use short hidden tags only when needed: <stroll_record kind="marker" text="short label" emoji="*" />; <stroll_action type="view_camera" reason="why" />; <stroll_action type="capture_photo" reason="why" />; <stroll_action type="set_limen_screen" text="short screen text" emoji="spark" />; <stroll_action type="refresh_nearby" reason="why" />. Omit lng/lat to use current point.')
+    lines.append('stroll_xml: use short hidden tags only when needed: <stroll_record kind="marker" text="short label" emoji="*" />; <stroll_action type="view_camera" reason="why" />; <stroll_action type="capture_photo" reason="why" />; <stroll_action type="set_limen_screen" text="spark" />; <stroll_action type="refresh_nearby" reason="why" />. Omit lng/lat to use current point. Limen screen renders ASCII only: prefer text="<short lowercase word>" or text="(^_^)" style kaomoji, or text="emoji:heart" / text="emoji:smile" (only heart and smile are drawn). Do NOT put unicode emoji like ✨💖 into text — they render as a generic geometric fallback. Save unicode emoji for stroll_record / map markers, not Limen.')
     if current:
         lines.append(f"current lat={current.get('lat')} lng={current.get('lng')} accuracy={current.get('accuracy', '')}")
     records = context.get("spatialRecords") or []
