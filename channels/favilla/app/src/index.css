@@ -188,6 +188,22 @@ body {
 ::selection { background: rgba(102, 78, 68, 0.22); color: #3f2f29; }
 ::-moz-selection { background: rgba(102, 78, 68, 0.22); color: #3f2f29; }
 
+/* Studio: suppress native long-press callout on chrome, but RE-ENABLE inside the editor so the
+   WebView's native copy/paste/select context menu works (system clipboard available there even
+   in insecure HTTP context). */
+.studio-root {
+  -webkit-touch-callout: default;
+  /* removed user-select: none on root to fix Android Copy/Paste WebView bug */
+}
+.studio-root .ProseMirror,
+.studio-root .ProseMirror *,
+.bn-editor,
+.bn-editor * {
+  -webkit-touch-callout: default !important;
+  -webkit-user-select: text !important;
+  user-select: text !important;
+}
+
 /* favilla custom keyframes */
 @keyframes fav-pulse { 0%,100%{opacity:0.55} 50%{opacity:1} }
 @keyframes hg-drain { 0%,100%{transform:scaleY(1)} 50%{transform:scaleY(0.45)} }
@@ -352,4 +368,25 @@ body {
   background: rgba(255, 250, 243, 0.82);
   box-shadow: 0 0 10px rgba(255, 250, 243, 0.3);
   animation: stroll-snow-fall ease-in infinite;
+}
+
+/* BlockNote Mobile Clipboard & Toolbar Overrides */
+.studio-blocknote .bn-container * {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+  -webkit-touch-callout: default !important;
+}
+.studio-blocknote .bn-FormattingToolbar {
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 50 !important;
+  width: 100%;
+}
+.format-toolbar-container .bn-FormattingToolbar {
+  background: transparent !important;
+  box-shadow: none !important;
+  border: none !important;
+}
+.format-toolbar-container .bn-ToolbarButton {
+  border-radius: 8px !important;
 }

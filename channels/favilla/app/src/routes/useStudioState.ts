@@ -135,6 +135,45 @@ export function useStudioState() {
     return id;
   }, []);
 
+  const createFolder = useCallback((name: string, parentId: string | null = null) => {
+    const id = `folder-${Date.now()}`;
+    setFiles(prev => [...prev, { id, name, type: 'folder', parentId }]);
+    return id;
+  }, []);
+
+  const deleteItem = useCallback((id: string) => {
+    setFiles(prev => {
+      const toRemove = new Set<string>([id]);
+      // Recursively collect descendant ids so deleting a folder deletes its pages.
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const f of prev) {
+          if (f.parentId && toRemove.has(f.parentId) && !toRemove.has(f.id)) {
+            toRemove.add(f.id);
+            changed = true;
+          }
+        }
+      }
+      const next = prev.filter(f => !toRemove.has(f.id));
+      // If active file got deleted, move to first remaining file.
+      setActiveFileId(prevActive => {
+        if (!toRemove.has(prevActive)) return prevActive;
+        const fallback = next.find(f => f.type === 'file');
+        return fallback ? fallback.id : prevActive;
+      });
+      // Drop content for removed files.
+      setFileContents(prevContents => {
+        const out: Record<string, string> = {};
+        for (const [k, v] of Object.entries(prevContents)) {
+          if (!toRemove.has(k)) out[k] = v;
+        }
+        return out;
+      });
+      return next;
+    });
+  }, []);
+
   return {
     activeNoteContent,
     setActiveNoteContent,
@@ -147,5 +186,7 @@ export function useStudioState() {
     timeline,
     addTimelineEvent,
     createNote,
+    createFolder,
+    deleteItem,
   };
 }
