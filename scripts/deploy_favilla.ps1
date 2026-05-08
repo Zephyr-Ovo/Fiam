@@ -17,6 +17,7 @@ param(
     [string]$Adb = "D:\scrcpy-win64-v3.3.4\adb.exe",
     [switch]$Dispatch,
     [string]$MapboxToken = "",
+    [string]$DevServerUrl = "",
     [int]$PollSeconds = 15,
     [int]$TimeoutMinutes = 20
 )
@@ -66,13 +67,14 @@ Write-Host "[deploy] target SHA $targetSha" -ForegroundColor DarkGray
 
 $eventFilter = ""
 $dispatchStartedAt = $null
-if ($Dispatch -or $MapboxToken) {
+if ($Dispatch -or $MapboxToken -or $DevServerUrl) {
     $dispatchStartedAt = (Get-Date).ToUniversalTime().AddSeconds(-10)
     $dispatchBody = @{
         ref = $Branch
         inputs = @{
             api_base = ""
             mapbox_token = $MapboxToken
+            dev_server_url = $DevServerUrl
         }
     } | ConvertTo-Json -Depth 5
     Write-Host "[deploy] workflow_dispatch $Workflow" -ForegroundColor Cyan
