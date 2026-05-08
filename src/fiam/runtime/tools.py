@@ -14,7 +14,7 @@ Tool surface (deliberately small, mirrors editor primitives):
 - ``create_file(path, content)``      — create new file, fail if exists
 - ``git_diff(path?, since?)``         — git diff inside home_path
 - ``grep_files(path, query)``         — search text files under a path
-- ``schedule_wake(at, kind, reason?)`` — append a wake/todo entry to self/todo.jsonl
+- ``add_todo(at, kind, reason?)`` — append a wake/todo entry to self/todo.jsonl
 - ``set_ai_state(state, until?, reason?)`` — update self/ai_state.json
 
 The ``remember`` action is intentionally NOT a separate tool: editing
@@ -154,10 +154,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "schedule_wake",
+            "name": "add_todo",
             "description": (
-                "Append a future wake to self/todo.jsonl. Use kind='wake' for a "
-                "bare time-only reminder (no description \u2013 you'll re-read your "
+                "Append a future wake/todo to self/todo.jsonl. Use kind='wake' for "
+                "a bare time-only reminder (no description – you'll re-read your "
                 "session memory when you wake up); use kind='todo' to attach a "
                 "short note describing what you wanted to do at that time."
             ),
@@ -337,7 +337,7 @@ def _grep_files(home: Path, args: dict[str, Any]) -> str:
     return json.dumps(results, ensure_ascii=False)
 
 
-def _schedule_wake(home: Path, args: dict[str, Any], default_tz: Any = None) -> str:
+def _add_todo(home: Path, args: dict[str, Any], default_tz: Any = None) -> str:
     at_raw = str(args["at"]).strip()
     kind = str(args["kind"]).strip().lower()
     reason = str(args.get("reason") or "").strip()
@@ -411,7 +411,7 @@ _DISPATCH = {
     "create_file": _create_file,
     "git_diff": _git_diff,
     "grep_files": _grep_files,
-    "schedule_wake": _schedule_wake,
+    "add_todo": _add_todo,
     "set_ai_state": _set_ai_state,
 }
 
@@ -439,13 +439,13 @@ def execute_tool_call(config: "FiamConfig", name: str, raw_args: str) -> str:
     if not isinstance(args, dict):
         return "error: arguments must be a JSON object"
     try:
-        if name == "schedule_wake":
+        if name == "add_todo":
             tzinfo = None
             try:
                 tzinfo = config.project_tz()
             except Exception:
                 tzinfo = None
-            return _schedule_wake(config.home_path, args, default_tz=tzinfo)
+            return _add_todo(config.home_path, args, default_tz=tzinfo)
         return handler(config.home_path, args)
     except ToolError as exc:
         return f"error: {exc}"
