@@ -345,6 +345,48 @@ async function postJson(path, body) {
   return data;
 }
 
+async function getJson(path) {
+  const settings = await getSettings();
+  if (!settings.token) throw new Error("Set FIAM_INGEST_TOKEN in extension options first");
+  const response = await fetch(`${normalizeEndpoint(settings.endpoint)}${path}`, {
+    method: "GET",
+    headers: { "X-Fiam-Token": settings.token }
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+  return data;
+}
+
+let wakeupPollTimer = null;
+let wakeupInflight = false;
+async function pollWakeupOnce() {
+  if (wakeupInflight) return;
+  wakeupInflight = true;
+  try {
+    const settings = await getSettings();
+    if (!settings.token) return;
+    const data = await getJson("/browser/wakeup");
+    const items = Array.isArray(data?.items) ? data.items : [];
+    for (const item of items) {
+      try {
+        await startAutonomousSession(String(item.url || ""));
+      } catch (error) {
+        console.warn("Fiam wakeup failed", item, error);
+      }
+    }
+  } catch (error) {
+    // Silent — server may be down. Don't spam.
+  } finally {
+    wakeupInflight = false;
+  }
+}
+function startWakeupPolling() {
+  if (wakeupPollTimer) return;
+  wakeupPollTimer = setInterval(pollWakeupOnce, 5000);
+  pollWakeupOnce();
+}
+startWakeupPolling();
+
 async function capturePage() {
   const tab = await activeTab();
   const snapshot = await collectSnapshot(tab);

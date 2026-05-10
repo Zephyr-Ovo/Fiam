@@ -662,6 +662,32 @@ def _browser_snapshot_payload(payload: dict) -> tuple[str, dict]:
     return text, meta
 
 
+# Reverse channel: AI / user pushes a wakeup; extension long-polls (short-polls).
+_BROWSER_WAKEUP_QUEUE: list[dict] = []
+_BROWSER_WAKEUP_LIMIT = 16
+
+
+def _browser_wakeup_push(payload: dict) -> dict:
+    url = str((payload or {}).get("url") or "").strip()
+    if not url.lower().startswith(("http://", "https://")):
+        raise ValueError("wakeup url must be http(s)")
+    item = {
+        "url": url[:2000],
+        "reason": str((payload or {}).get("reason") or "ai_request")[:120],
+        "at": datetime.now(timezone.utc).isoformat(),
+    }
+    _BROWSER_WAKEUP_QUEUE.append(item)
+    if len(_BROWSER_WAKEUP_QUEUE) > _BROWSER_WAKEUP_LIMIT:
+        del _BROWSER_WAKEUP_QUEUE[: len(_BROWSER_WAKEUP_QUEUE) - _BROWSER_WAKEUP_LIMIT]
+    return {"ok": True, "queued": item}
+
+
+def _browser_wakeup_pop_all() -> list[dict]:
+    items = list(_BROWSER_WAKEUP_QUEUE)
+    _BROWSER_WAKEUP_QUEUE.clear()
+    return items
+
+
 def _browser_screenshot_attachments(payload: dict) -> list[dict]:
     if not _CONFIG:
         return []
@@ -3328,6 +3354,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         raw = self.path
         path = raw.split("?")[0]
 
+        if path == "/browser/wakeup":
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            self._serve_json({"items": _browser_wakeup_pop_all()})
+            return
+
         if path == "/favilla/splash":
             if not _ingest_token_ok(self):
                 self._serve_json({"error": "unauthorized"}, status=401)
@@ -3568,7 +3601,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         is_annotate = path in annotate_paths
         is_config_write = path in config_paths
 
-        if path in {"/browser/snapshot", "/browser/ask", "/browser/tick", "/browser/action-result"}:
+        if path in {"/browser/snapshot", "/browser/ask", "/browser/tick", "/browser/action-result", "/browser/wakeup"}:
             if not _ingest_token_ok(self):
                 self._serve_json({"error": "unauthorized"}, status=401)
                 return
@@ -3593,6 +3626,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     result = _append_browser_action_flow(payload)
                 elif path == "/browser/tick":
                     result = _browser_control_tick(payload)
+                elif path == "/browser/wakeup":
+                    result = _browser_wakeup_push(payload)
                 else:
                     result = _browser_ask(payload)
             except ValueError as e:

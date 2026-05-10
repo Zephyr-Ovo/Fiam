@@ -102,3 +102,4 @@ btw/
 
 # Debug traces (cc_trace_* dumps)
 /docs/cc_trace_*
+_msg.txt
