@@ -1595,20 +1595,20 @@ def _favilla_studio_edit(payload: dict) -> dict:
 
 
 def _select_favilla_chat_runtime(text: str, attachments: list[dict] | None = None) -> str:
-    # Default to api (fast, cheap, no session lock-up). Only switch to cc when
-    # the user explicitly asks for it, or when attachments need code-level handling.
+    # Default to cc (Claude Code). User preference: avoid gemini/api unless
+    # explicitly requested. Only switch to api when the user says so out loud.
     if attachments:
         return "cc"
     lowered = text.lower()
-    api_token = r"(?<![a-z0-9])api(?![a-z0-9])"
+    api_token = r"(?<![a-z0-9])api(?![a-z0-9])|gemini"
     cc_token = r"(?<![a-z0-9])cc(?![a-z0-9])|claude\s*code"
-    if re.search(rf"runtime\s*(=|:|：)\s*{api_token}|(换|切|切换|转|去|到|用|走).{{0,8}}{api_token}|{api_token}.{{0,8}}(模式|运行|runtime)", lowered):
+    if re.search(rf"runtime\s*(=|:|：)\s*({api_token})|(换|切|切换|转|去|到|用|走).{{0,8}}({api_token})|({api_token}).{{0,8}}(模式|运行|runtime)", lowered):
         return "api"
     if re.search(rf"runtime\s*(=|:|：)\s*({cc_token})|(换|切|切换|转|去|到|用|走).{{0,8}}({cc_token})|({cc_token}).{{0,8}}(模式|运行|runtime)", lowered):
         return "cc"
     if re.search(r"(另一边|另一侧|另一端|切换过去|换过去|切过去)", lowered):
-        return "cc"
-    return "api"
+        return "api"
+    return "cc"
 
 
 def _transcript_source(channel: str) -> str:

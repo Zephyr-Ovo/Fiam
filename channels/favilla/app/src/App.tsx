@@ -481,16 +481,23 @@ function compactIconKey(value?: string) {
 }
 
 function inferStreamlineIcon(step: ThinkStep): string {
+  // 1. explicit icon hint from the step → highest priority
   const explicit = EXPLICIT_STREAMLINE_ICON[compactIconKey(step.icon)]
   if (explicit && STREAMLINE_THINK_ICONS.has(explicit)) return explicit
-  const haystack = [step.icon, step.summary, step.text, step.result, step.source]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase()
-  for (const rule of STREAMLINE_KEYWORD_RULES) {
-    if (rule.pattern.test(haystack) && STREAMLINE_THINK_ICONS.has(rule.slug)) return rule.slug
+  // 2. pure "thinking" steps (CC monologue, no tool call, no icon) MUST fall
+  //    back to the Brain fallback. The keyword rules historically swept words
+  //    like "file" / "text" out of the prose and produced a misleading
+  //    file-text icon, which is what users complained about. Only match
+  //    keywords against the icon hint and the explicit source label, never
+  //    the free-form text/summary.
+  const haystack = [step.icon, step.source].filter(Boolean).join(" ").toLowerCase()
+  if (haystack) {
+    for (const rule of STREAMLINE_KEYWORD_RULES) {
+      if (rule.pattern.test(haystack) && STREAMLINE_THINK_ICONS.has(rule.slug)) return rule.slug
+    }
   }
-  if (step.source === "native") return "settings"
+  // 3. native tool calls without a more specific signal → settings cog
+  if (step.source === "native" && step.kind !== "think") return "settings"
   return ""
 }
 
