@@ -209,6 +209,7 @@ class OpenAICompatibleClient:
         temperature: float,
         max_tokens: int,
         tools: list[dict[str, Any]] | None = None,
+        _retries: int = 2,
     ) -> ApiCompletion:
         body: dict[str, Any] = {
             "model": model,
@@ -219,36 +220,42 @@ class OpenAICompatibleClient:
         if tools:
             body["tools"] = tools
         headers = self._headers()
-        request = urllib.request.Request(
-            f"{self.base_url}/chat/completions",
-            data=json.dumps(body).encode("utf-8"),
-            headers=headers,
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                data = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")[:500]
-            raise RuntimeError(f"API request failed ({exc.code}): {detail}") from exc
+        last_exc: Exception | None = None
+        for attempt in range(1 + _retries):
+            request = urllib.request.Request(
+                f"{self.base_url}/chat/completions",
+                data=json.dumps(body).encode("utf-8"),
+                headers=headers,
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                    data = json.loads(response.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace")[:500]
+                raise RuntimeError(f"API request failed ({exc.code}): {detail}") from exc
 
-        choices = data.get("choices") or []
-        if not choices:
-            raise RuntimeError("API response has no choices")
-        choice = choices[0]
-        message = choice.get("message") or {}
-        text = str(message.get("content") or "").strip()
-        tool_calls = list(message.get("tool_calls") or [])
-        if not text and not tool_calls:
-            raise RuntimeError("API response has neither content nor tool_calls")
-        return ApiCompletion(
-            text=text,
-            model=str(data.get("model") or model),
-            usage=dict(data.get("usage") or {}),
-            raw=data,
-            tool_calls=tool_calls,
-            finish_reason=str(choice.get("finish_reason") or ""),
-        )
+            choices = data.get("choices") or []
+            if not choices:
+                raise RuntimeError("API response has no choices")
+            choice = choices[0]
+            message = choice.get("message") or {}
+            text = str(message.get("content") or "").strip()
+            tool_calls = list(message.get("tool_calls") or [])
+            if not text and not tool_calls:
+                last_exc = RuntimeError(
+                    f"API response has neither content nor tool_calls (attempt {attempt + 1}/{1 + _retries})"
+                )
+                continue
+            return ApiCompletion(
+                text=text,
+                model=str(data.get("model") or model),
+                usage=dict(data.get("usage") or {}),
+                raw=data,
+                tool_calls=tool_calls,
+                finish_reason=str(choice.get("finish_reason") or ""),
+            )
+        raise last_exc or RuntimeError("API response has neither content nor tool_calls")
 
     def _headers(self) -> dict[str, str]:
         return {
