@@ -46,7 +46,7 @@ def _speaker_for_beat(beat: dict, *, config: Any, cc_lookup: dict[str, str]) -> 
     scene_tail = raw_scene.split("@", 1)[-1] if "@" in raw_scene else raw_scene
     actor = raw_scene.split("@", 1)[0] if "@" in raw_scene else ""
     user_label = _label(getattr(config, "user_name", ""), "zephyr")
-    ai_label = _label(getattr(config, "ai_name", ""), "ai")
+    ai_label = "ai"
 
     if scene_tail == "action" or actor == "ai" and scene_tail == "action":
         return ""
@@ -86,7 +86,7 @@ def _cc_role_lookup(config: Any) -> dict[str, str]:
         return dict(_CC_ROLE_CACHE.get("lookup") or {})
 
     user_label = _label(getattr(config, "user_name", ""), "zephyr")
-    ai_label = _label(getattr(config, "ai_name", ""), "ai")
+    ai_label = "ai"
     lookup: dict[str, str] = {}
 
     for path in files:

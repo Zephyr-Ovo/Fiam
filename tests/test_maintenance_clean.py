@@ -32,7 +32,6 @@ class MaintenanceCleanTest(unittest.TestCase):
             config = FiamConfig(
                 home_path=home,
                 code_path=code,
-                ai_name="Fiet",
                 user_name="Zephyr",
                 embedding_dim=3,
             )

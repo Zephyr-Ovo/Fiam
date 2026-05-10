@@ -143,7 +143,6 @@ class MarkerParsingTest(unittest.TestCase):
             scene="api",
             user_status="together",
             ai_status="online",
-            ai_name="claude",
         )
 
         self.assertEqual(len(beats), 1)

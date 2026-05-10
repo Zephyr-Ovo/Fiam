@@ -68,7 +68,7 @@ def _on_dispatch(_leaf: str, payload: dict) -> None:
     if not from_addr or not to_addr or not config.email_smtp_host:
         logger.warning("email not configured — skipping dispatch")
         return
-    subject = text.split("\n", 1)[0][:80] or f"From {config.ai_name}"
+    subject = text.split("\n", 1)[0][:80] or "From ai"
     ok = _email_send(
         config.email_smtp_host, config.email_smtp_port,
         from_addr, to_addr, subject, text,

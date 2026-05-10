@@ -56,12 +56,12 @@ def _flow(text: str, offset: int = 0, bold: bool = True) -> _Text:
 def _conjure() -> None:
     """Play the Latin-progression loading animation during setup.
 
-    fio (I become) → fiam (I will become) → fiet (it will happen)
-    → fiat (let it be done) → fiat lux ✦
+    fio (I become) → fiam (I will become) → fiat (let it be done)
+    → fiat lux ✦
 
     Each word sweeps the full palette so colours keep flowing as text grows.
     """
-    words = ["fio", "fiam", "fiet", "fiat", "fiat lux ✦"]
+    words = ["fio", "fiam", "fiat", "fiat lux ✦"]
     # smoothly rotate through palette within each word display (~12 frames/word)
     frames_per_word = 12
     step = 0.22 / frames_per_word

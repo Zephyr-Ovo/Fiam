@@ -1,0 +1,233 @@
+# Atrium capability registry.
+#
+# Every action the daemon can ask the desktop to perform must be declared here.
+# Atrium will refuse any dispatch whose `name` is not in this file, regardless
+# of trust level. Trust controls *how* a permitted call is confirmed.
+#
+# trust:
+#   0 = execute silently (logged in audit only)
+#   1 = execute, surface a non-blocking toast
+#   2 = execute only after user clicks confirm in a blocking modal
+#   3 = always require confirm + reason text + audit highlight
+#
+# kind:
+#   "sensor"   = read-only, no observable side effects
+#   "actuator" = changes user-visible state
+#
+# Capabilities stay disabled until the implementation lands. High-trust actions
+# may be enabled here, but Atrium still requires the UI confirmation gate.
+
+# ───────────────────────── sensors ─────────────────────────
+
+[capabilities."aw.query"]
+kind = "sensor"
+trust = 0
+enabled = false
+description = "Query ActivityWatch REST API on localhost:5600 (windows, AFK, web)."
+backend = "http://localhost:5600/api"
+
+[capabilities."screen.region"]
+kind = "sensor"
+trust = 1
+enabled = false
+description = "Capture a screen region as PNG. Toast user on capture."
+
+[capabilities."fs.watch"]
+kind = "sensor"
+trust = 2
+enabled = false
+description = "Subscribe to fs change events under an allowed path."
+
+[capabilities."window.list"]
+kind = "sensor"
+trust = 0
+enabled = true
+description = "List visible windows with hwnd, title, owning process, and focus state."
+
+# ───────────────────────── actuators ─────────────────────────
+
+[capabilities."web.intercept.add"]
+kind = "actuator"
+trust = 3
+enabled = true
+description = "Add a host/path pattern to the mitmproxy intercept ruleset."
+engine = "mitmproxy"
+ruleset = "channels/atrium/tools/mitmproxy/rules.json"
+
+[capabilities."web.intercept.remove"]
+kind = "actuator"
+trust = 3
+enabled = true
+description = "Remove a host/path pattern from the intercept ruleset."
+
+[capabilities."web.intercept.release"]
+kind = "actuator"
+trust = 3
+enabled = true
+description = "Temporarily release a previously intercepted host/session. Feature-local release only; not a global permission lease."
+
+[capabilities."web.open"]
+kind = "actuator"
+trust = 1
+enabled = false
+description = "Open a URL in the user's default browser."
+
+[capabilities."web.surface.open"]
+kind = "actuator"
+trust = 1
+enabled = true
+description = "Open an Atrium-owned browser/co-reader surface that ai can operate without touching Iris's active window."
+
+[capabilities."web.surface.navigate"]
+kind = "actuator"
+trust = 1
+enabled = true
+description = "Navigate the latest Atrium-owned browser surface without touching the default browser or active window."
+
+[capabilities."web.surface.reload"]
+kind = "actuator"
+trust = 1
+enabled = true
+description = "Reload the latest Atrium-owned browser surface."
+
+[capabilities."web.cdp.click"]
+kind = "actuator"
+trust = 1
+enabled = true
+description = "Click inside an Atrium-owned browser surface through a DevTools-style page action. Does not move the system cursor."
+
+[capabilities."web.cdp.type"]
+kind = "actuator"
+trust = 1
+enabled = true
+description = "Type inside an Atrium-owned browser surface through a DevTools-style page action. Does not steal Iris's active focus."
+
+[capabilities."web.cdp.scroll"]
+kind = "actuator"
+trust = 1
+enabled = true
+description = "Scroll an Atrium-owned browser surface without affecting Iris's current page."
+
+[capabilities."web.screenshot"]
+kind = "sensor"
+trust = 0
+enabled = false
+description = "Headless render of a URL → PNG for ai-side page inspection."
+
+[capabilities."process.list"]
+kind = "sensor"
+trust = 0
+enabled = true
+description = "List running processes (name, pid, window title)."
+
+[capabilities."process.kill"]
+kind = "actuator"
+trust = 2
+enabled = false
+description = "Kill a process by pid. Allowlist enforced by atrium."
+allowlist = []
+
+[capabilities."window.uia.invoke"]
+kind = "actuator"
+trust = 2
+enabled = false
+description = "Invoke an accessibility-exposed desktop control without moving the system cursor."
+
+[capabilities."window.uia.set_text"]
+kind = "actuator"
+trust = 2
+enabled = false
+description = "Set text through UI Automation when a target supports it. Prefer over real keyboard input."
+
+[capabilities."window.win32.control_click"]
+kind = "actuator"
+trust = 2
+enabled = true
+description = "ControlClick-style Win32 message dispatch to a target hwnd. Best-effort, app-dependent."
+
+[capabilities."window.win32.set_text"]
+kind = "actuator"
+trust = 2
+enabled = true
+description = "Set text on a target hwnd with WM_SETTEXT. Best-effort, app-dependent, and gated by confirmation."
+
+[capabilities."input.borrow_focus"]
+kind = "actuator"
+trust = 3
+enabled = false
+description = "Last-resort real SendInput action that may move focus/cursor. Must be confirmed and obvious in audit."
+
+[capabilities."fs.read"]
+kind = "actuator"
+trust = 1
+enabled = false
+description = "Read a file under an allowed root."
+roots = []
+
+[capabilities."fs.write"]
+kind = "actuator"
+trust = 2
+enabled = false
+description = "Write a file under an allowed root."
+roots = []
+
+[capabilities."overlay.dialog"]
+kind = "actuator"
+trust = 0
+enabled = false
+description = "Show an ai dialog window on top of everything; collect user reply."
+
+[capabilities."notify"]
+kind = "actuator"
+trust = 0
+enabled = false
+description = "Native OS notification toast."
+
+[capabilities."app.spawn"]
+kind = "actuator"
+trust = 1
+enabled = true
+description = "Spawn an in-app window (chess board, co-reader, doc viewer, ...)."
+known = ["browser", "chess", "co-reader", "doc-viewer", "reader"]
+
+[capabilities."reader.set_text"]
+kind = "actuator"
+trust = 1
+enabled = true
+description = "Set text inside the latest Atrium-owned reader surface without using system keyboard input."
+
+[capabilities."reader.append_text"]
+kind = "actuator"
+trust = 1
+enabled = true
+description = "Append text inside the latest Atrium-owned reader surface without using system keyboard input."
+
+[capabilities."mitm.toggle"]
+kind = "actuator"
+trust = 3
+enabled = true
+description = "Start or stop the bundled mitmproxy subprocess."
+
+[capabilities."mitm.cert.status"]
+kind = "sensor"
+trust = 0
+enabled = true
+description = "Check whether mitmproxy's local CA certificate file is available."
+
+[capabilities."mitm.cert.install"]
+kind = "actuator"
+trust = 3
+enabled = true
+description = "Open or perform mitmproxy certificate setup. May require explicit user action and OS confirmation."
+
+[capabilities."proxy.system.apply"]
+kind = "actuator"
+trust = 3
+enabled = true
+description = "Apply the local proxy settings needed for Atrium-managed interception."
+
+[capabilities."proxy.system.restore"]
+kind = "actuator"
+trust = 3
+enabled = true
+description = "Restore the previous system proxy settings saved by Atrium."

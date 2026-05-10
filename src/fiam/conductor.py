@@ -214,8 +214,8 @@ class Conductor:
         # Scheduler / device triggers
         if scene in {"schedule", "limen", "xiao", "ring"}:
             return f"system@{scene}"
-        # Phone-app surfaces (user-originated)
-        if scene in {"favilla", "stroll", "app", "webapp"}:
+        # User-originated client surfaces
+        if scene in {"favilla", "stroll", "app", "webapp", "browser"}:
             return f"user@{scene}"
         return scene
 
@@ -250,7 +250,6 @@ class Conductor:
             user_status=self.user_status,
             ai_status=self.ai_status,
             user_name=getattr(self.config, "user_name", "") or "zephyr",
-            ai_name=getattr(self.config, "ai_name", "") or "ai",
         )
         results = []
         for beat in beats:

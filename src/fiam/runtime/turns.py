@@ -30,6 +30,7 @@ _SOURCE_TO_CHANNEL = {
     "studio": "favilla",
     "app": "favilla",
     "webapp": "favilla",
+    "browser": "browser",
 }
 
 
@@ -110,7 +111,6 @@ def assistant_text_beats(
     scene: str,
     user_status: "UserStatus",
     ai_status: "AiStatus",
-    ai_name: str,
     runtime: str | None = None,
 ) -> list[Beat]:
     """Build assistant dialogue and dispatch beats from a text response."""

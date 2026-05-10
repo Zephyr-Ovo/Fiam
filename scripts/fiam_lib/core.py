@@ -63,8 +63,6 @@ def _build_config(args: argparse.Namespace | None = None) -> "FiamConfig":
                 config.home_paths.append(override)
         if getattr(args, "debug", False):
             config.debug_mode = True
-        if getattr(args, "ai_name", None):
-            config.ai_name = args.ai_name
         if getattr(args, "user_name", None):
             config.user_name = args.user_name
 

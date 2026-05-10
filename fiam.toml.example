@@ -3,7 +3,6 @@
 
 home_path = ""           # set by fiam init (e.g. "/home/user/ai-home" or "D:/ai-home")
 user_name = ""           # set by fiam init
-ai_name = ""             # display name for the assistant (e.g. "Fiam"); empty falls back to "ai"
 timezone = "Asia/Shanghai"  # project-local time for prompts, tools, and naive schedules; storage stays UTC
 language_profile = "multi"  # zh / en / multi (multi = bilingual, recommended)
 

@@ -232,7 +232,6 @@ class ClaudeCodeAdapter:
         user_status: UserStatus = "cc",
         ai_status: AiStatus = "online",
         user_name: str = "zephyr",
-        ai_name: str = "ai",
     ) -> tuple[list["Beat"], int]:
         """Parse JSONL into Beat objects for the narrative stream.
 
@@ -267,7 +266,6 @@ class ClaudeCodeAdapter:
         asst_order: dict[str, int] = {}
         order = 0
         user_label = _speaker_label(user_name, "zephyr")
-        ai_label = _speaker_label(ai_name, "ai")
 
         pos = 0
         for raw_line in raw.split(b"\n"):

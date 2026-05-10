@@ -12,7 +12,6 @@ from fiam_lib.core import _project_root, _toml_path
 # (toml_section, field_name, config_attr, display_label, type)
 _FIELDS = [
     ("",          "home_path",        "home_path",              "Home directory",                "path"),
-    ("",          "ai_name",          "ai_name",                "AI name",                       "str"),
     ("",          "user_name",        "user_name",              "Your name",                     "str"),
     ("",          "language_profile",  "language_profile",      "Language profile (zh/en/multi)", "str"),
     ("retrieval", "top_k",            "top_k",                  "Retrieval top_k",               "int"),

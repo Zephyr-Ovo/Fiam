@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>Fiam Browser Bridge Options</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main>
+      <header><strong>Fiam Browser Options</strong></header>
+      <label>
+        Endpoint
+        <input id="endpoint" placeholder="http://127.0.0.1:8766" />
+      </label>
+      <label>
+        FIAM_INGEST_TOKEN
+        <input id="token" type="password" />
+      </label>
+      <label>
+        Default runtime
+        <select id="runtime">
+          <option value="api">api</option>
+          <option value="cc">cc</option>
+        </select>
+      </label>
+      <label class="checkline">
+        <input id="auto-execute" type="checkbox" />
+        自动执行 AI 浏览器动作
+      </label>
+      <label class="checkline">
+        <input id="autonomous-control" type="checkbox" />
+        页面变化时让 AI 自主接管
+      </label>
+      <label class="checkline">
+        <input id="auto-screenshot" type="checkbox" />
+        图像页面自动附截图
+      </label>
+      <button id="save">Save</button>
+      <pre id="status"></pre>
+    </main>
+    <script src="options.js"></script>
+  </body>
+</html>

@@ -108,7 +108,7 @@ def dispatch_file(path: Path, config: FiamConfig) -> bool:
         return True  # Only had control markers, nothing to send
 
     if via == "email":
-        subject = str(post.metadata.get("subject", f"From {config.ai_name}"))
+        subject = str(post.metadata.get("subject", "From ai"))
         from_addr = config.email_from
         to_field = str(post.metadata.get("to", "")).strip()
         # Resolve recipient: bare email address, named contact, or config default

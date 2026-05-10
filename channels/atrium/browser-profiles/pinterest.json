@@ -1,0 +1,26 @@
+{
+  "id": "pinterest",
+  "hosts": ["pinterest.com", "www.pinterest.com"],
+  "maxNodes": 18,
+  "strictKeepContextFallback": true,
+  "keep": [
+    {"role": "searchbox", "labelContains": "search", "alias": "Search"},
+    {"role": "link", "labelContains": "home", "alias": "Home"},
+    {"role": "link", "labelContains": "explore", "alias": "Explore"},
+    {"role": "link", "labelContains": "your boards", "alias": "Your boards"},
+    {"role": "button", "labelContains": "create", "alias": "Create"},
+    {"role": "button", "labelContains": "updates", "alias": "Updates"},
+    {"role": "button", "labelContains": "messages", "alias": "Messages"},
+    {"role": "button", "labelContains": "settings", "alias": "Settings & Support"},
+    {"role": "button", "labelContains": "tune your home feed", "alias": "Tune home feed"},
+    {"role": "link", "labelContains": "your profile", "alias": "Your profile"}
+  ],
+  "suppress": [
+    {"labelContains": "pin page", "group": "feed_pins"},
+    {"labelRegex": "^div >", "group": "anonymous_overlays"}
+  ],
+  "groups": {
+    "feed_pins": "similar feed pin links",
+    "anonymous_overlays": "unlabelled visual card overlays"
+  }
+}

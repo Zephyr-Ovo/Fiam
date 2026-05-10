@@ -1,0 +1,101 @@
+body {
+  min-width: 320px;
+  margin: 0;
+  background: #f5efe7;
+  color: #201a17;
+  font: 14px/1.4 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+main {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+label {
+  display: grid;
+  gap: 6px;
+  font-weight: 700;
+}
+
+.checkline {
+  display: flex;
+  grid-template-columns: none;
+  align-items: center;
+  gap: 8px;
+}
+
+.checkline input {
+  width: auto;
+}
+
+.picker {
+  display: grid;
+  gap: 8px;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  min-height: 34px;
+  border: 1px solid #bfae9f;
+  border-radius: 6px;
+  background: #fffaf3;
+  color: #201a17;
+}
+
+#pick-keep {
+  border-color: #8aa4d6;
+}
+
+#autonomous-session {
+  border-color: #6f8f72;
+  background: #f5fff4;
+}
+
+#execute-action {
+  border-color: #8aa4d6;
+  background: #eef4ff;
+}
+
+
+input,
+textarea,
+select {
+  width: 100%;
+  border: 1px solid #bfae9f;
+  border-radius: 6px;
+  background: #fffaf3;
+  color: #201a17;
+  box-sizing: border-box;
+}
+
+input,
+select {
+  min-height: 34px;
+  padding: 0 8px;
+}
+
+textarea {
+  resize: vertical;
+  padding: 8px;
+}
+
+pre {
+  max-height: 160px;
+  overflow: auto;
+  white-space: pre-wrap;
+  margin: 0;
+  color: #5b4438;
+}

@@ -21,8 +21,9 @@ from typing import Any, Literal
 # view-only). Old "source"-style values may still appear in legacy data.
 BeatScene = str
 KNOWN_BEAT_SCENES: set[str] = {
-    "user@favilla", "user@stroll", "user@email", "user@studio",
+    "user@browser", "user@favilla", "user@stroll", "user@email", "user@studio",
     "ai@favilla", "ai@stroll", "ai@think", "ai@action", "ai@email",
+    "ai@browser",
     "external@email", "system@schedule",
 }
 

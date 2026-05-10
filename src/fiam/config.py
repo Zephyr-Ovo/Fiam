@@ -61,7 +61,6 @@ class FiamConfig:
     # User identity
     # ------------------------------------------------------------------
     user_name: str = ""
-    ai_name: str = ""
     timezone: str = "Asia/Shanghai"
 
     # ------------------------------------------------------------------
@@ -493,7 +492,6 @@ class FiamConfig:
             f'home_path = "{self.home_path.as_posix()}"',
             f'home_paths = [{paths_list}]',
             f'user_name = "{self.user_name}"',
-            f'ai_name = "{self.ai_name}"',
             f'timezone = "{self.timezone}"',
             f'language_profile = "{self.language_profile}"',
             "",
@@ -644,7 +642,6 @@ class FiamConfig:
             home_paths=home_paths,
             code_path=code_path,
             user_name=raw.get("user_name", ""),
-            ai_name=raw.get("ai_name", ""),
             timezone=raw.get("timezone", cls.timezone),
             language_profile=raw.get("language_profile", "multi"),
             # Models
