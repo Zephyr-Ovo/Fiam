@@ -1595,6 +1595,8 @@ def _favilla_studio_edit(payload: dict) -> dict:
 
 
 def _select_favilla_chat_runtime(text: str, attachments: list[dict] | None = None) -> str:
+    # Default to api (fast, cheap, no session lock-up). Only switch to cc when
+    # the user explicitly asks for it, or when attachments need code-level handling.
     if attachments:
         return "cc"
     lowered = text.lower()
@@ -1606,13 +1608,7 @@ def _select_favilla_chat_runtime(text: str, attachments: list[dict] | None = Non
         return "cc"
     if re.search(r"(另一边|另一侧|另一端|切换过去|换过去|切过去)", lowered):
         return "cc"
-    cc_terms = (
-        "代码", "仓库", "文件", "目录", "终端", "命令", "脚本", "报错", "错误", "测试",
-        "部署", "构建", "apk", "git", "github", "vscode", "python", "typescript",
-        "react", "svelte", "android", "frontend", "server",
-        "traceback", "pytest", "npm", "gradle", "systemd", "ssh", "curl",
-    )
-    return "cc" if any(term in lowered for term in cc_terms) else "api"
+    return "api"
 
 
 def _transcript_source(channel: str) -> str:
