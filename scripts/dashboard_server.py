@@ -1648,6 +1648,8 @@ def _append_transcript(channel: str, message: dict) -> dict:
         "divider", "recallUsed", "error",
         # Step 6: extended schema
         "tool_calls_summary", "actions", "presence", "metrics", "meta",
+        # Step 7: multi-agent identity (zephyr/cc/copilot/codex/api)
+        "agent_id",
     ):
         if key in message and message[key] not in (None, [], ""):
             record[key] = message[key]
