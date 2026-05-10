@@ -57,9 +57,8 @@ class FeatureRecord:
 class FeatureStore:
     """Append-only beat vector store.
 
-    Older stores may have one monolithic ``flow_vectors.npy``. New writes use
-    chunk files under ``chunks/`` so appending one beat does not rewrite the
-    full historical matrix.
+    Vectors are written into chunk files under ``chunks/`` so appending one
+    beat does not rewrite the full historical matrix.
     """
 
     def __init__(self, root: Path, *, dim: int, chunk_size: int = 1024) -> None:
@@ -67,7 +66,6 @@ class FeatureStore:
         self.dim = dim
         self.chunk_size = chunk_size
         self.index_path = root / "flow_index.jsonl"
-        self.vectors_path = root / "flow_vectors.npy"
         self.chunks_dir = root / "chunks"
         self._records: dict[str, FeatureRecord] | None = None
         self._vectors: np.ndarray | None = None
@@ -106,13 +104,6 @@ class FeatureStore:
         if self._vectors is not None:
             return self._vectors
         arrays: list[np.ndarray] = []
-        if self.vectors_path.exists():
-            try:
-                legacy = np.load(self.vectors_path)
-                if legacy.size:
-                    arrays.append(legacy.astype(np.float32, copy=False))
-            except (OSError, ValueError):
-                pass
         for chunk in sorted(self.chunks_dir.glob("flow_vectors_*.npy")):
             try:
                 arr = np.load(chunk)

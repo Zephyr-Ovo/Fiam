@@ -14,19 +14,11 @@ from typing import Any
 from fiam.config import FiamConfig
 from fiam.markers import parse_hold_kind, strip_xml_markers
 
-# COT markers — new protocol (preferred): <cot>...</cot> + <lock/>
-# Old protocol kept for back-compat with replayed transcripts and AIs that
-# haven't yet seen the updated awareness.md / CLAUDE.md.
-_COT_NEW_RE = re.compile(r"<cot>\s*(.*?)\s*</cot>", re.DOTALL | re.IGNORECASE)
-_LOCK_NEW_RE = re.compile(r"<lock\s*/>", re.IGNORECASE)
-_COT_SHOW_RE = re.compile(r"<<COT:show>>\s*(.*?)\s*<<COT:end>>", re.DOTALL | re.IGNORECASE)
-_COT_LOCK_RE = re.compile(r"<<COT:lock>>", re.IGNORECASE)
-_COT_HIDE_RE = re.compile(r"<<COT:hide>>", re.IGNORECASE)
-# Combined block regex iterated in document order (new + legacy).
-_COT_ANY_BLOCK_RE = re.compile(
-    r"<cot>\s*(?P<new>.*?)\s*</cot>|<<COT:show>>\s*(?P<old>.*?)\s*<<COT:end>>",
-    re.DOTALL | re.IGNORECASE,
-)
+# COT markers: <cot>...</cot> for shareable thought blocks; <lock/> to lock
+# the entire turn's thought chain (covers marker thoughts + any native
+# reasoning the runtime carries).
+_COT_BLOCK_RE = re.compile(r"<cot>\s*(.*?)\s*</cot>", re.DOTALL | re.IGNORECASE)
+_LOCK_RE = re.compile(r"<lock\s*/>", re.IGNORECASE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,19 +34,15 @@ def parse_app_cot(reply: str, config: FiamConfig | None = None) -> AppCotResult:
     if not reply:
         return AppCotResult("", [], False, [])
 
-    locked = bool(
-        _LOCK_NEW_RE.search(reply)
-        or _COT_LOCK_RE.search(reply)
-        or _COT_HIDE_RE.search(reply)
-    )
+    locked = bool(_LOCK_RE.search(reply))
     segments: list[dict[str, Any]] = []
     thoughts_raw: list[dict[str, Any]] = []
     cursor = 0
-    for match in _COT_ANY_BLOCK_RE.finditer(reply):
+    for match in _COT_BLOCK_RE.finditer(reply):
         before = _strip_cot_control(reply[cursor:match.start()]).strip()
         if before:
             segments.append({"type": "text", "text": before})
-        body = (match.group("new") or match.group("old") or "").strip()
+        body = (match.group(1) or "").strip()
         if body:
             step = {"kind": "think", "text": body, "source": "marker"}
             thoughts_raw.append(step)
@@ -148,10 +136,7 @@ def apply_hold(
 
 
 def _strip_cot_control(text: str) -> str:
-    text = _LOCK_NEW_RE.sub("", text)
-    text = _COT_HIDE_RE.sub("", text)
-    text = _COT_LOCK_RE.sub("", text)
-    return text
+    return _LOCK_RE.sub("", text)
 
 
 def summarize_cot_steps(steps: list[dict[str, Any]], *, locked: bool, config: FiamConfig | None) -> list[dict[str, Any]]:

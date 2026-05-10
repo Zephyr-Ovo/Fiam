@@ -80,15 +80,10 @@ def _save_ai_state(
     if expires_at:
         data["expires_at"] = expires_at
     _write_ai_state(config, data)
-    # Clean up legacy split-state files once the unified state is written.
-    config.sleep_state_path.unlink(missing_ok=True)
-    (config.self_dir / "comm_state.json").unlink(missing_ok=True)
 
 
 def _clear_ai_state(config) -> None:
     config.ai_state_path.unlink(missing_ok=True)
-    config.sleep_state_path.unlink(missing_ok=True)
-    (config.self_dir / "comm_state.json").unlink(missing_ok=True)
 
 
 def _parse_state_time(config, raw: str):
@@ -99,47 +94,8 @@ def _parse_state_time(config, raw: str):
         return None
 
 
-def _migrate_legacy_ai_state(config) -> dict | None:
-    sleep_path = config.sleep_state_path
-    if sleep_path.exists():
-        try:
-            data = json.loads(sleep_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            data = {}
-        until = str(data.get("sleeping_until") or data.get("until") or "")
-        reason = str(data.get("reason") or "")
-        if until:
-            migrated = {
-                "state": "sleep",
-                "until": until,
-                "reason": reason,
-                "since": str(data.get("since") or config.now_local().isoformat()),
-            }
-            _write_ai_state(config, migrated)
-            sleep_path.unlink(missing_ok=True)
-            return migrated
-
-    comm_path = config.self_dir / "comm_state.json"
-    if comm_path.exists():
-        try:
-            data = json.loads(comm_path.read_text(encoding="utf-8"))
-            state = str(data.get("state", "notify"))
-        except (json.JSONDecodeError, OSError):
-            state = "notify"
-        if state in _AI_STATES:
-            migrated = {
-                "state": state,
-                "reason": str(data.get("reason") or ""),
-                "since": str(data.get("since") or config.now_local().isoformat()),
-            }
-            _write_ai_state(config, migrated)
-            comm_path.unlink(missing_ok=True)
-            return migrated
-    return None
-
-
 def _load_ai_state(config) -> dict:
-    """Load the unified AI state, auto-migrating legacy split files."""
+    """Load the unified AI state."""
     path = config.ai_state_path
     data: dict | None = None
     if path.exists():
@@ -147,8 +103,6 @@ def _load_ai_state(config) -> dict:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             data = None
-    if data is None:
-        data = _migrate_legacy_ai_state(config)
     if not data:
         return _default_ai_state()
 
@@ -246,7 +200,6 @@ def _save_sleep_state(config, sleeping_until: str, reason: str) -> None:
 def _clear_sleep_state(config) -> None:
     if _load_ai_state(config).get("state") == "sleep":
         _clear_ai_state(config)
-    config.sleep_state_path.unlink(missing_ok=True)
 
 
 def _is_sleeping(config) -> tuple[bool, str | None]:
@@ -1140,9 +1093,8 @@ def cmd_start(args: argparse.Namespace) -> None:
 
             due = load_due(config)
             for entry in due:
-                # New schema: kind="wake" (no description) or kind="todo" (with reason text).
-                # Tolerate legacy "type" field on old todo.jsonl entries.
-                kind = str(entry.get("kind") or entry.get("type") or "todo").lower()
+                # Schema: kind="wake" (no description) or kind="todo" (with reason text).
+                kind = str(entry.get("kind") or "todo").lower()
                 if kind not in {"wake", "todo"}:
                     kind = "todo"
                 reason = entry.get("reason", "") if kind == "todo" else ""

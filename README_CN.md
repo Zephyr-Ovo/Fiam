@@ -19,7 +19,7 @@ Claude Code session
 
 ### 核心概念
 
-- **Beat** — `flow.jsonl` 中的原子信息单元。`{t, text, source, user_status, ai_status, meta?}`；嵌入与切点只看 `text`，发送者、URL、路由目标等放在 `meta`。
+- **Beat** — `flow.jsonl` 中的原子信息单元。`{t, text, scene, user, ai, runtime?}`；`scene` 形如 `"<actor>@<channel>"`（如 `user@favilla`、`ai@think`、`external@email`、`system@schedule`）；嵌入与切点只看 `text`。
 - **Conductor** — 信息流中枢：beat 摄入 → flow 持久化 → 冻结向量 → 可选自动记忆流水线
 - **FeatureStore** — beat 级 bge-m3 冻结向量库，位于分片式 `store/features/`，用 beat hash 幂等索引
 - **Gorge** — TextTiling 深度切分，峰谷确认；仅在 `memory_mode = "auto"` 时运行
@@ -37,15 +37,15 @@ Claude Code session
 | 相似度 | `cosine.npy` | N × N 两两余弦相似度 |
 | 边 | PyG `edge_index.npy` + `edge_attr.npy` | 有类型有向边 (temporal/semantic/causal/remind/elaboration/contrast) |
 
-### Beat 来源
+### Beat scene
 
-`cc`（对话）· `action`（工具调用和图片描述）· `email` · `favilla`（Android）· `limen`/`xiao`（可穿戴）· `todo`
+`user@favilla`（聊天）· `user@browser` / `user@stroll` / `user@email` / `user@studio` · `ai@favilla` / `ai@think` / `ai@action` / `ai@email` / `ai@browser` / `ai@stroll` · `external@email` · `system@schedule`
 
 ### 功能插件协议
 
 功能性入口统一用 `plugins/<id>/plugin.toml` 注册；基础设施（dashboard、网页、git diff、flow、Pool、recall）不作为插件单位。入站统一发布到 `fiam/receive/<source>`，出站统一由 AI marker（如 `[→email:Zephyr] ...`）解析到 `fiam/dispatch/<target>`。禁用某项功能时改 manifest 的 `enabled = false`，daemon、Conductor、bridge 都会按该开关跳过收发。
 
-当前 manifests：`email`、`favilla`、`xiao`、`app`、`voice-call`、`device-control`、`ring`、`mcp`。详细协议见 [docs/plugin_protocol.md](docs/plugin_protocol.md)。
+当前 manifests：`email`、`favilla`、`limen`、`atrium`、`browser`、`app`、`voice-call`、`device-control`、`ring`、`mcp`、`tlon`、`xiao`。详细协议见 [docs/plugin_protocol.md](docs/plugin_protocol.md)；AI 可见标记与路由前缀见 [docs/markers_protocol.md](docs/markers_protocol.md)。
 
 ### 手机与可穿戴入口
 
@@ -87,7 +87,7 @@ src/fiam/
   config.py                # FiamConfig + fiam.toml 解析
   conductor.py          ★  # Beat 摄入 → flow + 冻结向量；可选 auto gorge/pool/recall
   plugins.py            ★  # plugin.toml manifest 扫描 + enable/disable registry
-  markers.py            ★  # [→target:recipient] 出站 marker 解析
+  markers.py            ★  # XML marker 解析（hold/wake/todo/sleep/mute/notify/carry_over/lock） + [→target:recipient] 出站路由
   gorge.py              ★  # TextTiling 深度切分（批量 + 流式）
   store/
     beat.py             ★  # Beat 数据类 + flow.jsonl 读写

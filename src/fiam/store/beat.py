@@ -18,7 +18,7 @@ from typing import Any, Literal
 # Beat scenes are open-ended (plugins can add receive scenes). Format is
 # "<actor>@<scene>" — examples: user@favilla, ai@favilla, ai@think,
 # external@email, system@schedule. No "console" scene exists (the dashboard is
-# view-only). Old "source"-style values may still appear in legacy data.
+# view-only).
 BeatScene = str
 KNOWN_BEAT_SCENES: set[str] = {
     "user@browser", "user@favilla", "user@stroll", "user@email", "user@studio",
@@ -68,19 +68,13 @@ class Beat:
         t = d["t"]
         if isinstance(t, str):
             t = datetime.fromisoformat(t.replace("Z", "+00:00"))
-        # Legacy data: old field name was "source"; "meta" is dropped entirely.
-        scene = d.get("scene") or d.get("source") or ""
-        runtime = d.get("runtime")
-        if not runtime:
-            legacy_meta = d.get("meta") or {}
-            runtime = legacy_meta.get("runtime") or None
         return Beat(
             t=t,
             text=d["text"],
-            scene=scene,
+            scene=d.get("scene", ""),
             user=d.get("user", "away"),
             ai=d.get("ai", "online"),
-            runtime=runtime,
+            runtime=d.get("runtime"),
         )
 
 

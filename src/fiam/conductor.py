@@ -205,7 +205,7 @@ class Conductor:
 
     @staticmethod
     def _normalize_scene(scene: str) -> str:
-        """Map legacy bare scene names to the new actor@channel format."""
+        """Promote bare channel names to the actor@channel format."""
         if not scene or "@" in scene:
             return scene
         # Plugin/external inbound channels

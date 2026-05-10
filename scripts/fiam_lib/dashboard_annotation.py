@@ -10,7 +10,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from fiam_lib.flow_text import normalize_beats  # noqa: F401  # legacy
 
 _ROOT: Path | None = None
 _CONFIG: Any = None

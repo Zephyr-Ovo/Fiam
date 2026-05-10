@@ -94,7 +94,6 @@ class FiamConfig:
     min_score: float = 0.15             # primary gate: skip events below this combined score
     diversity_threshold: float = 0.88   # cosine similarity ceiling for dedup
     min_event_age_hours: int = 6        # skip events newer than this
-    temporal_window_hours: float = 4.0  # legacy; kept for toml compat (unused)
 
     # ------------------------------------------------------------------
     # Event extraction parameters
@@ -350,7 +349,7 @@ class FiamConfig:
 
     @property
     def claude_md_path(self) -> Path:
-        """Legacy alias. Prefer constitution_md_path. Kept for backward compat."""
+        """Claude Code's auto-loaded CLAUDE.md (separate from constitution.md)."""
         return self.home_path / "CLAUDE.md"
 
     @property
@@ -419,11 +418,6 @@ class FiamConfig:
     def active_session_path(self) -> Path:
         """Tracks the current CC session ID for resume-based messaging."""
         return self.self_dir / "active_session.json"
-
-    @property
-    def sleep_state_path(self) -> Path:
-        """Deprecated legacy sleep state path; use ai_state_path."""
-        return self.self_dir / "sleep_state.json"
 
     @property
     def ai_state_path(self) -> Path:
@@ -510,7 +504,6 @@ class FiamConfig:
             f"temporal_link_weight = {self.temporal_link_weight}",
             f"diversity_threshold = {self.diversity_threshold}",
             f"min_event_age_hours = {self.min_event_age_hours}",
-            f"temporal_window_hours = {self.temporal_window_hours}",
             "",
             "[extraction]",
             f"half_life_base = {self.half_life_base}",
@@ -647,9 +640,7 @@ class FiamConfig:
             timezone=raw.get("timezone", cls.timezone),
             language_profile=raw.get("language_profile", "multi"),
             # Models
-            embedding_model=models.get("embedding",
-                                       # backward compat: old toml had embedding_zh/embedding_en
-                                       models.get("embedding_zh", "")),
+            embedding_model=models.get("embedding", ""),
             embedding_dim=models.get("embedding_dim", 0),  # 0 = derive from profile
             embedding_backend=models.get("embedding_backend", "local"),
             embedding_remote_url=models.get("embedding_remote_url", ""),
@@ -661,7 +652,6 @@ class FiamConfig:
             temporal_link_weight=retrieval.get("temporal_link_weight", cls.temporal_link_weight),
             diversity_threshold=retrieval.get("diversity_threshold", cls.diversity_threshold),
             min_event_age_hours=retrieval.get("min_event_age_hours", cls.min_event_age_hours),
-            temporal_window_hours=retrieval.get("temporal_window_hours", cls.temporal_window_hours),
             # Extraction
             half_life_base=extraction.get("half_life_base", cls.half_life_base),
             strength_cap=extraction.get("strength_cap", 3.0),

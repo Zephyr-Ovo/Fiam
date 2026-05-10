@@ -81,7 +81,6 @@ class ClaudeCodeAdapter:
         Returns only external message content. Recall is deliberately excluded to prevent
         memory fragments from re-entering the event graph (anti-recursion / 套娃).
         """
-        # If no section markers, the entire content is recall-only (legacy format)
         if "[external]" not in content_text:
             return ""
         match = _INBOX_SECTION_RE.search(content_text)

@@ -56,9 +56,6 @@ def build_api_messages(
 
     # system 1 — constitution.md (project knowledge / environment / guide)
     constitution = _read_text(config.constitution_md_path).strip()
-    if not constitution:
-        # Backward compat: fall back to legacy CLAUDE.md if constitution.md absent.
-        constitution = _read_text(config.claude_md_path).strip()
     if constitution:
         messages.append(_system_block(constitution, cache=True))
 

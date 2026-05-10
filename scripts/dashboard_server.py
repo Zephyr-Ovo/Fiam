@@ -49,7 +49,6 @@ from fiam_lib.dashboard_annotation import (
     annotate_proposal as _annotate_proposal,
     annotate_request as _annotate_request,
 )
-from fiam_lib.flow_text import normalize_beats  # noqa: F401  # legacy import
 from fiam_lib.app_markers import parse_app_cot
 
 
@@ -1920,8 +1919,6 @@ def _write_app_ai_state(state_tag: dict) -> None:
         data["until"] = until
     _CONFIG.ai_state_path.parent.mkdir(parents=True, exist_ok=True)
     _CONFIG.ai_state_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    _CONFIG.sleep_state_path.unlink(missing_ok=True)
-    (_CONFIG.self_dir / "comm_state.json").unlink(missing_ok=True)
     if state == "sleep":
         _CONFIG.active_session_path.unlink(missing_ok=True)
 
@@ -2329,13 +2326,10 @@ def _favilla_chat_process_status(_payload: dict | None = None) -> dict:
 
 # CoT visibility: parsing lives in fiam_lib.app_markers (parse_app_cot).
 # Protocol:
-# - <cot>...</cot> wraps a shareable thought block (preferred).
+# - <cot>...</cot> wraps a shareable thought block.
 # - <lock/> anywhere locks the ENTIRE thought chain for this turn
 #   (covers both marker thoughts AND any native reasoning the runtime carries).
 # - Default = unlocked. AI must opt-in to lock.
-# Legacy <<COT:show>>/<<COT:end>>/<<COT:lock>>/<<COT:hide>> are still parsed
-# for back-compat with replayed transcripts; new prompts only document the
-# new tags.
 
 _APP_RUNTIME_CONTEXT_BASE = """[Direct runtime awareness]
 The scene tag describes where this turn appears in the narrative. User-side scenes look like user@<channel>: user@favilla and user@stroll are the two Favilla app surfaces. AI-side scenes look like ai@<channel>: ai@favilla and ai@stroll are the matching reply surfaces; ai@think is internal reasoning; ai@action is a tool call. The runtime tag describes the capability surface for this turn: api is the OpenAI-compatible API surface, cc is Claude Code with file/shell/tool capability, and auto means the server selected one. Do not infer a fixed personal name from the runtime tag. The web dashboard is view-only and never originates a user turn — there is no console scene. Reply naturally for the active scene while staying precise about the runtime."""
@@ -2349,7 +2343,7 @@ def _app_runtime_context() -> str:
         _APP_RUNTIME_CONTEXT_BASE,
         f"[uploads]\nFavilla uploads live at {uploads_dir} with an index at {uploads_dir / 'manifest.jsonl'}. Do not mention old uploaded files just because they exist. Only inspect or discuss uploads when the current user message asks about files/images/uploads or includes current attachments.",
         f"[server_time]\nutc={now_utc.isoformat()}\nlocal={local}",
-        "[tool_mode]\nUse the structured file/shell tools (Read/Write/Edit/Glob/Grep/Bash/git_diff) only when you must wait on a real result. For fire-and-forget side effects use the XML markers documented in self/awareness.md (and CLAUDE.md): <todo at=\"...\">desc</todo> to wake yourself later, <wake>TIME</wake> for bare wake-ups, <sleep until=\"...\" reason=\"...\" /> to sleep, <mute .../> + <notify /> for do-not-disturb, <state>tag</state> for status. Keep tool details out of the user-facing reply unless the user asks for them.",
+        "[tool_mode]\nUse the structured file/shell tools (Read/Write/Edit/Glob/Grep/Bash/git_diff) only when you must wait on a real result. For fire-and-forget side effects use the XML markers documented in self/awareness.md (and CLAUDE.md): <todo at=\"...\">desc</todo> to wake yourself later, <wake>TIME</wake> for bare wake-ups, <sleep until=\"...\" reason=\"...\" /> to sleep, <mute .../> + <notify /> for do-not-disturb. Keep tool details out of the user-facing reply unless the user asks for them.",
         "[app_markers]\nFor visible thinking summaries, wrap shareable state notes in <cot>...</cot>. To lock the entire turn's thought chain (both <cot> blocks and any native reasoning), include <lock/> anywhere in the reply. The server strips these markers into structured segments; clients may or may not render them visibly. Do not promise a specific button, bubble, or visual affordance unless the current client explicitly supports it. To pull back a reply you no longer want to send, include <hold/> — the visible reply text is dropped (other markers like dispatch/todo still execute) and a hold_retry todo is auto-queued so you can take another pass shortly. Use <hold all/> to drop the entire round (no dispatch, no actions, no state updates); the retry todo is still queued. Your held output remains in your context, so on the retry you can see what you just held.",
     ])
 
@@ -2406,13 +2400,13 @@ def _recent_conversation_for_app(source: str, *, max_n: int = 12, max_chars: int
 
 
 def _parse_cot(reply: str) -> tuple[str, list[dict], bool, list[dict]]:
-    """Strip <<COT:*>> markers from reply.
+    """Strip <cot>/<lock> markers from reply.
 
-    Returns (cleaned_reply, thoughts, locked).
-    - thoughts: list of {"kind":"think","text":str,"source":"marker"} from <<COT:show>> blocks
-    - locked: True if AI wrote <<COT:lock>> (or legacy <<COT:hide>>); else False (default unlock)
+    Returns (cleaned_reply, thoughts, locked, segments).
+    - thoughts: list of {"kind":"think","text":str,"source":"marker"} from <cot> blocks
+    - locked: True if AI wrote <lock/>; else False (default unlock)
 
-    Fallback: if the model wrapped its ENTIRE reply inside <<COT:show>> markers
+    Fallback: if the model wrapped its ENTIRE reply inside <cot> markers
     so the cleaned body is empty, demote the last thought back to the user-facing
     reply (avoids "AI's answer disappeared into thinking chain" bug).
     """

@@ -43,14 +43,6 @@ class AppRuntimeRouterTest(unittest.TestCase):
         self.assertEqual([segment["type"] for segment in segments], ["thought", "text", "thought", "text"])
         self.assertEqual(len(thoughts), 2)
 
-    def test_legacy_cot_markers_still_parsed(self) -> None:
-        reply, thoughts, _locked, segments = dashboard_server._parse_cot(
-            "<<COT:show>>legacy thought<<COT:end>>Visible."
-        )
-        self.assertEqual(reply, "Visible.")
-        self.assertEqual(len(thoughts), 1)
-        self.assertEqual([s["type"] for s in segments], ["thought", "text"])
-
     def test_locked_cot_hides_raw_text(self) -> None:
         _reply, thoughts, locked, segments = dashboard_server._parse_cot(
             "<lock/><cot>secret plan detail</cot>Visible."

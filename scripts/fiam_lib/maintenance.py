@@ -179,7 +179,6 @@ def collect_clean_targets(code_path: Path, config=None) -> list[CleanTarget]:
             ("active CC session", config.active_session_path),
             ("todo", config.todo_path),
             ("AI state", config.ai_state_path),
-            ("legacy sleep state", config.sleep_state_path),
             ("generated state", config.state_path),
             ("daily summary", config.daily_summary_path),
             ("pending external", config.pending_external_path),

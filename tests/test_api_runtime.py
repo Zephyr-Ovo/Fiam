@@ -100,7 +100,7 @@ class ApiRuntimeTest(unittest.TestCase):
             api_key_env="OPENROUTER_API_KEY",
         )
         config.ensure_dirs()
-        config.claude_md_path.write_text("你是 ai。", encoding="utf-8")
+        config.constitution_md_path.write_text("你是 ai。", encoding="utf-8")
         config.personality_path.write_text("喜欢保持连续身份。", encoding="utf-8")
         return config
 

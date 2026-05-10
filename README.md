@@ -19,7 +19,7 @@ Claude Code session
 
 ### Core concepts
 
-- **Beat** — atomic information unit in `flow.jsonl`. `{t, text, source, user_status, ai_status, meta?}`; embeddings and cuts use `text` only, while sender/url/route metadata lives in `meta`.
+- **Beat** — atomic information unit in `flow.jsonl`. `{t, text, scene, user, ai, runtime?}`; `scene` is `"<actor>@<channel>"` (e.g. `user@favilla`, `ai@think`, `external@email`, `system@schedule`). Embeddings and cuts use `text` only.
 - **Conductor** — info flow hub: beat ingestion → flow persistence → frozen vector persistence → optional auto memory pipeline
 - **FeatureStore** — frozen beat-level bge-m3 vectors in chunked `store/features/`, keyed by beat hash for annotation/training
 - **Gorge** — TextTiling depth segmentation with peak-valley confirmation. Used only in `memory_mode = "auto"`
@@ -37,13 +37,13 @@ Claude Code session
 | Cosine | `cosine.npy` | N × N pairwise similarity |
 | Edges | PyG `edge_index.npy` + `edge_attr.npy` | Typed directed edges (temporal/semantic/causal/remind/elaboration/contrast) |
 
-### Beat sources
+### Beat scenes
 
-`cc` (dialogue) · `action` (tool use and image descriptions) · `email` · `favilla` (Android) · `limen`/`xiao` (wearable) · `todo`
+`user@favilla` (chat) · `user@browser` / `user@stroll` / `user@email` / `user@studio` · `ai@favilla` / `ai@think` / `ai@action` / `ai@email` / `ai@browser` / `ai@stroll` · `external@email` · `system@schedule`
 
 ### Functional plugins
 
-Optional integrations are registered by `plugins/<id>/plugin.toml`. Infrastructure such as dashboard, git diff, flow, Pool, and recall is not treated as a plugin. Inbound messages go through `fiam/receive/<source>`; outbound AI markers such as `[→email:Zephyr] ...` are resolved through enabled plugin `dispatch_targets` and published to `fiam/dispatch/<target>`. See [docs/plugin_protocol.md](docs/plugin_protocol.md).
+Optional integrations are registered by `plugins/<id>/plugin.toml`. Infrastructure such as dashboard, git diff, flow, Pool, and recall is not treated as a plugin. Inbound messages go through `fiam/receive/<source>`; outbound AI markers such as `[→email:Zephyr] ...` are resolved through enabled plugin `dispatch_targets` and published to `fiam/dispatch/<target>`. See [docs/plugin_protocol.md](docs/plugin_protocol.md) and the marker reference at [docs/markers_protocol.md](docs/markers_protocol.md).
 
 ### Mobile and wearable surfaces
 
@@ -85,7 +85,7 @@ src/fiam/
   config.py                # FiamConfig + fiam.toml parsing
   conductor.py          ★  # Beat ingestion → flow + frozen vectors; optional auto gorge/pool/recall
   plugins.py            ★  # plugin.toml registry + enable/disable helpers
-  markers.py            ★  # generic [→target:recipient] marker parser
+  markers.py            ★  # XML marker parser (hold/wake/todo/sleep/mute/notify/carry_over/lock) + [→target:recipient] router
   gorge.py              ★  # TextTiling depth segmentation (batch + streaming)
   store/
     beat.py             ★  # Beat dataclass + flow.jsonl I/O
@@ -122,7 +122,7 @@ channels/
   limen/                   # ESP32 wearable device
 
 plugins/                   # optional functional integration manifests
-  email/ favilla/ xiao/ app/ voice-call/ device-control/ ring/ mcp/
+  email/ favilla/ limen/ atrium/ browser/ app/ voice-call/ device-control/ ring/ mcp/ tlon/ xiao/
 ```
 
 ## Commands
