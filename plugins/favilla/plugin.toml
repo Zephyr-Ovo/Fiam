@@ -1,0 +1,18 @@
+id = "favilla"
+name = "Favilla text capture"
+enabled = true
+status = "merge_into_app"
+kind = "capture"
+description = "Android selected-text annotation capture; currently enters through dashboard /api/capture."
+transports = ["http", "mqtt"]
+capabilities = ["capture_text", "annotate_selection"]
+receive_sources = ["favilla"]
+dispatch_targets = []
+entrypoint = "channels/favilla"
+auth = "FIAM_INGEST_TOKEN for HTTP capture; future app should use device-bound tokens"
+latency = "single HTTP request plus local MQTT publish; usually sub-second on tailnet"
+env = ["FIAM_INGEST_TOKEN"]
+replaces = []
+notes = [
+  "Can be merged into the self app instead of remaining a separate reader-only app."
+]

@@ -7,6 +7,7 @@ Type=simple
 User=fiet
 Group=fiet
 WorkingDirectory=/home/fiet/fiam-code
+EnvironmentFile=-/home/fiet/fiam-code/.env
 ExecStart=/home/fiet/fiam-code/.venv/bin/python /home/fiet/fiam-code/scripts/dashboard_server.py --port 8766
 Restart=on-failure
 RestartSec=5
@@ -16,7 +17,7 @@ StandardError=journal
 # Harden: read-only for most paths, read-write only for logs
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/home/fiet/fiet-home /home/fiet/fiam-code/logs /home/fiet/fiam-code/store /tmp
+ReadWritePaths=/home/fiet/fiet-home /home/fiet/fiam-code/logs /home/fiet/fiam-code/store /home/fiet/.claude /home/fiet/.cache /home/fiet/.config /tmp
 PrivateTmp=true
 NoNewPrivileges=true
 

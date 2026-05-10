@@ -1,0 +1,19 @@
+id = "ring"
+name = "Smart ring"
+enabled = false
+status = "planned"
+kind = "device"
+auto_wake = false
+description = "Wearable biomarker or gesture stream from a smart ring."
+transports = ["vendor_api_or_ble_gateway", "mqtt"]
+capabilities = ["biometric_signal", "gesture_signal", "ambient_state"]
+receive_sources = ["ring", "smart_ring"]
+dispatch_targets = []
+entrypoint = ""
+auth = "Vendor OAuth or local BLE gateway token"
+latency = "seconds to minutes for vendor cloud; sub-second only with local BLE gateway"
+env = []
+replaces = []
+notes = [
+  "Treat health data as sensitive; store only derived signals unless raw data is explicitly needed."
+]

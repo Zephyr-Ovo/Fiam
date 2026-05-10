@@ -2,8 +2,8 @@
 # Or run `fiam init` directly; it will generate fiam.toml interactively.
 
 home_path = ""           # set by fiam init (e.g. "/home/user/ai-home" or "D:/ai-home")
-ai_name = ""             # set by fiam init
 user_name = ""           # set by fiam init
+timezone = "Asia/Shanghai"  # project-local time for prompts, tools, and naive schedules; storage stays UTC
 language_profile = "multi"  # zh / en / multi (multi = bilingual, recommended)
 
 [models]
@@ -14,12 +14,13 @@ embedding_backend = "local"       # "local" = in-process SentenceTransformer | "
 embedding_remote_url = ""         # e.g. "http://127.0.0.1:8819" (tunnelled via SSH: ssh -L 8819:127.0.0.1:8819 root@DO)
 
 [retrieval]
-top_k = 5
+top_k = 50                    # safety cap — real gate is min_score
+min_score = 0.15              # primary recall gate
 semantic_weight = 0.5
 recency_weight = 0.3
 temporal_link_weight = 0.2
 diversity_threshold = 0.88
-min_event_age_hours = 6      # set to 0 for smoke testing
+min_event_age_hours = 24     # skip last 24h (already in CC context); set to 0 for smoke testing
 temporal_window_hours = 4.0
 
 [extraction]
@@ -28,9 +29,59 @@ half_life_base = 14.0
 [daemon]
 idle_timeout_minutes = 30    # post-session triggers after this many idle minutes
 poll_interval_seconds = 30
+email_poll_interval = 600    # seconds between email inbox polls
+events_per_session = 10      # rotate CC session after N wake events
 daily_budget_usd = 5.0       # 0 = unlimited; daily CC spend cap for auto-wakes
 cc_model = ""                # CC model alias: "opus", "sonnet", or full name; empty = CC default
 cc_disallowed_tools = ""     # comma-separated CC tools to disable (e.g. "WebFetch,NotebookEdit")
+
+[api]
+# OpenAI-compatible AI source used outside Claude Code. Keep the key in env, never here.
+provider = "google_openai"          # Gemini API key quota first
+model = "gemini-2.5-flash"
+base_url = ""                       # auto: https://generativelanguage.googleapis.com/v1beta/openai
+api_key_env = "GEMINI_API_KEY"
+temperature = 0.7
+max_tokens = 2048
+timeout_seconds = 60
+tools_enabled = true
+tools_max_loops = 10
+
+[api.fallback]
+provider = "vertex_openai"          # GCP/Vertex service account fallback
+model = "google/gemini-2.5-flash"
+base_url = ""                       # auto-built from GOOGLE_CLOUD_PROJECT / GOOGLE_CLOUD_LOCATION
+api_key_env = "GOOGLE_APPLICATION_CREDENTIALS"
+
+[app]
+default_runtime = "auto"          # "auto" | "api" | "cc"
+recall_include_recent = true      # manual Favilla recall sees freshly processed debug/test events
+cot_summary_enabled = true        # summarize visible/locked COT into short UI state labels
+cot_summary_model = "deepseek-chat"
+cot_summary_base_url = "https://api.deepseek.com"
+cot_summary_api_key_env = "FIAM_COT_SUMMARY_API_KEY"  # falls back to [graph].edge_api_key_env if unset
+
+[debug]
+enabled = false
+idle_timeout_minutes = 3
+poll_interval_seconds = 5
+memory_mode = "manual"
+api_tools_max_loops = 12
+app_default_runtime = "auto"
+app_recall_include_recent = true
+
+[conductor]
+memory_mode = "manual"       # "manual" = flow+vectors+human labels; "auto" = drift+gorge+Pool+DS edges
+gorge_max_beat = 30
+gorge_min_depth = 0.01
+gorge_stream_confirm = 2
+drift_threshold = 0.65
+recall_top_k = 3
+
+[mqtt]
+host = "127.0.0.1"
+port = 1883
+keepalive = 60
 
 [features]
 git_enabled = true
@@ -50,10 +101,30 @@ edge_model = "deepseek-chat"
 edge_base_url = "https://api.deepseek.com"
 edge_api_key_env = "FIAM_GRAPH_API_KEY"
 
+[vision]
+# Image understanding is deliberately routed away from the main AI.
+# The vision model returns text; that text enters flow as kind=action.
+provider = "vertex_openai"
+model = "google/gemini-2.5-flash"     # recommended fallback: Gemini Flash describes images when the main model cannot read them directly
+base_url = ""
+api_key_env = "GOOGLE_APPLICATION_CREDENTIALS"  # env var points to the JSON key file path
+
+[voice.stt]
+# Voice notes are transcribed and then treated like ordinary text beats.
+provider = "openai_compatible"
+model = "whisper-1"
+base_url = ""
+api_key_env = "FIAM_STT_API_KEY"
+
+[voice.tts]
+# Stroll mode may speak aloud through an attached app/device.
+provider = "openai_compatible"
+model = "gpt-4o-mini-tts"
+base_url = ""
+api_key_env = "FIAM_TTS_API_KEY"
+
 [communication]
-tg_bot_token_env = "FIAM_TG_BOT_TOKEN"   # env var name (never put token directly in config)
-tg_chat_id = ""                            # your Telegram user/chat ID
-email_from = ""                             # AI's email address (e.g. fiet@fiet.cc)
+email_from = ""                             # AI's email address (e.g. ai@example.com)
 email_to = ""                               # User's email address
 email_smtp_host = "smtppro.zoho.com"        # SMTP server (Zoho custom domain)
 email_smtp_port = 587                       # 587+TLS or 465+SSL

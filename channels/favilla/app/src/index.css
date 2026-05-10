@@ -1,0 +1,392 @@
+@import "tailwindcss";
+
+@font-face {
+  font-family: "Anthropic Serif";
+  src: url("./assets/fonts/AnthropicSerif-Roman.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Anthropic Serif";
+  src: url("./assets/fonts/AnthropicSerif-Italic.ttf") format("truetype");
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Anthropic Sans";
+  src: url("./assets/fonts/AnthropicSans-Roman.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Anthropic Sans";
+  src: url("./assets/fonts/AnthropicSans-Italic.ttf") format("truetype");
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Anthropic Mono";
+  src: url("./assets/fonts/AnthropicMono-Roman.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Favilla v2 design tokens — palette: Cocoa / Dusty / Peach / Cream / Sage */
+@theme {
+  --color-cocoa: #664E44;
+  --color-cocoa-deep: #3f2f29;
+  --color-dusty: #B08B7F;
+  --color-dusty-soft: #d6bdb3;
+  --color-peach: #FFE8D6;
+  --color-peach-deep: #f4cdb0;
+  --color-cream: #FAF4E5;
+  --color-sage: #C7C3B0;
+  --color-sage-deep: #8a8674;
+  --color-thread: rgba(102, 78, 68, 0.16);
+  --color-lead: rgba(63, 47, 41, 0.58);
+  --color-accent: #B08B7F;
+
+  --color-paper: #FAF4E5;
+  --color-ink: #3f2f29;
+
+  --font-serif: "Anthropic Serif", "Source Han Serif SC", "Noto Serif SC", serif;
+  --font-sans: "Anthropic Sans", system-ui, sans-serif;
+  --font-mono: "Anthropic Mono", ui-monospace, monospace;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--color-cream);
+  color: var(--color-ink);
+  font-family: var(--font-serif);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Markdown content — sans for body, serif italic for emphasis */
+.md {
+  font-family: var(--font-sans);
+}
+.md p {
+  margin: 0 0 0.6em 0;
+}
+.md p:last-child { margin-bottom: 0; }
+.md em {
+  font-family: var(--font-serif);
+  font-style: italic;
+}
+.md ul, .md ol {
+  margin: 0.4em 0 0.6em 0;
+  padding-left: 1.2em;
+  list-style: none;
+}
+.md ul > li {
+  position: relative;
+  padding-left: 0.2em;
+  margin: 0.15em 0;
+}
+.md ul > li::before {
+  content: "✦";
+  position: absolute;
+  left: -1em;
+  top: 0.05em;
+  color: var(--color-dusty);
+  font-size: 0.85em;
+}
+.md ol {
+  counter-reset: item;
+}
+.md ol > li {
+  position: relative;
+  counter-increment: item;
+  margin: 0.15em 0;
+}
+.md ol > li::before {
+  content: counter(item) ".";
+  position: absolute;
+  left: -1.4em;
+  color: var(--color-dusty);
+  font-style: italic;
+}
+.md em { font-style: italic; }
+.md strong { font-weight: 600; color: var(--color-cocoa-deep); }
+.md a { color: var(--color-cocoa); text-decoration: underline; text-decoration-color: var(--color-dusty); text-underline-offset: 2px; }
+.md code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  background: rgba(102,78,68,0.08);
+  padding: 0.05em 0.35em;
+  border-radius: 4px;
+}
+.md blockquote {
+  margin: 0.5em 0;
+  padding-left: 0.9em;
+  border-left: 2px solid var(--color-dusty);
+  color: var(--color-cocoa);
+  font-style: italic;
+}
+
+.ProseMirror {
+  outline: none;
+  min-height: 100%;
+}
+.ProseMirror p.is-editor-empty:first-child::before {
+  color: var(--color-lead);
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
+.ProseMirror h1 { font-size: 1.8em; font-weight: 600; margin-bottom: 0.5em; letter-spacing: -0.02em; }
+.ProseMirror h2 { font-size: 1.4em; font-weight: 600; margin-top: 1.2em; margin-bottom: 0.5em; }
+.ProseMirror p { margin-bottom: 0.8em; line-height: 1.6; }
+.ProseMirror ul { list-style-type: disc; padding-left: 1.5em; margin-bottom: 1em; }
+.ProseMirror ol { list-style-type: decimal; padding-left: 1.5em; margin-bottom: 1em; }
+.ProseMirror li { margin-bottom: 0.25em; }
+.ProseMirror blockquote { border-left: 3px solid var(--color-accent); padding-left: 1em; color: var(--color-lead); font-style: italic; }
+.ProseMirror strong { font-weight: 600; color: var(--color-ink); }
+.ProseMirror [data-author] {
+  position: relative;
+}
+.ProseMirror [data-author]::after {
+  content: "— " attr(data-author);
+  display: inline-block;
+  font-size: 0.8rem;
+  color: var(--color-lead);
+  opacity: 0.6;
+  margin-left: 8px;
+  font-style: italic;
+  font-weight: normal;
+  user-select: none;
+}
+.ProseMirror blockquote[data-author]::after {
+  display: block;
+  text-align: right;
+  margin-top: 0.5rem;
+}
+
+/* Slim, no-arrow scrollbar for the composer textarea */
+.composer-input::-webkit-scrollbar { width: 4px; }
+.composer-input::-webkit-scrollbar-track { background: transparent; }
+.composer-input::-webkit-scrollbar-thumb {
+  background: rgba(63, 47, 41, 0.25);
+  border-radius: 2px;
+}
+.composer-input::-webkit-scrollbar-button { display: none; }
+.composer-input { scrollbar-width: thin; scrollbar-color: rgba(63,47,41,0.25) transparent; }
+
+/* Custom selection colour to match Favilla cocoa palette. */
+::selection { background: rgba(102, 78, 68, 0.22); color: #3f2f29; }
+::-moz-selection { background: rgba(102, 78, 68, 0.22); color: #3f2f29; }
+
+/* Studio: suppress native long-press callout on chrome, but RE-ENABLE inside the editor so the
+   WebView's native copy/paste/select context menu works (system clipboard available there even
+   in insecure HTTP context). */
+.studio-root {
+  -webkit-touch-callout: default;
+  /* removed user-select: none on root to fix Android Copy/Paste WebView bug */
+}
+.studio-root .ProseMirror,
+.studio-root .ProseMirror *,
+.bn-editor,
+.bn-editor * {
+  -webkit-touch-callout: default !important;
+  -webkit-user-select: text !important;
+  user-select: text !important;
+}
+
+/* favilla custom keyframes */
+@keyframes fav-pulse { 0%,100%{opacity:0.55} 50%{opacity:1} }
+@keyframes hg-drain { 0%,100%{transform:scaleY(1)} 50%{transform:scaleY(0.45)} }
+@keyframes hg-fill  { 0%,100%{transform:scaleY(1)} 50%{transform:scaleY(0.45)} }
+@keyframes hg-stream { 0%,100%{opacity:0} 30%,70%{opacity:1} }
+
+@keyframes stroll-wave {
+  0%, 100% { transform: scaleY(0.38); opacity: 0.58; }
+  50% { transform: scaleY(1); opacity: 1; }
+}
+
+.stroll-wave-bar {
+  transform-origin: center;
+  animation: stroll-wave 840ms ease-in-out infinite;
+}
+
+.stroll-map,
+.mapboxgl-map,
+.stroll-map__canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+.stroll-map__tint {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background:
+    linear-gradient(180deg, rgba(237, 229, 216, 0.12), rgba(244, 214, 204, 0.08) 48%, rgba(163, 185, 201, 0.05)),
+    radial-gradient(circle at 46% 38%, rgba(255, 255, 255, 0.08), transparent 42%);
+  mix-blend-mode: soft-light;
+  opacity: 0.32;
+}
+
+.mapboxgl-ctrl-logo,
+.mapboxgl-ctrl-bottom-left,
+.mapboxgl-ctrl-bottom-right {
+  opacity: 0 !important;
+  pointer-events: none;
+  transform: translateY(96px);
+}
+
+.stroll-marker {
+  position: relative;
+  width: 30px;
+  height: 40px;
+  cursor: pointer;
+  filter: drop-shadow(0 8px 14px rgba(38, 48, 74, 0.34));
+}
+
+.stroll-marker::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 2px;
+  width: 28px;
+  height: 28px;
+  border: 2px solid #26304A;
+  border-radius: 50% 50% 50% 0;
+  background: #FAF4E5;
+  transform: translateX(-50%) rotate(-45deg);
+}
+
+.stroll-marker::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 10px;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #D99D92;
+  box-shadow: 0 0 0 3px rgba(217, 157, 146, 0.22);
+  transform: translateX(-50%);
+}
+
+.stroll-map-annotation {
+  position: relative;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  font-family: var(--font-sans);
+}
+
+.stroll-map-annotation--photo {
+  width: 15px;
+  height: 15px;
+  border-radius: 999px;
+  background: #FAF4E5;
+  border: 2px solid #D99D92;
+  box-shadow: 0 0 0 5px rgba(217, 157, 146, 0.18), 0 8px 18px -12px rgba(38, 48, 74, 0.68);
+}
+
+.stroll-map-annotation--photo[data-count]:not([data-count=""])::after {
+  content: attr(data-count);
+  position: absolute;
+  left: 8px;
+  top: -9px;
+  min-width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: #26304A;
+  color: #FAF4E5;
+  font-size: 9px;
+  line-height: 14px;
+  text-align: center;
+}
+
+.stroll-map-annotation--ai {
+  width: 34px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  color: #26304A;
+  font-size: 17px;
+  line-height: 1;
+  filter: drop-shadow(0 8px 14px rgba(38, 48, 74, 0.28));
+}
+
+.stroll-map-annotation--ai::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  left: 50%;
+  top: 1px;
+  width: 31px;
+  height: 31px;
+  border-radius: 50% 50% 50% 0;
+  background: rgba(255, 250, 243, 0.96);
+  border: 1px solid rgba(38, 48, 74, 0.22);
+  transform: translateX(-50%) rotate(-45deg);
+}
+
+@keyframes stroll-rain-fall {
+  from { transform: translate3d(0, -18vh, 0) rotate(10deg); }
+  to { transform: translate3d(-28px, 112vh, 0) rotate(10deg); }
+}
+
+@keyframes stroll-snow-fall {
+  from { transform: translate3d(0, -10vh, 0); }
+  to { transform: translate3d(18px, 108vh, 0); }
+}
+
+.stroll-rain-drop {
+  position: absolute;
+  top: -14vh;
+  width: 1.5px;
+  height: 28px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(232, 243, 247, 0), rgba(232, 243, 247, 0.74));
+  animation: stroll-rain-fall linear infinite;
+}
+
+.stroll-snowflake {
+  position: absolute;
+  top: -10vh;
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(255, 250, 243, 0.82);
+  box-shadow: 0 0 10px rgba(255, 250, 243, 0.3);
+  animation: stroll-snow-fall ease-in infinite;
+}
+
+/* BlockNote Mobile Clipboard & Toolbar Overrides */
+.studio-blocknote .bn-container * {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+  -webkit-touch-callout: default !important;
+}
+.studio-blocknote .bn-FormattingToolbar {
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 50 !important;
+  width: 100%;
+}
+.format-toolbar-container .bn-FormattingToolbar {
+  background: transparent !important;
+  box-shadow: none !important;
+  border: none !important;
+}
+.format-toolbar-container .bn-ToolbarButton {
+  border-radius: 8px !important;
+}

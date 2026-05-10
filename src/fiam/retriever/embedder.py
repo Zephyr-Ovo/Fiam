@@ -102,16 +102,3 @@ class Embedder:
         vecs = model.encode(texts, batch_size=batch_size, convert_to_numpy=True)
         return vecs.astype(np.float32)
 
-    def save(self, vec: np.ndarray, event_id: str) -> str:
-        """Save *vec* to embeddings/{event_id}.npy.
-
-        Returns the relative path string stored in EventRecord.embedding.
-        """
-        out_dir = self.config.embeddings_dir
-        out_dir.mkdir(parents=True, exist_ok=True)
-        np.save(out_dir / f"{event_id}.npy", vec)
-        return f"embeddings/{event_id}.npy"
-
-    def embed_and_save(self, text: str, event_id: str) -> str:
-        """Convenience wrapper: embed + save in one call."""
-        return self.save(self.embed(text), event_id)

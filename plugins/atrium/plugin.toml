@@ -1,0 +1,51 @@
+id = "atrium"
+name = "Atrium desktop host"
+enabled = false
+status = "m12-browser-extension-bridge"
+kind = "device"
+description = """
+Latin atrium = central hall / entry court. Pairs with limen (threshold).
+High-privilege desktop client running on Iris's PC. Exposes a curated set of
+sensors and actuators to the daemon over MQTT, gated by capabilities.toml +
+trust levels + audit log. The brain stays on ISP; atrium is hands and eyes.
+"""
+
+transports = ["mqtt"]
+capabilities = [
+    "sense_window_activity",
+    "sense_screen",
+    "actuate_web_intercept",
+    "actuate_web_open",
+    "actuate_process_control",
+    "actuate_input",
+    "actuate_fs",
+    "actuate_overlay_dialog",
+    "actuate_app_spawn",
+]
+receive_sources = ["desktop"]
+dispatch_targets = ["desktop"]
+entrypoint = "channels/atrium"
+auth = "tailnet only; per-capability trust gating in channels/atrium/capabilities.toml"
+latency = "MQTT in tailnet, sub-second; user-facing dialogs gated by trust level"
+env = []
+replaces = ["device-control"]
+notes = [
+    "M0 done: Tauri single-process shell + tray + capability registry + dry-run dispatch + audit + pause/panic gates.",
+    "M1 done: MQTT dispatch subscription + result publish + live capability gate + bus status in UI.",
+    "M2 done: managed mitmdump subprocess, dynamic rules.json, and 451 intercept response script.",
+    "M3 done: trust 2/3 pending confirmation queue with approve/deny audit and MQTT result publish.",
+    "M4 done: Windows proxy snapshot/apply/restore UX and mitmproxy CA open flow through Trust Gate.",
+    "M5 done: mitmproxy intercept inbox with release dispatch through Trust Gate.",
+    "M6 done: local release dialog with reason and release window, still gated by Trust Gate.",
+    "M7 done: read-only window/process inventory sensors and UI panel.",
+    "M8 done: Atrium-owned reader/co-reader surface via app.spawn.",
+    "M9 done: reader.set_text and reader.append_text update Atrium-owned surfaces without system input.",
+    "M10 done: owned WebView2 browser surface with navigate/reload/click/type/scroll actions that avoid system input.",
+    "M11 done: Win32 control_click and set_text actions are trust-gated and avoid system cursor/keyboard input.",
+    "M12 done: browser extension bridge captures compact page snapshots and routes browser asks to api/cc under source=browser.",
+    "M13 scope: UI Automation control-tree lane for accessible native controls.",
+    "Reuses ActivityWatch (localhost:5600) as one optional passive sensor; AW is not a decision layer.",
+    "Web interception starts with managed mitmproxy; higher privilege WFP/WinDivert adapters are future work.",
+    "Desktop operation is non-focus-first: AI-owned surfaces, CDP/UIA/Win32 target lanes, then real input fallback.",
+    "Brain decides intent; atrium only executes what capabilities.toml permits.",
+]

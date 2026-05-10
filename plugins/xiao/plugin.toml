@@ -1,0 +1,20 @@
+id = "xiao"
+name = "XIAO / Limen peripheral"
+enabled = true
+status = "screen_proto"
+kind = "device"
+auto_wake = false
+description = "Independent ESP32/XIAO physical peripheral for sensing or tiny interactions."
+transports = ["wifi", "http"]
+capabilities = ["device_screen", "device_signal", "ambient_capture"]
+receive_sources = ["xiao", "limen"]
+dispatch_targets = ["xiao", "limen"]
+entrypoint = "channels/limen"
+auth = "tailnet/local broker only; add per-device token before public exposure"
+latency = "direct HTTP over LAN/hotspot is tens of ms; MJPEG /stream auto-stops after 30s for thermal management"
+env = []
+replaces = []
+notes = [
+  "Existing code lives under channels/limen; manifest uses xiao as the user-facing plugin id.",
+  "2026-04-26: screen protocol active. AI can emit [→xiao:screen] message:/kaomoji:/emoji: payloads; dashboard queues them for /api/wearable/reply. Camera/touch are intentionally deferred."
+]

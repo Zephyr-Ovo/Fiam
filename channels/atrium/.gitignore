@@ -1,0 +1,10 @@
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+*.tsbuildinfo
+__pycache__/
+**/__pycache__/
+audit.jsonl
+proxy-snapshot.json
+tools/mitmproxy/intercepts.jsonl

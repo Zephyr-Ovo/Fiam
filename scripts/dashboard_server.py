@@ -2,7 +2,7 @@
 Debug dashboard server for fiam daemon.
 
 Serves the dashboard HTML and provides data endpoints by reading
-daemon state, pipeline log, recall.md, events, schedule, and cost.
+daemon state, pipeline log, recall.md, events, todo queue, and cost.
 
 Usage:
     python scripts/dashboard_server.py [--port 8766]
@@ -12,35 +12,241 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
+import re
 import sys
+import threading
 import time
 from datetime import datetime, timezone
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+from http.server import HTTPServer, ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from io import BytesIO
+
+logger = logging.getLogger(__name__)
 
 # Resolve paths relative to fiam-code root
 _ROOT = Path(__file__).resolve().parent.parent
 _LOGS = _ROOT / "logs"
-_STORE = None  # set after config load
 _CONFIG = None
+_POOL = None        # Pool instance (lazy)
+_EMBEDDER = None    # Embedder instance (lazy)
+_BUS = None         # Bus instance (lazy, for /api/capture publishing)
+_COMPUTE_LOCK = threading.Lock()  # gate concurrent mutations
+_WEARABLE_LOCK = threading.Lock()
 
-# Fix sys.path: add src/, remove scripts/ (fiam.py shadows fiam package)
+# Fix sys.path before importing helpers that may themselves import fiam.*.
 _src_dir = str(_ROOT / "src")
-if _src_dir not in sys.path:
-    sys.path.insert(0, _src_dir)
 _scripts_dir = str(_ROOT / "scripts")
-if _scripts_dir in sys.path:
-    sys.path.remove(_scripts_dir)
+sys.path = [p for p in sys.path if p not in {_src_dir, _scripts_dir}]
+sys.path.insert(0, _src_dir)
+sys.path.insert(1, _scripts_dir)
+
+from fiam_lib.dashboard_annotation import (
+    configure as _configure_annotation,
+    annotation_state as _annotation_state,
+    annotate_confirm as _annotate_confirm,
+    annotate_edges as _annotate_edges,
+    annotate_proposal as _annotate_proposal,
+    annotate_request as _annotate_request,
+)
+from fiam_lib.app_markers import parse_app_cot
 
 
 def _load_config():
-    global _CONFIG, _STORE
+    global _CONFIG, _POOL
     from fiam.config import FiamConfig
     toml_path = _ROOT / "fiam.toml"
     if toml_path.exists():
         _CONFIG = FiamConfig.from_toml(toml_path, _ROOT)
-        _STORE = Path(_CONFIG.home_path) / "store"
+    # Init Pool
+    if _CONFIG:
+        from fiam.store.pool import Pool
+        _POOL = Pool(_CONFIG.pool_dir)
+        _POOL.ensure_dirs()
+    _configure_annotation(
+        root=_CONFIG.home_path if _CONFIG else _ROOT,
+        config=_CONFIG,
+        pool=_POOL,
+        compute_lock=_COMPUTE_LOCK,
+        get_embedder=_get_embedder,
+        logger=logger,
+    )
+
+
+def _get_embedder():
+    """Lazy-init embedder — may fail if torch not installed."""
+    global _EMBEDDER
+    if _EMBEDDER is not None:
+        return _EMBEDDER
+    if not _CONFIG:
+        return None
+    try:
+        from fiam.retriever.embedder import Embedder
+        _EMBEDDER = Embedder(_CONFIG)
+        return _EMBEDDER
+    except Exception as exc:
+        logger.warning("embedder init failed (re-embed disabled): %s", exc)
+        return None
+
+
+def _get_bus():
+    """Lazy-init MQTT bus client. Returns None if broker unreachable."""
+    global _BUS
+    if _BUS is not None:
+        return _BUS
+    if not _CONFIG:
+        return None
+    try:
+        from fiam.bus import Bus
+        _BUS = Bus(client_id="fiam-dashboard")
+        _BUS.subscribe("fiam/dispatch/xiao", _on_wearable_dispatch)
+        _BUS.subscribe("fiam/dispatch/limen", _on_wearable_dispatch)
+        _BUS.connect(_CONFIG.mqtt_host, _CONFIG.mqtt_port, _CONFIG.mqtt_keepalive)
+        _BUS.loop_start()
+        logger.info("bus connected to %s:%d", _CONFIG.mqtt_host, _CONFIG.mqtt_port)
+        return _BUS
+    except Exception as exc:
+        logger.warning("bus init failed (capture/wearable disabled): %s", exc)
+        _BUS = None
+        return None
+
+
+def _wearable_queue_path() -> Path:
+    base = (_CONFIG.store_dir if _CONFIG else (_ROOT / "store")) / "wearable"
+    base.mkdir(parents=True, exist_ok=True)
+    return base / "xiao_queue.jsonl"
+
+
+def _splash_line() -> str:
+    if not _CONFIG:
+        return "今天也一起散步"
+    daily = _CONFIG.daily_summary_path
+    if daily.exists():
+        for line in daily.read_text(encoding="utf-8", errors="replace").splitlines():
+            clean = line.strip().lstrip("#- ").strip()
+            if clean:
+                return clean[:80]
+    return "今天也一起散步"
+
+
+def _favilla_splash() -> dict:
+    return {
+        "ok": True,
+        "mode": "stroll",
+        "label": "散步",
+        "tagline": "a spark → fiam",
+        "line": _splash_line(),
+    }
+
+
+def _vision_route() -> dict:
+    if not _CONFIG:
+        return {"provider": "default", "model": "", "base_url": ""}
+    return {
+        "provider": getattr(_CONFIG, "vision_provider", "openai_compatible"),
+        "model": getattr(_CONFIG, "vision_model", ""),
+        "base_url": getattr(_CONFIG, "vision_base_url", ""),
+        "api_key_env": getattr(_CONFIG, "vision_api_key_env", "FIAM_VISION_API_KEY"),
+    }
+
+
+def _voice_routes() -> dict:
+    if not _CONFIG:
+        return {"stt": {}, "tts": {}}
+    return {
+        "stt": {
+            "provider": getattr(_CONFIG, "stt_provider", "openai_compatible"),
+            "model": getattr(_CONFIG, "stt_model", ""),
+            "base_url": getattr(_CONFIG, "stt_base_url", ""),
+            "api_key_env": getattr(_CONFIG, "stt_api_key_env", "FIAM_STT_API_KEY"),
+        },
+        "tts": {
+            "provider": getattr(_CONFIG, "tts_provider", "openai_compatible"),
+            "model": getattr(_CONFIG, "tts_model", ""),
+            "base_url": getattr(_CONFIG, "tts_base_url", ""),
+            "api_key_env": getattr(_CONFIG, "tts_api_key_env", "FIAM_TTS_API_KEY"),
+        },
+    }
+
+
+def _display_type_from_text(text: str, explicit: str = "") -> tuple[str, str]:
+    raw = (text or "").strip()
+    prefix, sep, rest = raw.partition(":")
+    if sep and prefix.strip().lower() in {"message", "msg", "kaomoji", "emoji", "status"}:
+        explicit = prefix.strip().lower()
+        raw = rest.strip()
+    kind = (explicit or "").strip().lower()
+    aliases = {"msg": "message", "text": "message", "face": "kaomoji"}
+    kind = aliases.get(kind, kind)
+    if kind not in {"message", "kaomoji", "emoji", "status"}:
+        if len(raw) <= 12 and any(ch in raw for ch in "()_^;><=-~*"):
+            kind = "kaomoji"
+        elif len(raw) <= 8 and any(ord(ch) > 0x2600 for ch in raw):
+            kind = "emoji"
+        else:
+            kind = "message"
+    return kind, raw[:240]
+
+
+def _normalize_wearable_payload(payload: dict) -> dict:
+    text = str(payload.get("text") or payload.get("body") or "").strip()
+    if not text:
+        raise ValueError("missing text")
+    explicit = str(payload.get("type") or payload.get("display_type") or "")
+    kind, text = _display_type_from_text(text, explicit)
+    recipient = str(payload.get("recipient") or "screen").strip() or "screen"
+    now = datetime.now(timezone.utc).isoformat()
+    return {
+        "id": f"xiao-{int(time.time() * 1000)}",
+        "t": now,
+        "recipient": recipient,
+        "type": kind,
+        "text": text,
+        "ttl_ms": int(payload.get("ttl_ms") or 30000),
+        "source": str(payload.get("source") or "dispatch"),
+    }
+
+
+def _enqueue_wearable_message(payload: dict) -> dict:
+    item = _normalize_wearable_payload(payload)
+    path = _wearable_queue_path()
+    with _WEARABLE_LOCK:
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(item, ensure_ascii=False) + "\n")
+    return {"ok": True, "queued": True, "id": item["id"], "type": item["type"]}
+
+
+def _api_wearable_reply() -> dict:
+    path = _wearable_queue_path()
+    with _WEARABLE_LOCK:
+        rows: list[dict] = []
+        if path.exists():
+            for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+        item = rows[0] if rows else None
+        rest = rows[1:] if rows else []
+        path.write_text(
+            "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rest),
+            encoding="utf-8",
+        )
+    if item is None:
+        return {"ok": True, "has_message": False}
+    return {"ok": True, "has_message": True, **item}
+
+
+def _on_wearable_dispatch(target: str, payload: dict) -> None:
+    try:
+        enriched = dict(payload)
+        enriched.setdefault("source", f"dispatch/{target}")
+        _enqueue_wearable_message(enriched)
+        logger.info("wearable queued target=%s type=%s", target, enriched.get("type", "message"))
+    except Exception:
+        logger.error("wearable dispatch failed target=%s payload=%r", target, payload, exc_info=True)
 
 
 def _pipeline_tail(n: int = 40) -> str:
@@ -86,12 +292,13 @@ def _api_status() -> dict:
     last_processed = None
     home = str(_CONFIG.home_path) if _CONFIG else ""
     if _CONFIG:
-        ev_dir = _CONFIG.events_dir
-        if ev_dir.is_dir():
-            events = len(list(ev_dir.glob("*.md")))
-        emb_dir = _CONFIG.embeddings_dir
-        if emb_dir.is_dir():
-            embeddings = len(list(emb_dir.glob("*.npy")))
+        if _POOL:
+            events = _POOL.event_count
+        try:
+            from fiam.store.features import FeatureStore
+            embeddings = FeatureStore(_CONFIG.feature_dir, dim=_CONFIG.embedding_dim).count()
+        except Exception:
+            embeddings = 0
         cursor = _CONFIG.store_dir / "cursor.json"
         if cursor.exists():
             try:
@@ -112,62 +319,54 @@ def _api_status() -> dict:
 
 
 def _api_events(limit: int = 50) -> list[dict]:
-    """Events with intensity parsed from frontmatter."""
-    if not _CONFIG:
+    """Events from Pool metadata + body preview."""
+    if not _POOL:
         return []
-    events_dir = _CONFIG.events_dir
-    if not events_dir.is_dir():
+    events = _POOL.load_events()
+    if not events:
         return []
     out: list[dict] = []
-    for md in events_dir.glob("*.md"):
-        text = md.read_text(encoding="utf-8", errors="replace")
-        etime = ""
-        intensity = 0.0
-        preview = ""
-        last_accessed = ""
-        access_count = 0
-        in_fm = False
-        body: list[str] = []
-        for line in text.split("\n"):
-            s = line.strip()
-            if s == "---":
-                in_fm = not in_fm
-                continue
-            if in_fm:
-                if s.startswith("time:"):
-                    etime = s.split(":", 1)[1].strip().strip("'\"")
-                elif s.startswith("intensity:"):
-                    try:
-                        intensity = float(s.split(":", 1)[1].strip())
-                    except ValueError:
-                        pass
-                elif s.startswith("last_accessed:"):
-                    last_accessed = s.split(":", 1)[1].strip().strip("'\"")
-                elif s.startswith("access_count:"):
-                    try:
-                        access_count = int(s.split(":", 1)[1].strip())
-                    except ValueError:
-                        pass
-            else:
-                body.append(line)
-        preview = " ".join(l.strip() for l in body if l.strip())[:140]
+    for ev in events:
+        body = _POOL.read_body(ev.id)
+        preview = " ".join(body.split())[:140]
+        # Intensity from access_count (0→0.3, 10+→1.0)
+        intensity = min(1.0, 0.3 + ev.access_count * 0.07)
         out.append({
-            "id": md.stem,
-            "time": etime,
+            "id": ev.id,
+            "time": ev.t.isoformat(),
             "intensity": intensity,
-            "last_accessed": last_accessed,
-            "access_count": access_count,
+            "last_accessed": "",
+            "access_count": ev.access_count,
             "preview": preview,
         })
     out.sort(key=lambda e: e["time"], reverse=True)
     return out[:limit]
 
 
-def _api_schedule() -> list[dict]:
-    """Pending wakes from schedule.jsonl."""
+def _api_event(event_id: str) -> dict | None:
+    """Full content of one event from Pool."""
+    if not _POOL:
+        return None
+    ev = _POOL.get_event(event_id)
+    if ev is None:
+        return None
+    body = _POOL.read_body(event_id)
+    return {
+        "id": ev.id,
+        "frontmatter": {
+            "time": ev.t.isoformat(),
+            "access_count": str(ev.access_count),
+            "fingerprint_idx": str(ev.fingerprint_idx),
+        },
+        "body": body,
+    }
+
+
+def _api_todo() -> list[dict]:
+    """Pending delayed work from todo.jsonl."""
     if not _CONFIG:
         return []
-    path = _CONFIG.schedule_path
+    path = _CONFIG.todo_path
     if not path.exists():
         return []
     now = datetime.now(timezone.utc)
@@ -178,33 +377,32 @@ def _api_schedule() -> list[dict]:
             continue
         try:
             entry = json.loads(line)
-            wake_at = datetime.fromisoformat(entry["wake_at"])
-            if wake_at.tzinfo is None:
-                wake_at = wake_at.replace(tzinfo=timezone.utc)
-            if wake_at > now:
+            at = datetime.fromisoformat(entry["at"])
+            at = _CONFIG.ensure_timezone(at)
+            if at > now:
                 out.append({
-                    "wake_at": entry["wake_at"],
+                    "at": entry["at"],
                     "type": entry.get("type", "private"),
                     "reason": entry.get("reason", ""),
                 })
         except (json.JSONDecodeError, KeyError, ValueError):
             continue
-    out.sort(key=lambda e: e["wake_at"])
+    out.sort(key=lambda e: e["at"])
     return out
 
 
 def _api_health() -> dict:
-    """Aggregate fault-tolerance signals — daemon, scheduler, budget."""
+    """Aggregate fault-tolerance signals — daemon, todo queue, budget."""
     status = _api_status()
     out: dict = {
         "daemon": status["daemon"],
         "pid": status["pid"],
         "events": status["events"],
         "last_processed": status["last_processed"],
-        "missed_wakes": 0,
-        "failed_wakes": 0,
-        "pending_wakes": 0,
-        "retry_wakes": 0,
+        "missed_todos": 0,
+        "failed_todos": 0,
+        "pending_todos": 0,
+        "retry_todos": 0,
         "budget": None,
         "budget_ok": True,
         "last_pipeline_error": None,
@@ -213,9 +411,9 @@ def _api_health() -> dict:
         return out
 
     # Pending + retry counts
-    sched = _CONFIG.schedule_path
-    if sched.exists():
-        for line in sched.read_text(encoding="utf-8").splitlines():
+    todo_path = _CONFIG.todo_path
+    if todo_path.exists():
+        for line in todo_path.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if not line:
                 continue
@@ -223,15 +421,15 @@ def _api_health() -> dict:
                 e = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            out["pending_wakes"] += 1
+            out["pending_todos"] += 1
             if int(e.get("attempts", 0)) > 0:
-                out["retry_wakes"] += 1
+                out["retry_todos"] += 1
 
     # Missed / failed archives
     for kind in ("missed", "failed"):
-        p = _CONFIG.self_dir / f"schedule_{kind}.jsonl"
+        p = _CONFIG.self_dir / f"todo_{kind}.jsonl"
         if p.exists():
-            out[f"{kind}_wakes"] = sum(
+            out[f"{kind}_todos"] = sum(
                 1 for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()
             )
 
@@ -300,62 +498,2737 @@ def _api_state() -> dict | None:
     return {"mood": mood, "tension": tension, "reflection": reflection, "updated_at": updated_at}
 
 
-def _api_graph() -> dict:
-    """Return nodes/edges from graph.jsonl for visualization."""
+def _api_config() -> dict:
+    """Runtime/editable dashboard config."""
     if not _CONFIG:
-        return {"nodes": [], "edges": []}
-    graph_path = _CONFIG.graph_jsonl_path
-    nodes: dict[str, dict] = {}
-    edges: list[dict] = []
-    # Build intensity map from events
-    intensity_map: dict[str, float] = {}
-    time_map: dict[str, str] = {}
-    last_acc_map: dict[str, str] = {}
-    acc_cnt_map: dict[str, int] = {}
-    for ev in _api_events(10000):
-        intensity_map[ev["id"]] = ev["intensity"]
-        time_map[ev["id"]] = ev["time"]
-        last_acc_map[ev["id"]] = ev.get("last_accessed", "")
-        acc_cnt_map[ev["id"]] = ev.get("access_count", 0)
-        nodes[ev["id"]] = {
-            "id": ev["id"],
-            "label": ev["id"][-6:],
-            "intensity": ev["intensity"],
-            "time": ev["time"],
-            "last_accessed": ev.get("last_accessed", ""),
-            "access_count": ev.get("access_count", 0),
+        return {"memory_mode": "manual", "annotation": {"processed_until": 0}}
+    return {
+        "memory_mode": _CONFIG.memory_mode,
+        "annotation": _annotation_state(),
+        "multimodal": {
+            "vision": _vision_route(),
+            "voice": _voice_routes(),
+            "stroll": {"internal_name": "stroll", "label": "散步"},
+        },
+    }
+
+
+def _api_plugins() -> dict:
+    """Return registered functional plugins."""
+    if not _CONFIG:
+        return {"plugins": []}
+    from fiam.plugins import load_plugins
+    return {
+        "plugins": [
+            {
+                "id": plugin.id,
+                "name": plugin.name,
+                "enabled": plugin.enabled,
+                "status": plugin.status,
+                "kind": plugin.kind,
+                "description": plugin.description,
+                "transports": list(plugin.transports),
+                "capabilities": list(plugin.capabilities),
+                "receive_sources": list(plugin.receive_sources),
+                "dispatch_targets": list(plugin.dispatch_targets),
+                "entrypoint": plugin.entrypoint,
+                "auth": plugin.auth,
+                "latency": plugin.latency,
+                "env": list(plugin.env),
+                "replaces": list(plugin.replaces),
+                "notes": list(plugin.notes),
+            }
+            for plugin in load_plugins(_CONFIG)
+        ]
+    }
+
+
+def _update_memory_mode(payload: dict) -> dict:
+    """Persist conductor.memory_mode in fiam.toml."""
+    if not _CONFIG:
+        raise RuntimeError("config not loaded")
+    mode = str(payload.get("memory_mode", "")).strip().lower()
+    if mode not in ("manual", "auto"):
+        raise ValueError("memory_mode must be manual or auto")
+
+    path = _CONFIG.toml_path
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    lines = text.splitlines()
+    out: list[str] = []
+    in_conductor = False
+    saw_conductor = False
+    wrote_mode = False
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            if in_conductor and not wrote_mode:
+                out.append(f'memory_mode = "{mode}"')
+                wrote_mode = True
+            in_conductor = stripped == "[conductor]"
+            saw_conductor = saw_conductor or in_conductor
+            out.append(line)
+            continue
+        if in_conductor and stripped.startswith("memory_mode"):
+            out.append(f'memory_mode = "{mode}"')
+            wrote_mode = True
+        else:
+            out.append(line)
+
+    if not saw_conductor:
+        if out and out[-1].strip():
+            out.append("")
+        out.extend(["[conductor]", f'memory_mode = "{mode}"'])
+    elif in_conductor and not wrote_mode:
+        out.append(f'memory_mode = "{mode}"')
+
+    path.write_text("\n".join(out) + "\n", encoding="utf-8")
+    _CONFIG.memory_mode = mode
+    return {"ok": True, "memory_mode": mode}
+
+
+def _update_plugin(payload: dict) -> dict:
+    """Enable or disable one plugin manifest."""
+    if not _CONFIG:
+        raise RuntimeError("config not loaded")
+    plugin_id = str(payload.get("id", "")).strip()
+    if not plugin_id:
+        raise ValueError("missing plugin id")
+    enabled = bool(payload.get("enabled"))
+    from fiam.plugins import set_plugin_enabled
+    plugin = set_plugin_enabled(_CONFIG, plugin_id, enabled)
+    return {"ok": True, "id": plugin.id, "enabled": plugin.enabled}
+
+
+def _api_capture(payload: dict) -> dict:
+    """Forward a mobile/quick-capture event to the MQTT bus.
+
+    The daemon subscribes to ``fiam/receive/favilla`` and handles
+    ingestion (embed + gorge + pool) through the unified Conductor.
+    Dashboard no longer touches Pool directly — it's a pure HTTP→MQTT
+    bridge for clients that can't speak MQTT (e.g. the Android app).
+
+    Expected payload keys: text (required), source (optional),
+    url (optional), tags (optional list), kind/interaction/session_id/meta.
+    """
+    if not _CONFIG:
+        raise RuntimeError("config not loaded")
+    text = (payload.get("text") or "").strip()
+    if not text:
+        raise ValueError("missing text")
+    source = (payload.get("source") or "favilla").strip()
+    url = (payload.get("url") or "").strip()
+    meta = dict(payload.get("meta") or {})
+    tags = payload.get("tags") or []
+    for key in ("kind", "interaction", "session_id", "phase"):
+        value = payload.get(key)
+        if value not in (None, "", []):
+            meta[key] = value
+    if any(str(tag).lower() in {"image", "vision", "vision_pending"} for tag in tags):
+        meta.setdefault("kind", "action")
+        meta["route"] = "vision"
+        meta["vision"] = _vision_route()
+    from fiam.plugins import is_receive_enabled
+    receive_source = source.lower() if source.lower() in {"xiao", "limen"} else "favilla"
+    if not is_receive_enabled(_CONFIG, receive_source):
+        raise RuntimeError(f"{receive_source} plugin disabled")
+
+    bus = _get_bus()
+    if bus is None:
+        raise RuntimeError("MQTT bus unavailable")
+    ok = bus.publish_receive(receive_source, {
+        "text": text,
+        "source": receive_source,
+        "from_name": source,
+        "url": url,
+        "tags": tags,
+        "kind": meta.get("kind"),
+        "interaction": meta.get("interaction"),
+        "session_id": meta.get("session_id"),
+        "phase": meta.get("phase"),
+        "meta": meta,
+        "t": datetime.now(timezone.utc),
+    })
+    if not ok:
+        raise RuntimeError("publish rejected")
+    return {"ok": True, "queued": True}
+
+
+def _browser_snapshot_payload(payload: dict) -> tuple[str, dict]:
+    from fiam.browser_bridge import browser_snapshot_meta, format_browser_snapshot
+
+    text = format_browser_snapshot(payload)
+    meta = browser_snapshot_meta(payload)
+    return text, meta
+
+
+def _browser_screenshot_attachments(payload: dict) -> list[dict]:
+    if not _CONFIG:
+        return []
+    screenshot = payload.get("screenshot") if isinstance(payload.get("screenshot"), dict) else None
+    if not screenshot:
+        return []
+    data_url = str(screenshot.get("dataUrl") or screenshot.get("data_url") or "")
+    if not data_url.startswith("data:image/") or "," not in data_url:
+        return []
+    header, b64 = data_url.split(",", 1)
+    mime = header[5:].split(";", 1)[0].lower()
+    if mime not in {"image/jpeg", "image/png", "image/webp"}:
+        return []
+    import base64
+    import hashlib
+
+    try:
+        raw = base64.b64decode(b64, validate=True)
+    except Exception:
+        return []
+    if not raw or len(raw) > 6 * 1024 * 1024:
+        return []
+    ext = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}.get(mime, "jpg")
+    date_dir = _CONFIG.now_local().strftime("%Y-%m-%d")
+    out_dir = _CONFIG.home_path / "uploads" / "browser" / date_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256(raw).hexdigest()
+    name = f"browser-viewport-{digest[:12]}.{ext}"
+    target = out_dir / name
+    target.write_bytes(raw)
+    record = {"path": str(target), "name": name, "mime": mime, "size": len(raw)}
+    snapshot_payload = payload.get("snapshot")
+    snapshot_url = str(snapshot_payload.get("url") or "") if isinstance(snapshot_payload, dict) else ""
+    manifest = _CONFIG.home_path / "uploads" / "manifest.jsonl"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    with manifest.open("a", encoding="utf-8") as mf:
+        mf.write(json.dumps({
+            "uploaded_at": datetime.now(timezone.utc).isoformat(),
+            "kind": "browser_screenshot",
+            "reason": str(screenshot.get("reason") or payload.get("reason") or ""),
+            "url": snapshot_url,
+            "sha256": digest,
+            **record,
+        }, ensure_ascii=False) + "\n")
+    return [record]
+
+
+def _recent_browser_action_trail(limit: int = 8) -> list[dict]:
+    if not _CONFIG or not _CONFIG.flow_path.exists():
+        return []
+    try:
+        lines = _CONFIG.flow_path.read_text(encoding="utf-8").splitlines()[-120:]
+    except OSError:
+        return []
+    trail: list[dict] = []
+    action_re = re.compile(r"^browser_action\s+(\w+):\s+(\w+)\s+(\S+)\s+(.+)$")
+    for line in lines:
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if obj.get("scene") != "ai@action" or obj.get("runtime") != "browser":
+            continue
+        text = str(obj.get("text") or "")
+        match = action_re.match(text)
+        if not match:
+            continue
+        status, action, node_id, name = match.groups()
+        trail.append({"action": action, "nodeId": node_id, "name": name, "result": status})
+    return trail[-limit:]
+
+
+def _action_signature(action: dict) -> tuple[str, str]:
+    return (str(action.get("action") or "click").lower(), str(action.get("name") or action.get("nodeId") or "").casefold())
+
+
+def _suppress_repeated_browser_actions(actions: list[dict], trail: list[dict]) -> list[dict]:
+    if not actions or not trail:
+        return actions
+    latest = _action_signature(trail[-1])
+    filtered = []
+    for action in actions:
+        sig = _action_signature(action)
+        recent_count = sum(1 for item in trail[-6:] if _action_signature(item) == sig)
+        if sig == latest or recent_count >= 2:
+            continue
+        filtered.append(action)
+    return filtered
+
+
+def _append_browser_flow_text(text: str) -> None:
+    if not _CONFIG:
+        return
+    from fiam.runtime.turns import scene_for_user, user_beat
+    from fiam.store.beat import append_beat
+
+    append_beat(_CONFIG.flow_path, user_beat(
+        text,
+        t=datetime.now(timezone.utc),
+        scene=scene_for_user("browser"),
+        user_status="away",
+        ai_status="online",
+        user_name=getattr(_CONFIG, "user_name", "") or "zephyr",
+    ))
+
+
+def _append_browser_action_flow(payload: dict) -> dict:
+    if not _CONFIG:
+        raise RuntimeError("config not loaded")
+    from fiam.store.beat import Beat, append_beat
+
+    raw_action = payload.get("action")
+    raw_result = payload.get("result")
+    action: dict = raw_action if isinstance(raw_action, dict) else {}
+    result: dict = raw_result if isinstance(raw_result, dict) else {}
+    node_id = str(action.get("nodeId") or action.get("node") or "").strip()
+    action_kind = str(action.get("action") or result.get("action") or "browser_action").strip()
+    label = str(action.get("name") or result.get("label") or node_id or "target").strip()
+    status = "ok" if result.get("ok", True) else "error"
+    text = f"browser_action {status}: {action_kind} {node_id} {label}".strip()
+    append_beat(_CONFIG.flow_path, Beat(
+        t=datetime.now(timezone.utc),
+        text=text,
+        scene="ai@action",
+        user="away",
+        ai="online",
+        runtime="browser",
+    ))
+    try:
+        from fiam_lib.computer_events import get_bus as _ce_bus
+        _ce_bus().publish("act", {
+            "surface": "b",
+            "kind": action_kind,
+            "label": label,
+            "node": node_id,
+            "ok": status == "ok",
+            "text": text,
+        })
+    except Exception:
+        logger.exception("computer bus publish (action) failed")
+    snapshot = payload.get("snapshot") if isinstance(payload.get("snapshot"), dict) else None
+    snapshot_result = None
+    if snapshot:
+        try:
+            text_snapshot, _meta = _browser_snapshot_payload({"snapshot": snapshot})
+            _append_browser_flow_text(text_snapshot)
+            snapshot_result = {"recorded": True, "chars": len(text_snapshot)}
+        except Exception as exc:
+            snapshot_result = {"recorded": False, "error": str(exc)}
+    return {"ok": True, "recorded": True, "snapshot": snapshot_result}
+
+
+def _append_browser_ai_decision_flow(reply: str, actions: list[dict], done: dict | None, *, runtime: str) -> None:
+    if not _CONFIG:
+        return
+    from fiam.store.beat import Beat, append_beat
+
+    clean_reply = " ".join(str(reply or "").split())
+    if done:
+        kind = "done"
+        text = f"browser_control_done: {done.get('reason') or 'done'}"
+        if clean_reply:
+            text = f"{text}\n{clean_reply}"
+    elif actions:
+        kind = "decision"
+        action_bits = ", ".join(f"{item.get('action')} {item.get('nodeId')} {item.get('name')}".strip() for item in actions)
+        text = f"browser_control_decision: {action_bits}"
+        if clean_reply:
+            text = f"{text}\n{clean_reply}"
+    elif clean_reply:
+        kind = "note"
+        text = f"browser_control_note: {clean_reply}"
+    else:
+        return
+    append_beat(_CONFIG.flow_path, Beat(
+        t=datetime.now(timezone.utc),
+        text=text,
+        scene="ai@browser",
+        user="away",
+        ai="online",
+        runtime=runtime,
+    ))
+    try:
+        from fiam_lib.computer_events import get_bus as _ce_bus
+        _ce_bus().publish("info", {
+            "surface": "b",
+            "kind": kind,
+            "reply": clean_reply,
+            "actions": [
+                {"action": a.get("action"), "node": a.get("nodeId"), "name": a.get("name")}
+                for a in (actions or [])
+            ],
+            "done": done or None,
+            "text": text,
+        })
+    except Exception:
+        logger.exception("computer bus publish (decision) failed")
+
+
+def _browser_snapshot(payload: dict) -> dict:
+    if not _CONFIG:
+        raise RuntimeError("config not loaded")
+    from fiam.plugins import is_receive_enabled
+
+    if not is_receive_enabled(_CONFIG, "browser"):
+        raise RuntimeError("browser plugin disabled")
+    text, meta = _browser_snapshot_payload(payload)
+    bus = _get_bus()
+    if bus is not None:
+        ok = bus.publish_receive("browser", {
+            "text": text,
+            "source": "browser",
+            "from_name": meta.get("browser") or "browser",
+            "url": meta.get("url") or "",
+            "tags": ["browser", "snapshot"],
+            "kind": "browser_snapshot",
+            "meta": meta,
+            "t": datetime.now(timezone.utc),
+        })
+        if not ok:
+            raise RuntimeError("publish rejected")
+        return {"ok": True, "queued": True, "source": "browser", "meta": meta, "chars": len(text)}
+    _append_browser_flow_text(text)
+    return {"ok": True, "queued": False, "recorded": True, "source": "browser", "meta": meta, "chars": len(text)}
+
+
+def _browser_ask(payload: dict) -> dict:
+    question = str(payload.get("question") or payload.get("text") or "").strip()
+    runtime = str(payload.get("runtime") or "api").strip().lower() or "api"
+    record_turn = payload.get("record", True) is not False
+    if runtime not in {"api", "cc"}:
+        raise ValueError("browser runtime must be api or cc")
+    from fiam.browser_bridge import browser_snapshot_meta, build_browser_runtime_text, extract_browser_actions, strip_browser_action_markers
+
+    runtime_text = build_browser_runtime_text(question, payload)
+    result = _favilla_chat_send({
+        "text": runtime_text,
+        "source": "browser",
+        "runtime": runtime,
+        "record_turn": record_turn,
+    })
+    cleaned_reply, browser_actions = extract_browser_actions(str(result.get("reply") or ""), payload)
+    cleaned_segments = []
+    for segment in result.get("segments") or []:
+        if isinstance(segment, dict) and "text" in segment:
+            segment = dict(segment)
+            segment["text"] = strip_browser_action_markers(str(segment.get("text") or ""))
+        cleaned_segments.append(segment)
+    result["segments"] = cleaned_segments
+    result["reply"] = cleaned_reply
+    if browser_actions:
+        result["browser_actions"] = browser_actions
+    else:
+        result["browser_actions"] = []
+    result["browser"] = browser_snapshot_meta(payload)
+    result["context_chars"] = len(runtime_text)
+    return result
+
+
+def _browser_control_tick(payload: dict) -> dict:
+    runtime = str(payload.get("runtime") or "api").strip().lower() or "api"
+    if runtime not in {"api", "cc"}:
+        raise ValueError("browser runtime must be api or cc")
+    from fiam.browser_bridge import browser_snapshot_meta, build_browser_control_text, extract_browser_actions, extract_browser_done, strip_browser_action_markers
+
+    payload = dict(payload)
+    recent_trail = _recent_browser_action_trail()
+    raw_payload_trail = payload.get("controlTrail")
+    payload_trail = raw_payload_trail if isinstance(raw_payload_trail, list) else []
+    payload["controlTrail"] = [*recent_trail, *payload_trail][-12:]
+    runtime_text = build_browser_control_text(payload)
+    attachments = _browser_screenshot_attachments(payload)
+    if attachments:
+        runtime_text = f"{runtime_text}\n\n[browser_screenshot]\nA current viewport screenshot is attached for visual reasoning."
+    screenshot_error = ""
+    send_text = runtime_text
+    try:
+        result = _favilla_chat_send({
+            "text": send_text,
+            "source": "browser",
+            "runtime": runtime,
+            "record_turn": False,
+            "attachments": attachments,
+        })
+    except Exception as exc:
+        if not attachments:
+            raise
+        screenshot_error = str(exc)[:240]
+        logger.warning("browser screenshot tick failed; retrying without screenshot: %s", screenshot_error)
+        runtime_text = build_browser_control_text(payload)
+        send_text = f"{runtime_text}\n\n[browser_screenshot]\nA screenshot was attempted but unavailable for this tick; rely on DOM context."
+        result = _favilla_chat_send({
+            "text": send_text,
+            "source": "browser",
+            "runtime": runtime,
+            "record_turn": False,
+            "attachments": [],
+        })
+    raw_reply = str(result.get("reply") or "")
+    cleaned_reply, browser_done = extract_browser_done(raw_reply)
+    cleaned_reply, browser_actions = extract_browser_actions(cleaned_reply, payload)
+    browser_actions = _suppress_repeated_browser_actions(browser_actions[:1], payload["controlTrail"])
+    cleaned_segments = []
+    for segment in result.get("segments") or []:
+        if isinstance(segment, dict) and "text" in segment:
+            segment = dict(segment)
+            segment["text"] = strip_browser_action_markers(str(segment.get("text") or ""))
+        cleaned_segments.append(segment)
+    result["reply"] = cleaned_reply
+    result["browser_actions"] = browser_actions
+    result["browser_done"] = browser_done
+    result["segments"] = cleaned_segments
+    result["browser"] = browser_snapshot_meta(payload)
+    result["context_chars"] = len(send_text)
+    result["mode"] = "autonomous"
+    result["screenshot_attempted"] = bool(attachments)
+    result["screenshot_attached"] = bool(attachments) and not screenshot_error
+    if screenshot_error:
+        result["screenshot_fallback_error"] = screenshot_error
+    _append_browser_ai_decision_flow(cleaned_reply, browser_actions, browser_done, runtime=runtime)
+    return result
+
+
+def _favilla_status() -> dict:
+    status = _api_status()
+    flow_count = 0
+    thinking_count = 0
+    interaction_count = 0
+    if _CONFIG and _CONFIG.flow_path.exists():
+        try:
+            for line in _CONFIG.flow_path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                flow_count += 1
+                obj = json.loads(line)
+                meta = obj.get("meta") or {}
+                if meta.get("kind") == "thinking":
+                    thinking_count += 1
+                if meta.get("kind") == "interaction" or meta.get("interaction"):
+                    interaction_count += 1
+        except Exception:
+            pass
+    return {
+        "daemon": status.get("daemon"),
+        "events": status.get("events"),
+        "embeddings": status.get("embeddings"),
+        "flow_beats": flow_count,
+        "thinking_beats": thinking_count,
+        "interaction_beats": interaction_count,
+        "home": status.get("home"),
+    }
+
+
+def _favilla_message_units(text: str) -> int:
+    units = re.findall(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]", text or "")
+    return len(units)
+
+
+def _favilla_transcript_digest(source: str, limit: int = 500) -> dict:
+    messages = _favilla_transcript_load(source=source, limit=limit).get("messages") or []
+    digest = {
+        "turns": 0,
+        "user_turns": 0,
+        "ai_turns": 0,
+        "words": 0,
+        "user_words": 0,
+        "ai_words": 0,
+        "by_day": {},
+    }
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role") or "")
+        text = str(message.get("text") or "")
+        units = _favilla_message_units(text)
+        digest["turns"] += 1
+        digest["words"] += units
+        if role == "user":
+            digest["user_turns"] += 1
+            digest["user_words"] += units
+        elif role == "ai":
+            digest["ai_turns"] += 1
+            digest["ai_words"] += units
+        try:
+            minute = int(message.get("t") or 0)
+            dt = datetime.fromtimestamp(minute * 60, timezone.utc)
+            day = dt.astimezone(_CONFIG.project_tz()).date().isoformat() if _CONFIG else dt.date().isoformat()
+            bucket = digest["by_day"].setdefault(day, {"turns": 0, "user_words": 0, "ai_words": 0})
+            bucket["turns"] += 1
+            if role == "user":
+                bucket["user_words"] += units
+            elif role == "ai":
+                bucket["ai_words"] += units
+        except (TypeError, ValueError, OSError):
+            pass
+    return digest
+
+
+def _favilla_plain_text(html: str) -> str:
+    text = re.sub(r"<[^>]+>", " ", html or "")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _favilla_local_day_from_ms(value) -> str | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number <= 0:
+        return None
+    seconds = number / 1000 if number > 10_000_000_000 else number
+    try:
+        dt = datetime.fromtimestamp(seconds, timezone.utc)
+    except (OSError, ValueError):
+        return None
+    return dt.astimezone(_CONFIG.project_tz()).date().isoformat() if _CONFIG else dt.date().isoformat()
+
+
+def _favilla_local_day_from_iso(value: str) -> str | None:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None and _CONFIG:
+        dt = _CONFIG.ensure_timezone(dt)
+    return dt.astimezone(_CONFIG.project_tz()).date().isoformat() if _CONFIG else dt.date().isoformat()
+
+
+def _favilla_studio_digest(limit: int = 500) -> dict:
+    try:
+        state = _favilla_studio_load().get("state") or {}
+    except Exception:
+        state = {}
+    timeline = state.get("timeline") if isinstance(state.get("timeline"), list) else []
+    fallback_day = _favilla_local_day_from_iso(str(state.get("updated_at") or ""))
+    digest = {
+        "turns": 0,
+        "user_turns": 0,
+        "ai_turns": 0,
+        "words": 0,
+        "user_words": 0,
+        "ai_words": 0,
+        "by_day": {},
+        "events": [],
+    }
+    for event in timeline[-max(1, min(5000, limit)):]:
+        if not isinstance(event, dict):
+            continue
+        role = str(event.get("type") or "user")
+        title = str(event.get("title") or "")
+        summary = str(event.get("summary") or "")
+        try:
+            units = int(event.get("units") or 0)
+        except (TypeError, ValueError):
+            units = 0
+        if units <= 0:
+            units = _favilla_message_units(" ".join(part for part in (title, summary) if part)) or 1
+        day = _favilla_local_day_from_ms(event.get("at")) or fallback_day
+        digest["turns"] += 1
+        digest["words"] += units
+        if role == "ai":
+            digest["ai_turns"] += 1
+            digest["ai_words"] += units
+        else:
+            digest["user_turns"] += 1
+            digest["user_words"] += units
+        if day:
+            bucket = digest["by_day"].setdefault(day, {"turns": 0, "user_words": 0, "ai_words": 0, "emoji": ""})
+            bucket["turns"] += 1
+            if role == "ai":
+                bucket["ai_words"] += units
+                bucket["emoji"] = "✨"
+            else:
+                bucket["user_words"] += units
+                if not bucket.get("emoji"):
+                    bucket["emoji"] = "✍️"
+        digest["events"].append({
+            "id": str(event.get("id") or ""),
+            "title": title,
+            "type": role,
+            "kind": str(event.get("kind") or ""),
+            "at": event.get("at"),
+            "units": units,
+            "fileId": event.get("fileId"),
+            "fileName": event.get("fileName"),
+            "location": event.get("location") if isinstance(event.get("location"), dict) else None,
+        })
+    content_units = _favilla_message_units(_favilla_plain_text(str(state.get("activeNoteContent") or "")))
+    digest["content_units"] = content_units
+    return digest
+
+
+def _favilla_stroll_record_rows(limit: int = 5000) -> list[dict]:
+    if not _CONFIG:
+        return []
+    path = _CONFIG.home_path / "stroll" / "spatial_records.jsonl"
+    if not path.exists():
+        return []
+    rows: list[dict] = []
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines()[-max(1, min(20000, limit)):]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(item, dict):
+            rows.append(item)
+    return rows
+
+
+def _favilla_location_name(row: dict, prefix: str) -> str:
+    location = row.get("location") if isinstance(row.get("location"), dict) else row
+    label = str(location.get("label") or "").strip()
+    if label:
+        return label[:48]
+    place_kind = str(location.get("placeKind") or row.get("placeKind") or "unknown")
+    try:
+        lat = float(location.get("lat"))
+        lng = float(location.get("lng"))
+        return f"{prefix} {place_kind} · {lat:.4f},{lng:.4f}"
+    except (TypeError, ValueError):
+        return prefix
+
+
+def _favilla_location_digest() -> list[dict]:
+    buckets: dict[str, dict] = {}
+
+    def add(key: str, name: str, *, units: int, emoji: str, latest_at=None, place_kind: str = "unknown") -> None:
+        bucket = buckets.setdefault(key, {"name": name, "words": 0, "count": 0, "emoji": emoji, "latest_at": latest_at, "placeKind": place_kind})
+        bucket["words"] += max(1, units)
+        bucket["count"] += 1
+        if emoji and not bucket.get("emoji"):
+            bucket["emoji"] = emoji
+        if latest_at and (not bucket.get("latest_at") or str(latest_at) > str(bucket.get("latest_at"))):
+            bucket["latest_at"] = latest_at
+
+    for row in _favilla_stroll_record_rows():
+        try:
+            lat = float(row.get("lat"))
+            lng = float(row.get("lng"))
+        except (TypeError, ValueError):
+            continue
+        key = str(row.get("cellId") or f"stroll:{lat:.4f}:{lng:.4f}")
+        name = _favilla_location_name(row, "Stroll")
+        units = _favilla_message_units(str(row.get("text") or "")) or 1
+        add(key, name, units=units, emoji=str(row.get("emoji") or "📍"), latest_at=row.get("updatedAt") or row.get("createdAt"), place_kind=str(row.get("placeKind") or "unknown"))
+
+    studio = _favilla_studio_digest()
+    for event in studio.get("events") or []:
+        if not isinstance(event, dict):
+            continue
+        location = event.get("location") if isinstance(event.get("location"), dict) else None
+        if location:
+            try:
+                lat = float(location.get("lat"))
+                lng = float(location.get("lng"))
+                key = str(location.get("cellId") or f"studio:{lat:.4f}:{lng:.4f}")
+            except (TypeError, ValueError):
+                key = "studio"
+        else:
+            key = "studio"
+        name = _favilla_location_name({"location": location or {}, "placeKind": (location or {}).get("placeKind", "studio")}, "Studio")
+        add(key, name, units=int(event.get("units") or 1), emoji="✨" if event.get("type") == "ai" else "✍️", latest_at=event.get("at"), place_kind=str((location or {}).get("placeKind") or "studio"))
+
+    total = sum(bucket["words"] for bucket in buckets.values()) or 1
+    out = []
+    for bucket in buckets.values():
+        out.append({**bucket, "percent": max(5, round((bucket["words"] / total) * 100))})
+    out.sort(key=lambda item: (int(item.get("words") or 0), int(item.get("count") or 0)), reverse=True)
+    return out[:8]
+
+
+def _favilla_dashboard() -> dict:
+    return {
+        "ok": True,
+        "status": _favilla_status(),
+        "health": _api_health(),
+        "events": _api_events(40),
+        "todos": _api_todo()[:20],
+        "chat": _favilla_transcript_digest("chat"),
+        "stroll": _favilla_transcript_digest("stroll"),
+        "studio": _favilla_studio_digest(),
+        "locations": _favilla_location_digest(),
+    }
+
+
+def _favilla_studio_path() -> Path:
+    if not _CONFIG:
+        raise RuntimeError("config not loaded")
+    return _CONFIG.home_path / "app_studio" / "state.json"
+
+
+def _favilla_studio_load() -> dict:
+    path = _favilla_studio_path()
+    if not path.exists():
+        return {"ok": True, "state": None}
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise RuntimeError(f"bad studio state: {exc}") from exc
+    return {"ok": True, "state": state}
+
+
+def _favilla_studio_save(payload: dict) -> dict:
+    state = payload.get("state") if isinstance(payload.get("state"), dict) else payload
+    if not isinstance(state, dict):
+        raise ValueError("missing studio state")
+    files = state.get("files") if isinstance(state.get("files"), list) else []
+    timeline = state.get("timeline") if isinstance(state.get("timeline"), list) else []
+    file_contents = state.get("fileContents") if isinstance(state.get("fileContents"), dict) else {}
+    clean_state = {
+        "version": 1,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "files": files[:500],
+        "activeFileId": str(state.get("activeFileId") or ""),
+        "activeNoteContent": str(state.get("activeNoteContent") or "")[:1024 * 1024],
+        "fileContents": {str(key): str(value)[:1024 * 1024] for key, value in list(file_contents.items())[:500]},
+        "timeline": timeline[-500:],
+    }
+    path = _favilla_studio_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(clean_state, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+    return {"ok": True, "state": clean_state}
+
+
+_STUDIO_EDIT_OPS = {"replace", "insert_after", "insert_before", "delete", "append", "prepend"}
+
+
+def _studio_edit_prompt(payload: dict) -> str:
+    instruction = str(payload.get("instruction") or "").strip()
+    content = str(payload.get("content") or "")[:120_000]
+    file_name = str(payload.get("fileName") or payload.get("file_id") or payload.get("fileId") or "current note")
+    location = payload.get("location") if isinstance(payload.get("location"), dict) else {}
+    return "\n".join([
+        "[studio_edit_contract]",
+        "Return only JSON. Do not use XML, Markdown fences, or prose outside JSON.",
+        "Produce an edit script, not a rewritten full document. Prefer the smallest command that preserves the user's existing text.",
+        "Allowed commands:",
+        '{"op":"replace","target":"exact existing substring","text":"replacement"}',
+        '{"op":"insert_after","target":"exact existing substring","text":"inserted text"}',
+        '{"op":"insert_before","target":"exact existing substring","text":"inserted text"}',
+        '{"op":"delete","target":"exact existing substring"}',
+        '{"op":"append","text":"text or HTML to add at the end"}',
+        '{"op":"prepend","text":"text or HTML to add at the beginning"}',
+        'Example: changing AAA into AABA is {"op":"replace","target":"AAA","text":"AABA"}, not delete+append.',
+        'For new full HTML blocks, include data-author="AI" on the new block when natural.',
+        "JSON shape: {\"summary\":\"short visible summary\",\"author\":\"AI\",\"edits\":[...commands...]}",
+        "",
+        f"[file]\n{file_name}",
+        f"[location]\n{json.dumps(location, ensure_ascii=False)}",
+        f"[instruction]\n{instruction}",
+        f"[document_html]\n{content}",
+    ])
+
+
+def _clean_json_text(text: str) -> str:
+    raw = (text or "").strip()
+    raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
+    raw = re.sub(r"\s*```$", "", raw)
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start >= 0 and end > start:
+        raw = raw[start:end + 1]
+    return raw
+
+
+def _sanitize_studio_edits(raw_edits) -> list[dict]:
+    if not isinstance(raw_edits, list):
+        return []
+    edits: list[dict] = []
+    aliases = {"remove": "delete", "del": "delete", "insertAfter": "insert_after", "insertBefore": "insert_before"}
+    for item in raw_edits[:80]:
+        if not isinstance(item, dict):
+            continue
+        op = str(item.get("op") or item.get("command") or "").strip()
+        op = aliases.get(op, op).lower().replace("-", "_")
+        if op not in _STUDIO_EDIT_OPS:
+            continue
+        target = str(item.get("target") or item.get("find") or item.get("search") or "")[:20_000]
+        text = str(item.get("text") if item.get("text") is not None else item.get("replacement") if item.get("replacement") is not None else item.get("insert") if item.get("insert") is not None else "")[:40_000]
+        if op in {"replace", "insert_after", "insert_before", "delete"} and not target:
+            continue
+        if op in {"replace", "insert_after", "insert_before", "append", "prepend"} and not text:
+            continue
+        clean = {"op": op}
+        if target:
+            clean["target"] = target
+        if text:
+            clean["text"] = text
+        note = str(item.get("note") or item.get("reason") or "").strip()
+        if note:
+            clean["note"] = note[:240]
+        edits.append(clean)
+    return edits
+
+
+def _parse_studio_edit_response(text: str) -> dict:
+    try:
+        data = json.loads(_clean_json_text(text))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"studio edit returned non-json: {text[:240]}") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError("studio edit JSON must be an object")
+    edits = _sanitize_studio_edits(data.get("edits") or data.get("operations") or data.get("commands"))
+    if not edits:
+        raise RuntimeError("studio edit returned no usable edit commands")
+    return {
+        "summary": str(data.get("summary") or data.get("title") or "Prepared edit script")[:500],
+        "author": str(data.get("author") or "AI")[:80],
+        "edits": edits,
+    }
+
+
+def _run_api_studio_edit(prompt: str) -> dict:
+    from fiam.runtime.api import OpenAICompatibleClient
+    from fiam.runtime.prompt import build_api_messages
+
+    client = OpenAICompatibleClient.from_config(_CONFIG)
+    messages = build_api_messages(
+        _CONFIG,
+        prompt,
+        source="studio",
+        include_recall=True,
+        consume_recall_dirty=False,
+        extra_context=_app_runtime_context(),
+    )
+    completion = client.complete(
+        messages=messages,
+        model=_CONFIG.api_model,
+        temperature=0.2,
+        max_tokens=max(1200, min(4096, _CONFIG.api_max_tokens)),
+        tools=None,
+    )
+    parsed = _parse_studio_edit_response(completion.text)
+    return {**parsed, "runtime": "api", "model": completion.model, "usage": completion.usage}
+
+
+def _run_cc_studio_edit(prompt: str) -> dict:
+    import subprocess
+    from fiam.runtime.prompt import build_plain_prompt_parts
+
+    system_context, user_prompt = build_plain_prompt_parts(
+        _CONFIG,
+        prompt,
+        source="studio",
+        include_recall=True,
+        consume_recall_dirty=False,
+        extra_context=_app_runtime_context(),
+    )
+    command = [
+        "claude", "-p", user_prompt,
+        "--output-format", "json",
+        "--max-turns", "4",
+        "--setting-sources", "user,project,local",
+        "--exclude-dynamic-system-prompt-sections",
+        "--permission-mode", "bypassPermissions",
+    ]
+    if system_context:
+        command.extend(["--append-system-prompt", system_context])
+    if _CONFIG.cc_model:
+        command.extend(["--model", _CONFIG.cc_model])
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=180, cwd=str(_CONFIG.home_path))
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("claude studio edit timeout") from exc
+    except FileNotFoundError as exc:
+        raise RuntimeError("claude not found on server PATH") from exc
+    try:
+        data = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        detail = (result.stderr or result.stdout or "").strip()[:500]
+        raise RuntimeError(f"bad claude json: {detail}") from exc
+    if bool(data.get("is_error")) or result.returncode != 0:
+        detail = data.get("error") or data.get("result") or result.stderr or result.stdout or "claude failed"
+        raise RuntimeError(str(detail).strip()[:500])
+    parsed = _parse_studio_edit_response(str(data.get("result") or ""))
+    return {**parsed, "runtime": "cc", "session_id": str(data.get("session_id") or ""), "cost_usd": data.get("total_cost_usd", 0)}
+
+
+def _run_studio_edit_model(prompt: str, runtime: str) -> dict:
+    if runtime == "cc":
+        return _run_cc_studio_edit(prompt)
+    return _run_api_studio_edit(prompt)
+
+
+def _favilla_studio_edit(payload: dict) -> dict:
+    if not _CONFIG:
+        raise RuntimeError("config not loaded")
+    instruction = str(payload.get("instruction") or "").strip()
+    content = str(payload.get("content") or "")
+    if not instruction:
+        raise ValueError("missing instruction")
+    if not content:
+        raise ValueError("missing content")
+    default_runtime = getattr(_CONFIG, "app_default_runtime", "auto") or "auto"
+    runtime = str(payload.get("runtime") or default_runtime).strip().lower() or "auto"
+    if runtime == "auto":
+        runtime = "api"
+    if runtime not in {"api", "cc"}:
+        raise ValueError("Studio edit runtime must be auto, api, or cc")
+    prompt = _studio_edit_prompt(payload)
+    result = _run_studio_edit_model(prompt, runtime)
+    _append_transcript("studio", {
+        "role": "user",
+        "text": f"Studio edit request: {instruction[:500]}",
+        "runtime": runtime,
+    })
+    _append_transcript("studio", {
+        "role": "ai",
+        "text": f"Studio edit script: {result.get('summary', '')}",
+        "runtime": runtime,
+    })
+    return {"ok": True, **result}
+
+
+def _select_favilla_chat_runtime(text: str, attachments: list[dict] | None = None) -> str:
+    if attachments:
+        return "cc"
+    lowered = text.lower()
+    api_token = r"(?<![a-z0-9])api(?![a-z0-9])"
+    cc_token = r"(?<![a-z0-9])cc(?![a-z0-9])|claude\s*code"
+    if re.search(rf"runtime\s*(=|:|：)\s*{api_token}|(换|切|切换|转|去|到|用|走).{{0,8}}{api_token}|{api_token}.{{0,8}}(模式|运行|runtime)", lowered):
+        return "api"
+    if re.search(rf"runtime\s*(=|:|：)\s*({cc_token})|(换|切|切换|转|去|到|用|走).{{0,8}}({cc_token})|({cc_token}).{{0,8}}(模式|运行|runtime)", lowered):
+        return "cc"
+    if re.search(r"(另一边|另一侧|另一端|切换过去|换过去|切过去)", lowered):
+        return "cc"
+    cc_terms = (
+        "代码", "仓库", "文件", "目录", "终端", "命令", "脚本", "报错", "错误", "测试",
+        "部署", "构建", "apk", "git", "github", "vscode", "python", "typescript",
+        "react", "svelte", "android", "frontend", "server",
+        "traceback", "pytest", "npm", "gradle", "systemd", "ssh", "curl",
+    )
+    return "cc" if any(term in lowered for term in cc_terms) else "api"
+
+
+def _transcript_source(source: str) -> str:
+    clean = re.sub(r"[^A-Za-z0-9_-]+", "_", (source or "chat").strip().lower()).strip("_")
+    return clean or "chat"
+
+
+def _transcript_path(source: str = "chat") -> Path:
+    return _CONFIG.home_path / "transcript" / f"{_transcript_source(source)}.jsonl"
+
+
+def _history_attachments(attachments: list[dict]) -> list[dict]:
+    out = []
+    for att in attachments:
+        mime = str(att.get("mime") or "")
+        out.append({
+            "kind": "image" if mime.startswith("image/") else "file",
+            "name": str(att.get("name") or Path(str(att.get("path") or "file")).name),
+            "path": str(att.get("path") or ""),
+            "mime": mime,
+            "size": att.get("size"),
+        })
+    return out
+
+
+def _append_transcript(source: str, message: dict) -> dict:
+    path = _transcript_path(source)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    now_min = int(time.time() // 60)
+    record = {
+        "id": str(message.get("id") or f"srv-{int(time.time() * 1000)}"),
+        "role": str(message.get("role") or "ai"),
+        "t": int(message.get("t") or now_min),
+    }
+    for key in (
+        "text", "raw_text", "runtime",
+        "attachments", "thinking", "thinkingLocked", "segments", "hold",
+        "divider", "recallUsed", "error",
+        # Step 6: extended schema
+        "tool_calls_summary", "actions", "presence", "metrics", "meta",
+    ):
+        if key in message and message[key] not in (None, [], ""):
+            record[key] = message[key]
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    _append_carryover(source, record)
+    return record
+
+
+def _normalize_metrics(
+    *,
+    runtime: str,
+    model: str,
+    usage: dict | None,
+    latency_ms: int | None = None,
+    cost_usd=None,
+) -> dict:
+    """Project provider-specific usage into a unified metrics dict.
+
+    Handles OpenAI (prompt_tokens/completion_tokens, prompt_tokens_details.cached_tokens),
+    Anthropic (input_tokens/output_tokens/cache_read_input_tokens/cache_creation_input_tokens),
+    and DeepSeek (prompt_cache_hit_tokens) usage shapes. Unknown shape → store as raw_usage only.
+    """
+    out: dict = {
+        "runtime": runtime,
+        "model": str(model or ""),
+    }
+    if latency_ms is not None:
+        out["latency_ms"] = int(latency_ms)
+    if cost_usd is not None:
+        try:
+            out["cost_usd"] = float(cost_usd)
+        except (TypeError, ValueError):
+            pass
+    if isinstance(usage, dict) and usage:
+        out["raw_usage"] = usage
+        # Unify token names
+        tok_in = usage.get("prompt_tokens") or usage.get("input_tokens")
+        tok_out = usage.get("completion_tokens") or usage.get("output_tokens")
+        if tok_in is not None:
+            try: out["tokens_in"] = int(tok_in)
+            except (TypeError, ValueError): pass
+        if tok_out is not None:
+            try: out["tokens_out"] = int(tok_out)
+            except (TypeError, ValueError): pass
+        # Cache fields (provider-specific)
+        cache_read = (
+            usage.get("cache_read_input_tokens")
+            or (usage.get("prompt_tokens_details") or {}).get("cached_tokens")
+            or usage.get("prompt_cache_hit_tokens")
+        )
+        if cache_read is not None:
+            try: out["tokens_cache_read"] = int(cache_read)
+            except (TypeError, ValueError): pass
+        cache_creation = usage.get("cache_creation_input_tokens")
+        if cache_creation is not None:
+            try: out["tokens_cache_creation"] = int(cache_creation)
+            except (TypeError, ValueError): pass
+    return out
+
+
+def _current_presence(scene: str = "") -> dict:
+    """Best-effort snapshot of user/ai status + scene for transcript record."""
+    out: dict = {}
+    if scene:
+        out["scene"] = scene
+    try:
+        if _CONFIG and _CONFIG.ai_state_path.exists():
+            data = json.loads(_CONFIG.ai_state_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                if data.get("ai_status"):
+                    out["ai"] = str(data.get("ai_status"))
+                if data.get("user_status"):
+                    out["user"] = str(data.get("user_status"))
+    except (OSError, json.JSONDecodeError):
+        pass
+    return out
+
+
+def _append_carryover(source: str, record: dict) -> None:
+    """Append non-cc turns to carryover.md so cc sees what it missed.
+
+    Carryover.md is a markdown side-channel consumed by the inject.sh hook
+    on the next cc UserPromptSubmit. Only turns whose runtime != "cc" are
+    appended; cc's own turns are already in its session resume state.
+    """
+    runtime = str(record.get("runtime") or "").strip().lower()
+    if runtime in {"", "cc"}:
+        return
+    text = str(record.get("raw_text") or record.get("text") or "").strip()
+    if not text:
+        return
+    role = str(record.get("role") or "ai")
+    ts = datetime.now(timezone.utc).isoformat()
+    home = _CONFIG.home_path
+    co_path = home / "carryover.md"
+    section = f"## {ts} {role}@{source} runtime={runtime}\n{text}\n\n"
+    with co_path.open("a", encoding="utf-8") as fh:
+        fh.write(section)
+    (home / ".carryover_dirty").touch()
+
+
+def _favilla_transcript_load(source: str = "chat", limit: int = 200) -> dict:
+    path = _transcript_path(source)
+    if not path.exists():
+        return {"ok": True, "messages": []}
+    cap = max(1, min(1000, limit))
+    messages = []
+    for line in path.read_text(encoding="utf-8").splitlines()[-cap:]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            messages.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return {"ok": True, "messages": messages}
+
+
+def _favilla_transcript_append(payload: dict) -> dict:
+    source = str(payload.get("source") or "chat")
+    role = str(payload.get("role") or "user")
+    if role not in {"user", "ai"}:
+        raise ValueError("role must be user or ai")
+    attachments = payload.get("attachments") or []
+    if not isinstance(attachments, list):
+        attachments = []
+    safe_attachments = _validate_app_attachments(attachments)
+    text_in = str(payload.get("text") or "")
+    record = _append_transcript(source, {
+        "role": role,
+        "text": text_in,
+        "raw_text": str(payload.get("raw_text") or text_in),
+        "attachments": _history_attachments(safe_attachments),
+    })
+    return {"ok": True, "message": record}
+
+
+def _favilla_stroll_nearby(payload: dict) -> dict:
+    if not _CONFIG:
+        raise RuntimeError("config not loaded")
+    from fiam_lib.stroll_store import list_spatial_records
+
+    current = payload.get("current") if isinstance(payload.get("current"), dict) else payload
+    radius_m = float(payload.get("radiusM") or payload.get("radius_m") or 50)
+    changed_since = int(payload.get("changedSince") or payload.get("changed_since") or 0)
+    return list_spatial_records(_CONFIG, current=current, radius_m=radius_m, changed_since=changed_since)
+
+
+def _favilla_stroll_record(payload: dict) -> dict:
+    if not _CONFIG:
+        raise RuntimeError("config not loaded")
+    from fiam_lib.stroll_store import add_spatial_record
+    from fiam_lib.stroll_events import get_bus
+
+    record = add_spatial_record(_CONFIG, payload)
+    text = str(record.get("text") or "").strip()
+    if text:
+        _append_transcript("stroll", {
+            "role": "user" if record.get("origin") == "user" else "ai",
+            "text": text,
+            "raw_text": text,
+        })
+    get_bus().publish("record", record)
+    return {"ok": True, "record": record}
+
+
+def _favilla_stroll_action_result(payload: dict) -> dict:
+    if not _CONFIG:
+        raise RuntimeError("config not loaded")
+    from fiam_lib.stroll_store import record_action_result
+    from fiam_lib.stroll_events import get_bus
+
+    record = record_action_result(_CONFIG, payload)
+    get_bus().publish("action_result", record)
+    return {"ok": True, "action": record}
+
+
+def _favilla_stroll_state_start(payload: dict) -> dict:
+    if not _CONFIG:
+        raise RuntimeError("config not loaded")
+    from fiam_lib import stroll_state
+
+    data = stroll_state.start(_CONFIG, payload or {})
+    return {"ok": True, "state": data}
+
+
+def _favilla_stroll_state_heartbeat(payload: dict) -> dict:
+    if not _CONFIG:
+        raise RuntimeError("config not loaded")
+    from fiam_lib import stroll_state
+
+    data = stroll_state.heartbeat(_CONFIG, payload or {})
+    return {"ok": True, "state": data}
+
+
+def _favilla_stroll_state_stop(payload: dict) -> dict:
+    if not _CONFIG:
+        raise RuntimeError("config not loaded")
+    from fiam_lib import stroll_state
+
+    reason = str((payload or {}).get("reason") or "user_stop").strip() or "user_stop"
+    data = stroll_state.stop(_CONFIG, reason=reason)
+    return {"ok": True, "state": data}
+
+
+def _favilla_stroll_state_status() -> dict:
+    if not _CONFIG:
+        raise RuntimeError("config not loaded")
+    from fiam_lib import stroll_state
+
+    return {"ok": True, "state": stroll_state.get_state(_CONFIG)}
+
+
+def _format_sse(ev: dict) -> bytes:
+    """Render one bus event as an SSE frame: id/event/data lines + blank line."""
+    payload = json.dumps(ev.get("data") or {}, ensure_ascii=False)
+    out = f"id: {ev['id']}\nevent: {ev.get('event') or 'message'}\ndata: {payload}\n\n"
+    return out.encode("utf-8")
+
+
+_STROLL_TICK_CHECK_INTERVAL_S = 10.0
+
+
+def _stroll_tick_loop() -> None:
+    """Background tick: while a stroll is active, wake AI every interval_seconds."""
+    import time as _time
+
+    from fiam_lib import stroll_state
+
+    while True:
+        try:
+            _time.sleep(_STROLL_TICK_CHECK_INTERVAL_S)
+            if not _CONFIG:
+                continue
+            state = stroll_state.get_state(_CONFIG)
+            if not state.get("active"):
+                continue
+            interval = float(state.get("interval_seconds") or stroll_state.DEFAULT_TICK_INTERVAL_S)
+            last_tick = float(state.get("last_tick_at") or 0.0)
+            now = _time.time()
+            if now - last_tick < interval:
+                continue
+            location = state.get("location") if isinstance(state.get("location"), dict) else None
+            stroll_ctx: dict = {}
+            if location and "lat" in location and "lng" in location:
+                stroll_ctx["current"] = {
+                    "lat": location["lat"],
+                    "lng": location["lng"],
+                    "accuracy": location.get("accuracy"),
+                }
+            payload = {
+                "source": "stroll",
+                "runtime": "api",
+                "text": f"[stroll_tick] 距上次 tick {int(now - last_tick)}s。看一下当前镜头/周围，决定要不要拍照、记录或给屏幕换图。",
+                "stroll_context": stroll_ctx,
+            }
+            try:
+                _favilla_chat_send(payload)
+            except Exception:
+                logger.exception("stroll tick send failed")
+            stroll_state.mark_tick(_CONFIG, at=now)
+        except Exception:
+            logger.exception("stroll tick loop error")
+
+
+def _start_stroll_tick_thread() -> None:
+    import threading as _threading
+
+    t = _threading.Thread(target=_stroll_tick_loop, name="stroll-tick", daemon=True)
+    t.start()
+
+
+def _validate_app_attachments(attachments: list) -> list[dict]:
+    safe_attachments = []
+    uploads_root = (_CONFIG.home_path / "uploads").resolve()
+    for att in attachments:
+        if not isinstance(att, dict):
+            continue
+        p = str(att.get("path") or "").strip()
+        if not p:
+            continue
+        try:
+            resolved = Path(p).resolve()
+        except Exception:
+            continue
+        try:
+            resolved.relative_to(uploads_root)
+        except ValueError:
+            continue
+        if not resolved.exists():
+            continue
+        safe_attachments.append({
+            "path": str(resolved),
+            "name": str(att.get("name") or resolved.name),
+            "mime": str(att.get("mime") or ""),
+            "size": int(att.get("size") or resolved.stat().st_size),
+        })
+    return safe_attachments
+
+
+def _apply_app_control_markers(
+    reply: str,
+    *,
+    source: str,
+    runtime: str,
+    user_text: str,
+    attachments: list | None = None,
+) -> tuple[str, int, str, dict | None]:
+    """Apply hold + control markers from an AI reply.
+
+    Returns ``(cleaned_reply, queued_todos, hold_kind, carry_over)`` where
+    ``hold_kind`` is ``""``, ``"text"`` (drop reply text only), or ``"all"``
+    (drop everything: no dispatch, no actions, no state updates). A
+    ``hold_retry`` todo is auto-queued when a hold is detected.
+    """
+    from fiam.markers import parse_carry_over_markers, strip_xml_markers
+    from fiam_lib.app_markers import apply_hold
+    from fiam_lib.todo import append_to_todo, extract_scheduled_items, extract_state_tag
+
+    if _CONFIG:
+        cleaned, hold_kind, retry_todos = apply_hold(
+            reply, _CONFIG, source=source, runtime=runtime,
+        )
+        if retry_todos:
+            append_to_todo(retry_todos, _CONFIG)
+    else:
+        from fiam.markers import parse_hold_kind
+        from fiam_lib.app_markers import strip_hold_markers
+        hold_kind = parse_hold_kind(reply or "")
+        cleaned = strip_hold_markers(reply or "")
+        retry_todos = []
+
+    if hold_kind == "all":
+        # Drop everything this round; only the retry todo persists.
+        return "", 0, "all", None
+
+    carry_markers = parse_carry_over_markers(cleaned)
+    carry_over = None
+    if carry_markers:
+        marker = carry_markers[-1]
+        carry_over = {"to": marker.target, "reason": marker.reason}
+
+    queued_todos = 0
+    if _CONFIG:
+        tags = extract_scheduled_items(cleaned, _CONFIG)
+        if tags:
+            queued_todos = append_to_todo(tags, _CONFIG)
+        state_tag = extract_state_tag(cleaned, _CONFIG)
+        if state_tag:
+            _write_app_ai_state(state_tag)
+
+    cleaned = strip_xml_markers(cleaned, {"wake", "todo", "sleep", "mute", "notify", "carry_over"}).strip()
+    if hold_kind == "text":
+        cleaned = ""
+    return cleaned, queued_todos, hold_kind, carry_over
+
+
+def _write_app_ai_state(state_tag: dict) -> None:
+    if not _CONFIG:
+        return
+    state = str(state_tag.get("state") or "notify")
+    if state not in {"notify", "mute", "sleep"}:
+        return
+    data = {
+        "state": state,
+        "since": _CONFIG.now_local().isoformat(),
+    }
+    reason = str(state_tag.get("reason") or "")
+    until = str(state_tag.get("sleeping_until") or state_tag.get("until") or "")
+    if reason:
+        data["reason"] = reason
+    if until:
+        data["until"] = until
+    _CONFIG.ai_state_path.parent.mkdir(parents=True, exist_ok=True)
+    _CONFIG.ai_state_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    if state == "sleep":
+        _CONFIG.active_session_path.unlink(missing_ok=True)
+
+
+def _recent_uploads_block(limit: int = 12) -> str:
+    if not _CONFIG:
+        return ""
+    manifest = _CONFIG.home_path / "uploads" / "manifest.jsonl"
+    if not manifest.exists():
+        return ""
+    rows = []
+    for line in manifest.read_text(encoding="utf-8", errors="replace").splitlines()[-limit:]:
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        rows.append(
+            f"- {rec.get('path')} (name={rec.get('name')!r}, mime={rec.get('mime')!r}, size={rec.get('size')}, uploaded_at={rec.get('uploaded_at')})"
+        )
+    if not rows:
+        return ""
+    return "[available_uploads]\nFiles are available for manual inspection; do not assume their contents without using tools.\n" + "\n".join(rows)
+
+
+def _favilla_chat_send(payload: dict) -> dict:
+    if not _CONFIG:
+        raise RuntimeError("config not loaded")
+    text = str(payload.get("text") or "").strip()
+    attachments = payload.get("attachments") or []
+    if not isinstance(attachments, list):
+        attachments = []
+    safe_attachments = _validate_app_attachments(attachments)
+    if not text and not safe_attachments:
+        raise ValueError("missing text")
+    if not text:
+        text = "(see attached file)"
+    source = str(payload.get("source") or "chat").strip() or "chat"
+    default_runtime = getattr(_CONFIG, "app_default_runtime", "auto") or "auto"
+    runtime = str(payload.get("runtime") or default_runtime).strip().lower() or "auto"
+    if runtime == "auto":
+        runtime = _select_favilla_chat_runtime(text, safe_attachments)
+    user_text = text
+    runtime_text = text
+    stroll_context: dict | None = None
+    if source == "stroll":
+        from fiam_lib.stroll_store import build_context_block
+
+        context_block, stroll_context = build_context_block(_CONFIG, payload.get("stroll_context") if isinstance(payload.get("stroll_context"), dict) else payload.get("context"))
+        runtime_text = f"{context_block}\n\n[user_message]\n{user_text}"
+    record_turn = payload.get("record_turn", payload.get("record", True)) is not False
+    if runtime == "api":
+        result = _run_api_favilla_chat(text=runtime_text, source=source, attachments=safe_attachments, record_turn=record_turn)
+    elif runtime == "cc":
+        result = _run_cc_favilla_chat(text=runtime_text, source=source, attachments=safe_attachments)
+    else:
+        raise ValueError("Favilla chat runtime must be auto, cc, or api")
+    carry = result.get("carry_over") if isinstance(result.get("carry_over"), dict) else None
+    target = str((carry or {}).get("to") or "").strip().lower()
+    if target in {"api", "cc"} and target != runtime:
+        transfer_text = _build_carry_over_text(
+            from_runtime=runtime,
+            to_runtime=target,
+            user_text=runtime_text,
+            private_notes=str(result.get("reply") or ""),
+            reason=str((carry or {}).get("reason") or ""),
+        )
+        if target == "api":
+            result = _run_api_favilla_chat(text=transfer_text, source=source, attachments=safe_attachments)
+        else:
+            result = _run_cc_favilla_chat(text=transfer_text, source=source, attachments=safe_attachments)
+        result["carry_over_from"] = runtime
+        runtime = target
+    stroll_records: list[dict] = []
+    stroll_actions: list[dict] = []
+    if source == "stroll":
+        from fiam_lib.stroll_store import apply_spatial_record_markers, apply_stroll_action_markers, strip_spatial_record_markers, strip_stroll_action_markers
+
+        cleaned_reply, stroll_records = apply_spatial_record_markers(_CONFIG, str(result.get("reply") or ""), stroll_context or {})
+        cleaned_reply, stroll_actions = apply_stroll_action_markers(_CONFIG, cleaned_reply, stroll_context or {})
+        result["reply"] = cleaned_reply
+        cleaned_segments = []
+        for segment in result.get("segments") or []:
+            if isinstance(segment, dict) and "text" in segment:
+                segment = dict(segment)
+                segment["text"] = strip_stroll_action_markers(strip_spatial_record_markers(str(segment.get("text") or "")))
+                if segment.get("type") == "text" and not str(segment.get("text") or "").strip():
+                    continue
+            cleaned_segments.append(segment)
+        result["segments"] = cleaned_segments
+    _append_transcript(source, {
+        "role": "user",
+        "text": user_text,
+        "raw_text": user_text,
+        "runtime": runtime,
+        "attachments": _history_attachments(safe_attachments),
+        "presence": _current_presence(scene=f"user@{source}"),
+    })
+    _append_transcript(source, {
+        "role": "ai",
+        "text": result.get("reply", ""),
+        "raw_text": result.get("raw_reply", result.get("reply", "")),
+        "runtime": runtime,
+        "thinking": result.get("thoughts") or [],
+        "thinkingLocked": bool(result.get("thoughts_locked")),
+        "segments": result.get("segments") or [],
+        "hold": result.get("hold"),
+        "tool_calls_summary": result.get("tool_calls_summary") or [],
+        "actions": result.get("actions_list") or [],
+        "metrics": result.get("metrics") or {},
+        "presence": _current_presence(scene=f"ai@{source}"),
+    })
+    if stroll_context is not None:
+        result["stroll_context"] = stroll_context
+    if stroll_records:
+        result["stroll_records"] = stroll_records
+        try:
+            from fiam_lib.stroll_events import get_bus
+            bus = get_bus()
+            for rec in stroll_records:
+                bus.publish("record", rec)
+        except Exception:
+            logger.exception("stroll record publish failed")
+    if source == "stroll" and stroll_actions:
+        result["stroll_actions"] = stroll_actions
+        try:
+            from fiam_lib.stroll_events import get_bus
+            bus = get_bus()
+            for act in stroll_actions:
+                bus.publish("action", act)
+        except Exception:
+            logger.exception("stroll action publish failed")
+    result["runtime"] = runtime
+    return result
+
+
+def _build_carry_over_text(*, from_runtime: str, to_runtime: str, user_text: str, private_notes: str, reason: str) -> str:
+    parts = [
+        f"[carry_over from={from_runtime} to={to_runtime}] Continue this same Favilla chat turn on the target runtime.",
+        "Do not mention the transfer mechanics unless the user asks.",
+    ]
+    if reason:
+        parts.append(f"Reason: {reason}")
+    parts.extend([
+        "",
+        "Original user message:",
+        user_text,
+    ])
+    if private_notes.strip():
+        parts.extend([
+            "",
+            "Private notes from the previous surface:",
+            private_notes.strip(),
+        ])
+    return "\n".join(parts)
+
+
+def _favilla_upload(payload: dict) -> dict:
+    """Accept base64-encoded files, save under home_path/uploads/<date>/<hash>-<name>."""
+    if not _CONFIG:
+        raise RuntimeError("config not loaded")
+    import base64
+    import hashlib
+    files_in = payload.get("files") or []
+    if not isinstance(files_in, list) or not files_in:
+        raise ValueError("missing files")
+    date_dir = _CONFIG.now_local().strftime("%Y-%m-%d")
+    out_dir = _CONFIG.home_path / "uploads" / date_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+    saved = []
+    for f in files_in:
+        if not isinstance(f, dict):
+            continue
+        name = str(f.get("name") or "").strip()
+        b64 = str(f.get("data") or "")
+        mime = str(f.get("mime") or "")
+        if not name or not b64:
+            continue
+        # Strip data: prefix if present
+        if "," in b64 and b64.startswith("data:"):
+            b64 = b64.split(",", 1)[1]
+        try:
+            raw = base64.b64decode(b64)
+        except Exception as exc:
+            raise ValueError(f"bad base64 for {name}: {exc}") from exc
+        # Sanitize name: keep ext, strip path components
+        safe_name = Path(name).name.replace("/", "_").replace("\\", "_")
+        digest = hashlib.sha256(raw).hexdigest()[:12]
+        target = out_dir / f"{digest}-{safe_name}"
+        target.write_bytes(raw)
+        record = {
+            "path": str(target),
+            "name": safe_name,
+            "mime": mime,
+            "size": len(raw),
         }
-    if graph_path.exists():
-        for line in graph_path.read_text(encoding="utf-8").splitlines():
+        saved.append(record)
+        manifest = _CONFIG.home_path / "uploads" / "manifest.jsonl"
+        with manifest.open("a", encoding="utf-8") as mf:
+            mf.write(json.dumps({
+                "uploaded_at": datetime.now(timezone.utc).isoformat(),
+                "sha256": hashlib.sha256(raw).hexdigest(),
+                **record,
+            }, ensure_ascii=False) + "\n")
+    return {"ok": True, "files": saved}
+
+
+# ------------------------------------------------------------------
+# Favilla Chat memory ops (manual mode): /favilla/chat/recall, /favilla/chat/process
+# ------------------------------------------------------------------
+#
+# Until BGE-M3 is well-tuned for personal-life semantics, the system runs
+# in manual memory_mode: the user (via Favilla app or dashboard) decides
+# *when* to recall and *when* to seal an event. Embeddings/edges are still
+# computed and stored so we accumulate training data; they just don't
+# auto-fire retrieval or auto-segment beats.
+#
+# These endpoints are intentionally lightweight stubs right now:
+# - /favilla/chat/recall: writes a small fake recall.md using existing events
+#   (or a placeholder if pool is empty), touches .recall_dirty so the next
+#   chat turn picks it up via _pending_recall_for_app().
+# - /favilla/chat/process: simulates DS processing time (sleep 2s) so the UI can
+#   show its hourglass animation, then appends a fake event to the pool
+#   (random-init 1024-d fingerprint). Real seal logic comes after the
+#   CC-path beat ingestion fix.
+
+import threading
+
+_SEAL_LOCK = threading.Lock()
+_SEAL_BUSY = False
+
+
+def _favilla_chat_recall(payload: dict) -> dict:
+    """Run real spread-activation recall over the pool using the latest
+    beats as the seed query vector, and write the result to recall.md so
+    the next chat turn picks it up via _pending_recall_for_app().
+    """
+    if not _CONFIG or not _POOL:
+        raise RuntimeError("config/pool not loaded")
+    import numpy as _np
+    from fiam.runtime.recall import refresh_recall
+    from fiam.store.beat import Beat
+    from fiam.store.features import FeatureStore
+
+    # Seed = mean of vectors for the most recent N beats in flow.jsonl
+    seed_n = max(1, int(payload.get("seed_beats", 8)))
+    flow_path = _CONFIG.flow_path
+    seed_vec = None
+    if flow_path.exists():
+        store = FeatureStore(_CONFIG.feature_dir, dim=_CONFIG.embedding_dim)
+        lines = flow_path.read_text(encoding="utf-8").splitlines()[-seed_n:]
+        vecs = []
+        for line in lines:
             line = line.strip()
             if not line:
                 continue
             try:
-                e = json.loads(line)
-                src = e.get("source") or e.get("src")
-                tgt = e.get("target") or e.get("dst")
-                if not src or not tgt:
-                    continue
-                edges.append({
-                    "source": src,
-                    "target": tgt,
-                    "kind": e.get("kind", e.get("type", "associative")),
-                    "weight": float(e.get("weight", e.get("score", 0.5))),
-                })
-                # ensure endpoints exist as nodes
-                for eid in (src, tgt):
-                    if eid not in nodes:
-                        nodes[eid] = {
-                            "id": eid,
-                            "label": eid[-6:],
-                            "intensity": intensity_map.get(eid, 0.3),
-                            "time": time_map.get(eid, ""),
-                            "last_accessed": last_acc_map.get(eid, ""),
-                            "access_count": acc_cnt_map.get(eid, 0),
-                        }
-            except (json.JSONDecodeError, KeyError, ValueError):
+                raw = json.loads(line)
+                v = store.get_beat_vector(Beat.from_dict(raw))
+                if v is not None:
+                    vecs.append(v)
+            except Exception:
                 continue
-    return {"nodes": list(nodes.values()), "edges": edges}
+        if vecs:
+            arr = _np.mean(_np.stack(vecs), axis=0).astype(_np.float32)
+            n = float(_np.linalg.norm(arr))
+            if n > 1e-9:
+                seed_vec = arr / n
+
+    if seed_vec is None:
+        # No beats yet: write empty recall, mark dirty so chat sees nothing stale
+        _CONFIG.background_path.parent.mkdir(parents=True, exist_ok=True)
+        _CONFIG.background_path.write_text("", encoding="utf-8")
+        (_CONFIG.background_path.parent / ".recall_dirty").touch()
+        return {"ok": True, "count": 0, "note": "no beats"}
+
+    include_recent = payload.get(
+        "include_recent",
+        getattr(_CONFIG, "app_recall_include_recent", True),
+    )
+    if isinstance(include_recent, str):
+        include_recent = include_recent.strip().lower() not in {"0", "false", "no", "off"}
+    count = refresh_recall(
+        _CONFIG,
+        _POOL,
+        seed_vec,
+        top_k=_CONFIG.recall_top_k,
+    )
+    return {"ok": True, "count": count, "path": str(_CONFIG.background_path)}
+
+
+def _cut_file_path():
+    return _CONFIG.home_path / "app_cuts.jsonl"
+
+
+def _favilla_chat_cut(payload: dict) -> dict:
+    """Append a cut marker at the current end of flow.jsonl. The next
+    /favilla/chat/process call will use these markers to slice unprocessed
+    beats into multiple segments (events).
+
+    Cut alone does NOT trigger DS processing. It just records a divider.
+    """
+    if not _CONFIG:
+        raise RuntimeError("config not loaded")
+    flow_path = _CONFIG.flow_path
+    if flow_path.exists():
+        offset = sum(1 for line in flow_path.read_text(encoding="utf-8").splitlines() if line.strip())
+    else:
+        offset = 0
+    cut_path = _cut_file_path()
+    cut_path.parent.mkdir(parents=True, exist_ok=True)
+    record = {"flow_offset": int(offset), "ts": datetime.now(timezone.utc).isoformat()}
+    with cut_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record) + "\n")
+    source = str(payload.get("source") or "chat")
+    _append_transcript(source, {
+        "role": "ai",
+        "divider": {"kind": "scissor", "label": "cut"},
+    })
+    return {"ok": True, "flow_offset": offset}
+
+
+def _read_pending_cuts(start: int, end: int) -> list[int]:
+    """Return absolute flow offsets in (start, end) where the user cut."""
+    cut_path = _cut_file_path()
+    if not cut_path.exists():
+        return []
+    out: list[int] = []
+    for line in cut_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+            o = int(rec.get("flow_offset", -1))
+        except (json.JSONDecodeError, ValueError, TypeError):
+            continue
+        if start < o < end:
+            out.append(o)
+    return sorted(set(out))
+
+
+def _truncate_cut_file() -> None:
+    cut_path = _cut_file_path()
+    if cut_path.exists():
+        cut_path.write_text("", encoding="utf-8")
+
+
+def _favilla_chat_process(payload: dict) -> dict:
+    """Process all unprocessed flow beats. Cut markers (recorded via
+    /favilla/chat/cut) split beats into multiple segments; each segment becomes
+    one event via the dashboard 3-phase annotation pipeline.
+
+    Cut markers are consumed (file truncated) on success. App-side seal is
+    immutable once confirmed — edit via web console.
+    """
+    global _SEAL_BUSY
+    if not _CONFIG or not _POOL:
+        raise RuntimeError("config/pool not loaded")
+    with _SEAL_LOCK:
+        if _SEAL_BUSY:
+            return {"ok": False, "error": "seal already in progress"}
+        _SEAL_BUSY = True
+    try:
+        try:
+            from fiam_lib.dashboard_annotation import annotation_state as _annot_state
+            start = int(_annot_state().get("processed_until", 0))
+            # Phase 1: load unprocessed beats
+            proposal = _annotate_request({"limit": 10000})
+            beats = proposal.get("beats", [])
+            if not beats:
+                return {"ok": False, "error": "no beats to seal"}
+            end = int(proposal.get("flow_end", start + len(beats)))
+            # Build cuts vector from pending cut markers in (start, end)
+            cut_offsets = _read_pending_cuts(start, end)
+            cuts = [0] * max(0, len(beats) - 1)
+            for o in cut_offsets:
+                idx = o - start - 1  # cut between beat[idx] and beat[idx+1]
+                if 0 <= idx < len(cuts):
+                    cuts[idx] = 1
+            # Phase 2: DS proposes name + edges
+            _annotate_edges({"cuts": cuts, "drift_cuts": cuts})
+            # Phase 3: commit
+            result = _annotate_confirm({"cuts": cuts, "drift_cuts": cuts})
+            _truncate_cut_file()
+            ev_ids = result.get("events_created", [])
+            return {
+                "ok": True,
+                "event_id": ev_ids[0] if ev_ids else None,
+                "events_created": ev_ids,
+                "edges_created": result.get("edges_created", 0),
+                "beats": len(beats),
+                "segments": len(ev_ids),
+            }
+        except Exception as exc:
+            logger.exception("seal failed")
+            return {"ok": False, "error": str(exc)}
+    finally:
+        with _SEAL_LOCK:
+            _SEAL_BUSY = False
+
+
+def _favilla_chat_process_status(_payload: dict | None = None) -> dict:
+    return {"ok": True, "busy": _SEAL_BUSY}
+
+
+# CoT visibility: parsing lives in fiam_lib.app_markers (parse_app_cot).
+# Protocol:
+# - <cot>...</cot> wraps a shareable thought block.
+# - <lock/> anywhere locks the ENTIRE thought chain for this turn
+#   (covers both marker thoughts AND any native reasoning the runtime carries).
+# - Default = unlocked. AI must opt-in to lock.
+
+_APP_RUNTIME_CONTEXT_BASE = """[Direct runtime awareness]
+The scene tag describes where this turn appears in the narrative. User-side scenes look like user@<channel>: user@favilla and user@stroll are the two Favilla app surfaces. AI-side scenes look like ai@<channel>: ai@favilla and ai@stroll are the matching reply surfaces; ai@think is internal reasoning; ai@action is a tool call. The runtime tag describes the capability surface for this turn: api is the OpenAI-compatible API surface, cc is Claude Code with file/shell/tool capability, and auto means the server selected one. Do not infer a fixed personal name from the runtime tag. The web dashboard is view-only and never originates a user turn — there is no console scene. Reply naturally for the active scene while staying precise about the runtime."""
+
+
+def _app_runtime_context() -> str:
+    now_utc = _CONFIG.now_utc() if _CONFIG else datetime.now(timezone.utc)
+    local = now_utc.astimezone(_CONFIG.project_tz()).isoformat() if _CONFIG else now_utc.astimezone().isoformat()
+    uploads_dir = (_CONFIG.home_path / "uploads") if _CONFIG else Path("uploads")
+    return "\n\n".join([
+        _APP_RUNTIME_CONTEXT_BASE,
+        f"[uploads]\nFavilla uploads live at {uploads_dir} with an index at {uploads_dir / 'manifest.jsonl'}. Do not mention old uploaded files just because they exist. Only inspect or discuss uploads when the current user message asks about files/images/uploads or includes current attachments.",
+        f"[server_time]\nutc={now_utc.isoformat()}\nlocal={local}",
+        "[tool_mode]\nUse the structured file/shell tools (Read/Write/Edit/Glob/Grep/Bash/git_diff) only when you must wait on a real result. For fire-and-forget side effects use the XML markers documented in self/awareness.md (and CLAUDE.md): <todo at=\"...\">desc</todo> to wake yourself later, <wake>TIME</wake> for bare wake-ups, <sleep until=\"...\" reason=\"...\" /> to sleep, <mute .../> + <notify /> for do-not-disturb. Keep tool details out of the user-facing reply unless the user asks for them.",
+        "[app_markers]\nFor visible thinking summaries, wrap shareable state notes in <cot>...</cot>. To lock the entire turn's thought chain (both <cot> blocks and any native reasoning), include <lock/> anywhere in the reply. The server strips these markers into structured segments; clients may or may not render them visibly. Do not promise a specific button, bubble, or visual affordance unless the current client explicitly supports it. To pull back a reply you no longer want to send, include <hold/> — the visible reply text is dropped (other markers like dispatch/todo still execute) and a hold_retry todo is auto-queued so you can take another pass shortly. Use <hold all/> to drop the entire round (no dispatch, no actions, no state updates); the retry todo is still queued. Your held output remains in your context, so on the retry you can see what you just held.",
+    ])
+
+
+def _recent_conversation_for_app(source: str, *, max_n: int = 12, max_chars: int = 4000) -> str:
+    """Read transcript tail for the given source as a block for api context.
+
+    Returns formatted lines like:
+        [recent_conversation source=chat]
+        2026-05-07T14:00 user@chat (api): hello
+        2026-05-07T14:00 ai@chat (api): hi there
+        ...
+
+    Cross-source merge is intentionally NOT done here: chat ↔ stroll keep
+    separate threads. Returns "" if no transcript.
+    """
+    if not _CONFIG:
+        return ""
+    path = _transcript_path(source)
+    if not path.exists():
+        return ""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    records = []
+    for line in lines[-(max_n * 2):]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    if not records:
+        return ""
+    rendered: list[str] = [f"[recent_conversation source={source}]"]
+    rendered.append("# This is the recent transcript on this surface (raw, includes XML markers). Use it as conversational context; do not echo XML markers back.")
+    for rec in records[-max_n:]:
+        role = str(rec.get("role") or "ai")
+        rt = str(rec.get("runtime") or "")
+        rt_tag = f" ({rt})" if rt else ""
+        ts = int(rec.get("t") or 0)
+        body = str(rec.get("raw_text") or rec.get("text") or "").strip()
+        if not body:
+            continue
+        rendered.append(f"{ts} {role}@{source}{rt_tag}: {body}")
+    block = "\n".join(rendered)
+    if len(block) > max_chars:
+        block = block[-max_chars:]
+        # Re-anchor with a header so the model still recognises the block
+        block = f"[recent_conversation source={source} truncated]\n...{block}"
+    return block
+
+
+def _parse_cot(reply: str) -> tuple[str, list[dict], bool, list[dict]]:
+    """Strip <cot>/<lock> markers from reply.
+
+    Returns (cleaned_reply, thoughts, locked, segments).
+    - thoughts: list of {"kind":"think","text":str,"source":"marker"} from <cot> blocks
+    - locked: True if AI wrote <lock/>; else False (default unlock)
+
+    Fallback: if the model wrapped its ENTIRE reply inside <cot> markers
+    so the cleaned body is empty, demote the last thought back to the user-facing
+    reply (avoids "AI's answer disappeared into thinking chain" bug).
+    """
+    parsed = parse_app_cot(reply, _CONFIG)
+    return parsed.reply, parsed.thoughts, parsed.locked, parsed.segments
+
+
+def _redact_cc_snippet(value: object, *, limit: int = 500) -> str:
+    text = str(value or "")
+    text = re.sub(r"(?i)(token|api[_-]?key|secret|password)(\s*[:=]\s*)[^\s'\"]+", r"\1\2<redacted>", text)
+    text = re.sub(r"(?i)bearer\s+[a-z0-9._~+/=-]+", "Bearer <redacted>", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:limit] + ("..." if len(text) > limit else "")
+
+
+def _summarize_cc_tool_input(name: str, data: dict) -> str:
+    if name == "Bash":
+        desc = data.get("description") or ""
+        command = data.get("command") or ""
+        return _redact_cc_snippet(desc or command, limit=360)
+    for key in ("file_path", "path", "pattern", "glob", "url"):
+        if data.get(key):
+            return _redact_cc_snippet(data.get(key), limit=360)
+    if data:
+        return _redact_cc_snippet(json.dumps(data, ensure_ascii=False, sort_keys=True), limit=360)
+    return ""
+
+
+def _parse_cc_stream(stdout: str) -> tuple[dict, list[dict]]:
+    result_data: dict = {}
+    tool_names: dict[str, str] = {}
+    action_events: list[dict] = []
+    for raw_line in (stdout or "").splitlines():
+        raw_line = raw_line.strip()
+        if not raw_line:
+            continue
+        try:
+            item = json.loads(raw_line)
+        except json.JSONDecodeError:
+            continue
+        item_type = item.get("type")
+        if item_type == "result":
+            result_data = item
+            continue
+        if item_type == "assistant":
+            message = item.get("message") if isinstance(item.get("message"), dict) else {}
+            for block in message.get("content") or []:
+                if not isinstance(block, dict) or block.get("type") != "tool_use":
+                    continue
+                tool_id = str(block.get("id") or "")
+                name = str(block.get("name") or "tool")
+                tool_names[tool_id] = name
+                input_data = block.get("input") if isinstance(block.get("input"), dict) else {}
+                summary = _summarize_cc_tool_input(name, input_data)
+                action_events.append({
+                    "kind": "tool_use",
+                    "tool_use_id": tool_id,
+                    "tool_name": name,
+                    "summary": summary,
+                })
+            continue
+        if item_type == "user":
+            result = item.get("tool_use_result") if isinstance(item.get("tool_use_result"), dict) else {}
+            message = item.get("message") if isinstance(item.get("message"), dict) else {}
+            content = message.get("content") or []
+            tool_id = ""
+            content_text = ""
+            if content and isinstance(content[0], dict):
+                tool_id = str(content[0].get("tool_use_id") or "")
+                content_text = str(content[0].get("content") or "")
+            name = tool_names.get(tool_id, "tool")
+            stdout_text = result.get("stdout") or content_text
+            stderr_text = result.get("stderr") or ""
+            output = stdout_text if stdout_text else stderr_text
+            action_events.append({
+                "kind": "tool_result",
+                "tool_use_id": tool_id,
+                "tool_name": name,
+                "is_error": bool(result.get("is_error")) or bool(result.get("isError")) or bool(stderr_text and not stdout_text),
+                "summary": _redact_cc_snippet(output, limit=500),
+            })
+    return result_data, action_events
+
+
+def _combine_cc_action_events(action_events: list[dict]) -> list[dict]:
+    combined: list[dict] = []
+    by_id: dict[str, dict] = {}
+    for event in action_events:
+        tool_id = str(event.get("tool_use_id") or "")
+        name = str(event.get("tool_name") or "tool")
+        action = by_id.get(tool_id)
+        if action is None:
+            action = {
+                "kind": "tool_action",
+                "tool_use_id": tool_id,
+                "tool_name": name,
+                "input_summary": "",
+                "result_summary": "",
+                "is_error": False,
+                "status": "pending",
+            }
+            by_id[tool_id] = action
+            combined.append(action)
+        if name and action.get("tool_name") in {"", "tool"}:
+            action["tool_name"] = name
+        if event.get("kind") == "tool_use":
+            action["input_summary"] = str(event.get("summary") or "")
+        elif event.get("kind") == "tool_result":
+            action["result_summary"] = str(event.get("summary") or "")
+            action["is_error"] = bool(event.get("is_error"))
+            action["status"] = "error" if action["is_error"] else "ok"
+    return combined
+
+
+def _run_cc_favilla_chat(*, text: str, source: str, attachments: list | None = None) -> dict:
+    import subprocess
+    from fiam.runtime.prompt import build_plain_prompt_parts
+
+    pending_recall = _pending_recall_for_app()
+    session = _load_app_active_session()
+    prompt_text = text
+    if attachments:
+        lines = ["[attachments]"]
+        for a in attachments:
+            mime = a.get("mime") or ""
+            lines.append(f"- {a['path']}  (name={a['name']!r}, mime={mime})")
+        lines.append("")
+        prompt_text = "\n".join(lines) + text
+    system_context, user_prompt = build_plain_prompt_parts(
+        _CONFIG,
+        prompt_text,
+        source=source,
+        include_recall=True,
+        consume_recall_dirty=True,
+        extra_context=_app_runtime_context(),
+    )
+    command = [
+        "claude", "-p", user_prompt,
+        "--output-format", "stream-json",
+        "--verbose",
+        "--max-turns", "10",
+        "--setting-sources", "user,project,local",
+        "--exclude-dynamic-system-prompt-sections",
+        "--permission-mode", "bypassPermissions",
+    ]
+    if system_context:
+        command.extend(["--append-system-prompt", system_context])
+    if _CONFIG.cc_model:
+        command.extend(["--model", _CONFIG.cc_model])
+    if _CONFIG.cc_disallowed_tools:
+        command.extend([
+            "--disallowedTools",
+            *[tool.strip() for tool in _CONFIG.cc_disallowed_tools.split(",") if tool.strip()],
+        ])
+    cwd_path = _CONFIG.home_path
+    def run_claude(resume_session_id: str | None):
+        cmd = list(command)
+        if resume_session_id:
+            cmd.extend(["--resume", resume_session_id])
+        try:
+            return subprocess.run(
+                cmd,
+                input="",
+                capture_output=True,
+                text=True,
+                timeout=240,
+                cwd=str(cwd_path),
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("claude chat timeout") from exc
+        except FileNotFoundError as exc:
+            raise RuntimeError("claude not found on server PATH") from exc
+
+    def parse_claude_result(result):
+        data, action_events = _parse_cc_stream(result.stdout or "")
+        if not data:
+            detail = (result.stderr or result.stdout or "").strip()[:500]
+            raise RuntimeError(f"bad claude stream-json: {detail}")
+        is_partial_success = data.get("subtype") == "error_max_turns"
+        is_error = bool(data.get("is_error")) or result.returncode != 0
+        return data, _combine_cc_action_events(action_events), is_partial_success, is_error
+
+    resume_id = session["session_id"] if session else None
+    result = run_claude(resume_id)
+    data, action_events, is_partial_success, is_error = parse_claude_result(result)
+    if is_error and not is_partial_success:
+        detail = (data.get("error") or data.get("result") or result.stderr or result.stdout or "claude failed")
+        if resume_id and "No conversation found with session ID" in str(detail):
+            try:
+                _CONFIG.active_session_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            result = run_claude(None)
+            data, action_events, is_partial_success, is_error = parse_claude_result(result)
+            detail = (data.get("error") or data.get("result") or result.stderr or result.stdout or "claude failed")
+        if is_error and not is_partial_success:
+            raise RuntimeError(str(detail).strip()[:500])
+
+    session_id = str(data.get("session_id") or "").strip()
+    if session_id:
+        _save_app_active_session(session_id)
+
+    reply = str(data.get("result") or "").strip()
+    raw_reply = reply
+    reply, queued_todos, hold_kind, carry_over = _apply_app_control_markers(
+        reply,
+        source=source,
+        runtime="cc",
+        user_text=prompt_text,
+        attachments=attachments or [],
+    )
+    cleaned_reply, thoughts, thoughts_locked, segments = _parse_cot(reply)
+    hold = {"kind": hold_kind} if hold_kind else None
+    if hold and not segments:
+        thoughts_locked = True
+        summary = "holding everything" if hold_kind == "all" else "holding this reply"
+        thoughts = [{"kind": "think", "text": summary, "summary": summary, "source": "marker", "locked": True, "icon": "Clock3"}]
+        segments = [{"type": "thought", "summary": summary, "source": "marker", "locked": True, "icon": "Clock3"}]
+    # Step 6: enrich segments with tool_use / tool_result events from cc stream-json
+    enriched_segments = list(segments)
+    for action in action_events or []:
+        tool_id = str(action.get("tool_use_id") or "")
+        tool_name = str(action.get("tool_name") or "tool")
+        if action.get("input_summary"):
+            enriched_segments.append({
+                "type": "tool_use",
+                "tool_use_id": tool_id,
+                "tool_name": tool_name,
+                "input_summary": str(action.get("input_summary") or ""),
+            })
+        if action.get("result_summary") or action.get("is_error"):
+            enriched_segments.append({
+                "type": "tool_result",
+                "tool_use_id": tool_id,
+                "tool_name": tool_name,
+                "result_summary": str(action.get("result_summary") or ""),
+                "is_error": bool(action.get("is_error")),
+            })
+    metrics = _normalize_metrics(
+        runtime="cc",
+        model=str(data.get("model") or _CONFIG.cc_model or ""),
+        usage=data.get("usage") if isinstance(data.get("usage"), dict) else None,
+        latency_ms=int(data.get("duration_ms") or 0) or None,
+        cost_usd=data.get("total_cost_usd"),
+    )
+    actions_list: list[dict] = []
+    for todo in queued_todos or []:
+        actions_list.append({"kind": "queued_todo", **(todo if isinstance(todo, dict) else {"text": str(todo)})})
+    if carry_over:
+        actions_list.append({"kind": "carry_over", **(carry_over if isinstance(carry_over, dict) else {"value": str(carry_over)})})
+    _record_cc_app_turn(prompt_text, cleaned_reply, source, action_events=action_events, session_id=session_id)
+    return {
+        "ok": True,
+        "runtime": "cc",
+        "reply": cleaned_reply,
+        "raw_reply": raw_reply,
+        "recall": pending_recall,
+        "session_id": session_id,
+        "subtype": data.get("subtype"),
+        "cost_usd": data.get("total_cost_usd", 0),
+        "thoughts": thoughts,
+        "thoughts_locked": thoughts_locked,
+        "segments": enriched_segments,
+        "hold": hold,
+        "queued_todos": queued_todos,
+        "carry_over": carry_over,
+        "actions": action_events,
+        # Step 6: structured fields for transcript
+        "tool_calls_summary": action_events or [],
+        "actions_list": actions_list,
+        "metrics": metrics,
+    }
+
+def _record_cc_app_turn(user_text: str, assistant_reply: str, source: str, *, action_events: list[dict] | None = None, session_id: str = "") -> None:
+    if not _CONFIG or not _POOL:
+        return
+    from fiam.conductor import Conductor
+    from fiam.runtime.turns import assistant_text_beats, user_beat
+    from fiam.store.beat import Beat
+    from fiam.store.features import FeatureStore
+
+    feature_store = FeatureStore(_CONFIG.feature_dir, dim=_CONFIG.embedding_dim)
+    conductor = Conductor(
+        pool=_POOL,
+        embedder=_get_embedder(),
+        config=_CONFIG,
+        flow_path=_CONFIG.flow_path,
+        drift_threshold=_CONFIG.drift_threshold,
+        gorge_max_beat=_CONFIG.gorge_max_beat,
+        gorge_min_depth=_CONFIG.gorge_min_depth,
+        gorge_stream_confirm=_CONFIG.gorge_stream_confirm,
+        memory_mode=_CONFIG.memory_mode,
+        feature_store=feature_store,
+    )
+    now = datetime.now(timezone.utc)
+    from fiam.runtime.turns import scene_for_user, scene_for_ai
+    user_scene = scene_for_user(source)
+    ai_scene = scene_for_ai(source)
+    conductor._ingest_beat(user_beat(
+        user_text,
+        t=now,
+        scene=user_scene,
+        user_status=conductor.user_status,
+        ai_status=conductor.ai_status,
+        user_name=getattr(_CONFIG, "user_name", "") or "zephyr",
+    ))
+    for action in action_events or []:
+        kind = str(action.get("kind") or "tool")
+        name = str(action.get("tool_name") or "tool")
+        if kind == "tool_action":
+            input_summary = str(action.get("input_summary") or "").strip()
+            text = f"action: {name}" + (f" — {input_summary}" if input_summary else "")
+        else:
+            summary = str(action.get("summary") or "").strip()
+            if kind == "tool_use":
+                text = f"action: {name}" + (f" — {summary}" if summary else "")
+            else:
+                # legacy path: 单独的 result 事件不再入 flow
+                continue
+        conductor._ingest_beat(Beat(
+            t=datetime.now(timezone.utc),
+            text=text,
+            scene="ai@action",
+            user=conductor.user_status,
+            ai=conductor.ai_status,
+            runtime="cc",
+        ))
+    for beat in assistant_text_beats(
+        assistant_reply,
+        t=datetime.now(timezone.utc),
+        scene=ai_scene,
+        user_status=conductor.user_status,
+        ai_status=conductor.ai_status,
+        runtime="cc",
+    ):
+        conductor._ingest_beat(beat)
+
+
+def _record_api_turn_light(user_text: str, assistant_reply: str, source: str, *, tool_calls: list[dict] | None = None) -> None:
+    if not _CONFIG:
+        return
+    from fiam.runtime.turns import assistant_text_beats, scene_for_ai, scene_for_user, user_beat
+    from fiam.store.beat import Beat, append_beats
+
+    now = datetime.now(timezone.utc)
+    beats = [user_beat(
+        user_text,
+        t=now,
+        scene=scene_for_user(source),
+        user_status="away",
+        ai_status="online",
+        user_name=getattr(_CONFIG, "user_name", "") or "zephyr",
+    )]
+    for call in tool_calls or []:
+        tool_name = str(call.get("tool_name") or "tool")
+        input_summary = str(call.get("input_summary") or "").replace("\n", " ")[:300]
+        beats.append(Beat(
+            t=datetime.now(timezone.utc),
+            text=f"action: {tool_name}" + (f" — {input_summary}" if input_summary else ""),
+            scene="ai@action",
+            user="away",
+            ai="online",
+            runtime="api",
+        ))
+    beats.extend(assistant_text_beats(
+        assistant_reply,
+        t=datetime.now(timezone.utc),
+        scene=scene_for_ai(source),
+        user_status="away",
+        ai_status="online",
+        runtime="api",
+    ))
+    append_beats(_CONFIG.flow_path, beats)
+
+
+def _run_api_favilla_chat(*, text: str, source: str, attachments: list | None = None, record_turn: bool = True) -> dict:
+    if not _CONFIG or not _POOL:
+        raise RuntimeError("config not loaded")
+    config = _CONFIG
+    pool = _POOL
+
+    from fiam.conductor import Conductor
+    from fiam.runtime.api import ApiRuntime
+    from fiam.runtime.recall import refresh_recall
+    from fiam.store.features import FeatureStore
+
+    light_browser_record = source == "browser" and getattr(config, "embedding_backend", "local") == "local"
+    feature_store = None if light_browser_record else FeatureStore(config.feature_dir, dim=config.embedding_dim)
+    bus = None if light_browser_record else _get_bus()
+
+    def _refresh(vec):
+        return refresh_recall(config, pool, vec, top_k=config.recall_top_k)
+
+    conductor = None
+    if not light_browser_record:
+        embedder = _get_embedder()
+        if embedder is None:
+            raise RuntimeError("embedder unavailable")
+        conductor = Conductor(
+            pool=pool,
+            embedder=embedder,
+            config=config,
+            flow_path=config.flow_path,
+            drift_threshold=config.drift_threshold,
+            gorge_max_beat=config.gorge_max_beat,
+            gorge_min_depth=config.gorge_min_depth,
+            gorge_stream_confirm=config.gorge_stream_confirm,
+            bus=bus,
+            memory_mode=config.memory_mode,
+            feature_store=feature_store,
+        )
+    runtime = ApiRuntime.from_config(
+        config,
+        conductor=conductor,
+        dispatcher=conductor.dispatch if bus is not None and conductor is not None else None,
+        recall_refresher=None if light_browser_record else _refresh,
+    )
+    api_text = text
+    if attachments:
+        lines = ["[attachments]"]
+        for a in attachments:
+            mime = a.get("mime") or ""
+            lines.append(f"- {a['path']}  (name={a['name']!r}, mime={mime})")
+        lines.append("")
+        api_text = "\n".join(lines) + text
+    extras = _app_runtime_context()
+    recent = "" if source == "browser" else _recent_conversation_for_app(source)
+    if recent:
+        extras = f"{extras}\n\n{recent}"
+    api_started_at = time.time()
+    result = runtime.ask(api_text, source=source, record=not light_browser_record, extra_context=extras, image_attachments=attachments or [])
+    api_latency_ms = int((time.time() - api_started_at) * 1000)
+    raw_reply = str(result.reply or "")
+    reply, queued_todos, hold_kind, carry_over = _apply_app_control_markers(
+        result.reply,
+        source=source,
+        runtime="api",
+        user_text=api_text,
+        attachments=attachments or [],
+    )
+    cleaned_reply, thoughts, thoughts_locked, segments = _parse_cot(reply)
+    hold = {"kind": hold_kind} if hold_kind else None
+    if hold and not segments:
+        thoughts_locked = True
+        summary = "holding everything" if hold_kind == "all" else "holding this reply"
+        thoughts = [{"kind": "think", "text": summary, "summary": summary, "source": "marker", "locked": True, "icon": "Clock3"}]
+        segments = [{"type": "thought", "summary": summary, "source": "marker", "locked": True, "icon": "Clock3"}]
+    # OpenRouter conveniently returns usage.cost; other providers may not.
+    api_cost = None
+    if isinstance(result.usage, dict):
+        api_cost = result.usage.get("cost") or (result.usage.get("cost_details") or {}).get("upstream_inference_cost")
+    metrics = _normalize_metrics(
+        runtime="api",
+        model=result.model,
+        usage=result.usage if isinstance(result.usage, dict) else None,
+        latency_ms=api_latency_ms,
+        cost_usd=api_cost,
+    )
+    actions_list: list[dict] = []
+    # Surface api tool invocations (Step 6 schema)
+    api_tool_calls = list(getattr(result, "tool_calls", None) or [])
+    api_tool_calls_summary: list[dict] = []
+    for call in api_tool_calls:
+        if not isinstance(call, dict):
+            continue
+        name = str(call.get("name") or "")
+        api_tool_calls_summary.append({
+            "tool_name": name,
+            "tool_id": call.get("id") or "",
+            "input_summary": str(call.get("arguments") or "")[:300],
+            "loop": call.get("loop"),
+        })
+        actions_list.append({
+            "kind": "api_tool",
+            "tool_name": name,
+            "tool_id": call.get("id") or "",
+            "arguments": str(call.get("arguments") or "")[:300],
+            "result_preview": call.get("result_preview") or "",
+            "loop": call.get("loop"),
+        })
+    if light_browser_record and record_turn:
+        _record_api_turn_light(api_text, cleaned_reply, source=source, tool_calls=api_tool_calls_summary)
+    for todo in queued_todos or []:
+        actions_list.append({"kind": "queued_todo", **(todo if isinstance(todo, dict) else {"text": str(todo)})})
+    if carry_over:
+        actions_list.append({"kind": "carry_over", **(carry_over if isinstance(carry_over, dict) else {"value": str(carry_over)})})
+    return {
+        "ok": True,
+        "runtime": "api",
+        "reply": cleaned_reply,
+        "raw_reply": raw_reply,
+        "recall": _pending_recall_for_app(),
+        "session_id": "",
+        "subtype": None,
+        "cost_usd": 0,
+        "model": result.model,
+        "usage": result.usage,
+        "recall_fragments": result.recall_fragments,
+        "dispatched": result.dispatched,
+        "thoughts": thoughts,
+        "thoughts_locked": thoughts_locked,
+        "segments": segments,
+        "hold": hold,
+        "queued_todos": queued_todos,
+        "carry_over": carry_over,
+        # Step 6: structured fields for transcript
+        "tool_calls_summary": api_tool_calls_summary,
+        "actions_list": actions_list,
+        "metrics": metrics,
+    }
+
+
+def _load_app_active_session() -> dict | None:
+    path = _CONFIG.active_session_path
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    session_id = str(data.get("session_id") or "").strip()
+    return data if session_id else None
+
+
+def _save_app_active_session(session_id: str) -> None:
+    path = _CONFIG.active_session_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "session_id": session_id,
+        "started_at": _CONFIG.now_local().isoformat(),
+    }
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def _pending_recall_for_app(max_chars: int = 1400) -> str:
+    if not _CONFIG:
+        return ""
+    dirty = _CONFIG.home_path / ".recall_dirty"
+    recall_path = _CONFIG.background_path
+    if not dirty.exists() or not recall_path.exists():
+        return ""
+    try:
+        text = recall_path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+    if len(text) > max_chars:
+        return text[: max_chars - 1] + "…"
+    return text
+
+
+# ------------------------------------------------------------------
+# Pool-based APIs
+# ------------------------------------------------------------------
+
+def _pool_graph() -> dict:
+    """Return nodes/edges from Pool for visualization."""
+    if not _POOL:
+        return {"nodes": [], "edges": []}
+    from fiam.store.pool import Pool
+
+    events = _POOL.load_events()
+    if not events:
+        return {"nodes": [], "edges": []}
+
+    # Build idx→id map and node list
+    idx_to_id: dict[int, str] = {}
+    nodes: list[dict] = []
+    for ev in events:
+        idx_to_id[ev.fingerprint_idx] = ev.id
+        # Label = pretty version of DS-given event name
+        label = ev.id.replace("_", " ")
+        # Intensity from access_count (0→0.3, 10+→1.0)
+        intensity = min(1.0, 0.3 + ev.access_count * 0.07)
+        nodes.append({
+            "id": ev.id,
+            "label": label,
+            "intensity": intensity,
+            "time": ev.t.isoformat(),
+            "last_accessed": "",  # TODO: track in Event if needed
+            "access_count": ev.access_count,
+        })
+
+    # Convert PyG edges to {source, target, kind, weight}
+    ei, ea = _POOL.load_edges()
+    edge_list: list[dict] = []
+    for i in range(ei.shape[1]):
+        src_idx = int(ei[0, i])
+        dst_idx = int(ei[1, i])
+        src_id = idx_to_id.get(src_idx)
+        dst_id = idx_to_id.get(dst_idx)
+        if not src_id or not dst_id:
+            continue
+        type_id = int(ea[i, 0])
+        weight = float(ea[i, 1])
+        edge_list.append({
+            "source": src_id,
+            "target": dst_id,
+            "kind": Pool.edge_type_name(type_id),
+            "weight": weight,
+        })
+
+    return {"nodes": nodes, "edges": edge_list}
+
+
+def _pool_event_detail(event_id: str) -> dict | None:
+    """Full event detail for editing."""
+    if not _POOL:
+        return None
+    ev = _POOL.get_event(event_id)
+    if not ev:
+        return None
+    body = _POOL.read_body(event_id)
+    return {
+        "id": ev.id,
+        "body": body,
+        "time": ev.t.isoformat(),
+        "access_count": ev.access_count,
+        "fingerprint_idx": ev.fingerprint_idx,
+    }
+
+
+def _pool_update_event(event_id: str, payload: dict) -> dict:
+    """Update event body. Re-embed if embedder available."""
+    if not _POOL:
+        raise RuntimeError("pool not loaded")
+    ev = _POOL.get_event(event_id)
+    if not ev:
+        raise ValueError(f"event not found: {event_id}")
+
+    new_body = payload.get("body")
+    if new_body is None:
+        raise ValueError("missing body")
+
+    with _COMPUTE_LOCK:
+        _POOL.write_body(event_id, new_body)
+        re_embedded = False
+        embedder = _get_embedder()
+        if embedder and ev.fingerprint_idx >= 0:
+            try:
+                import numpy as np
+                vec = embedder.embed(new_body)
+                _POOL.update_fingerprint(ev.fingerprint_idx, vec)
+                _POOL.rebuild_cosine()
+                re_embedded = True
+            except Exception as exc:
+                logger.warning("re-embed failed for %s: %s", event_id, exc)
+    return {"ok": True, "id": event_id, "re_embedded": re_embedded}
+
+
+def _pool_create_edge(payload: dict) -> dict:
+    """Create an edge between two events."""
+    if not _POOL:
+        raise RuntimeError("pool not loaded")
+    from fiam.store.pool import Pool
+
+    src_id = payload.get("source")
+    dst_id = payload.get("target")
+    kind = payload.get("kind", "semantic")
+    weight = float(payload.get("weight", 0.5))
+
+    if not src_id or not dst_id:
+        raise ValueError("missing source or target")
+
+    src_ev = _POOL.get_event(src_id)
+    dst_ev = _POOL.get_event(dst_id)
+    if not src_ev or not dst_ev:
+        raise ValueError("event not found")
+    if src_ev.fingerprint_idx < 0 or dst_ev.fingerprint_idx < 0:
+        raise ValueError("event not embedded")
+
+    type_id = Pool.edge_type_id(kind)
+    with _COMPUTE_LOCK:
+        _POOL.add_edge(src_ev.fingerprint_idx, dst_ev.fingerprint_idx, type_id, weight)
+    return {"ok": True}
+
+
+def _pool_update_edge(payload: dict) -> dict:
+    """Update an existing edge's type and/or weight."""
+    if not _POOL:
+        raise RuntimeError("pool not loaded")
+    from fiam.store.pool import Pool
+
+    src_id = payload.get("source")
+    dst_id = payload.get("target")
+    if not src_id or not dst_id:
+        raise ValueError("missing source or target")
+
+    src_ev = _POOL.get_event(src_id)
+    dst_ev = _POOL.get_event(dst_id)
+    if not src_ev or not dst_ev:
+        raise ValueError("event not found")
+
+    import numpy as np
+    ei, ea = _POOL.load_edges()
+    mask = (ei[0] == src_ev.fingerprint_idx) & (ei[1] == dst_ev.fingerprint_idx)
+    if not mask.any():
+        raise ValueError("edge not found")
+
+    with _COMPUTE_LOCK:
+        if "kind" in payload:
+            ea[mask, 0] = Pool.edge_type_id(payload["kind"])
+        if "weight" in payload:
+            ea[mask, 1] = float(payload["weight"])
+        _POOL._save_edges()
+    return {"ok": True}
+
+
+def _pool_delete_edge(payload: dict) -> dict:
+    """Remove an edge."""
+    if not _POOL:
+        raise RuntimeError("pool not loaded")
+
+    src_id = payload.get("source")
+    dst_id = payload.get("target")
+    if not src_id or not dst_id:
+        raise ValueError("missing source or target")
+
+    src_ev = _POOL.get_event(src_id)
+    dst_ev = _POOL.get_event(dst_id)
+    if not src_ev or not dst_ev:
+        raise ValueError("event not found")
+
+    import numpy as np
+    with _COMPUTE_LOCK:
+        ei, ea = _POOL.load_edges()
+        mask = ~((ei[0] == src_ev.fingerprint_idx) & (ei[1] == dst_ev.fingerprint_idx))
+        _POOL._edge_index = ei[:, mask]
+        _POOL._edge_attr = ea[mask]
+        _POOL._save_edges()
+    return {"ok": True}
+
+
+def _pool_delete_event(event_id: str) -> dict:
+    """Delete an event and all related data."""
+    if not _POOL:
+        raise RuntimeError("pool not loaded")
+    with _COMPUTE_LOCK:
+        ok = _POOL.delete_event(event_id)
+    if not ok:
+        raise ValueError(f"event not found: {event_id}")
+    return {"ok": True, "id": event_id}
+
+
+def _api_flow(offset: int = 0, limit: int = 50) -> dict:
+    """Read beats from flow.jsonl with pagination."""
+    if not _CONFIG:
+        return {"beats": [], "offset": 0, "total": 0}
+    flow_path = _CONFIG.flow_path
+    if not flow_path.exists():
+        return {"beats": [], "offset": 0, "total": 0}
+
+    lines = flow_path.read_text(encoding="utf-8").splitlines()
+    total = len(lines)
+    # Return from the end (most recent) if offset is 0
+    if offset <= 0:
+        start = max(0, total - limit)
+    else:
+        start = offset
+    end = min(start + limit, total)
+
+    beats: list[dict] = []
+    for line in lines[start:end]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            beats.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return {"beats": beats, "offset": start, "total": total}
+
+
+def _ingest_token_ok(handler) -> bool:
+    """Constant-time comparison of X-Fiam-Token header against env secret."""
+    import os
+    import hmac
+    expected = os.environ.get("FIAM_INGEST_TOKEN", "")
+    if not expected:
+        return False
+    got = handler.headers.get("X-Fiam-Token", "")
+    if not got:
+        return False
+    return hmac.compare_digest(got, expected)
+
+
+def _viewer_token_ok(handler) -> bool:
+    """Auth for dashboard viewing. Accepts FIAM_VIEW_TOKEN via:
+    0. Header  X-Forwarded-User   (trusted local Caddy basic-auth proxy)
+    1. Cookie  fiam_view=<token>   (set by /login redirect)
+    2. Query   ?token=<token>       (one-shot, used by /login)
+    3. Header  X-Fiam-View-Token    (programmatic clients)
+    Returns True if any source matches.
+    """
+    import os
+    import hmac
+    forwarded_user = handler.headers.get("X-Forwarded-User", "").lower()
+    if forwarded_user in {"Zephyr", "ai", "fiet"}:
+        return True
+    expected = os.environ.get("FIAM_VIEW_TOKEN", "")
+    if not expected:
+        return False
+    # cookie
+    cookie = handler.headers.get("Cookie", "")
+    for part in cookie.split(";"):
+        part = part.strip()
+        if part.startswith("fiam_view="):
+            got = part[len("fiam_view="):]
+            if got and hmac.compare_digest(got, expected):
+                return True
+    # header
+    got = handler.headers.get("X-Fiam-View-Token", "")
+    if got and hmac.compare_digest(got, expected):
+        return True
+    # query (only used by /login below)
+    raw = handler.path
+    if "?" in raw:
+        import urllib.parse as _u
+        qs = dict(_u.parse_qsl(raw.split("?", 1)[1]))
+        got = qs.get("token", "")
+        if got and hmac.compare_digest(got, expected):
+            return True
+    return False
 
 
 class DashboardHandler(SimpleHTTPRequestHandler):
@@ -376,21 +3249,50 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             elif path == "/api/events":
                 limit = int(query.get("limit", 50))
                 self._serve_json(_api_events(limit))
-            elif path == "/api/schedule":
-                self._serve_json(_api_schedule())
+            elif path.startswith("/api/event/"):
+                ev_id = path[len("/api/event/") :]
+                ev = _api_event(ev_id)
+                if ev is None:
+                    self.send_error(404)
+                else:
+                    self._serve_json(ev)
+            elif path == "/api/todo":
+                self._serve_json(_api_todo())
             elif path == "/api/state":
                 self._serve_json(_api_state())
             elif path == "/api/graph":
-                self._serve_json(_api_graph())
+                self._serve_json(_pool_graph())
+            elif path == "/api/pool/graph":
+                self._serve_json(_pool_graph())
+            elif path.startswith("/api/pool/event/"):
+                ev_id = path[len("/api/pool/event/"):]
+                ev = _pool_event_detail(ev_id)
+                if ev is None:
+                    self.send_error(404)
+                else:
+                    self._serve_json(ev)
+            elif path == "/api/flow":
+                offset = int(query.get("offset", 0))
+                limit = int(query.get("limit", 50))
+                self._serve_json(_api_flow(offset, limit))
             elif path == "/api/pipeline":
                 self._serve_json({"lines": _pipeline_tail(200).splitlines()})
             elif path == "/api/whoami":
                 # Determine role from Caddy-forwarded header (basic-auth user)
                 user = self.headers.get("X-Forwarded-User", "anon").lower()
-                role = user if user in ("iris", "ai", "fiet") else "anon"
+                role = user if user in ("Zephyr", "ai", "fiet") else "anon"
                 self._serve_json({"role": role})
             elif path == "/api/health":
                 self._serve_json(_api_health())
+            elif path == "/api/config":
+                self._serve_json(_api_config())
+            elif path == "/api/plugins":
+                self._serve_json(_api_plugins())
+            elif path == "/api/pool/edge-types":
+                from fiam.store.pool import Pool
+                self._serve_json({"types": list(Pool.EDGE_TYPE_NAMES.values())})
+            elif path == "/api/annotate/proposal":
+                self._serve_json(_annotate_proposal())
             else:
                 self.send_error(404)
         except Exception as e:
@@ -402,12 +3304,737 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         raw = self.path
         path = raw.split("?")[0]
 
+        if path == "/favilla/splash":
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            self._serve_json(_favilla_splash())
+            return
+
+        if path == "/favilla/status":
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            self._serve_json(_favilla_status())
+            return
+
+        if path == "/favilla/dashboard":
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            self._serve_json(_favilla_dashboard())
+            return
+
+        if path == "/favilla/studio":
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            try:
+                self._serve_json(_favilla_studio_load())
+            except Exception as e:
+                logger.exception("Favilla Studio load error")
+                self._serve_json({"error": str(e)}, status=500)
+            return
+
+        if path in ("/favilla/chat/transcript", "/favilla/stroll/transcript"):
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            from urllib.parse import parse_qs, urlparse
+
+            query = parse_qs(urlparse(raw).query)
+            source = "stroll" if path == "/favilla/stroll/transcript" else (query.get("source") or ["chat"])[0]
+            try:
+                limit = int((query.get("limit") or ["200"])[0])
+            except ValueError:
+                limit = 200
+            self._serve_json(_favilla_transcript_load(source=source, limit=limit))
+            return
+
+        if path == "/favilla/stroll/nearby":
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            from urllib.parse import parse_qs, urlparse
+
+            query = parse_qs(urlparse(raw).query)
+            try:
+                payload = {
+                    "lng": float((query.get("lng") or [""])[0]),
+                    "lat": float((query.get("lat") or [""])[0]),
+                    "radiusM": float((query.get("radiusM") or ["50"])[0]),
+                    "changedSince": int((query.get("changedSince") or ["0"])[0]),
+                }
+                self._serve_json(_favilla_stroll_nearby(payload))
+            except ValueError as e:
+                self._serve_json({"error": str(e)}, status=400)
+            except Exception as e:
+                logger.exception("Favilla Stroll nearby error")
+                self._serve_json({"error": str(e)}, status=500)
+            return
+
+        if path == "/favilla/chat/process/status":
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            self._serve_json(_favilla_chat_process_status())
+            return
+
+        if path == "/favilla/stroll/state":
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            try:
+                self._serve_json(_favilla_stroll_state_status())
+            except Exception as e:
+                logger.exception("Favilla Stroll state error")
+                self._serve_json({"error": str(e)}, status=500)
+            return
+
+        if path == "/favilla/stroll/events":
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            from urllib.parse import parse_qs, urlparse
+            from fiam_lib.stroll_events import get_bus
+
+            query = parse_qs(urlparse(raw).query)
+            last_id_header = self.headers.get("Last-Event-ID")
+            try:
+                last_id = int(last_id_header) if last_id_header else int((query.get("last_id") or ["0"])[0])
+            except ValueError:
+                last_id = 0
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "keep-alive")
+                self.send_header("X-Accel-Buffering", "no")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                bus = get_bus()
+                # Initial replay of any missed events.
+                for ev in bus.replay(last_id):
+                    self.wfile.write(_format_sse(ev))
+                    self.wfile.flush()
+                    last_id = ev["id"]
+                # Long-poll loop: 25s windows then heartbeat comment.
+                while True:
+                    got_any = False
+                    for ev in bus.subscribe(after_id=last_id, timeout=25.0):
+                        self.wfile.write(_format_sse(ev))
+                        self.wfile.flush()
+                        last_id = ev["id"]
+                        got_any = True
+                    if not got_any:
+                        # Heartbeat keeps proxies / mobile radios from killing the conn.
+                        self.wfile.write(b": ping\n\n")
+                        self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                return
+            except Exception:
+                logger.exception("Favilla Stroll SSE error")
+                return
+            return
+
+        if path == "/favilla/computer/events":
+            # Live push of AI computer-control activity (browser + desktop).
+            # EventSource can't set custom headers, so accept token via
+            # query string (?token=...) in addition to X-Fiam-Token.
+            import os as _os
+            import hmac as _hmac
+            from urllib.parse import parse_qs, urlparse
+
+            query = parse_qs(urlparse(raw).query)
+            expected = _os.environ.get("FIAM_INGEST_TOKEN", "")
+            qtoken = (query.get("token") or [""])[0]
+            authed = False
+            if expected:
+                if _hmac.compare_digest(qtoken, expected):
+                    authed = True
+                else:
+                    htoken = self.headers.get("X-Fiam-Token", "")
+                    if htoken and _hmac.compare_digest(htoken, expected):
+                        authed = True
+            if not authed:
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+
+            from fiam_lib.computer_events import get_bus as _get_computer_bus
+
+            last_id_header = self.headers.get("Last-Event-ID")
+            try:
+                last_id = int(last_id_header) if last_id_header else int((query.get("last_id") or ["0"])[0])
+            except ValueError:
+                last_id = 0
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "keep-alive")
+                self.send_header("X-Accel-Buffering", "no")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                bus = _get_computer_bus()
+                for ev in bus.replay(last_id):
+                    self.wfile.write(_format_sse(ev))
+                    self.wfile.flush()
+                    last_id = ev["id"]
+                while True:
+                    got_any = False
+                    for ev in bus.subscribe(after_id=last_id, timeout=25.0):
+                        self.wfile.write(_format_sse(ev))
+                        self.wfile.flush()
+                        last_id = ev["id"]
+                        got_any = True
+                    if not got_any:
+                        self.wfile.write(b": ping\n\n")
+                        self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                return
+            except Exception:
+                logger.exception("Favilla Computer SSE error")
+                return
+            return
+
+        if path == "/api/wearable/reply":
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            self._serve_json(_api_wearable_reply())
+            return
+
+        # /login?token=<view_token> → set cookie + redirect to /
+        if path == "/login":
+            if _viewer_token_ok(self):
+                import os
+                tok = os.environ.get("FIAM_VIEW_TOKEN", "")
+                self.send_response(302)
+                # 30-day cookie, HttpOnly, SameSite=Lax. Secure inferred from CF tunnel TLS.
+                self.send_header(
+                    "Set-Cookie",
+                    f"fiam_view={tok}; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax; Secure",
+                )
+                self.send_header("Location", "/")
+                self.end_headers()
+                return
+            self._serve_json({"error": "unauthorized"}, status=401)
+            return
+
+        # All other GETs require viewer auth
+        if not _viewer_token_ok(self):
+            self._serve_json({"error": "unauthorized"}, status=401)
+            return
+
         # /api/* JSON endpoints used by the SvelteKit SPA
         if path.startswith("/api/"):
             return self._handle_api(path, raw)
 
         # Everything else → SvelteKit static build (SPA with index.html fallback)
         return self._serve_spa(path)
+
+    def do_POST(self):
+        path = self.path.split("?")[0]
+        # Mutation endpoints require ingest token
+        pool_write_paths = {"/api/pool/edge", "/api/pool/edge/delete"}
+        pool_write_prefixes = ("/api/pool/event/",)
+        annotate_paths = {"/api/annotate/request", "/api/annotate/edges", "/api/annotate/confirm"}
+        config_paths = {"/api/config/memory-mode", "/api/config/plugin"}
+        is_pool_write = path in pool_write_paths or any(path.startswith(p) for p in pool_write_prefixes)
+        is_annotate = path in annotate_paths
+        is_config_write = path in config_paths
+
+        if path in {"/browser/snapshot", "/browser/ask", "/browser/tick", "/browser/action-result"}:
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = 0
+            max_browser_post = 8 * 1024 * 1024
+            if length <= 0 or length > max_browser_post:
+                self._serve_json({"error": "bad length"}, status=400)
+                return
+            try:
+                body = self.rfile.read(length).decode("utf-8")
+                payload = json.loads(body)
+            except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                self._serve_json({"error": f"bad json: {e}"}, status=400)
+                return
+            try:
+                if path == "/browser/snapshot":
+                    result = _browser_snapshot(payload)
+                elif path == "/browser/action-result":
+                    result = _append_browser_action_flow(payload)
+                elif path == "/browser/tick":
+                    result = _browser_control_tick(payload)
+                else:
+                    result = _browser_ask(payload)
+            except ValueError as e:
+                self._serve_json({"error": str(e)}, status=400)
+                return
+            except Exception as e:
+                logger.exception("Browser bridge error")
+                self._serve_json({"error": str(e)}, status=500)
+                return
+            self._serve_json(result)
+            return
+
+        if path == "/api/capture":
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = 0
+            if length <= 0 or length > 256 * 1024:
+                self._serve_json({"error": "bad length"}, status=400)
+                return
+            try:
+                body = self.rfile.read(length).decode("utf-8")
+                payload = json.loads(body)
+            except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                self._serve_json({"error": f"bad json: {e}"}, status=400)
+                return
+            try:
+                result = _api_capture(payload)
+            except ValueError as e:
+                self._serve_json({"error": str(e)}, status=400)
+                return
+            except Exception as e:
+                self._serve_json({"error": str(e)}, status=500)
+                return
+            self._serve_json(result)
+            return
+
+        if path in ("/favilla/chat/send", "/favilla/stroll/send"):
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = 0
+            if length <= 0 or length > 64 * 1024:
+                self._serve_json({"error": "bad length"}, status=400)
+                return
+            try:
+                body = self.rfile.read(length).decode("utf-8")
+                payload = json.loads(body)
+            except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                self._serve_json({"error": f"bad json: {e}"}, status=400)
+                return
+            try:
+                if path == "/favilla/stroll/send":
+                    payload["source"] = "stroll"
+                result = _favilla_chat_send(payload)
+            except ValueError as e:
+                self._serve_json({"error": str(e)}, status=400)
+                return
+            except Exception as e:
+                logger.exception("Favilla chat error")
+                self._serve_json({"error": str(e)}, status=500)
+                return
+            self._serve_json(result)
+            return
+
+        if path == "/favilla/upload":
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = 0
+            if length <= 0 or length > 32 * 1024 * 1024:  # 32MB cap
+                self._serve_json({"error": "bad length"}, status=400)
+                return
+            try:
+                body = self.rfile.read(length).decode("utf-8")
+                payload = json.loads(body)
+            except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                self._serve_json({"error": f"bad json: {e}"}, status=400)
+                return
+            try:
+                result = _favilla_upload(payload)
+            except ValueError as e:
+                self._serve_json({"error": str(e)}, status=400)
+                return
+            except Exception as e:
+                logger.exception("Favilla upload error")
+                self._serve_json({"error": str(e)}, status=500)
+                return
+            self._serve_json(result)
+            return
+
+        if path == "/favilla/studio/edit":
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = 0
+            if length <= 0 or length > 2 * 1024 * 1024:
+                self._serve_json({"error": "bad length"}, status=400)
+                return
+            try:
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                self._serve_json({"error": f"bad json: {e}"}, status=400)
+                return
+            try:
+                result = _favilla_studio_edit(payload)
+            except ValueError as e:
+                self._serve_json({"error": str(e)}, status=400)
+                return
+            except Exception as e:
+                logger.exception("Favilla Studio edit error")
+                self._serve_json({"error": str(e)}, status=500)
+                return
+            self._serve_json(result)
+            return
+
+        if path == "/favilla/studio":
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = 0
+            if length <= 0 or length > 2 * 1024 * 1024:
+                self._serve_json({"error": "bad length"}, status=400)
+                return
+            try:
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                self._serve_json({"error": f"bad json: {e}"}, status=400)
+                return
+            try:
+                result = _favilla_studio_save(payload)
+            except ValueError as e:
+                self._serve_json({"error": str(e)}, status=400)
+                return
+            except Exception as e:
+                logger.exception("Favilla Studio save error")
+                self._serve_json({"error": str(e)}, status=500)
+                return
+            self._serve_json(result)
+            return
+
+        if path in ("/favilla/chat/transcript", "/favilla/stroll/transcript"):
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = 0
+            if length <= 0 or length > 64 * 1024:
+                self._serve_json({"error": "bad length"}, status=400)
+                return
+            try:
+                body = self.rfile.read(length).decode("utf-8")
+                payload = json.loads(body)
+            except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                self._serve_json({"error": f"bad json: {e}"}, status=400)
+                return
+            try:
+                if path == "/favilla/stroll/transcript":
+                    payload["source"] = "stroll"
+                result = _favilla_transcript_append(payload)
+            except ValueError as e:
+                self._serve_json({"error": str(e)}, status=400)
+                return
+            except Exception as e:
+                logger.exception("Favilla transcript error")
+                self._serve_json({"error": str(e)}, status=500)
+                return
+            self._serve_json(result)
+            return
+
+        if path in ("/favilla/stroll/records", "/favilla/stroll/action-result"):
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = 0
+            if length <= 0 or length > 256 * 1024:
+                self._serve_json({"error": "bad length"}, status=400)
+                return
+            try:
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                self._serve_json({"error": f"bad json: {e}"}, status=400)
+                return
+            try:
+                result = _favilla_stroll_record(payload) if path == "/favilla/stroll/records" else _favilla_stroll_action_result(payload)
+            except ValueError as e:
+                self._serve_json({"error": str(e)}, status=400)
+                return
+            except Exception as e:
+                logger.exception("Favilla Stroll write error")
+                self._serve_json({"error": str(e)}, status=500)
+                return
+            self._serve_json(result)
+            return
+
+        if path in ("/favilla/stroll/start", "/favilla/stroll/heartbeat", "/favilla/stroll/stop"):
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = 0
+            payload: dict = {}
+            if length > 0:
+                if length > 64 * 1024:
+                    self._serve_json({"error": "bad length"}, status=400)
+                    return
+                try:
+                    payload = json.loads(self.rfile.read(length).decode("utf-8")) or {}
+                except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                    self._serve_json({"error": f"bad json: {e}"}, status=400)
+                    return
+            try:
+                if path == "/favilla/stroll/start":
+                    result = _favilla_stroll_state_start(payload)
+                elif path == "/favilla/stroll/heartbeat":
+                    result = _favilla_stroll_state_heartbeat(payload)
+                else:
+                    result = _favilla_stroll_state_stop(payload)
+            except ValueError as e:
+                self._serve_json({"error": str(e)}, status=400)
+                return
+            except Exception as e:
+                logger.exception("Favilla Stroll state op error")
+                self._serve_json({"error": str(e)}, status=500)
+                return
+            self._serve_json(result)
+            return
+
+        if path in ("/favilla/chat/recall", "/favilla/chat/cut", "/favilla/chat/process"):
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = 0
+            payload: dict = {}
+            if length > 0:
+                try:
+                    payload = json.loads(self.rfile.read(length).decode("utf-8")) or {}
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    payload = {}
+            try:
+                if path == "/favilla/chat/recall":
+                    result = _favilla_chat_recall(payload)
+                elif path == "/favilla/chat/cut":
+                    result = _favilla_chat_cut(payload)
+                else:
+                    result = _favilla_chat_process(payload)
+            except ValueError as e:
+                self._serve_json({"error": str(e)}, status=400)
+                return
+            except Exception as e:
+                logger.exception("Favilla chat memory op error")
+                self._serve_json({"error": str(e)}, status=500)
+                return
+            self._serve_json(result)
+            return
+
+        if path == "/api/wearable/message":
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = 0
+            if length <= 0 or length > 16 * 1024:
+                self._serve_json({"error": "bad length"}, status=400)
+                return
+            try:
+                body = self.rfile.read(length).decode("utf-8")
+                payload = json.loads(body)
+                result = _enqueue_wearable_message(payload)
+            except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                self._serve_json({"error": f"bad json: {e}"}, status=400)
+                return
+            except ValueError as e:
+                self._serve_json({"error": str(e)}, status=400)
+                return
+            except Exception as e:
+                logger.exception("wearable message error")
+                self._serve_json({"error": str(e)}, status=500)
+                return
+            self._serve_json(result)
+            return
+
+        if is_pool_write:
+            # Pool mutations — require viewer auth (console user)
+            if not _viewer_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = 0
+            if length > 1024 * 1024:
+                self._serve_json({"error": "payload too large"}, status=400)
+                return
+            payload = {}
+            if length > 0:
+                try:
+                    body = self.rfile.read(length).decode("utf-8")
+                    payload = json.loads(body)
+                except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                    self._serve_json({"error": f"bad json: {e}"}, status=400)
+                    return
+            try:
+                if path.startswith("/api/pool/event/delete/"):
+                    ev_id = path[len("/api/pool/event/delete/"):]
+                    result = _pool_delete_event(ev_id)
+                elif path.startswith("/api/pool/event/"):
+                    ev_id = path[len("/api/pool/event/"):]
+                    result = _pool_update_event(ev_id, payload)
+                elif path == "/api/pool/edge":
+                    result = _pool_create_edge(payload)
+                elif path == "/api/pool/edge/delete":
+                    result = _pool_delete_edge(payload)
+                else:
+                    self.send_error(404)
+                    return
+            except ValueError as e:
+                self._serve_json({"error": str(e)}, status=400)
+                return
+            except Exception as e:
+                self._serve_json({"error": str(e)}, status=500)
+                return
+            self._serve_json(result)
+            return
+
+        if is_annotate:
+            if not _viewer_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = 0
+            payload = {}
+            if length > 0:
+                try:
+                    body = self.rfile.read(length).decode("utf-8")
+                    payload = json.loads(body)
+                except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                    self._serve_json({"error": f"bad json: {e}"}, status=400)
+                    return
+            try:
+                if path == "/api/annotate/request":
+                    result = _annotate_request(payload)
+                elif path == "/api/annotate/edges":
+                    result = _annotate_edges(payload)
+                elif path == "/api/annotate/confirm":
+                    result = _annotate_confirm(payload)
+                else:
+                    self.send_error(404)
+                    return
+            except ValueError as e:
+                self._serve_json({"error": str(e)}, status=400)
+                return
+            except Exception as e:
+                logger.exception("annotate error")
+                self._serve_json({"error": str(e)}, status=500)
+                return
+            self._serve_json(result)
+            return
+
+        if is_config_write:
+            if not _viewer_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = 0
+            payload = {}
+            if length > 0:
+                try:
+                    body = self.rfile.read(length).decode("utf-8")
+                    payload = json.loads(body)
+                except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                    self._serve_json({"error": f"bad json: {e}"}, status=400)
+                    return
+            try:
+                if path == "/api/config/memory-mode":
+                    result = _update_memory_mode(payload)
+                elif path == "/api/config/plugin":
+                    result = _update_plugin(payload)
+                else:
+                    self.send_error(404)
+                    return
+            except ValueError as e:
+                self._serve_json({"error": str(e)}, status=400)
+                return
+            except Exception as e:
+                self._serve_json({"error": str(e)}, status=500)
+                return
+            self._serve_json(result)
+            return
+
+        self.send_error(404)
+
+    def do_PUT(self):
+        path = self.path.split("?")[0]
+        if not _viewer_token_ok(self):
+            self._serve_json({"error": "unauthorized"}, status=401)
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        if length <= 0 or length > 1024 * 1024:
+            self._serve_json({"error": "bad payload"}, status=400)
+            return
+        try:
+            body = self.rfile.read(length).decode("utf-8")
+            payload = json.loads(body)
+        except (UnicodeDecodeError, json.JSONDecodeError) as e:
+            self._serve_json({"error": f"bad json: {e}"}, status=400)
+            return
+        try:
+            if path.startswith("/api/pool/event/"):
+                ev_id = path[len("/api/pool/event/"):]
+                result = _pool_update_event(ev_id, payload)
+            elif path == "/api/pool/edge":
+                result = _pool_update_edge(payload)
+            else:
+                self.send_error(404)
+                return
+        except ValueError as e:
+            self._serve_json({"error": str(e)}, status=400)
+            return
+        except Exception as e:
+            self._serve_json({"error": str(e)}, status=500)
+            return
+        self._serve_json(result)
+
+    def do_OPTIONS(self):
+        """CORS preflight for mutation endpoints."""
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Fiam-Token, X-Fiam-View-Token")
+        self.send_header("Access-Control-Max-Age", "86400")
+        self.end_headers()
 
     def _serve_spa(self, path: str):
         """Serve files from dashboard/build/ with SPA fallback to index.html."""
@@ -460,13 +4087,16 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
     def _serve_json(self, obj, status: int = 200):
         data = json.dumps(obj, ensure_ascii=False, indent=2).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Cache-Control", "no-cache")
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            return
 
     def log_message(self, format, *args):
         pass  # suppress access logs
@@ -475,11 +4105,19 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 def main():
     parser = argparse.ArgumentParser(description="fiam debug dashboard")
     parser.add_argument("--port", type=int, default=8766)
+    parser.add_argument("--bind", default="127.0.0.1",
+                        help="Bind address (default 127.0.0.1; use 0.0.0.0 only behind a trusted proxy)")
     args = parser.parse_args()
 
     _load_config()
-    server = HTTPServer(("0.0.0.0", args.port), DashboardHandler)
-    print(f"Dashboard: http://localhost:{args.port}/")
+    _get_bus()
+    import os
+    if not os.environ.get("FIAM_VIEW_TOKEN"):
+        print("WARN: FIAM_VIEW_TOKEN not set — direct GET requests will return 401 unless proxied by Caddy auth.",
+              file=sys.stderr)
+    server = ThreadingHTTPServer((args.bind, args.port), DashboardHandler)
+    print(f"Dashboard: http://{args.bind}:{args.port}/")
+    _start_stroll_tick_thread()
     try:
         server.serve_forever()
     except KeyboardInterrupt:

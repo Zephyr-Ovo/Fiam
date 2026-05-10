@@ -63,13 +63,28 @@ def _build_config(args: argparse.Namespace | None = None) -> "FiamConfig":
                 config.home_paths.append(override)
         if getattr(args, "debug", False):
             config.debug_mode = True
-        if getattr(args, "ai_name", None):
-            config.ai_name = args.ai_name
         if getattr(args, "user_name", None):
             config.user_name = args.user_name
 
+    config.apply_debug_overrides()
     config.ensure_dirs()
     return config
+
+
+def _load_env_file(code_path: Path | None = None) -> None:
+    """Load simple KEY=VALUE pairs from project .env into os.environ."""
+    root = code_path or _project_root()
+    env_file = root / ".env"
+    if not env_file.is_file():
+        return
+    for line in env_file.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key, val = key.strip(), val.strip().strip("\"'")
+        if key and key not in os.environ:
+            os.environ[key] = val
 
 
 def _detect_platform() -> str:

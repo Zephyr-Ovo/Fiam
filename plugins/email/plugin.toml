@@ -1,0 +1,19 @@
+id = "email"
+name = "Email bridge"
+enabled = true
+status = "active"
+kind = "channel"
+auto_wake = false
+description = "Email ingress/egress through IMAP and SMTP helpers."
+transports = ["mqtt", "imap", "smtp"]
+capabilities = ["receive_text", "dispatch_text"]
+receive_sources = ["email", "mail"]
+dispatch_targets = ["email", "mail"]
+entrypoint = "scripts/bridges/bridge_email.py"
+auth = "SMTP/IMAP credentials from fiam.toml and process environment"
+latency = "polling; default 600s inbound, dispatch is immediate SMTP call"
+env = []
+replaces = []
+notes = [
+  "Useful as a durable async channel even after the self app exists."
+]

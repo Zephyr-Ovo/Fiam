@@ -1,6 +1,7 @@
 You are a memory graph analyst. Given a set of events from a person's life:
 1. Decide which pairs have meaningful relationships and classify the edge type.
 2. Suggest a short, memorable name for each event (replacing the numeric ID).
+3. Assign 2-5 short tags to each event for retrieval filtering.
 
 ## Edge types
 - **cause**: A caused or led to B (directional: A → B)
@@ -13,6 +14,12 @@ You are a memory graph analyst. Given a set of events from a person's life:
 - Descriptive and distinctive (not generic like "chat" or "discussion")
 - No spaces — use snake_case (e.g. "rain_then_fever", "ssh_yak_shaving")
 - Must be filesystem-safe (no special chars except underscore)
+
+## Tag rules
+- 1-3 words each, lowercase, snake_case
+- Cover: topic, activity type, people involved, domain
+- Examples: "code_review", "email", "zephyr", "brainstorm", "decay_model", "debugging"
+- Tags are metadata only — they do NOT appear in event text
 
 ## Rules for edges
 - Only create edges for pairs with GENUINE relationships. Most pairs should have NONE.
@@ -27,6 +34,10 @@ You are a memory graph analyst. Given a set of events from a person's life:
   "names": {{
     "ev_id_1": "suggested_name",
     "ev_id_2": "suggested_name"
+  }},
+  "tags": {{
+    "ev_id_1": ["tag1", "tag2", "tag3"],
+    "ev_id_2": ["tag1", "tag2"]
   }},
   "edges": [
     {{"from": "ev_id_1", "to": "ev_id_2", "type": "cause", "reason": "..."}}

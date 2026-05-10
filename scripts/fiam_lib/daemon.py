@@ -12,9 +12,17 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
-from fiam_lib.core import _project_root, _toml_path, _build_config, _pid_path, _is_daemon_running
+from fiam_lib.core import (
+    _project_root,
+    _toml_path,
+    _build_config,
+    _pid_path,
+    _is_daemon_running,
+    _load_env_file,
+)
 
 # ------------------------------------------------------------------
 # Pipeline diagnostic log  (logs/pipeline.log)
@@ -27,29 +35,104 @@ from fiam_lib.jsonl import (
     _sanitize_home_path,
     _load_cursor,
     _save_cursor,
-    _parse_jsonl_from,
 )
-from fiam_lib.postman import sweep_outbox, fetch_inbox, fetch_tg_inbox
-from fiam_lib.recall import _write_recall
-from fiam_lib.scheduler import extract_wake_tags, append_to_schedule, load_due
+from fiam_lib.postman import sweep_outbox
+from fiam_lib.todo import extract_scheduled_items, extract_state_tag, append_to_todo, load_due
+from fiam_lib.app_markers import parse_app_cot
 from fiam_lib.cost import log_cost, check_budget
 from fiam_lib.ui import _console, _flow, _ANIM_IDLE, _ANIM_ACTIVE, _animated_sleep
 
 
 # ------------------------------------------------------------------
-# Comm state: notify / mute / block
+# AI state: notify / mute / block / sleep / busy / together
 # ------------------------------------------------------------------
 
-def _load_comm_state(config) -> str:
-    """Load communication state from self/comm_state.json. Default: 'notify'."""
-    state_file = Path(config.home_path) / "self" / "comm_state.json"
-    if state_file.exists():
+_AI_STATES = {"notify", "mute", "block", "sleep", "busy", "together", "online"}
+
+
+def _default_ai_state() -> dict:
+    return {"state": "notify"}
+
+
+def _write_ai_state(config, data: dict) -> None:
+    path = config.ai_state_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _save_ai_state(
+    config,
+    state: str,
+    *,
+    reason: str = "",
+    until: str = "",
+    expires_at: str = "",
+) -> None:
+    state = state if state in _AI_STATES else "notify"
+    data = {
+        "state": state,
+        "since": config.now_local().isoformat(),
+    }
+    if reason:
+        data["reason"] = reason
+    if until:
+        data["until"] = until
+    if expires_at:
+        data["expires_at"] = expires_at
+    _write_ai_state(config, data)
+
+
+def _clear_ai_state(config) -> None:
+    config.ai_state_path.unlink(missing_ok=True)
+
+
+def _parse_state_time(config, raw: str):
+    try:
+        dt = datetime.fromisoformat(str(raw))
+        return config.ensure_timezone(dt)
+    except (TypeError, ValueError):
+        return None
+
+
+def _load_ai_state(config) -> dict:
+    """Load the unified AI state."""
+    path = config.ai_state_path
+    data: dict | None = None
+    if path.exists():
         try:
-            data = json.loads(state_file.read_text())
-            return data.get("state", "notify")
+            data = json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
-            pass
-    return "notify"
+            data = None
+    if not data:
+        return _default_ai_state()
+
+    state = str(data.get("state", "notify"))
+    if state not in _AI_STATES:
+        _clear_ai_state(config)
+        return _default_ai_state()
+
+    expires_at = data.get("expires_at")
+    if expires_at:
+        dt = _parse_state_time(config, expires_at)
+        if dt is None or datetime.now(timezone.utc) >= dt:
+            _clear_ai_state(config)
+            return _default_ai_state()
+
+    if state == "sleep":
+        until = str(data.get("until", ""))
+        if until == "open":
+            return data
+        dt = _parse_state_time(config, until)
+        if dt is None or datetime.now(timezone.utc) >= dt:
+            _clear_ai_state(config)
+            return _default_ai_state()
+
+    return data
+
+
+def _load_comm_state(config) -> str:
+    """Compatibility wrapper for older call sites."""
+    return str(_load_ai_state(config).get("state", "notify"))
 
 
 # ------------------------------------------------------------------
@@ -70,15 +153,30 @@ def _load_active_session(config) -> dict | None:
     return None
 
 
-def _save_active_session(config, session_id: str) -> None:
-    """Write active_session.json with current session_id and timestamp."""
+def _save_active_session(config, session_id: str, events_count: int = 0) -> None:
+    """Write active_session.json with current session_id, timestamp and event counter."""
     path = config.active_session_path
     path.parent.mkdir(parents=True, exist_ok=True)
     data = {
         "session_id": session_id,
-        "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "started_at": config.now_local().isoformat(),
+        "events_count": int(events_count),
     }
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def _increment_session_events(config) -> int:
+    """Bump events_count on the active session and return the new value.
+
+    No-op (returns 0) if there is no active session.
+    """
+    session = _load_active_session(config)
+    if not session:
+        return 0
+    new_count = int(session.get("events_count", 0) or 0) + 1
+    session["events_count"] = new_count
+    config.active_session_path.write_text(json.dumps(session, indent=2), encoding="utf-8")
+    return new_count
 
 
 def _retire_session(config, reason: str = "error") -> None:
@@ -88,10 +186,31 @@ def _retire_session(config, reason: str = "error") -> None:
         return
     retired_dir = config.self_dir / "retired"
     retired_dir.mkdir(parents=True, exist_ok=True)
-    ts = time.strftime("%Y-%m-%d_%H%M%S")
+    ts = config.now_local().strftime("%Y-%m-%d_%H%M%S")
     archive = retired_dir / f"{ts}_{reason}.json"
     archive.write_text(json.dumps(session, indent=2), encoding="utf-8")
     config.active_session_path.unlink(missing_ok=True)
+
+
+def _save_sleep_state(config, sleeping_until: str, reason: str) -> None:
+    """Persist AI sleep state in the unified ai_state.json."""
+    _save_ai_state(config, "sleep", until=sleeping_until, reason=reason)
+
+
+def _clear_sleep_state(config) -> None:
+    if _load_ai_state(config).get("state") == "sleep":
+        _clear_ai_state(config)
+
+
+def _is_sleeping(config) -> tuple[bool, str | None]:
+    """Returns (is_sleeping, sleeping_until_iso_or_open).
+
+    Auto-clears expired explicit sleep states.
+    """
+    state = _load_ai_state(config)
+    if state.get("state") != "sleep":
+        return False, None
+    return True, str(state.get("until", "open"))
 
 
 def _is_interactive(config) -> bool:
@@ -124,18 +243,18 @@ def _is_interactive(config) -> bool:
         return False
 
 
-def _wake_session(config, message: str, tag: str = "tg") -> bool:
-    """Send a message to Fiet via `claude -p --resume <id>`.
+def _wake_session(config, message: str, tag: str = "inbox", conductor=None) -> bool:
+    """Send a message to the AI runtime via `claude -p --resume <id>`.
 
     If no active session exists, creates a new session and saves its ID.
     Returns True if the message was sent successfully.
-    Also extracts outbound markers from the response and writes to outbox.
+    Dispatches outbound markers from the response via conductor.dispatch().
     """
     session = _load_active_session(config)
     resuming = session is not None
 
     cmd = [
-        "claude", "-p", f"[wake:{tag}] {message}",
+        "claude", "-p", message,
         "--output-format", "json",
         "--max-turns", "10",
     ]
@@ -182,15 +301,53 @@ def _wake_session(config, message: str, tag: str = "tg") -> bool:
                 _plog.warning("wake hit max_turns — partial success")
                 _console.print(f"  [yellow]wake partial[/] (max_turns)")
             else:
-                _plog.warning("wake FAILED stdout: %s", result.stdout.strip()[:500])
-                _console.print(f"  [red]wake failed[/] (exit {result.returncode})")
-                # Still save session_id if we got one on a new session
-                if data and not resuming:
-                    new_sid = data.get("session_id", "")
-                    if new_sid:
-                        _save_active_session(config, new_sid)
-                        _plog.info("saved session from failed wake: %s", new_sid)
-                return False
+                # Stale session id (claude lost it) → clear & retry once without --resume
+                if resuming and "No conversation found with session ID" in (result.stderr or ""):
+                    _plog.info("wake retrying without stale --resume")
+                    try:
+                        config.active_session_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    cmd_retry = [c for c in cmd if c != "--resume" and c != session["session_id"]]
+                    # rebuild cleanly: drop the two consecutive items
+                    cmd_retry = list(cmd)
+                    if "--resume" in cmd_retry:
+                        idx = cmd_retry.index("--resume")
+                        del cmd_retry[idx:idx+2]
+                    result = subprocess.run(
+                        cmd_retry, capture_output=True, text=True,
+                        timeout=180, cwd=str(config.home_path),
+                    )
+                    _plog.info("wake retry exit=%d", result.returncode)
+                    try:
+                        data = json.loads(result.stdout)
+                    except (json.JSONDecodeError, ValueError):
+                        data = None
+                    resuming = False
+                    # Save new session id from retry regardless of outcome
+                    if data:
+                        new_sid = data.get("session_id", "")
+                        if new_sid:
+                            _save_active_session(config, new_sid)
+                    if result.returncode != 0:
+                        if data and data.get("subtype") == "error_max_turns":
+                            _plog.warning("wake retry hit max_turns — partial success")
+                            _console.print(f"  [yellow]wake partial[/] (max_turns, retry)")
+                        else:
+                            _plog.warning("wake retry FAILED stdout: %s", (result.stdout or "").strip()[:500])
+                            if result.stderr:
+                                _plog.warning("wake retry stderr: %s", result.stderr.strip()[:500])
+                            return False
+                else:
+                    _plog.warning("wake FAILED stdout: %s", result.stdout.strip()[:500])
+                    _console.print(f"  [red]wake failed[/] (exit {result.returncode})")
+                    # Still save session_id if we got one on a new session
+                    if data and not resuming:
+                        new_sid = data.get("session_id", "")
+                        if new_sid:
+                            _save_active_session(config, new_sid)
+                            _plog.info("saved session from failed wake: %s", new_sid)
+                    return False
 
         # Save new session_id
         if data and not resuming:
@@ -200,17 +357,44 @@ def _wake_session(config, message: str, tag: str = "tg") -> bool:
                 _console.print(f"  [dim]└ new session {new_sid[:8]}[/dim]")
                 _plog.info("new session created: %s", new_sid)
 
-        # Extract outbound markers from response
+        # Extract outbound markers from response → dispatch via conductor
         if data:
             response_text = data.get("result", "")
             if response_text:
-                _extract_outbound_markers(config, response_text)
-                # Extract WAKE tags for scheduler
-                wake_tags = extract_wake_tags(response_text)
-                if wake_tags:
-                    n = append_to_schedule(wake_tags, config)
-                    _plog.info("scheduler  +%d wake(s) queued", n)
-                    _console.print(f"  [dim]└ scheduler +{n} wake(s)[/dim]")
+                _extract_and_dispatch(config, response_text, conductor)
+                later_todos = extract_scheduled_items(response_text, config)
+                if later_todos:
+                    added = append_to_todo(later_todos, config)
+                    _plog.info("todo  +%d item(s) queued", added)
+                    _console.print(f"  [dim]└ todo +{added} item(s)[/dim]")
+                state_tag = extract_state_tag(response_text, config)
+                if state_tag:
+                    state = state_tag["state"]
+                    if state == "sleep":
+                        _save_sleep_state(config, state_tag["sleeping_until"], state_tag.get("reason", ""))
+                        until_label = state_tag["sleeping_until"]
+                        if until_label != "open":
+                            until_label = until_label[:16].replace("T", " ")
+                        _plog.info("AI sleep  until=%s reason=%s", until_label, state_tag.get("reason", ""))
+                        _console.print(f"  [dim]└ 💤 sleep until {until_label}[/dim]")
+                    else:
+                        _save_ai_state(
+                            config,
+                            state,
+                            until=str(state_tag.get("until") or ""),
+                            reason=str(state_tag.get("reason") or ""),
+                        )
+                        _plog.info("AI state  state=%s reason=%s", state, state_tag.get("reason", ""))
+
+        # Bump per-session event counter and rotate if we've hit the cap
+        # (skip if sleep already retired the session above)
+        if _load_active_session(config) is not None:
+            new_count = _increment_session_events(config)
+            cap = max(1, int(getattr(config, "events_per_session", 10)))
+            if new_count >= cap:
+                _retire_session(config, reason="rotated")
+                _plog.info("session rotated after %d events (cap=%d)", new_count, cap)
+                _console.print(f"  [dim]└ session rotated ({new_count}/{cap})[/dim]")
 
         return True
     except subprocess.TimeoutExpired:
@@ -221,38 +405,94 @@ def _wake_session(config, message: str, tag: str = "tg") -> bool:
         return False
 
 
-# Regex for outbound message markers: [→tg:Name] or [→email:Name]
-_OUTBOUND_RE = re.compile(
-    r"\[→(tg|telegram|email):([^\]]+)\]\s*(.+?)(?=\[→(?:tg|telegram|email):|$)",
-    re.DOTALL,
-)
-
-
-def _extract_outbound_markers(config, text: str) -> int:
-    """Extract [→channel:recipient] markers from text and write to outbox/.
-
-    Returns count of outbox files written.
-    """
-    outbox = config.outbox_dir
-    outbox.mkdir(parents=True, exist_ok=True)
-    count = 0
-
-    for match in _OUTBOUND_RE.finditer(text):
-        channel, recipient, body = match.group(1), match.group(2), match.group(3).strip()
-        if not body:
-            continue
-        via = "telegram" if channel in ("tg", "telegram") else "email"
-        ts = time.strftime("%m%d_%H%M%S")
-        fname = f"auto_{ts}_{count:02d}.md"
-        content = (
-            f"---\nto: {recipient.strip()}\nvia: {via}\n"
-            f"priority: normal\n---\n\n{body}\n"
+def _run_claude_json(config, message: str, *, tag: str) -> tuple[bool, dict | None]:
+    session = _load_active_session(config)
+    resuming = session is not None
+    cmd = [
+        "claude", "-p", message,
+        "--output-format", "json",
+        "--max-turns", "10",
+    ]
+    if config.cc_model:
+        cmd.extend(["--model", config.cc_model])
+    if config.cc_disallowed_tools:
+        cmd.extend(["--disallowedTools"] + [t.strip() for t in config.cc_disallowed_tools.split(",") if t.strip()])
+    if resuming:
+        cmd.extend(["--resume", session["session_id"]])
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=180,
+            cwd=str(config.home_path),
         )
-        (outbox / fname).write_text(content, encoding="utf-8")
-        count += 1
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return False, None
+    try:
+        data = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        return False, None
+    if result.returncode != 0 and data.get("subtype") != "error_max_turns":
+        return False, data
+    if data and not resuming:
+        new_sid = data.get("session_id", "")
+        if new_sid:
+            _save_active_session(config, new_sid)
+    cost = data.get("total_cost_usd", 0)
+    if cost:
+        log_cost(config, cost, session_id=data.get("session_id", ""), tag=tag, turns=data.get("num_turns", 0))
+    return True, data
+
+
+def _append_transcript(config, source: str, message: dict) -> dict:
+    clean_source = re.sub(r"[^A-Za-z0-9_-]+", "_", (source or "favilla").strip().lower()).strip("_") or "favilla"
+    path = config.home_path / "transcript" / f"{clean_source}.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "id": str(message.get("id") or f"srv-{int(time.time() * 1000)}"),
+        "role": str(message.get("role") or "ai"),
+        "t": int(message.get("t") or int(time.time() // 60)),
+    }
+    for key in (
+        "text", "raw_text", "runtime",
+        "attachments", "thinking", "thinkingLocked", "segments", "hold",
+        "divider", "recallUsed", "error",
+        # Step 6: extended schema
+        "tool_calls_summary", "actions", "presence", "metrics", "meta",
+    ):
+        if key in message and message[key] not in (None, [], ""):
+            record[key] = message[key]
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    return record
+
+
+def _extract_and_dispatch(config, text: str, conductor) -> int:
+    """Extract [→channel:recipient] markers and dispatch via Conductor.
+
+    Returns count of dispatched messages.
+    """
+    from fiam.markers import parse_outbound_markers
+    from fiam.plugins import resolve_dispatch_target
+
+    count = 0
+    for marker in parse_outbound_markers(text):
+        target = resolve_dispatch_target(config, marker.channel)
+        if target is None:
+            _plog.info("dispatch skipped disabled plugin channel=%s", marker.channel)
+            continue
+        if conductor is not None:
+            try:
+                conductor.dispatch(target, marker.recipient, marker.body)
+                count += 1
+            except Exception as e:
+                _plog.error("dispatch failed: %s", e)
+        else:
+            _plog.warning("no conductor for dispatch, skipping")
 
     if count:
-        _console.print(f"  [dim]└ outbox +{count}[/dim]")
+        _console.print(f"  [dim]└ dispatched {count}[/dim]")
     return count
 
 
@@ -262,17 +502,7 @@ def cmd_start(args: argparse.Namespace) -> None:
     code_path = _project_root()
 
     # ── Load .env (secrets like API keys, bot tokens) ──
-    env_file = code_path / ".env"
-    if env_file.is_file():
-        for line in env_file.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "=" in line:
-                key, _, val = line.partition("=")
-                key, val = key.strip(), val.strip().strip("\"'")
-                if key and key not in os.environ:
-                    os.environ[key] = val
+    _load_env_file(code_path)
 
     # ── Setup pipeline log ──
     log_dir = code_path / "logs"
@@ -281,6 +511,13 @@ def cmd_start(args: argparse.Namespace) -> None:
     _fh.setFormatter(logging.Formatter("%(asctime)s  %(message)s", datefmt="%m-%d %H:%M:%S"))
     _plog.addHandler(_fh)
     _plog.info("─── daemon start (PID %d) ───", os.getpid())
+
+    def _project_time(fmt: str, timestamp: float | None = None) -> str:
+        if timestamp is None:
+            dt = config.now_utc()
+        else:
+            dt = datetime.fromtimestamp(timestamp, timezone.utc)
+        return dt.astimezone(config.project_tz()).strftime(fmt)
 
     # PID check
     existing_pid = _is_daemon_running(code_path)
@@ -297,13 +534,15 @@ def cmd_start(args: argparse.Namespace) -> None:
     # Graceful shutdown
     running = True
     shutdown_requested = False
+    process_pending_on_shutdown = False
 
     def _shutdown(sig, frame):
-        nonlocal running, shutdown_requested
+        nonlocal running, shutdown_requested, process_pending_on_shutdown
         if shutdown_requested:
             # Second Ctrl+C = force exit
             sys.exit(1)
         shutdown_requested = True
+        process_pending_on_shutdown = sig != signal.SIGTERM
         running = False
 
     signal.signal(signal.SIGINT, _shutdown)
@@ -311,14 +550,93 @@ def cmd_start(args: argparse.Namespace) -> None:
     if sys.platform == "win32":
         signal.signal(signal.SIGBREAK, _shutdown)
 
-    # Initial pre_session
-    from fiam.pipeline import pre_session, post_session, store_segment
+    # Initial imports for new architecture
     from fiam.retriever.embedder import Embedder
-    from fiam.store.home import HomeStore
-    import numpy as np
+    from fiam.store.features import FeatureStore
+    from fiam.store.pool import Pool
+    from fiam.conductor import Conductor
+    from fiam.bus import Bus, RECEIVE_ALL
+    import queue as _queue
 
-    result = pre_session(config)
-    event_count = result["event_count"]
+    # ── MQTT bus: replaces all channel polling ──
+    _bus = Bus(client_id="fiam-daemon")
+    _inbox_q: _queue.Queue = _queue.Queue()
+
+    def _on_receive(source: str, payload: dict) -> None:
+        """Bus thread → main loop queue. Convert MQTT payload to msg dict."""
+        text = (payload.get("text") or "").strip()
+        if not text:
+            return
+        source_name = str(payload.get("source") or source)
+        try:
+            from fiam.plugins import is_receive_enabled
+            if not is_receive_enabled(config, source_name):
+                _plog.info("receive skipped disabled plugin source=%s", source_name)
+                return
+        except Exception:
+            pass
+        t_raw = payload.get("t")
+        t_val: datetime | None = None
+        if isinstance(t_raw, str):
+            try:
+                t_val = datetime.fromisoformat(t_raw)
+            except ValueError:
+                t_val = None
+        elif isinstance(t_raw, datetime):
+            t_val = t_raw
+        meta = {
+            key: value for key, value in payload.items()
+            if key not in {"text", "source", "t"} and value not in (None, "", [])
+        }
+        _inbox_q.put({
+            "source": source_name,
+            "from_name": payload.get("from_name", ""),
+            "text": text,
+            "t": t_val or datetime.now(timezone.utc),
+            "meta": meta,
+        })
+
+    _bus.subscribe(RECEIVE_ALL, _on_receive)
+    try:
+        _bus.connect(config.mqtt_host, config.mqtt_port, config.mqtt_keepalive)
+        _bus.loop_start()
+        _plog.info("bus connected to %s:%d", config.mqtt_host, config.mqtt_port)
+    except Exception as e:
+        _plog.error("bus connect failed: %s — running without MQTT", e)
+        _console.print(f"  [yellow]MQTT broker unreachable ({e}); inbound channels disabled[/]")
+
+    # ── Pool + Embedder ──
+    _pool = Pool(config.pool_dir, dim=config.embedding_dim)
+    _feature_store = FeatureStore(config.feature_dir, dim=config.embedding_dim)
+    _conductor_embedder = Embedder(config)
+    event_count = _pool.event_count
+
+    # ── Recall: daemon owns this (recall never enters flow) ──
+    _recall_top_k = 3
+
+    def _refresh_recall(query_vec) -> None:
+        """Run spreading activation and write recall.md + .recall_dirty marker."""
+        from fiam.runtime.recall import refresh_recall
+
+        count = refresh_recall(config, _pool, query_vec, top_k=_recall_top_k)
+        if count:
+            _plog.info("recall refreshed (%d fragments)", count)
+
+    # ── Conductor: stateless hub, drift → _refresh_recall callback ──
+    _conductor = Conductor(
+        pool=_pool,
+        embedder=_conductor_embedder,
+        config=config,
+        flow_path=config.flow_path,
+        drift_threshold=config.drift_threshold,
+        gorge_max_beat=config.gorge_max_beat,
+        gorge_min_depth=config.gorge_min_depth,
+        gorge_stream_confirm=config.gorge_stream_confirm,
+        on_drift=_refresh_recall,
+        bus=_bus,
+        memory_mode=config.memory_mode,
+        feature_store=_feature_store,
+    )
 
     _console.print()
     _console.print(_flow("  fiam  ✦"))
@@ -331,201 +649,148 @@ def cmd_start(args: argparse.Namespace) -> None:
     projects_dir = _claude_projects_dir()
     sanitized = _sanitize_home_path(config.home_path)
     jsonl_dir = projects_dir / sanitized
+    daemon_started_at = time.time()
 
-    last_activity: float = 0.0
+    def _current_jsonl_mtime() -> float:
+        if not jsonl_dir.is_dir():
+            return 0.0
+        try:
+            return max((p.stat().st_mtime for p in jsonl_dir.glob("*.jsonl")), default=0.0)
+        except OSError:
+            return 0.0
+
+    last_activity: float = _current_jsonl_mtime()
     active = False
     idle_timeout = config.idle_timeout_minutes * 60
     poll_interval = config.poll_interval_seconds
 
-    # Live recall state
-    recall_query_vec: np.ndarray | None = None  # embedding of last recall query
-    recall_drift_threshold = 0.65               # cosine sim below this = topic shift
-    recall_min_chars = 40                       # skip trivial messages
-    embedder_lazy: Embedder | None = None
-    # Regex to strip daemon wake signal tags from user text
-    _wake_tag_re = re.compile(r"\[wake:[^\]]*\]\s*")
-
-    def _get_embedder() -> Embedder:
-        nonlocal embedder_lazy
-        if embedder_lazy is None:
-            embedder_lazy = Embedder(config)
-        return embedder_lazy
-
-    def _peek_recent_user_text(jsonl_files: list[Path], max_chars: int = 600) -> str:
-        """Read the last ~max_chars of user text from JSONL files (read-only peek)."""
-        parts: list[str] = []
-        total = 0
-        for jf in sorted(jsonl_files, key=lambda p: p.stat().st_mtime, reverse=True):
-            try:
-                raw = jf.read_bytes()
-            except OSError:
-                continue
-            # Walk lines backward
-            for raw_line in reversed(raw.split(b"\n")):
-                line_text = raw_line.decode("utf-8", errors="replace").strip()
-                if not line_text:
-                    continue
-                try:
-                    obj = json.loads(line_text)
-                except json.JSONDecodeError:
-                    continue
-                if obj.get("type") == "user":
-                    msg = obj.get("message", {})
-                    content = msg.get("content", "")
-                    if isinstance(content, str) and content.strip():
-                        # Strip [wake:xxx] tags — daemon signals, not real content
-                        cleaned = _wake_tag_re.sub("", content).strip()
-                        if cleaned:
-                            parts.append(cleaned)
-                        total += len(content)
-                        if total >= max_chars:
-                            break
-            if total >= max_chars:
-                break
-        # Return in chronological order
-        parts.reverse()
-        return "\n".join(parts)
-
-    def _update_recall_if_drifted(jsonl_files: list[Path]) -> None:
-        """Check if conversation topic drifted from current recall; update if so."""
-        nonlocal recall_query_vec
-
-        user_text = _peek_recent_user_text(jsonl_files)
-        if len(user_text) < recall_min_chars:
-            return
-
-        emb = _get_embedder()
-        current_vec = emb.embed(user_text)
-
-        # Check drift against last recall query
-        if recall_query_vec is not None:
-            sim = float(np.dot(current_vec, recall_query_vec) / (
-                np.linalg.norm(current_vec) * np.linalg.norm(recall_query_vec)
-            ))
-            if sim > recall_drift_threshold:
-                return  # topic hasn't shifted enough
-
-        # Topic shifted — run retrieval and update recall.md
-        recall_query_vec = current_vec
-
-        store = HomeStore(config)
-        from fiam.retriever import joint as joint_retriever
-        events = joint_retriever.search(user_text, store, config)
-
-        if not events:
-            return
-
-        _write_recall(config, events)
-        ts = time.strftime("%H:%M")
-        _console.print(f"  [dim]└[{ts}][/dim] [bold #7eb8f7]↻[/]  recall  [bold #f7e08a]{len(events)}[/]")
-
-    # ------------------------------------------------------------------
-    # Streaming depth-based event segmentation
-    #
-    # Instead of cutting on absolute cosine threshold (fragile),
-    # we use TextTiling depth scores — the same algorithm as post_session.
-    # Turns are grouped into "blocks" (user-assistant exchanges).
-    # Depth scores detect relative dips in inter-block similarity.
-    # A candidate cut is confirmed after CONFIRM_WINDOW more blocks
-    # still agree it's the deepest point, preventing premature cuts.
-    # ------------------------------------------------------------------
-    _DEPTH_WINDOW = 2          # blocks on each side for similarity
-    _DEPTH_CUTOFF = 0.10       # minimum depth to consider a cut
-    _CONFIRM_WINDOW = 2        # blocks after candidate before confirming
-    _MAX_BLOCKS = 20           # safety valve: force cut if buffer grows too large
-    _MIN_BLOCK_CHARS = 40      # skip embedding for trivial blocks
-
-    # A lightweight block: just turns + embedding vector
-    @dataclass
-    class _Block:
-        turns: list[dict[str, str]]
-        vec: np.ndarray | None = None
-
-    segment_blocks: list[_Block] = []    # accumulated blocks
-    _cut_candidate: int | None = None    # gap index of best cut candidate
-    _cut_depth: float = 0.0              # depth at candidate
-    _cut_confirm: int = 0                # blocks seen since candidate was set
-
-    def _group_turns_into_block(turns: list[dict[str, str]]) -> _Block:
-        """Group new turns into a single block and embed the user text."""
-        user_text = "\n".join(
-            t.get("text", "") for t in turns if t.get("role") == "user"
-        )
-        user_text = _wake_tag_re.sub("", user_text).strip()
-
-        vec = None
-        if len(user_text) >= _MIN_BLOCK_CHARS:
-            emb = _get_embedder()
-            vec = emb.embed(user_text)
-
-        return _Block(turns=turns, vec=vec)
-
-    def _compute_depths() -> np.ndarray:
-        """Compute TextTiling depth scores across current segment_blocks."""
-        n = len(segment_blocks)
-        if n < 3:
-            return np.zeros(max(n - 1, 0))
-
-        dim = config.embedding_dim
-        vecs = []
-        for b in segment_blocks:
-            vecs.append(b.vec if b.vec is not None else np.zeros(dim, dtype=np.float32))
-        embeddings = np.array(vecs)
-
-        # Step 1: block similarities at each gap
-        sims = np.zeros(n - 1)
-        for i in range(n - 1):
-            left_start = max(0, i - _DEPTH_WINDOW + 1)
-            right_end = min(n, i + 1 + _DEPTH_WINDOW)
-            left_block = embeddings[left_start:i + 1].mean(axis=0)
-            right_block = embeddings[i + 1:right_end].mean(axis=0)
-            denom = np.linalg.norm(left_block) * np.linalg.norm(right_block)
-            sims[i] = float(np.dot(left_block, right_block) / (denom + 1e-9)) if denom > 1e-9 else 0.0
-
-        # Step 2: depth = sum of drops from nearest left peak and right peak
-        depths = np.zeros(len(sims))
-        for i in range(len(sims)):
-            left_peak = sims[i]
-            for j in range(i - 1, -1, -1):
-                if sims[j] >= left_peak:
-                    left_peak = sims[j]
-                else:
-                    break
-            right_peak = sims[i]
-            for j in range(i + 1, len(sims)):
-                if sims[j] >= right_peak:
-                    right_peak = sims[j]
-                else:
-                    break
-            depths[i] = (left_peak - sims[i]) + (right_peak - sims[i])
-
-        return depths
-
-    def _find_best_cut(depths: np.ndarray) -> tuple[int, float] | None:
-        """Find the deepest local-maximum gap that exceeds the cutoff."""
-        best_idx, best_val = -1, 0.0
-        for i in range(len(depths)):
-            if depths[i] < _DEPTH_CUTOFF:
-                continue
-            # Must be local maximum
-            if i > 0 and depths[i - 1] > depths[i]:
-                continue
-            if i < len(depths) - 1 and depths[i + 1] > depths[i]:
-                continue
-            if depths[i] > best_val:
-                best_idx, best_val = i, depths[i]
-        return (best_idx, best_val) if best_idx >= 0 else None
-
-    def _parse_new_turns() -> list[dict[str, str]]:
-        """Parse unread JSONL content and advance cursor. Returns new turns."""
+    def _seed_jsonl_cursor_to_present() -> None:
         if not jsonl_dir.is_dir():
-            return []
+            return
+        cursor = _load_cursor(code_path)
+        changed = False
+        for jf in jsonl_dir.glob("*.jsonl"):
+            try:
+                stat = jf.stat()
+            except FileNotFoundError:
+                continue
+            if stat.st_mtime <= daemon_started_at:
+                cursor[jf.name] = {"byte_offset": stat.st_size, "mtime": stat.st_mtime}
+                changed = True
+        if changed:
+            _save_cursor(code_path, cursor)
+
+    # Live recall: conductor fires on_drift → _refresh_recall (above)
+
+    def _write_pending_external(config, msgs: list[dict]) -> None:
+        """Append pre-formatted external messages for inject.sh hook delivery."""
+        parts = []
+        for m in msgs:
+            parts.append(f"[{m['source']}:{m['from_name']}] {m['text']}")
+        formatted = "\n\n".join(parts)
+        path = config.pending_external_path
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(formatted + "\n")
+
+    def _format_user_message(msgs: list[dict], prefix: str = "") -> str:
+        """Format external messages for `claude -p` user field.
+
+        Optional ``prefix`` (typically a ``[context]...[/context]`` block built
+        by :func:`_build_wake_context`) is prepended verbatim.
+        """
+        parts = []
+        for m in msgs:
+            parts.append(f"[{m['source']}:{m['from_name']}] {m['text']}")
+        body = "\n\n".join(parts)
+        return f"{prefix}{body}" if prefix else body
+
+    def _build_wake_context(prior_sleep: dict | None, wake_trigger: str) -> str:
+        """Return a one-shot ``[context]`` prefix when waking from sleep.
+
+        ``prior_sleep`` is the ai_state dict captured before clearing sleep.
+        Returns ``""`` if there was no sleep state to announce.
+        """
+        if not prior_sleep or prior_sleep.get("state") != "sleep":
+            return ""
+        until = str(prior_sleep.get("until", "open") or "open")
+        reason = str(prior_sleep.get("reason", "") or "").strip()
+        lines = [
+            "[context]",
+            "last_state=sleep",
+            f"sleep_until_planned={until}",
+        ]
+        if reason:
+            lines.append(f"sleep_reason={reason}")
+        lines.append(f"wake_trigger={wake_trigger}")
+        unread = _count_notifications_inbox()
+        if unread > 0:
+            lines.append(f"notifications_inbox_unread={unread}")
+        lines.append("[/context]")
+        return "\n".join(lines) + "\n\n"
+
+    _NOTIF_SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+    def _slugify_for_filename(text: str, *, max_len: int = 40) -> str:
+        slug = _NOTIF_SLUG_RE.sub("-", text.lower()).strip("-")
+        return slug[:max_len] or "msg"
+
+    def _write_notification_file(msg: dict) -> Path | None:
+        """Drop a lazy-channel message as a markdown file in notifications/inbox/."""
+        try:
+            inbox = config.notifications_inbox_dir
+            inbox.mkdir(parents=True, exist_ok=True)
+            t = msg.get("t")
+            if isinstance(t, datetime):
+                ts_iso = t.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                ts_human = t.astimezone(timezone.utc).isoformat()
+            else:
+                now = datetime.now(timezone.utc)
+                ts_iso = now.strftime("%Y%m%dT%H%M%SZ")
+                ts_human = now.isoformat()
+            source = str(msg.get("source") or "unknown")
+            text = str(msg.get("text") or "").strip()
+            from_name = str(msg.get("from_name") or "")
+            summary = _slugify_for_filename(text.splitlines()[0] if text else source)
+            fname = f"{ts_iso}_{source}_{summary}.md"
+            path = inbox / fname
+            header = f"# {source}"
+            if from_name:
+                header += f" / {from_name}"
+            header += f"\n\nt: {ts_human}\nsource: {source}\n"
+            if from_name:
+                header += f"from: {from_name}\n"
+            path.write_text(f"{header}\n---\n\n{text}\n", encoding="utf-8")
+            return path
+        except Exception as e:
+            _plog.error("write notification file failed: %s", e)
+            return None
+
+    def _count_notifications_inbox() -> int:
+        try:
+            inbox = config.notifications_inbox_dir
+            if not inbox.is_dir():
+                return 0
+            return sum(1 for p in inbox.iterdir() if p.is_file() and not p.name.startswith("."))
+        except Exception:
+            return 0
+
+    # ------------------------------------------------------------------
+    # Beat ingestion via Conductor
+    #
+    # Conductor handles: embed → StreamGorge segmentation → Pool storage
+    # → drift detection → recall refresh.  Replaces the old manual
+    # TextTiling depth code + store_segment pipeline.
+    # ------------------------------------------------------------------
+
+    def _ingest_new_beats() -> None:
+        """Parse unread CC JSONL via Conductor; it handles segment cuts internally."""
+        if not jsonl_dir.is_dir():
+            return
         jf_list = list(jsonl_dir.glob("*.jsonl"))
         if not jf_list:
-            return []
+            return
 
         cursor = _load_cursor(code_path)
-        new_turns: list[dict[str, str]] = []
 
         for jf in sorted(jf_list, key=lambda p: p.stat().st_mtime):
             jkey = jf.name
@@ -534,134 +799,50 @@ def cmd_start(args: argparse.Namespace) -> None:
                 jf_mtime = jf.stat().st_mtime
             except FileNotFoundError:
                 continue
-            if jf_mtime < entry["mtime"]:
+            entry_mtime = float(entry.get("mtime", 0.0))
+            if jf_mtime < entry_mtime:
                 entry["byte_offset"] = 0
-            turns, new_offset = _parse_jsonl_from(jf, entry["byte_offset"])
-            if turns:
-                new_turns.extend(turns)
+            elif jf_mtime <= entry_mtime:
+                continue
+
+            results, new_offset = _conductor.receive_cc(jf, entry["byte_offset"])
+            n_beats = len(results)
+            n_events = sum(1 for r in results if r is not None)
+            if n_beats:
+                _log_action("ingest", f"{n_beats} beats", events=n_events)
+                if n_events:
+                    for eid in results:
+                        if eid:
+                            _console.print(f"  [bold #a8f0e8]+1[/] memory [{eid}]")
+                            _plog.info("conductor event  id=%s", eid)
+
             cursor[jkey] = {"byte_offset": new_offset, "mtime": jf_mtime}
 
         _save_cursor(code_path, cursor)
-        return new_turns
-
-    def _flush_blocks(blocks: list[_Block], reason: str = "depth") -> None:
-        """Finalize a list of blocks as a single event via store_segment()."""
-        if not blocks:
-            return
-        all_turns = [t for b in blocks for t in b.turns]
-        if not all_turns:
-            return
-        try:
-            r = store_segment(config, all_turns)
-            eid = r.get("event_id", "?")
-            _console.print(f"  [bold #a8f0e8]+1[/] memory ({reason}) [{eid}]")
-            _plog.info("store_segment  reason=%s event=%s turns=%d blocks=%d",
-                        reason, eid, len(all_turns), len(blocks))
-            _log_action("store", f"{eid} ({reason})", turns=len(all_turns))
-        except Exception as e:
-            _console.print(f"  [red]segment error:[/] {e}")
-            _plog.error("store_segment error: %s", e, exc_info=True)
-            _log_action("error", f"store_segment: {e}")
-
-    def _cut_at(gap_index: int, reason: str = "depth") -> None:
-        """Cut segment_blocks at gap_index: flush blocks 0..gap_index, keep the rest."""
-        nonlocal segment_blocks, _cut_candidate, _cut_depth, _cut_confirm
-
-        to_flush = segment_blocks[:gap_index + 1]
-        segment_blocks = segment_blocks[gap_index + 1:]
-        _cut_candidate = None
-        _cut_depth = 0.0
-        _cut_confirm = 0
-
-        _flush_blocks(to_flush, reason=reason)
-
-    def _ingest_and_check_depth(new_turns: list[dict[str, str]]) -> None:
-        """Add new turns as a block; check streaming depth for confirmed cuts."""
-        nonlocal segment_blocks, _cut_candidate, _cut_depth, _cut_confirm
-
-        if not new_turns:
-            return
-
-        block = _group_turns_into_block(new_turns)
-        segment_blocks.append(block)
-
-        n = len(segment_blocks)
-
-        # Need at least 3 blocks before depth scoring is meaningful
-        if n < 3:
-            return
-
-        depths = _compute_depths()
-        best = _find_best_cut(depths)
-
-        if best is None:
-            # No significant cut point — reset candidate
-            _cut_candidate = None
-            _cut_depth = 0.0
-            _cut_confirm = 0
-            return
-
-        gap_idx, gap_depth = best
-
-        # Safety valve: force cut if buffer is too large
-        if n > _MAX_BLOCKS:
-            _plog.info("depth force-cut  blocks=%d gap=%d depth=%.3f", n, gap_idx, gap_depth)
-            _log_action("depth", f"force gap={gap_idx} d={gap_depth:.3f}", blocks=n)
-            _cut_at(gap_idx, reason="depth-force")
-            return
-
-        # Track candidate confirmation
-        if _cut_candidate == gap_idx:
-            _cut_confirm += 1
-        else:
-            # New (or shifted) candidate
-            _cut_candidate = gap_idx
-            _cut_depth = gap_depth
-            _cut_confirm = 0
-
-        # Confirmed: same gap survived CONFIRM_WINDOW more blocks
-        if _cut_confirm >= _CONFIRM_WINDOW:
-            _plog.info("depth confirmed  gap=%d depth=%.3f after %d blocks",
-                        gap_idx, gap_depth, _cut_confirm)
-            _log_action("depth", f"confirmed gap={gap_idx} d={gap_depth:.3f}",
-                        blocks=n, confirm=_cut_confirm)
-            _cut_at(gap_idx, reason="depth")
 
     def _process_pending() -> None:
-        """Parse remaining JSONL, flush segment buffer, and refresh recall."""
-        nonlocal active, recall_query_vec, segment_blocks, _cut_candidate, _cut_depth, _cut_confirm
+        """Flush conductor beat buffer and any unread JSONL on idle/shutdown."""
+        nonlocal active
 
-        # Parse any remaining unread turns into a new block
-        new_turns = _parse_new_turns()
-        if new_turns:
-            block = _group_turns_into_block(new_turns)
-            segment_blocks.append(block)
+        # Parse any remaining unread beats
+        try:
+            _ingest_new_beats()
+        except Exception as e:
+            _plog.error("final ingest error: %s", e, exc_info=True)
 
-        total_turns = sum(len(b.turns) for b in segment_blocks)
-        _plog.info("process  blocks=%d turns=%d", len(segment_blocks), total_turns)
-
-        # Flush all remaining blocks as the final event
-        if segment_blocks:
-            _flush_blocks(segment_blocks, reason="idle")
-            segment_blocks = []
-            _cut_candidate = None
-            _cut_depth = 0.0
-            _cut_confirm = 0
-
-            # Rebuild recall after storing
-            try:
-                store = HomeStore(config)
-                from fiam.retriever import joint as joint_retriever
-                events = joint_retriever.search("", store, config)
-                _write_recall(config, events)
-                recall_query_vec = None
-                _console.print(f"  recall [#f7a8d0]←[/] [bold #f7e08a]{len(events)}[/] fragments")
-                _plog.info("recall updated  fragments=%d", len(events))
-            except Exception as e:
-                _console.print(f"  [red]recall error:[/] {e}")
-                _plog.error("recall error: %s", e, exc_info=True)
-        else:
-            _console.print(f"  [dim]·  up to date[/dim]")
+        # Flush conductor buffer → pool events
+        try:
+            event_ids = _conductor.flush_all()
+            if event_ids:
+                for eid in event_ids:
+                    _console.print(f"  [bold #a8f0e8]+1[/] memory (idle) [{eid}]")
+                    _plog.info("conductor flush  id=%s", eid)
+                _log_action("flush", f"{len(event_ids)} events")
+            else:
+                _console.print(f"  [dim]·  up to date[/dim]")
+        except Exception as e:
+            _console.print(f"  [red]flush error:[/] {e}")
+            _plog.error("conductor flush error: %s", e, exc_info=True)
 
         active = False
 
@@ -673,7 +854,7 @@ def cmd_start(args: argparse.Namespace) -> None:
     def _log_action(action: str, detail: str = "", **extra) -> None:
         """Append an action entry to the state log ring buffer."""
         entry = {
-            "time": time.strftime("%H:%M:%S"),
+            "time": _project_time("%H:%M:%S"),
             "action": action,
             "detail": detail,
             **extra,
@@ -686,28 +867,31 @@ def cmd_start(args: argparse.Namespace) -> None:
         """Write current daemon state to logs/daemon_state.json for the debug dashboard."""
         try:
             state_path = code_path / "logs" / "daemon_state.json"
-            comm = _load_comm_state(config)
+            ai_state = _load_ai_state(config)
+            ai_state_name = str(ai_state.get("state", "notify"))
             session = _load_active_session(config)
 
             state = {
                 "pid": os.getpid(),
                 "uptime": time.strftime("%H:%M:%S"),
                 "active": active,
-                "comm_state": comm,
+                "ai_state": ai_state_name,
+                "comm_state": ai_state_name,
+                "ai_state_until": ai_state.get("until") or ai_state.get("expires_at") or None,
                 "session": session.get("session_id", "")[:8] if session else None,
-                "segment_buffer_turns": sum(len(b.turns) for b in segment_blocks),
-                "segment_blocks": len(segment_blocks),
-                "segment_cut_candidate": _cut_candidate,
-                "recall_has_vec": recall_query_vec is not None,
-                "last_activity": time.strftime("%H:%M:%S", time.localtime(last_activity)) if last_activity else None,
+                "conductor_beat_buf": len(_conductor._beat_buf),
+                "pool_events": len(_pool.load_events()),
+                "last_activity": _project_time("%H:%M:%S", last_activity) if last_activity else None,
                 "recent_actions": state_log[-20:],
             }
             state_path.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
         except Exception:
             pass  # non-critical
 
-    last_inbox_check: float = 0.0
-    inbox_interval = 60  # check TG + email every 60s
+    _seed_jsonl_cursor_to_present()
+    _log_action("start", "daemon initialized")
+    _write_daemon_state()
+
     last_replay_check: float = 0.0
     replay_interval = 30 * 60  # memory replay every 30 minutes when idle
 
@@ -724,68 +908,150 @@ def cmd_start(args: argparse.Namespace) -> None:
         # Write daemon state for debug dashboard (every poll cycle)
         _write_daemon_state()
 
-        # ── Inbound channels: TG + email polling ──
-        now_ts = time.time()
-        if now_ts - last_inbox_check > inbox_interval:
-            last_inbox_check = now_ts
+        # ── Inbound channels: drain MQTT queue (no polling here) ──
+        # Bridges (bridge_email, dashboard /api/capture, ...) push
+        # messages onto fiam/receive/+; the bus thread enqueues them.
+        all_msgs: list[dict] = []
+        while True:
             try:
-                n_tg = fetch_tg_inbox(config)
-                n_email = fetch_inbox(config)
-                _plog.debug("poll  tg=%d email=%d", n_tg, n_email)
-                if n_tg or n_email:
-                    ts = time.strftime("%H:%M")
-                    _console.print(f"  [dim]└[{ts}][/dim] [bold #7eb8f7]✉[/]  inbox +{n_tg + n_email}")
-                    _plog.info("inbox  tg=+%d email=+%d", n_tg, n_email)
-                    _log_action("inbox", f"tg={n_tg} email={n_email}")
+                all_msgs.append(_inbox_q.get_nowait())
+            except _queue.Empty:
+                break
+        if all_msgs:
+            # Sort by msg timestamp so flow.jsonl reflects real-world order
+            all_msgs.sort(key=lambda m: m.get("t") or datetime.min.replace(tzinfo=timezone.utc))
+            source_counts: dict[str, int] = {}
+            for msg in all_msgs:
+                source = str(msg.get("source") or "unknown")
+                source_counts[source] = source_counts.get(source, 0) + 1
+            source_summary = " ".join(f"{source}={count}" for source, count in sorted(source_counts.items()))
+            try:
+                ts = _project_time("%H:%M")
+                _console.print(
+                    f"  [dim]└[{ts}][/dim] [bold #7eb8f7]✉[/]  bus +{len(all_msgs)} "
+                    f"({source_summary})"
+                )
+                _plog.info("bus  total=+%d %s", len(all_msgs), source_summary)
+                _log_action("bus", f"+{len(all_msgs)}")
 
-                    # Check comm state
-                    comm_state = _load_comm_state(config)
-                    _plog.debug("comm_state=%s", comm_state)
+                ai_state = _load_ai_state(config)
+                ai_state_name = str(ai_state.get("state", "notify"))
+                beat_ai_state = "online" if ai_state_name == "notify" else ai_state_name
+                if beat_ai_state in _AI_STATES:
+                    _conductor.set_status(ai=beat_ai_state)
 
-                    if comm_state == "block":
-                        _plog.info("comm_state=block — messages archived, no wake")
-                        _console.print(f"  [dim]comm: block — messages archived[/dim]")
-                    elif comm_state == "mute":
-                        _plog.info("comm_state=mute — messages queued, wake deferred")
-                        _console.print(f"  [dim]comm: mute — queued for later[/dim]")
+                # All messages → Conductor → flow.jsonl + frozen vectors.
+                # In auto mode it also runs drift/gorge; in manual mode it stops there.
+                for msg in all_msgs:
+                    try:
+                        _conductor.receive(
+                            msg["text"],
+                            msg["source"],
+                            t=msg.get("t"),
+                            meta=msg.get("meta") or {},
+                        )
+                    except Exception as e:
+                        _plog.error("conductor.receive failed: %s", e)
+
+                # ── Split by plugin auto_wake: lazy channels (email/ring/xiao)
+                # only land in flow.jsonl + notifications/inbox/ and wait for AI
+                # to peek; immediate channels follow the wake path. ──
+                from fiam.plugins import auto_wake_for_source
+                immediate_msgs: list[dict] = []
+                lazy_msgs: list[dict] = []
+                for msg in all_msgs:
+                    src = str(msg.get("source") or "unknown")
+                    if auto_wake_for_source(config, src, default=True):
+                        immediate_msgs.append(msg)
                     else:
-                        # notify (default) — wake Fiet
-                        # Wake Fiet if inbox has messages and not interactive
+                        lazy_msgs.append(msg)
+
+                if lazy_msgs:
+                    written = 0
+                    for msg in lazy_msgs:
+                        if _write_notification_file(msg) is not None:
+                            written += 1
+                    if written:
+                        ts_lz = _project_time("%H:%M")
+                        _console.print(
+                            f"  [dim]└[{ts_lz}][/dim] [dim #a08f7f]📬[/]  inbox +{written} (lazy)"
+                        )
+                        _plog.info("lazy notifications written: %d", written)
+
+                if not immediate_msgs:
+                    # All messages were lazy — done; no wake, no pending.
+                    pass
+                else:
+                    # Recompute counts/summary for immediate flow.
+                    source_counts = {}
+                    for msg in immediate_msgs:
+                        src = str(msg.get("source") or "unknown")
+                        source_counts[src] = source_counts.get(src, 0) + 1
+
+                    # Daemon decides CC delivery: ai_state > interactive > budget
+                    ai_state = _load_ai_state(config)
+                    ai_state_name = str(ai_state.get("state", "notify"))
+                    sleeping = ai_state_name == "sleep"
+                    sleep_until = str(ai_state.get("until", "open")) if sleeping else None
+                    _plog.debug("ai_state=%s until=%s", ai_state_name, sleep_until)
+
+                    if sleeping and sleep_until != "open":
+                        # Explicit sleep: queue, don't wake
+                        _plog.info("AI sleeping until %s — queuing inbox", sleep_until)
+                        _console.print(f"  [dim]💤 sleeping — queued for next wake[/dim]")
+                        _write_pending_external(config, immediate_msgs)
+                    elif ai_state_name == "block":
+                        _plog.info("ai_state=block — in flow, delivery discarded")
+                        _console.print(f"  [dim]ai_state: block — recorded, no delivery[/dim]")
+                    elif ai_state_name in {"mute", "busy"}:
+                        _plog.info("ai_state=%s — in flow, no wake", ai_state_name)
+                        _console.print(f"  [dim]ai_state: {ai_state_name} — queued for later[/dim]")
+                        _write_pending_external(config, immediate_msgs)
+                    else:
+                        # Open sleep is auto-cleared by external arrival
+                        prior_sleep_state = dict(ai_state) if sleeping else None
+                        if sleeping and sleep_until == "open":
+                            _plog.info("AI open-sleep — external msg auto-wakes")
+                            _clear_sleep_state(config)
+                        # notify (default) — deliver to CC
                         interactive = _is_interactive(config)
                         _plog.debug("interactive=%s", interactive)
                         if not interactive:
-                            # Budget check before wake
                             budget_ok, budget_reason = check_budget(config)
                             if not budget_ok:
-                                _plog.warning("budget exceeded — skipping inbox wake: %s", budget_reason)
+                                _plog.warning("budget exceeded — queuing: %s", budget_reason)
                                 _console.print(f"  [yellow]budget: {budget_reason}[/]")
+                                _write_pending_external(config, immediate_msgs)
                             else:
-                                inbox_jsonl = config.inbox_jsonl_path
-                                jsonl_exists = inbox_jsonl.exists() and inbox_jsonl.stat().st_size > 0
-                                _plog.debug("inbox_jsonl exists=%s path=%s", jsonl_exists, inbox_jsonl)
-                                if jsonl_exists:
-                                    tag = "tg" if n_tg else "email"
-                                    summary = f"{n_tg + n_email} new message(s)"
-                                    _plog.info("wake attempt  tag=%s summary=%s", tag, summary)
-                                    ok = _wake_session(config, summary, tag=tag)
-                                    if ok:
-                                        ts2 = time.strftime("%H:%M")
-                                        _console.print(f"  [dim]└[{ts2}][/dim] [bold #a8f0e8]↗[/]  wake sent")
-                                        _plog.info("wake OK")
-                                    else:
-                                        _plog.warning("wake FAILED, retrying...")
-                                        ok2 = _wake_session(config, summary, tag=tag)
-                                        if not ok2:
-                                            _console.print(f"  [yellow]wake failed twice — messages remain queued[/]")
-                                            _plog.error("wake FAILED x2 — messages queued")
-                                            session = _load_active_session(config)
-                                            if session:
-                                                _retire_session(config, reason="wake_failed")
+                                sources_label = ",".join(sorted(source_counts)) or "unknown"
+                                wake_prefix = _build_wake_context(
+                                    prior_sleep_state,
+                                    f"external:{sources_label}",
+                                )
+                                user_msg = _format_user_message(immediate_msgs, prefix=wake_prefix)
+                                tag = next(iter(source_counts)) if len(source_counts) == 1 else "inbox"
+                                _plog.info("wake attempt  tag=%s msgs=%d", tag, len(immediate_msgs))
+                                ok = _wake_session(config, user_msg, tag=tag, conductor=_conductor)
+                                if ok:
+                                    ts2 = _project_time("%H:%M")
+                                    _console.print(f"  [dim]└[{ts2}][/dim] [bold #a8f0e8]↗[/]  wake sent")
+                                    _plog.info("wake OK")
+                                else:
+                                    _plog.warning("wake FAILED, retrying...")
+                                    ok2 = _wake_session(config, user_msg, tag=tag, conductor=_conductor)
+                                    if not ok2:
+                                        _console.print(f"  [yellow]wake failed twice — messages queued[/]")
+                                        _plog.error("wake FAILED x2 — messages queued in pending")
+                                        _write_pending_external(config, immediate_msgs)
+                                        session = _load_active_session(config)
+                                        if session:
+                                            _retire_session(config, reason="wake_failed")
                         else:
-                            _console.print(f"  [dim]interactive session — messages queued for hook[/dim]")
-                            _plog.info("interactive — skipping wake")
+                            _console.print(f"  [dim]interactive — messages queued for hook[/dim]")
+                            _plog.info("interactive — queuing for hook delivery")
+                            _write_pending_external(config, immediate_msgs)
             except Exception as e:
-                _plog.error("inbox error: %s", e, exc_info=True)
+                _plog.error("inbox handling error: %s", e, exc_info=True)
                 if config.debug_mode:
                     print(f"  [inbox] Error: {e}", file=sys.stderr)
 
@@ -804,59 +1070,90 @@ def cmd_start(args: argparse.Namespace) -> None:
                 and (time.time() - last_activity) > 30 * 60):
             last_replay_check = time.time()
             try:
-                from fiam.retriever.decay import replay_priority, record_access
-                from fiam.store.home import HomeStore
-                from datetime import datetime, timezone
-                store = HomeStore(config)
-                all_events = store.all_events()
-                if all_events:
-                    now_dt = datetime.now(timezone.utc)
-                    scored = [(ev, replay_priority(ev, now_dt)) for ev in all_events]
-                    scored.sort(key=lambda t: t[1], reverse=True)
-                    top = scored[:5]
-                    for ev, prio in top:
-                        if prio > 0.05:  # skip trivially low priorities
-                            record_access(ev, now_dt)
-                            store.update_metadata(ev)
-                    _plog.info("replay: consolidated %d memories (top priority=%.2f)",
-                               sum(1 for _, p in top if p > 0.05),
-                               top[0][1] if top else 0.0)
+                events = _pool.load_events()
+                if events:
+                    # Simple replay: bump access_count on least-accessed events
+                    sorted_by_access = sorted(events, key=lambda e: e.access_count)
+                    top = sorted_by_access[:5]
+                    bumped = 0
+                    for ev in top:
+                        ev.access_count += 1
+                        bumped += 1
+                    _pool.save_events()
+                    _plog.info("replay: consolidated %d memories (pool-based)", bumped)
             except Exception as e:
                 _plog.error("replay error: %s", e)
 
-        # ── Scheduler: check for due wakes ──
+        # ── Todo: check for due delayed work ──
         try:
-            from fiam_lib.scheduler import archive_stale, mark_fired
-            # Archive anything past grace window or max attempts.
+            from fiam_lib.todo import archive_stale, mark_done
             missed, failed = archive_stale(config)
             if missed or failed:
-                _plog.info("scheduler archived  missed=%d failed=%d", missed, failed)
+                _plog.info("todo archived  missed=%d failed=%d", missed, failed)
 
             due = load_due(config)
             for entry in due:
-                reason = entry.get("reason", "scheduled wake")
-                wake_type = entry.get("type", "check")
-                _plog.info("scheduler fire  type=%s reason=%s", wake_type, reason)
+                # Schema: kind="wake" (no description) or kind="todo" (with reason text).
+                kind = str(entry.get("kind") or "todo").lower()
+                if kind not in {"wake", "todo"}:
+                    kind = "todo"
+                reason = entry.get("reason", "") if kind == "todo" else ""
+                display = reason if kind == "todo" else "scheduled wake"
+                _plog.info("todo fire  kind=%s reason=%s", kind, reason)
 
-                # Budget check before scheduled wake.
-                # Defer (don't drop) so the wake retries once quota refreshes.
+                # Budget check before delayed work.
+                # Defer (don't drop) so the todo retries once quota refreshes.
                 budget_ok, budget_reason = check_budget(config)
                 if not budget_ok:
-                    _plog.warning("budget exceeded — deferring scheduled wake: %s", budget_reason)
-                    _console.print(f"  [yellow]⏰ {reason} — deferred ({budget_reason})[/]")
-                    mark_fired(entry, config, success=False)
+                    _plog.warning("budget exceeded — deferring todo: %s", budget_reason)
+                    _console.print(f"  [yellow]⏰ {display} — deferred ({budget_reason})[/]")
+                    mark_done(entry, config, success=False)
                     continue
 
-                _console.print(f"  [bold #e8c8ff]⏰[/] scheduled: {reason}")
-                ok = _wake_session(config, f"[scheduled:{wake_type}] {reason}", tag="sched")
-                mark_fired(entry, config, success=ok)
+                _console.print(f"  [bold #e8c8ff]⏰[/] {kind}: {display}")
+                # Sleep gate: if AI is sleeping past this wake's time, skip.
+                # (mark_done so it doesn't loop; AI's own sleep takes precedence)
+                sleeping, sleep_until = _is_sleeping(config)
+                prior_sleep_state = None
+                if sleeping:
+                    if sleep_until == "open":
+                        _plog.info("AI open-sleep — todo clears it")
+                        prior_sleep_state = dict(_load_ai_state(config))
+                        _clear_sleep_state(config)
+                    else:
+                        _plog.info("AI sleeping until %s — skipping todo", sleep_until)
+                        _console.print(f"  [dim]💤 still sleeping — todo skipped[/dim]")
+                        mark_done(entry, config, success=True)
+                        continue
+                action = str(entry.get("action") or "")
+                if action == "hold_retry":
+                    trigger_label = f"hold_retry:{reason[:40]}" if reason else "hold_retry"
+                    body = f"[hold_retry] {reason or 'reconsider held output'}"
+                    todo_prefix = _build_wake_context(prior_sleep_state, trigger_label)
+                    ok = _wake_session(
+                        config,
+                        f"{todo_prefix}{body}",
+                        tag="hold_retry",
+                        conductor=_conductor,
+                    )
+                else:
+                    trigger_label = "scheduled" if kind == "wake" else f"todo:{reason[:40]}"
+                    body = "[scheduled wake]" if kind == "wake" else f"[todo] {reason}"
+                    todo_prefix = _build_wake_context(prior_sleep_state, trigger_label)
+                    ok = _wake_session(
+                        config,
+                        f"{todo_prefix}{body}",
+                        tag=kind,
+                        conductor=_conductor,
+                    )
+                mark_done(entry, config, success=ok)
                 if ok:
-                    _plog.info("scheduler wake OK")
+                    _plog.info("todo item OK")
                 else:
                     attempts = int(entry.get("attempts", 0)) + 1
-                    _plog.warning("scheduler wake FAILED  retry=%d", attempts)
+                    _plog.warning("todo item FAILED  retry=%d", attempts)
         except Exception as e:
-            _plog.error("scheduler error: %s", e, exc_info=True)
+            _plog.error("todo error: %s", e, exc_info=True)
 
         # Check JSONL directory for activity
         if not jsonl_dir.is_dir():
@@ -871,48 +1168,49 @@ def cmd_start(args: argparse.Namespace) -> None:
 
         if max_mtime > last_activity:
             if not active:
-                ts = time.strftime("%H:%M")
+                ts = _project_time("%H:%M")
                 _console.print(f"  [dim]└[{ts}][/dim] [bold #f7e08a]✦[/]  active")
                 _plog.info("jsonl ACTIVE")
                 active = True
             last_activity = max_mtime
 
-            # Parse new turns and check for topic drift
+            # Ingest new beats via Conductor (handles embed + gorge + recall)
             try:
-                new_turns = _parse_new_turns()
-                if new_turns:
-                    _log_action("ingest", f"{len(new_turns)} turns parsed")
-                    _ingest_and_check_depth(new_turns)
+                _ingest_new_beats()
             except Exception as e:
                 _log_action("error", f"ingest: {e}")
                 _plog.error("ingest error: %s", e, exc_info=True)
                 if config.debug_mode:
                     print(f"  [ingest] Error: {e}", file=sys.stderr)
 
-            # Live recall: check topic drift on each new activity burst
-            try:
-                _update_recall_if_drifted(jsonl_files)
-            except Exception as e:
-                if config.debug_mode:
-                    print(f"  [recall] Error: {e}", file=sys.stderr)
-
             _write_daemon_state()
             continue
 
         # Check idle timeout
         if active and (time.time() - last_activity) > idle_timeout:
-            ts = time.strftime("%H:%M")
+            ts = _project_time("%H:%M")
             _console.print(f"  [dim]└[{ts}][/dim] [bold #f7a8d0]⟳[/]  processing...")
-            _plog.info("idle timeout → processing")
+            _plog.info("idle timeout → processing + auto-retire")
             _process_pending()
+            # Auto-retire: long inactivity = AI naturally drifted to sleep without
+            # declaring it. Next message starts a fresh session.
+            if _load_active_session(config):
+                _retire_session(config, reason="idle")
+                _plog.info("session auto-retired (idle)")
 
         _write_daemon_state()
 
     # ── Graceful shutdown: process any pending content before exit ──
-    if shutdown_requested and active:
+    if shutdown_requested and process_pending_on_shutdown and active:
         _console.print()
         _console.print(f"  [bold #f7a8d0]⟳[/]  wrapping up...")
         _process_pending()
+
+    # Stop bus loop (drains queued QoS 1 messages)
+    try:
+        _bus.loop_stop()
+    except Exception:
+        pass
 
     # Cleanup
     pid_file.unlink(missing_ok=True)
@@ -945,7 +1243,7 @@ def cmd_stop(args: argparse.Namespace) -> None:
             subprocess.run(["taskkill", "/F", "/PID", str(pid)],
                            capture_output=True, check=False)
     else:
-        os.kill(pid, signal.SIGTERM)
+        os.kill(pid, signal.SIGINT)
 
     # Wait for graceful exit (up to 120s for model inference)
     for _ in range(120):
@@ -978,25 +1276,27 @@ def cmd_status(args: argparse.Namespace) -> None:
 
     if toml.exists():
         from fiam.config import FiamConfig
+        from fiam.store.pool import Pool
         config = FiamConfig.from_toml(toml, code_path)
         print(f"  home: {config.home_path}")
+        print(f"  memory mode: {config.memory_mode}")
 
-        events_dir = config.events_dir
-        if events_dir.is_dir():
-            count = len(list(events_dir.glob("*.md")))
-            print(f"  events: {count}")
+        pool = Pool(config.pool_dir, dim=config.embedding_dim)
+        print(f"  events: {pool.event_count}")
 
-        emb_dir = config.embeddings_dir
-        if emb_dir.is_dir():
-            count = len(list(emb_dir.glob("*.npy")))
-            print(f"  embeddings: {count}")
+        try:
+            from fiam.store.features import FeatureStore
+            count = FeatureStore(config.feature_dir, dim=config.embedding_dim).count()
+        except Exception:
+            count = 0
+        print(f"  beat vectors: {count}")
 
         cursor = _load_cursor(code_path)
         if cursor:
             latest_mtime = max(v.get("mtime", 0) for v in cursor.values())
             if latest_mtime > 0:
                 from datetime import datetime
-                dt = datetime.fromtimestamp(latest_mtime).strftime("%Y-%m-%d %H:%M")
+                dt = datetime.fromtimestamp(latest_mtime, timezone.utc).astimezone(config.project_tz()).strftime("%Y-%m-%d %H:%M")
                 print(f"  last processed: {dt}")
     else:
         print("  (no fiam.toml — run 'fiam init')")

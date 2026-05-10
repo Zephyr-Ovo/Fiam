@@ -3,21 +3,19 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import subprocess
 import sys
 from pathlib import Path
 
 from fiam_lib.core import _project_root, _toml_path, _detect_platform
-from fiam_lib.hooks import _INJECT_PS1_TEMPLATE, _INJECT_SH_TEMPLATE
+from fiam_lib.hooks import write_claude_md, write_awareness_md, write_gitignore, install_hooks
 from fiam_lib.ui import _conjure
 
 
 def cmd_init(args: argparse.Namespace) -> None:
     """Interactive setup wizard."""
     from fiam.config import FiamConfig, LANGUAGE_PROFILES
-    from fiam.injector.claude_code import write_claude_md, write_gitignore
 
     code_path = _project_root()
     toml = _toml_path()
@@ -88,21 +86,14 @@ def cmd_init(args: argparse.Namespace) -> None:
     profile = LANGUAGE_PROFILES[language_profile]
     print(f"  → {language_profile}: embedding={profile['embedding']}, dim={profile['embedding_dim']}")
 
-    # ── Identity ──
-    default_ai = existing.ai_name if existing else ""
+    # ── User identity ──
     default_user = existing.user_name if existing else ""
-    if default_ai and default_user:
-        print(f"  AI: {default_ai}, User: {default_user}")
-        change_names = input("  Change names? [y/N]: ").strip().lower()
-        if change_names == "y":
-            ai_name = input(f"  AI name [{default_ai}]: ").strip() or default_ai
-            user_name = input(f"  Your name [{default_user}]: ").strip() or default_user
-        else:
-            ai_name = default_ai
-            user_name = default_user
+    if default_user:
+        print(f"  User: {default_user}")
+        change_user = input("  Change user name? [y/N]: ").strip().lower()
+        user_name = (input(f"  Your name [{default_user}]: ").strip() or default_user) if change_user == "y" else default_user
     else:
-        ai_name = input(f"  AI name [{'keep current' if default_ai else 'e.g. Nova'}]: ").strip() or default_ai
-        user_name = input(f"  Your name [{'keep current' if default_user else 'e.g. Alex'}]: ").strip() or default_user
+        user_name = input("  Your name [e.g. Alex]: ").strip()
 
     # ── Git ──
     default_git = existing.git_enabled if existing else True
@@ -121,7 +112,6 @@ def cmd_init(args: argparse.Namespace) -> None:
         home_path=home_path,
         home_paths=home_paths,
         code_path=code_path,
-        ai_name=ai_name,
         user_name=user_name,
         language_profile=language_profile,
         embedding_model=str(profile["embedding"]),
@@ -145,55 +135,19 @@ def cmd_init(args: argparse.Namespace) -> None:
         print(f"  CLAUDE.md    {config.claude_md_path}")
     else:
         print(f"  CLAUDE.md    {config.claude_md_path}  (exists, not overwritten)")
+    awareness_dest = config.self_dir / "awareness.md"
+    awareness_result = write_awareness_md(config)
+    if awareness_result:
+        print(f"  awareness.md {awareness_dest}")
+    else:
+        if awareness_dest.exists():
+            print(f"  awareness.md {awareness_dest}  (exists, not overwritten)")
     write_gitignore(config)
 
     # Auto-install hook files into home/.claude/
-    claude_dir = home_path / ".claude"
-    hooks_dir = claude_dir / "hooks"
-    hooks_dir.mkdir(parents=True, exist_ok=True)
-
-    # Platform-aware hook installation
-    if platform == "windows":
-        inject_path = hooks_dir / "inject.ps1"
-        hook_template = _INJECT_PS1_TEMPLATE
-        hook_command = r'& "$env:CLAUDE_PROJECT_DIR\.claude\hooks\inject.ps1"'
-        hook_shell = "powershell"
-    else:
-        inject_path = hooks_dir / "inject.sh"
-        hook_template = _INJECT_SH_TEMPLATE
-        hook_command = '"$CLAUDE_PROJECT_DIR/.claude/hooks/inject.sh"'
-        hook_shell = "bash"
-
-    if not inject_path.exists():
-        inject_path.write_text(hook_template, encoding="utf-8")
-        if platform != "windows":
-            inject_path.chmod(0o755)
-        print(f"  hook         {inject_path}")
-    else:
-        print(f"  hook         {inject_path}  (exists, not overwritten)")
-
-    settings_path = claude_dir / "settings.local.json"
-    if not settings_path.exists():
-        hook_settings = {
-            "hooks": {
-                "UserPromptSubmit": [
-                    {
-                        "hooks": [
-                            {
-                                "type": "command",
-                                "shell": hook_shell,
-                                "command": hook_command,
-                                "statusMessage": "checking memory...",
-                            }
-                        ]
-                    }
-                ]
-            }
-        }
-        settings_path.write_text(json.dumps(hook_settings, indent=2), encoding="utf-8")
-        print(f"  hook config  {settings_path}")
-    else:
-        print(f"  hook config  {settings_path}  (exists, not overwritten)")
+    hook_results = install_hooks(config, platform)
+    for h in hook_results:
+        print(f"  hook         {h}")
 
     # Git init
     if git_enabled:
@@ -219,6 +173,5 @@ def cmd_init(args: argparse.Namespace) -> None:
     print(f"    cd {home_path} && claude   # start Claude Code from home")
     print(f"    fiam start                 # start daemon (separate terminal)")
     print()
-    print("  First time? Import existing CC history:")
-    print(f"    fiam scan                  # one-time full history scan")
+    print("  First time? Open the dashboard annotate page after some flow has accumulated.")
     print()

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Brand palette mirrored from web app (index.css). -->
+    <color name="colorPrimary">#664E44</color>
+    <color name="colorPrimaryDark">#3F2F29</color>
+    <color name="colorAccent">#FAF4E5</color>
+</resources>

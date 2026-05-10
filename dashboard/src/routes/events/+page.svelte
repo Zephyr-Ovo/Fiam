@@ -1,10 +1,12 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { api, type EventRow } from '$lib/api';
+	import EventDetail from '$lib/EventDetail.svelte';
 
 	let events = $state<EventRow[]>([]);
 	let filter = $state('');
 	let err = $state<string | null>(null);
+	let detailId = $state<string | null>(null);
 
 	const filtered = $derived(
 		events.filter(
@@ -50,7 +52,10 @@
 			</thead>
 			<tbody>
 				{#each filtered as e}
-					<tr class="hover:bg-[var(--color-surface0)]/40">
+					<tr
+						class="hover:bg-[var(--color-surface0)]/40 cursor-pointer"
+						onclick={() => (detailId = e.id)}
+					>
 						<td class="font-mono text-xs text-[var(--color-overlay1)]">{e.id}</td>
 						<td class="font-mono text-xs text-[var(--color-sapphire)]">{e.time?.slice(0, 16)}</td>
 						<td
@@ -69,4 +74,8 @@
 			</tbody>
 		</table>
 	</div>
+
+	{#if detailId}
+		<EventDetail id={detailId} onclose={() => (detailId = null)} />
+	{/if}
 </div>

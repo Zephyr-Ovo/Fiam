@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>Fiam Browser Bridge</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <strong>Fiam Browser</strong>
+        <button id="options" title="Options">Options</button>
+      </header>
+      <button id="capture">Capture Snapshot</button>
+      <button id="autonomous-session" title="Open a controlled browser window and let AI operate until it stops">Start autonomous session</button>
+      <section class="picker">
+        <button id="pick-keep" title="Pick page controls to keep in browser context">选择保留控件</button>
+      </section>
+      <button id="control-tick" title="Debug: force one autonomous AI control tick">Run AI control tick</button>
+      <label>
+        Ask with page
+        <textarea id="question" rows="4" placeholder="根据当前页面，帮我总结重点"></textarea>
+      </label>
+      <label>
+        Runtime
+        <select id="runtime">
+          <option value="api">api</option>
+          <option value="cc">cc</option>
+        </select>
+      </label>
+      <button id="ask">Ask</button>
+      <button id="execute-action" hidden>执行建议动作</button>
+      <pre id="status"></pre>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>
