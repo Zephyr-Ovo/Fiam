@@ -407,6 +407,25 @@ const STREAMLINE_THINK_ICONS = new Set([
 
 const EXPLICIT_STREAMLINE_ICON: Record<string, string> = {
   alarmclock: "clock",
+  // CC native tools (no exact streamline match → closest visual)
+  bash: "settings",
+  terminal: "settings",
+  shell: "settings",
+  read: "file-text",
+  glob: "folder",
+  grep: "file-text",
+  ls: "folder",
+  edit: "write-paper",
+  multiedit: "write-paper",
+  write: "write",
+  notebookedit: "write-paper",
+  webfetch: "share",
+  websearch: "file-text",
+  task: "clipboard-check",
+  todowrite: "clipboard-check",
+  filesearch: "file-text",
+  testtube: "clipboard-check",
+  zap: "settings",
   bookmark: "bookmark",
   calendar: "calendar",
   calendarcheck: "calendar-check",
@@ -695,6 +714,75 @@ function stepFromSegment(segment: Extract<ChatSegment, { type: "thought" }>): Th
   }
 }
 
+function truncatePreview(value: unknown, max = 90): string {
+  if (value == null) return ""
+  let s = String(value).replace(/\s+/g, " ").trim()
+  if (s.length > max) s = s.slice(0, max - 1) + "…"
+  return s
+}
+
+// Server emits tool_use then tool_result segments side-by-side. The chat UI
+// renders them as ThinkSteps in a single chain, so fold consecutive tool
+// segments (matched by tool_use_id) into one combined step. Keeps Claude-like
+// "tool name + short input → short result" rendering compact.
+type RenderItem =
+  | { kind: "text"; index: number; text: string }
+  | { kind: "thought"; index: number; step: ThinkStep; locked?: boolean }
+  | { kind: "tools"; index: number; steps: ThinkStep[] }
+
+function buildRenderItems(segments: ChatSegment[] | undefined): RenderItem[] {
+  if (!segments || segments.length === 0) return []
+  const out: RenderItem[] = []
+  // Stage tool segments first so use+result fold even if interleaved with text.
+  const toolMap = new Map<string, ThinkStep>()
+  const toolOrder: string[] = []
+  let firstToolIndex = -1
+  segments.forEach((seg, idx) => {
+    if (seg.type === "text") {
+      if (seg.text) out.push({ kind: "text", index: idx, text: seg.text })
+    } else if (seg.type === "thought") {
+      if (seg.text || seg.summary) {
+        out.push({ kind: "thought", index: idx, step: stepFromSegment(seg), locked: seg.locked })
+      }
+    } else if (seg.type === "tool_use") {
+      if (firstToolIndex < 0) firstToolIndex = idx
+      const id = seg.tool_use_id || `anon-${idx}`
+      if (!toolMap.has(id)) {
+        toolMap.set(id, {
+          kind: "native",
+          source: "native",
+          icon: seg.tool_name,
+          text: truncatePreview(seg.input_summary),
+        })
+        toolOrder.push(id)
+      } else {
+        const existing = toolMap.get(id)!
+        if (seg.tool_name) existing.icon = seg.tool_name
+        if (seg.input_summary) existing.text = truncatePreview(seg.input_summary)
+      }
+    } else if (seg.type === "tool_result") {
+      if (firstToolIndex < 0) firstToolIndex = idx
+      const id = seg.tool_use_id || `anon-${idx}`
+      const existing = toolMap.get(id) || { kind: "native" as const, source: "native" as const, icon: seg.tool_name, text: "" }
+      if (seg.tool_name && !existing.icon) existing.icon = seg.tool_name
+      existing.result = truncatePreview(seg.result_summary, 140)
+      if (!toolMap.has(id)) {
+        toolMap.set(id, existing)
+        toolOrder.push(id)
+      }
+    }
+  })
+  if (toolOrder.length > 0) {
+    out.push({
+      kind: "tools",
+      index: firstToolIndex,
+      steps: toolOrder.map((id) => toolMap.get(id)!).filter((s) => s.text || s.result),
+    })
+  }
+  out.sort((a, b) => a.index - b.index)
+  return out
+}
+
 function Bubble({
   msg,
   peerName,
@@ -719,10 +807,7 @@ function Bubble({
   const fileAttachments = (msg.attachments ?? []).filter(
     (a) => a.kind !== "voice",
   )
-  const orderedSegments = !isUser ? (msg.segments || []).filter((segment) => {
-    if (segment.type === "text") return !!segment.text
-    return !!(segment.text || segment.summary)
-  }) : []
+  const orderedSegments: RenderItem[] = !isUser ? buildRenderItems(msg.segments) : []
   // Only animate the FIRST time we see this message id; on re-render skip
   // entrance entirely (no jank scrolling/switching tabs back to chat).
   const wasSeen = SEEN_BUBBLE_IDS.has(msg.id)
@@ -758,27 +843,40 @@ function Bubble({
         )}
 
         {orderedSegments.length > 0 ? (
-          orderedSegments.map((segment, index) =>
-            segment.type === "text" ? (
-              <BubbleBody
-                key={`${msg.id}-seg-${index}`}
-                text={segment.text}
-                isUser={isUser}
-                recallUsed={!!msg.recallUsed && index === 0}
-                selectionMode={!!selectionMode}
-                selected={!!selected}
-                onSelect={onSelect}
-                onLongSelect={onLongSelect}
-              />
-            ) : (
+          orderedSegments.map((item, index) => {
+            if (item.kind === "text") {
+              return (
+                <BubbleBody
+                  key={`${msg.id}-seg-${index}`}
+                  text={item.text}
+                  isUser={isUser}
+                  recallUsed={!!msg.recallUsed && index === 0}
+                  selectionMode={!!selectionMode}
+                  selected={!!selected}
+                  onSelect={onSelect}
+                  onLongSelect={onLongSelect}
+                />
+              )
+            }
+            if (item.kind === "thought") {
+              return (
+                <ThinkingChain
+                  key={`${msg.id}-seg-${index}`}
+                  steps={[item.step]}
+                  locked={msg.thinkingLocked || !!item.locked}
+                  peerName={peerName}
+                />
+              )
+            }
+            return (
               <ThinkingChain
                 key={`${msg.id}-seg-${index}`}
-                steps={[stepFromSegment(segment)]}
-                locked={msg.thinkingLocked || !!segment.locked}
+                steps={item.steps}
+                locked={msg.thinkingLocked}
                 peerName={peerName}
               />
-            ),
-          )
+            )
+          })
         ) : msg.text ? (
           <BubbleBody
             text={msg.text}

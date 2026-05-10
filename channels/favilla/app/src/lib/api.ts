@@ -45,6 +45,21 @@ export type ChatSegment =
       locked?: boolean
       icon?: string
     }
+  | {
+      // Native tool call (cc Bash/Read/Grep/Glob/Edit/Write/...).
+      // Server emits one tool_use then later a tool_result with matching id.
+      type: "tool_use"
+      tool_use_id?: string
+      tool_name?: string
+      input_summary?: string
+    }
+  | {
+      type: "tool_result"
+      tool_use_id?: string
+      tool_name?: string
+      result_summary?: string
+      is_error?: boolean
+    }
 
 export type ChatAttachment = {
   path: string
