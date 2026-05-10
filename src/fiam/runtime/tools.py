@@ -7,13 +7,13 @@ touch the rest of the filesystem.
 
 Tool surface (deliberately small, mirrors editor primitives):
 
-- ``read_file(path)``                 — read entire file
+- ``Read(path)``                      — read entire file (Claude Code parity)
 - ``list_dir(path)``                  — list directory entries
 - ``str_replace(path, old, new)``     — replace exactly one occurrence
 - ``insert(path, line, content)``     — insert after ``line`` (0 = file head)
-- ``create_file(path, content)``      — create new file, fail if exists
+- ``Write(path, content)``            — create new file, fail if exists
 - ``git_diff(path?, since?)``         — git diff inside home_path
-- ``grep_files(path, query)``         — search text files under a path
+- ``Grep(path, query)``               — search text files under a path
 - ``add_todo(at, kind, reason?)`` — append a wake/todo entry to self/todo.jsonl
 - ``set_ai_state(state, until?, reason?)`` — update self/ai_state.json
 
@@ -42,7 +42,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "read_file",
+            "name": "Read",
             "description": "Read the entire contents of a UTF-8 text file inside your home directory. This cannot inspect image or binary files.",
             "parameters": {
                 "type": "object",
@@ -106,7 +106,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "create_file",
+            "name": "Write",
             "description": "Create a new file. Fails if the file already exists.",
             "parameters": {
                 "type": "object",
@@ -135,7 +135,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "grep_files",
+            "name": "Grep",
             "description": (
                 "Search UTF-8 text files under a file or directory inside your home. "
                 "Use this for uploaded files instead of reading large files in full."
@@ -226,7 +226,7 @@ def _read_file(home: Path, args: dict[str, Any]) -> str:
     try:
         return path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
-        return "error: file is binary or not UTF-8 text; read_file cannot inspect image/binary contents"
+        return "error: file is binary or not UTF-8 text; Read cannot inspect image/binary contents"
 
 
 def _list_dir(home: Path, args: dict[str, Any]) -> str:
@@ -404,13 +404,15 @@ def _set_ai_state(home: Path, args: dict[str, Any]) -> str:
 
 
 _DISPATCH = {
-    "read_file": _read_file,
+    # Claude Code parity names
+    "Read": _read_file,
+    "Write": _create_file,
+    "Grep": _grep_files,
+    # fiam-specific tools (no CC counterpart yet; will migrate to fiam CLI)
     "list_dir": _list_dir,
     "str_replace": _str_replace,
     "insert": _insert,
-    "create_file": _create_file,
     "git_diff": _git_diff,
-    "grep_files": _grep_files,
     "add_todo": _add_todo,
     "set_ai_state": _set_ai_state,
 }

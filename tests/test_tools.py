@@ -43,7 +43,7 @@ class ToolsTest(unittest.TestCase):
             (home / "self").mkdir()
             (home / "self" / "identity.md").write_text("hello world\nsecond line\n", encoding="utf-8")
 
-            self.assertIn("hello", execute_tool_call(cfg, "read_file", json.dumps({"path": "self/identity.md"})))
+            self.assertIn("hello", execute_tool_call(cfg, "Read", json.dumps({"path": "self/identity.md"})))
 
             entries = json.loads(execute_tool_call(cfg, "list_dir", json.dumps({"path": "self"})))
             self.assertEqual([e["name"] for e in entries], ["identity.md"])
@@ -66,7 +66,7 @@ class ToolsTest(unittest.TestCase):
 
             self.assertEqual(
                 "ok",
-                execute_tool_call(cfg, "create_file", json.dumps({
+                execute_tool_call(cfg, "Write", json.dumps({
                     "path": "self/lessons.md", "content": "first lesson",
                 })),
             )
@@ -99,7 +99,7 @@ class ToolsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             (home / "f.md").write_text("x", encoding="utf-8")
-            out = execute_tool_call(_cfg(home), "create_file", json.dumps({
+            out = execute_tool_call(_cfg(home), "Write", json.dumps({
                 "path": "f.md", "content": "y",
             }))
             self.assertTrue(out.startswith("error: file already exists"))
@@ -109,7 +109,7 @@ class ToolsTest(unittest.TestCase):
             home = Path(tmp) / "home"
             home.mkdir()
             (Path(tmp) / "secret.txt").write_text("nope", encoding="utf-8")
-            out = execute_tool_call(_cfg(home), "read_file", json.dumps({"path": "../secret.txt"}))
+            out = execute_tool_call(_cfg(home), "Read", json.dumps({"path": "../secret.txt"}))
             self.assertTrue(out.startswith("error: path escapes home"))
 
     def test_unknown_tool(self) -> None:
@@ -127,7 +127,7 @@ class ToolsTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            hits = json.loads(execute_tool_call(cfg, "grep_files", json.dumps({
+            hits = json.loads(execute_tool_call(cfg, "Grep", json.dumps({
                 "path": "uploads",
                 "query": "needle",
             })))
