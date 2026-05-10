@@ -650,6 +650,29 @@ function agentBubbleBg(agentId?: string): string {
   }
 }
 
+// User-side bubble: zephyr keeps the original rose; other agents (copilot,
+// codex...) posting as user get their agent tint so the chat reads like a
+// group conversation on the phone.
+function userBubbleBg(agentId?: string): string {
+  const id = (agentId || "").toLowerCase()
+  if (!id || id === "zephyr") return "rgba(208,188,190,0.72)"
+  return agentBubbleBg(id)
+}
+
+function agentLabel(agentId?: string): string | null {
+  const id = (agentId || "").toLowerCase()
+  switch (id) {
+    case "cc": return "cc"
+    case "copilot": return "copilot"
+    case "codex": return "codex"
+    case "api":
+    case "gemini": return null
+    case "zephyr":
+    case "": return null
+    default: return id
+  }
+}
+
 function NameTag({ children }: { children: React.ReactNode }) {
   return (
     <span
@@ -753,7 +776,7 @@ function Bubble({
             orderedSegments.length > 0 ||
             (msg.thinking?.length ?? 0) > 0 ||
             (msg.attachments?.length ?? 0) > 0) && (
-            <NameTag>{isUser ? (appConfig.userName || "you") : peerName}</NameTag>
+            <NameTag>{isUser ? (agentLabel(msg.agentId) || appConfig.userName || "you") : (agentLabel(msg.agentId) || peerName)}</NameTag>
           )}
 
         {!isUser && orderedSegments.length === 0 && (msg.thinkingLocked || (msg.thinking && msg.thinking.length > 0)) && (
@@ -900,7 +923,7 @@ function BubbleBody({
         }`}
         style={{
           background: isUser
-            ? "rgba(208,188,190,0.72)"
+            ? userBubbleBg(agentId)
             : agentBubbleBg(agentId),
           color: INK,
           border: isUser
