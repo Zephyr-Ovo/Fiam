@@ -1,8 +1,9 @@
-import { svelte } from "@sveltejs/vite-plugin-svelte"
-import { defineConfig } from "vite"
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 
 export default defineConfig({
-  plugins: [svelte()],
+  plugins: [react(), tailwindcss()],
   clearScreen: false,
   server: {
     strictPort: true,
@@ -10,4 +11,8 @@ export default defineConfig({
     port: 1420,
   },
   envPrefix: ["VITE_", "TAURI_"],
-})
+  build: {
+    outDir: "dist",
+    target: "esnext",
+  },
+});

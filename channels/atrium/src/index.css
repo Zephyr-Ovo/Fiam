@@ -1,0 +1,134 @@
+@import "tailwindcss";
+
+@theme {
+  /* Favilla warm palette */
+  --color-paper: #F5F4F0;
+  --color-paper-warm: #EEEEE8;
+  --color-ink: #2B2826;
+  --color-lead: #6B6562;
+  --color-thread: #D9D5CF;
+  --color-accent: #8B7A6B;
+  --color-accent-warm: #D99477;
+  --color-ghost: #9B8F88;
+  --color-surface: #FFFFFF;
+  --color-thinking: #F9F8F5;
+
+  --font-serif: "Crimson Pro", Georgia, serif;
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", Monaco, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background: var(--color-paper);
+  color: var(--color-ink);
+  overflow: hidden;
+}
+
+/* TipTap editor styles */
+.ProseMirror {
+  outline: none;
+  min-height: 300px;
+  font-size: 1.05rem;
+  line-height: 1.75;
+}
+
+.ProseMirror p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  color: var(--color-ghost);
+  pointer-events: none;
+  height: 0;
+  font-style: italic;
+}
+
+.ProseMirror h1 { font-size: 1.8rem; font-weight: 600; margin: 1.5rem 0 0.75rem; }
+.ProseMirror h2 { font-size: 1.4rem; font-weight: 600; margin: 1.25rem 0 0.5rem; }
+.ProseMirror h3 { font-size: 1.15rem; font-weight: 600; margin: 1rem 0 0.5rem; }
+
+.ProseMirror blockquote {
+  border-left: 3px solid var(--color-accent);
+  padding-left: 1rem;
+  margin-left: 0;
+  color: var(--color-lead);
+}
+
+.ProseMirror code {
+  font-family: var(--font-mono);
+  background: rgba(139, 122, 107, 0.1);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+
+.ProseMirror pre {
+  background: var(--color-ink);
+  color: #e8e3dd;
+  border-radius: 8px;
+  padding: 1rem;
+  overflow-x: auto;
+}
+
+.ProseMirror pre code {
+  background: transparent;
+  padding: 0;
+  color: inherit;
+}
+
+.ProseMirror ul, .ProseMirror ol {
+  padding-left: 1.5rem;
+}
+
+.ProseMirror hr {
+  border: none;
+  border-top: 1px solid var(--color-thread);
+  margin: 1.5rem 0;
+}
+
+/* Author annotations */
+.ProseMirror [data-author="ai"] {
+  border-left: 2px solid var(--color-accent-warm);
+  padding-left: 0.75rem;
+  position: relative;
+}
+
+.ProseMirror [data-author="ai"]::after {
+  content: "AI";
+  position: absolute;
+  right: -2rem;
+  top: 0.2rem;
+  font-size: 0.6rem;
+  font-family: var(--font-mono);
+  color: var(--color-accent-warm);
+  opacity: 0.7;
+  letter-spacing: 0.05em;
+}
+
+.ProseMirror [data-author="human"] {
+  border-left: 2px solid var(--color-accent);
+  padding-left: 0.75rem;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-thread);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-ghost);
+}
