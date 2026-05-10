@@ -1230,20 +1230,36 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
 
   useEffect(() => {
     let cancelled = false
-    fetchChatTranscript("chat")
-      .then((res) => {
-        if (cancelled || !res.ok || !res.messages) return
-        setMessages(res.messages.map((msg) => ({
-          ...msg,
-          attachments: (msg.attachments || []).map((att) => {
-            if (att.kind === "voice") return { kind: "voice", seconds: Number(att.size || 0) || 0 }
-            if (att.kind === "image") return { kind: "image", name: att.name }
-            return { kind: "file", name: att.name, size: att.size }
-          }),
-        })))
-      })
-      .catch(() => {})
-    return () => { cancelled = true }
+    function loadTranscript() {
+      fetchChatTranscript("chat")
+        .then((res) => {
+          if (cancelled || !res.ok || !res.messages || res.messages.length === 0) return
+          setMessages(res.messages.map((msg) => ({
+            ...msg,
+            attachments: (msg.attachments || []).map((att) => {
+              if (att.kind === "voice") return { kind: "voice", seconds: Number(att.size || 0) || 0 }
+              if (att.kind === "image") return { kind: "image", name: att.name }
+              return { kind: "file", name: att.name, size: att.size }
+            }),
+          })))
+        })
+        .catch(() => {})
+    }
+    loadTranscript()
+    // Settings page may set the auth token AFTER mount. Refetch when the
+    // saved config changes so the user sees their history without restarting
+    // the app. Also refetch when the tab/page regains visibility (e.g. after
+    // unlocking the phone or coming back from another app), in case the
+    // server got new turns from CC while we were away.
+    function onConfigChanged() { loadTranscript() }
+    function onVisibility() { if (document.visibilityState === "visible") loadTranscript() }
+    window.addEventListener("favilla:config-changed", onConfigChanged)
+    document.addEventListener("visibilitychange", onVisibility)
+    return () => {
+      cancelled = true
+      window.removeEventListener("favilla:config-changed", onConfigChanged)
+      document.removeEventListener("visibilitychange", onVisibility)
+    }
   }, [])
 
   // ---- manual cut + recall + process handlers ----
