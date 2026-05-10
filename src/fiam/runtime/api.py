@@ -592,6 +592,12 @@ class ApiRuntime:
     def _record_assistant(self, text: str, *, source: str) -> None:
         if self.conductor is None:
             return
+        # Apply XML markers (todo/wake/state) before recording the beat.
+        # This mirrors the dashboard's _apply_app_control_markers post-processing
+        # so callers that drive ApiRuntime directly (e.g. `fiam api` CLI) also
+        # benefit. The dashboard layer still runs its own pass for hold/cot/
+        # carry_over which require richer context (attachments, runtime label).
+        self._apply_simple_markers(text)
         from fiam.runtime.turns import scene_for_ai
         scene = scene_for_ai(source)
         for beat in assistant_text_beats(
@@ -600,7 +606,6 @@ class ApiRuntime:
             scene=scene,
             user_status=self.conductor.user_status,
             ai_status=self.conductor.ai_status,
-            ai_name=getattr(self.config, "ai_name", "") or "ai",
             runtime="api",
         ):
             self.conductor._ingest_beat(beat)
@@ -629,3 +634,53 @@ class ApiRuntime:
             if self.dispatcher(marker.channel, marker.recipient, marker.body):
                 count += 1
         return count
+
+    def _apply_simple_markers(self, text: str) -> None:
+        """Parse <todo>/<wake>/<sleep>/<mute>/<notify> XML markers and persist them.
+
+        Mirrors the marker-driven side-effects the CC runtime gets via the
+        dashboard layer. Hold/CoT/carry_over markers are intentionally NOT
+        handled here — the dashboard still owns those because they need
+        attachments + runtime metadata.
+        """
+        if not text:
+            return
+        try:
+            from fiam_lib.todo import (
+                append_to_todo,
+                extract_scheduled_items,
+                extract_state_tag,
+            )
+        except ImportError:
+            return
+        try:
+            tags = extract_scheduled_items(text, self.config)
+            if tags:
+                append_to_todo(tags, self.config)
+            state_tag = extract_state_tag(text, self.config)
+            if state_tag:
+                self._write_ai_state(state_tag)
+        except Exception:
+            # Marker handling must never crash the tool loop.
+            pass
+
+    def _write_ai_state(self, state_tag: dict) -> None:
+        state = str(state_tag.get("state") or "").strip().lower()
+        if state not in {"notify", "mute", "block", "sleep", "busy", "together", "online"}:
+            return
+        record = {
+            "state": state,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        until = state_tag.get("until") or state_tag.get("sleeping_until") or ""
+        if until:
+            record["until"] = until
+        reason = state_tag.get("reason")
+        if reason:
+            record["reason"] = reason
+        path = self.config.home_path / "self" / "ai_state.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(record, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )

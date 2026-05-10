@@ -14,8 +14,12 @@ Tool surface (deliberately small, mirrors editor primitives):
 - ``Grep(path, query)``               — search text files under a path
 - ``Bash(command, timeout?)``         — run a shell command (full freedom; CC parity)
 - ``git_diff(path?, since?)``         — git diff inside home_path
-- ``add_todo(at, kind, reason?)`` — append a wake/todo entry to self/todo.jsonl
-- ``set_ai_state(state, until?, reason?)`` — update self/ai_state.json
+
+For delayed wakes/todos and AI state changes, the API runtime relies on
+XML markers in plain text (``<todo at=...>``, ``<wake>``, ``<sleep until=>``,
+``<mute />``, ``<notify />``), parsed in ``_record_assistant`` — same path
+the CC runtime uses. They do not occupy a tool_call slot, do not break
+prefix cache, and are taught to the model via the awareness prompt.
 
 Note on freedom: ``Bash`` runs without sandbox by design (CC-like free agent
 per docs/ai_runtime_alignment_notes.md). Path-based tools (Read/Write/Edit/
@@ -148,43 +152,6 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "max_results": {"type": "integer", "minimum": 1, "maximum": 50},
                 },
                 "required": ["path", "query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "add_todo",
-            "description": (
-                "Append a future wake/todo to self/todo.jsonl. Use kind='wake' for "
-                "a bare time-only reminder (no description – you'll re-read your "
-                "session memory when you wake up); use kind='todo' to attach a "
-                "short note describing what you wanted to do at that time."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "at": {"type": "string", "description": "ISO timestamp with timezone, or 'YYYY-MM-DD HH:MM' (project timezone)."},
-                    "kind": {"type": "string", "enum": ["wake", "todo"]},
-                    "reason": {"type": "string", "description": "Required when kind='todo'. Ignored when kind='wake'."},
-                },
-                "required": ["at", "kind"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "set_ai_state",
-            "description": "Switch your current app-visible state in self/ai_state.json.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "state": {"type": "string", "enum": ["notify", "mute", "block", "sleep", "busy", "together", "online"]},
-                    "until": {"type": "string", "description": "Optional ISO timestamp or 'open' for sleep/busy states."},
-                    "reason": {"type": "string"},
-                },
-                "required": ["state"],
             },
         },
     },
@@ -368,72 +335,6 @@ def _grep_files(home: Path, args: dict[str, Any]) -> str:
     return json.dumps(results, ensure_ascii=False)
 
 
-def _add_todo(home: Path, args: dict[str, Any], default_tz: Any = None) -> str:
-    at_raw = str(args["at"]).strip()
-    kind = str(args["kind"]).strip().lower()
-    reason = str(args.get("reason") or "").strip()
-    if kind not in {"wake", "todo"}:
-        raise ToolError("kind must be 'wake' or 'todo'")
-    if kind == "todo" and not reason:
-        raise ToolError("reason is required when kind='todo'")
-    parsed: datetime | None = None
-    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
-        try:
-            parsed = datetime.strptime(at_raw, fmt)
-            break
-        except ValueError:
-            continue
-    if parsed is None:
-        try:
-            parsed = datetime.fromisoformat(at_raw.replace("Z", "+00:00"))
-        except ValueError as exc:
-            raise ToolError("at must be ISO timestamp or 'YYYY-MM-DD HH:MM'") from exc
-    if parsed.tzinfo is None:
-        # naive timestamps are interpreted in the project timezone (per schema)
-        parsed = parsed.replace(tzinfo=default_tz or timezone.utc)
-    if parsed <= datetime.now(timezone.utc):
-        raise ToolError("at must be in the future")
-    path = home / "self" / "todo.jsonl"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    record = {
-        "at": parsed.isoformat(),
-        "kind": kind,
-        "reason": reason if kind == "todo" else "",
-        "created": datetime.now(timezone.utc).isoformat(),
-    }
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
-    return json.dumps({"ok": True, **record}, ensure_ascii=False)
-
-
-def _set_ai_state(home: Path, args: dict[str, Any]) -> str:
-    state = str(args["state"]).strip().lower()
-    if state not in {"notify", "mute", "block", "sleep", "busy", "together", "online"}:
-        raise ToolError("invalid state")
-    record: dict[str, Any] = {
-        "state": state,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }
-    until = str(args.get("until") or "").strip()
-    if until:
-        if until != "open":
-            try:
-                parsed = datetime.fromisoformat(until)
-            except ValueError as exc:
-                raise ToolError("until must be ISO timestamp or 'open'") from exc
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc)
-            until = parsed.isoformat()
-        record["until"] = until
-    reason = str(args.get("reason") or "").strip()
-    if reason:
-        record["reason"] = reason
-    path = home / "self" / "ai_state.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
-    return json.dumps({"ok": True, **record}, ensure_ascii=False)
-
-
 _BASH_DEFAULT_TIMEOUT = 120
 _BASH_MAX_TIMEOUT = 600
 _BASH_OUTPUT_LIMIT = 30_000
@@ -503,8 +404,6 @@ _DISPATCH = {
     "Bash": _bash,
     # fiam-specific tools (no CC counterpart yet; will migrate to fiam CLI)
     "git_diff": _git_diff,
-    "add_todo": _add_todo,
-    "set_ai_state": _set_ai_state,
 }
 
 
@@ -531,13 +430,6 @@ def execute_tool_call(config: "FiamConfig", name: str, raw_args: str) -> str:
     if not isinstance(args, dict):
         return "error: arguments must be a JSON object"
     try:
-        if name == "add_todo":
-            tzinfo = None
-            try:
-                tzinfo = config.project_tz()
-            except Exception:
-                tzinfo = None
-            return _add_todo(config.home_path, args, default_tz=tzinfo)
         return handler(config.home_path, args)
     except ToolError as exc:
         return f"error: {exc}"

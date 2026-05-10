@@ -72,20 +72,6 @@ class ToolsTest(unittest.TestCase):
             )
             self.assertTrue((home / "self" / "lessons.md").exists())
 
-            self.assertEqual(
-                "ok",
-                execute_tool_call(cfg, "write_file", json.dumps({
-                    "path": "notes/today.md", "content": "line one\n",
-                })),
-            )
-            self.assertEqual(
-                "ok",
-                execute_tool_call(cfg, "write_file", json.dumps({
-                    "path": "notes/today.md", "content": "line two\n", "mode": "append",
-                })),
-            )
-            self.assertEqual((home / "notes" / "today.md").read_text(encoding="utf-8"), "line one\nline two\n")
-
     def test_str_replace_unique_required(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
@@ -117,7 +103,7 @@ class ToolsTest(unittest.TestCase):
             out = execute_tool_call(_cfg(Path(tmp)), "rm_rf", "{}")
             self.assertEqual(out, "error: unknown tool 'rm_rf'")
 
-    def test_grep_todo_and_state_tools(self) -> None:
+    def test_grep(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             cfg = _cfg(home)
@@ -133,56 +119,18 @@ class ToolsTest(unittest.TestCase):
             })))
             self.assertEqual(hits[0]["line"], 2)
 
-            at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
-            out = json.loads(execute_tool_call(cfg, "add_todo", json.dumps({
-                "at": at,
-                "type": "notify",
-                "reason": "test todo",
-            })))
-            self.assertTrue(out["ok"])
-            self.assertTrue((home / "self" / "todo.jsonl").exists())
-
-            state = json.loads(execute_tool_call(cfg, "set_ai_state", json.dumps({
-                "state": "busy",
-                "reason": "testing",
-            })))
-            self.assertEqual(state["state"], "busy")
-            self.assertTrue((home / "self" / "ai_state.json").exists())
-
-            now = json.loads(execute_tool_call(cfg, "get_time", "{}"))
-            self.assertTrue(now["ok"])
-            self.assertIn("utc", now)
-            self.assertEqual(now["timezone"], "Asia/Shanghai")
-            self.assertTrue(now["local"].endswith("+08:00"))
-
-            naive_local = (
-                datetime.now(timezone.utc)
-                .astimezone(ZoneInfo("Asia/Shanghai"))
-                .replace(tzinfo=None, microsecond=0)
-                + timedelta(hours=1)
-            ).isoformat()
-            naive = json.loads(execute_tool_call(cfg, "add_todo", json.dumps({
-                "at": naive_local,
-                "type": "notify",
-                "reason": "naive local todo",
-            })))
-            self.assertTrue(naive["ok"])
-            self.assertTrue(naive["at"].endswith("+08:00"))
-
-            relative = json.loads(execute_tool_call(cfg, "add_todo", json.dumps({
-                "delay_minutes": 5,
-                "type": "check",
-                "reason": "relative todo",
-            })))
-            self.assertTrue(relative["ok"])
-            self.assertEqual(relative["type"], "check")
-
-            invalid = execute_tool_call(cfg, "add_todo", json.dumps({
-                "delay_minutes": 5,
-                "type": "seek",
-                "reason": "invalid todo type",
-            }))
-            self.assertIn("private, notify, or check", invalid)
+    def test_add_todo_and_set_ai_state_no_longer_native_tools(self) -> None:
+        # add_todo and set_ai_state were removed: they live in XML markers now.
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = _cfg(Path(tmp))
+            self.assertEqual(
+                execute_tool_call(cfg, "add_todo", "{}"),
+                "error: unknown tool 'add_todo'",
+            )
+            self.assertEqual(
+                execute_tool_call(cfg, "set_ai_state", "{}"),
+                "error: unknown tool 'set_ai_state'",
+            )
 
 
 if __name__ == "__main__":
