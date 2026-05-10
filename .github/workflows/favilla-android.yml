@@ -16,7 +16,7 @@ on:
         required: false
         default: ""
   push:
-    branches: [feat/memory-graph]
+    branches: [main, feat/memory-graph]
     paths:
       - "channels/favilla/app/**"
       - "packages/stroll-map/**"
