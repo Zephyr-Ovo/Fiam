@@ -415,7 +415,6 @@ const EXPLICIT_STREAMLINE_ICON: Record<string, string> = {
   glob: "folder",
   grep: "file-text",
   ls: "folder",
-  edit: "write-paper",
   multiedit: "write-paper",
   write: "write",
   notebookedit: "write-paper",
