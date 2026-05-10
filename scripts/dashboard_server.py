@@ -665,48 +665,64 @@ def _browser_snapshot_payload(payload: dict) -> tuple[str, dict]:
 def _browser_screenshot_attachments(payload: dict) -> list[dict]:
     if not _CONFIG:
         return []
-    screenshot = payload.get("screenshot") if isinstance(payload.get("screenshot"), dict) else None
-    if not screenshot:
-        return []
-    data_url = str(screenshot.get("dataUrl") or screenshot.get("data_url") or "")
-    if not data_url.startswith("data:image/") or "," not in data_url:
-        return []
-    header, b64 = data_url.split(",", 1)
-    mime = header[5:].split(";", 1)[0].lower()
-    if mime not in {"image/jpeg", "image/png", "image/webp"}:
-        return []
     import base64
     import hashlib
 
-    try:
-        raw = base64.b64decode(b64, validate=True)
-    except Exception:
+    items: list[tuple[str, str]] = []  # (kind, dataUrl)
+    screenshot = payload.get("screenshot") if isinstance(payload.get("screenshot"), dict) else None
+    if screenshot:
+        data_url = str(screenshot.get("dataUrl") or screenshot.get("data_url") or "")
+        if data_url:
+            items.append(("browser_screenshot", data_url))
+    video_frames = payload.get("videoFrames") if isinstance(payload.get("videoFrames"), list) else None
+    if video_frames:
+        for frame in video_frames[:5]:
+            if not isinstance(frame, dict):
+                continue
+            data_url = str(frame.get("dataUrl") or frame.get("data_url") or "")
+            if data_url:
+                items.append(("browser_video_frame", data_url))
+    if not items:
         return []
-    if not raw or len(raw) > 6 * 1024 * 1024:
-        return []
-    ext = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}.get(mime, "jpg")
-    date_dir = _CONFIG.now_local().strftime("%Y-%m-%d")
-    out_dir = _CONFIG.home_path / "uploads" / "browser" / date_dir
-    out_dir.mkdir(parents=True, exist_ok=True)
-    digest = hashlib.sha256(raw).hexdigest()
-    name = f"browser-viewport-{digest[:12]}.{ext}"
-    target = out_dir / name
-    target.write_bytes(raw)
-    record = {"path": str(target), "name": name, "mime": mime, "size": len(raw)}
+    out: list[dict] = []
     snapshot_payload = payload.get("snapshot")
     snapshot_url = str(snapshot_payload.get("url") or "") if isinstance(snapshot_payload, dict) else ""
     manifest = _CONFIG.home_path / "uploads" / "manifest.jsonl"
     manifest.parent.mkdir(parents=True, exist_ok=True)
-    with manifest.open("a", encoding="utf-8") as mf:
-        mf.write(json.dumps({
-            "uploaded_at": datetime.now(timezone.utc).isoformat(),
-            "kind": "browser_screenshot",
-            "reason": str(screenshot.get("reason") or payload.get("reason") or ""),
-            "url": snapshot_url,
-            "sha256": digest,
-            **record,
-        }, ensure_ascii=False) + "\n")
-    return [record]
+    date_dir = _CONFIG.now_local().strftime("%Y-%m-%d")
+    out_dir = _CONFIG.home_path / "uploads" / "browser" / date_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for kind, data_url in items:
+        if not data_url.startswith("data:image/") or "," not in data_url:
+            continue
+        header, b64 = data_url.split(",", 1)
+        mime = header[5:].split(";", 1)[0].lower()
+        if mime not in {"image/jpeg", "image/png", "image/webp"}:
+            continue
+        try:
+            raw = base64.b64decode(b64, validate=True)
+        except Exception:
+            continue
+        if not raw or len(raw) > 6 * 1024 * 1024:
+            continue
+        ext = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}.get(mime, "jpg")
+        digest = hashlib.sha256(raw).hexdigest()
+        slug = "viewport" if kind == "browser_screenshot" else "frame"
+        name = f"browser-{slug}-{digest[:12]}.{ext}"
+        target = out_dir / name
+        target.write_bytes(raw)
+        record = {"path": str(target), "name": name, "mime": mime, "size": len(raw)}
+        with manifest.open("a", encoding="utf-8") as mf:
+            mf.write(json.dumps({
+                "uploaded_at": datetime.now(timezone.utc).isoformat(),
+                "kind": kind,
+                "reason": str((screenshot or {}).get("reason") or payload.get("reason") or ""),
+                "url": snapshot_url,
+                "sha256": digest,
+                **record,
+            }, ensure_ascii=False) + "\n")
+        out.append(record)
+    return out
 
 
 def _recent_browser_action_trail(limit: int = 8) -> list[dict]:
@@ -781,7 +797,9 @@ def _append_browser_action_flow(payload: dict) -> dict:
     action_kind = str(action.get("action") or result.get("action") or "browser_action").strip()
     label = str(action.get("name") or result.get("label") or node_id or "target").strip()
     status = "ok" if result.get("ok", True) else "error"
-    text = f"browser_action {status}: {action_kind} {node_id} {label}".strip()
+    # Trail regex requires a non-whitespace nodeId token; use placeholder for actions without a node (goto, page-scroll).
+    node_token = node_id or "_"
+    text = f"browser_action {status}: {action_kind} {node_token} {label}".strip()
     append_beat(_CONFIG.flow_path, Beat(
         t=datetime.now(timezone.utc),
         text=text,
@@ -936,8 +954,12 @@ def _browser_control_tick(payload: dict) -> dict:
     payload["controlTrail"] = [*recent_trail, *payload_trail][-12:]
     runtime_text = build_browser_control_text(payload)
     attachments = _browser_screenshot_attachments(payload)
+    has_video_frames = bool(payload.get("videoFrames"))
     if attachments:
-        runtime_text = f"{runtime_text}\n\n[browser_screenshot]\nA current viewport screenshot is attached for visual reasoning."
+        if has_video_frames:
+            runtime_text = f"{runtime_text}\n\n[browser_screenshot]\nViewport screenshot and {sum(1 for a in attachments if 'frame' in a.get('name',''))} sampled video frames are attached for visual reasoning."
+        else:
+            runtime_text = f"{runtime_text}\n\n[browser_screenshot]\nA current viewport screenshot is attached for visual reasoning."
     screenshot_error = ""
     send_text = runtime_text
     try:

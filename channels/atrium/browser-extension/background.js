@@ -129,6 +129,13 @@ function wait(ms) {
 }
 
 async function executeBrowserAction(tab, action) {
+  if (action && String(action.action || "").toLowerCase() === "goto") {
+    const targetUrl = String(action.url || "").trim();
+    if (!/^https?:\/\//i.test(targetUrl)) throw new Error("goto requires http(s) url");
+    await callApi(ext.tabs, "update", tab.id, { url: targetUrl });
+    const ready = await waitForTabReady(tab.id);
+    return { ok: true, action: "goto", nodeId: "", label: ready?.url || targetUrl };
+  }
   const response = await callApi(ext.tabs, "sendMessage", tab.id, { type: "FIAM_EXECUTE_BROWSER_ACTION", action });
   if (!response || !response.ok) throw new Error(response?.error || "Browser action failed");
   return response.result;
@@ -192,6 +199,26 @@ async function screenshotForTick(tab, settings, reason, snapshot, steps = 0) {
   }
 }
 
+function shouldExtractVideoFrames(snapshot) {
+  if (!snapshot) return false;
+  const media = snapshot.media || {};
+  const videoCount = Number(media.videoCount || 0);
+  if (videoCount < 1) return false;
+  const textCount = Array.isArray(snapshot.textBlocks) ? snapshot.textBlocks.length : 0;
+  return textCount <= 12;
+}
+
+async function videoFramesForTick(tab, snapshot) {
+  if (!shouldExtractVideoFrames(snapshot)) return null;
+  try {
+    const resp = await callApi(ext.tabs, "sendMessage", tab.id, { type: "FIAM_CAPTURE_VIDEO_FRAMES", maxFrames: 3 });
+    if (resp && resp.ok && Array.isArray(resp.frames) && resp.frames.length) return resp.frames;
+  } catch (error) {
+    console.warn("Fiam video frame capture failed", error);
+  }
+  return null;
+}
+
 async function runControlLoop(tab, firstResult, settings, firstSnapshot) {
   const steps = [];
   const controlTrail = [];
@@ -231,6 +258,7 @@ async function runControlLoop(tab, firstResult, settings, firstSnapshot) {
       runtime: settings.runtime || "api",
       snapshot: afterSnapshot,
       screenshot: await screenshotForTick(tab, settings, "after_action", afterSnapshot, steps.length),
+      videoFrames: await videoFramesForTick(tab, afterSnapshot),
       controlTrail
     });
   }
@@ -276,12 +304,21 @@ async function waitForTabReady(tabId) {
 async function startAutonomousSession(startUrl) {
   const settings = await getSettings();
   if (!settings.token) throw new Error("Set FIAM_INGEST_TOKEN in extension options first");
-  const sourceTab = await activeTab();
-  const url = String(startUrl || sourceTab?.url || "").trim();
-  if (!/^https?:\/\//i.test(url)) throw new Error("Open an http(s) page before starting an autonomous session");
+  const sourceTab = await activeTab().catch(() => null);
+  let url = String(startUrl || sourceTab?.url || "").trim();
+  if (!/^https?:\/\//i.test(url)) {
+    // No usable starting page — open a neutral landing so AI can goto.
+    url = "https://www.google.com/";
+  }
   await setSessionBadge("AI");
   try {
-    const windowInfo = await callApi(ext.windows, "create", { url, type: "normal", focused: true });
+    // Open AI-controlled window in background to avoid stealing user focus.
+    const windowInfo = await callApi(ext.windows, "create", {
+      url,
+      type: "normal",
+      focused: false,
+      state: "minimized"
+    });
     const createdTab = await tabFromWindow(windowInfo);
     const tab = await waitForTabReady(createdTab.id);
     const result = await controlTick(tab, "autonomous_session_start", true);
@@ -358,7 +395,8 @@ async function controlTick(tab, reason, force = false) {
       reason: reason || "page_changed",
       runtime: settings.runtime || "api",
       snapshot,
-      screenshot: await screenshotForTick(tab, settings, reason || "page_changed", snapshot, 0)
+      screenshot: await screenshotForTick(tab, settings, reason || "page_changed", snapshot, 0),
+      videoFrames: await videoFramesForTick(tab, snapshot)
     });
     return runControlLoop(tab, result, settings, snapshot);
   } finally {

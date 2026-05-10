@@ -494,7 +494,37 @@ def extract_browser_actions(text: str, payload: dict[str, Any]) -> tuple[str, li
         action = _clean_text(attrs.get("action") or "click", limit=32).lower()
         if action in {"type", "input"}:
             action = "set_text"
-        if action not in {"click", "set_text", "focus"}:
+        if action == "goto":
+            url = _clean_text(attrs.get("url") or attrs.get("href"), limit=2000)
+            if not url or not url.lower().startswith(("http://", "https://")):
+                continue
+            actions.append({
+                "nodeId": "",
+                "action": "goto",
+                "url": url,
+                "selector": "",
+                "role": "",
+                "name": url,
+            })
+            if len(actions) >= 3:
+                break
+            continue
+        if action == "scroll" and not node_id:
+            dir_attr = _clean_text(attrs.get("dir") or attrs.get("direction") or "down", limit=16).lower()
+            if dir_attr not in {"up", "down", "top", "bottom", "page"}:
+                dir_attr = "down"
+            actions.append({
+                "nodeId": "",
+                "action": "scroll",
+                "dir": dir_attr,
+                "selector": "",
+                "role": "",
+                "name": f"scroll {dir_attr}",
+            })
+            if len(actions) >= 3:
+                break
+            continue
+        if action not in {"click", "set_text", "focus", "scroll", "key"}:
             continue
         target = action_map.get(node_id)
         if not isinstance(target, dict):
@@ -511,6 +541,7 @@ def extract_browser_actions(text: str, payload: dict[str, Any]) -> tuple[str, li
             "nodeId": node_id,
             "action": action,
             "text": _clean_text(attrs.get("text"), limit=500),
+            "key": _clean_text(attrs.get("key"), limit=32) if action == "key" else "",
             "selector": selector,
             "role": _clean_text(target.get("role"), limit=48),
             "name": _clean_text(target.get("name"), limit=120),
@@ -545,7 +576,7 @@ def build_browser_control_text(payload: dict[str, Any]) -> str:
     reason = _clean_text(payload.get("reason"), limit=120) or "page_changed"
     parts = [
         format_browser_snapshot(payload),
-        "[browser_control]\nThis browser tab is available for you to operate directly. You are not just observing it. Prefer taking exactly one low-risk browser operation now. Prefer current page content controls over global navigation. Do not wander between primary navigation items just to explore; after opening a navigation page, inspect/use page content or stop. Good idle first moves are focusing a visible search/text input, opening a clearly relevant content control, or choosing an obviously useful page control. Include exactly one hidden XML action using a listed node id: <browser_action node=\"node_3\" action=\"click\" /> or <browser_action node=\"node_1\" action=\"set_text\" text=\"...\" />. Use set_text only when the intended text is clear; otherwise focus the relevant input. Do not repeat a recent action if the page did not materially change. When this control loop should stop, include exactly one hidden stop marker and no action: <browser_done reason=\"brief reason\" />. If every available operation is risky, repetitive, global-navigation wandering, or meaningless, stop with browser_done.",
+        "[browser_control]\nThis browser tab is available for you to operate directly. You are not just observing it. Prefer taking exactly one low-risk browser operation now. Prefer current page content controls over global navigation. Do not wander between primary navigation items just to explore; after opening a navigation page, inspect/use page content or stop. Good idle first moves are focusing a visible search/text input, opening a clearly relevant content control, or choosing an obviously useful page control. Include exactly one hidden XML action using a listed node id: <browser_action node=\"node_3\" action=\"click\" /> or <browser_action node=\"node_1\" action=\"set_text\" text=\"...\" />. To open a different page directly, use <browser_action action=\"goto\" url=\"https://...\" /> (no node id; only when no listed control gets you there). To scroll, use <browser_action action=\"scroll\" dir=\"down\" /> (down|up|top|bottom). To submit a form after set_text, use <browser_action action=\"key\" node=\"node_1\" key=\"Enter\" />. Use set_text only when the intended text is clear; otherwise focus the relevant input. Do not repeat a recent action if the page did not materially change. When this control loop should stop, include exactly one hidden stop marker and no action: <browser_done reason=\"brief reason\" />. If every available operation is risky, repetitive, global-navigation wandering, or meaningless, stop with browser_done.",
     ]
     trail = _list_of_dicts(payload.get("controlTrail") or payload.get("control_trail"))[-6:]
     if trail:

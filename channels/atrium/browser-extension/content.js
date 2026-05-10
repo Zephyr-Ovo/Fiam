@@ -552,7 +552,6 @@ function startPicker(mode) {
   renderPickerList();
   pickerToast("点击要保留的页面控件，Esc 取消");
 }
-
 function setElementText(element, value) {
   element.focus();
   if ("value" in element) {
@@ -568,18 +567,40 @@ function setElementText(element, value) {
 }
 
 function executeBrowserAction(action) {
+  const kind = String(action?.action || "click");
+  // Page-level scroll (no selector required when dir is given).
+  if (kind === "scroll" && !action?.selector) {
+    const dir = String(action?.dir || "down").toLowerCase();
+    const vh = window.innerHeight || 800;
+    const map = { down: vh * 0.85, up: -vh * 0.85, top: -1e7, bottom: 1e7, page: vh * 0.85 };
+    const dy = map[dir] ?? vh * 0.85;
+    window.scrollBy({ top: dy, left: 0, behavior: "smooth" });
+    return { ok: true, action: "scroll", nodeId: "", label: `scroll ${dir}` };
+  }
   const selector = String(action?.selector || "");
   if (!selector) throw new Error("Missing action selector");
   const element = document.querySelector(selector);
   if (!(element instanceof HTMLElement)) throw new Error("Action target not found");
   element.scrollIntoView({ block: "center", inline: "center", behavior: "smooth" });
-  const kind = String(action.action || "click");
   if (kind === "focus") {
     element.focus();
   } else if (kind === "set_text") {
     setElementText(element, String(action.text || ""));
   } else if (kind === "click") {
     element.click();
+  } else if (kind === "scroll") {
+    // scrollIntoView already happened above.
+  } else if (kind === "key") {
+    const key = String(action.key || "Enter");
+    element.focus();
+    const init = { key, code: key, bubbles: true, cancelable: true };
+    element.dispatchEvent(new KeyboardEvent("keydown", init));
+    element.dispatchEvent(new KeyboardEvent("keypress", init));
+    element.dispatchEvent(new KeyboardEvent("keyup", init));
+    // For inputs, also try to submit the enclosing form on Enter.
+    if (key === "Enter" && element.form && typeof element.form.requestSubmit === "function") {
+      try { element.form.requestSubmit(); } catch (_e) { try { element.form.submit(); } catch (_e2) {} }
+    }
   } else {
     throw new Error(`Unsupported browser action: ${kind}`);
   }
@@ -830,6 +851,72 @@ function schedulePageEvent(reason, delay = 1200) {
   }, delay);
 }
 
+function pickPrimaryVideo() {
+  let best = null;
+  let bestArea = 0;
+  for (const v of document.querySelectorAll("video")) {
+    if (!(v instanceof HTMLVideoElement)) continue;
+    const rect = v.getBoundingClientRect();
+    if (rect.width < 200 || rect.height < 150) continue;
+    if (rect.bottom < 0 || rect.right < 0) continue;
+    if (rect.top > window.innerHeight || rect.left > window.innerWidth) continue;
+    const area = rect.width * rect.height;
+    if (area > bestArea) { best = v; bestArea = area; }
+  }
+  return best;
+}
+
+async function captureVideoFrames(maxFrames) {
+  const video = pickPrimaryVideo();
+  if (!video) return [];
+  const duration = Number.isFinite(video.duration) ? video.duration : 0;
+  const wasPaused = video.paused;
+  const originalTime = video.currentTime;
+  const w = Math.min(640, video.videoWidth || 480);
+  const h = Math.round(w * ((video.videoHeight || 360) / (video.videoWidth || 640)));
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return [];
+  const frames = [];
+  try {
+    if (!wasPaused) try { video.pause(); } catch (_) {}
+    const offsets = [];
+    if (duration > 1 && Number.isFinite(duration)) {
+      for (let i = 0; i < maxFrames; i++) {
+        offsets.push(((i + 0.5) / maxFrames) * duration);
+      }
+    } else {
+      // Live or unknown duration: just sample current frame.
+      offsets.push(originalTime);
+    }
+    for (const t of offsets) {
+      if (Number.isFinite(t) && Number.isFinite(duration) && duration > 0) {
+        await new Promise((resolve) => {
+          let done = false;
+          const onSeeked = () => { if (done) return; done = true; video.removeEventListener("seeked", onSeeked); resolve(); };
+          video.addEventListener("seeked", onSeeked, { once: true });
+          try { video.currentTime = t; } catch (_) { done = true; resolve(); }
+          setTimeout(() => { if (!done) { done = true; video.removeEventListener("seeked", onSeeked); resolve(); } }, 1500);
+        });
+      }
+      try {
+        ctx.drawImage(video, 0, 0, w, h);
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.55);
+        if (dataUrl && dataUrl.length < 280_000) frames.push({ t, dataUrl });
+      } catch (_e) {
+        // CORS-tainted canvas — give up.
+        return [];
+      }
+    }
+  } finally {
+    try { video.currentTime = originalTime; } catch (_) {}
+    if (!wasPaused) try { await video.play(); } catch (_) {}
+  }
+  return frames;
+}
+
 ext.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message && message.type === "FIAM_COLLECT_SNAPSHOT") {
     sendResponse({ ok: true, snapshot: snapshot() });
@@ -853,6 +940,14 @@ ext.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       sendResponse({ ok: true, result });
     }).catch((error) => {
       sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) });
+    });
+    return true;
+  }
+  if (message && message.type === "FIAM_CAPTURE_VIDEO_FRAMES") {
+    captureVideoFrames(Math.max(1, Math.min(5, Number(message.maxFrames || 3)))).then((frames) => {
+      sendResponse({ ok: true, frames });
+    }).catch((error) => {
+      sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error), frames: [] });
     });
     return true;
   }
