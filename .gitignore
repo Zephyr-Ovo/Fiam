@@ -65,7 +65,6 @@ favilla-v04/
 *.md.bak
 /check.md
 /case/
-/docs/
 texput.log
 
 # Deployment-specific scripts (contain instance IPs/configs)
@@ -100,3 +99,6 @@ btw/
 .tmp_extract.py
 
 .qa_body.json
+
+# Debug traces (cc_trace_* dumps)
+/docs/cc_trace_*
