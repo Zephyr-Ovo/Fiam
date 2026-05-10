@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 from fiam_lib.core import _project_root, _toml_path, _detect_platform
-from fiam_lib.hooks import write_claude_md, write_gitignore, install_hooks
+from fiam_lib.hooks import write_claude_md, write_awareness_md, write_gitignore, install_hooks
 from fiam_lib.ui import _conjure
 
 
@@ -86,21 +86,14 @@ def cmd_init(args: argparse.Namespace) -> None:
     profile = LANGUAGE_PROFILES[language_profile]
     print(f"  → {language_profile}: embedding={profile['embedding']}, dim={profile['embedding_dim']}")
 
-    # ── Identity ──
-    default_ai = existing.ai_name if existing else ""
+    # ── User identity ──
     default_user = existing.user_name if existing else ""
-    if default_ai and default_user:
-        print(f"  AI: {default_ai}, User: {default_user}")
-        change_names = input("  Change names? [y/N]: ").strip().lower()
-        if change_names == "y":
-            ai_name = input(f"  AI name [{default_ai}]: ").strip() or default_ai
-            user_name = input(f"  Your name [{default_user}]: ").strip() or default_user
-        else:
-            ai_name = default_ai
-            user_name = default_user
+    if default_user:
+        print(f"  User: {default_user}")
+        change_user = input("  Change user name? [y/N]: ").strip().lower()
+        user_name = (input(f"  Your name [{default_user}]: ").strip() or default_user) if change_user == "y" else default_user
     else:
-        ai_name = input(f"  AI name [{'keep current' if default_ai else 'e.g. Nova'}]: ").strip() or default_ai
-        user_name = input(f"  Your name [{'keep current' if default_user else 'e.g. Alex'}]: ").strip() or default_user
+        user_name = input("  Your name [e.g. Alex]: ").strip()
 
     # ── Git ──
     default_git = existing.git_enabled if existing else True
@@ -119,7 +112,6 @@ def cmd_init(args: argparse.Namespace) -> None:
         home_path=home_path,
         home_paths=home_paths,
         code_path=code_path,
-        ai_name=ai_name,
         user_name=user_name,
         language_profile=language_profile,
         embedding_model=str(profile["embedding"]),
@@ -143,6 +135,13 @@ def cmd_init(args: argparse.Namespace) -> None:
         print(f"  CLAUDE.md    {config.claude_md_path}")
     else:
         print(f"  CLAUDE.md    {config.claude_md_path}  (exists, not overwritten)")
+    awareness_dest = config.self_dir / "awareness.md"
+    awareness_result = write_awareness_md(config)
+    if awareness_result:
+        print(f"  awareness.md {awareness_dest}")
+    else:
+        if awareness_dest.exists():
+            print(f"  awareness.md {awareness_dest}  (exists, not overwritten)")
     write_gitignore(config)
 
     # Auto-install hook files into home/.claude/

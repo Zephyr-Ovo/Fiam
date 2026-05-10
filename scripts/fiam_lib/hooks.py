@@ -250,15 +250,37 @@ def write_claude_md(config: "FiamConfig") -> bool:
     template_path = config.code_path / "scripts" / "templates" / "CLAUDE.md"
     if template_path.exists():
         content = template_path.read_text(encoding="utf-8")
-        if config.ai_name:
-            content = content.replace("Fiet", config.ai_name, 1)
         if config.user_name:
             content = content.replace("Zephyr", config.user_name)
     else:
         # Minimal fallback
-        ai_line = f"你叫{config.ai_name}。\n" if config.ai_name else ""
         user_line = f"与你交谈的人叫{config.user_name}。\n" if config.user_name else ""
-        content = ai_line + user_line + "\n这是你的家。\n"
+        content = user_line + "\n这是你的家。\n"
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(content, encoding="utf-8")
+    return True
+
+
+def write_awareness_md(config: "FiamConfig") -> bool:
+    """Write self/awareness.md to home from template. Returns False if already exists.
+
+    awareness.md is the API runtime's equivalent of CLAUDE.md: it teaches the AI
+    about XML markers (<wake>/<todo at>/<sleep>/<mute>/<notify>/<hold>/<carry_over>/COT)
+    and other runtime conventions. prompt.load_self_context() picks it up automatically
+    via the sorted-glob fallback.
+    """
+    dest = config.self_dir / "awareness.md"
+    if dest.exists():
+        return False
+
+    template_path = config.code_path / "scripts" / "templates" / "awareness.md"
+    if not template_path.exists():
+        return False
+
+    content = template_path.read_text(encoding="utf-8")
+    if config.user_name:
+        content = content.replace("Zephyr", config.user_name)
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(content, encoding="utf-8")
