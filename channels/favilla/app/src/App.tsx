@@ -52,6 +52,8 @@ type ThinkStep = {
 type Msg = {
   id: string
   role: "user" | "ai"
+  /** Sender identity for multi-agent UIs. user→zephyr; ai→cc/api/copilot/codex. */
+  agentId?: string
   text?: string
   /** Minutes since epoch. Used to decide whether to show a time separator. */
   t: number
@@ -632,6 +634,22 @@ function ThinkingChain({ steps, locked, peerName }: { steps: ThinkStep[]; locked
 }
 
 // ---------- Bubble ----------
+
+function agentBubbleBg(agentId?: string): string {
+  switch ((agentId || "").toLowerCase()) {
+    case "cc":
+      return "rgba(214,200,170,0.62)"      // warm sand — Claude Code
+    case "copilot":
+      return "rgba(195,200,225,0.62)"      // soft indigo — GitHub Copilot
+    case "codex":
+      return "rgba(220,210,180,0.62)"      // pale gold — Codex
+    case "api":
+    case "gemini":
+    default:
+      return "rgba(235,235,235,0.62)"      // neutral — Gemini api / unknown
+  }
+}
+
 function NameTag({ children }: { children: React.ReactNode }) {
   return (
     <span
@@ -753,6 +771,7 @@ function Bubble({
                 key={`${msg.id}-seg-${index}`}
                 text={segment.text}
                 isUser={isUser}
+                agentId={msg.agentId}
                 recallUsed={!!msg.recallUsed && index === 0}
                 selectionMode={!!selectionMode}
                 selected={!!selected}
@@ -772,6 +791,7 @@ function Bubble({
           <BubbleBody
             text={msg.text}
             isUser={isUser}
+            agentId={msg.agentId}
             recallUsed={!!msg.recallUsed}
             selectionMode={!!selectionMode}
             selected={!!selected}
@@ -791,6 +811,7 @@ function Bubble({
 function BubbleBody({
   text,
   isUser,
+  agentId,
   recallUsed,
   selectionMode,
   selected,
@@ -799,6 +820,7 @@ function BubbleBody({
 }: {
   text: string
   isUser: boolean
+  agentId?: string
   recallUsed: boolean
   selectionMode: boolean
   selected: boolean
@@ -879,7 +901,7 @@ function BubbleBody({
         style={{
           background: isUser
             ? "rgba(208,188,190,0.72)"
-            : "rgba(235,235,235,0.62)",
+            : agentBubbleBg(agentId),
           color: INK,
           border: isUser
             ? "1px solid rgba(255,255,255,0.28)"
@@ -1136,7 +1158,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
     }
   }
 
-  function streamReply(aiId: string, full: string, thoughts: ThinkStep[], locked: boolean, segments?: ChatSegment[], hold?: Msg["hold"]) {
+  function streamReply(aiId: string, full: string, thoughts: ThinkStep[], locked: boolean, segments?: ChatSegment[], hold?: Msg["hold"], agentId?: string) {
     if (segments && segments.length > 0) {
       setMessages((m) =>
         m.map((x) =>
@@ -1144,6 +1166,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
             ? {
                 ...x,
                 text: full,
+                agentId,
                 thinking: thoughts.length > 0 ? thoughts : undefined,
                 thinkingLocked: locked,
                 segments,
@@ -1158,7 +1181,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
       setMessages((m) =>
         m.map((x) =>
           x.id === aiId
-            ? { ...x, text: full, thinking: thoughts.length > 0 ? thoughts : undefined, thinkingLocked: locked, hold }
+            ? { ...x, text: full, agentId, thinking: thoughts.length > 0 ? thoughts : undefined, thinkingLocked: locked, hold }
             : x,
         ),
       )
@@ -1226,6 +1249,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
         if (cancelled || !res.ok || !res.messages) return
         setMessages(res.messages.map((msg) => ({
           ...msg,
+          agentId: (msg as { agent_id?: string }).agent_id,
           attachments: (msg.attachments || []).map((att) => {
             if (att.kind === "voice") return { kind: "voice", seconds: Number(att.size || 0) || 0 }
             if (att.kind === "image") return { kind: "image", name: att.name }
@@ -1405,7 +1429,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
       }))
       const locked = !!res.thoughts_locked
       const full = res.reply || ""
-      streamReply(aiId, full, thoughts, locked, res.segments, res.hold)
+      streamReply(aiId, full, thoughts, locked, res.segments, res.hold, res.agent_id)
       // Tell Shell to set the home unread dot if user isn't on chat.
       try {
         window.dispatchEvent(

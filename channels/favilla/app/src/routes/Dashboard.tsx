@@ -257,8 +257,8 @@ export function Dashboard({ onBack }: { onBack: () => void }) {
                 <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-neutral-400"></div>REM</div>
               </div>
             </div>
-            <div className="flex-1 w-full -ml-4 mt-2">
-              <ResponsiveContainer width="100%" height="100%">
+            <div className="flex-1 w-full -ml-4 mt-2 min-h-[180px]">
+              <ResponsiveContainer width="100%" height="100%" minHeight={180}>
                 <AreaChart data={sleepData}>
                   <defs>
                     <linearGradient id="sleepColor" x1="0" y1="0" x2="0" y2="1">
@@ -321,8 +321,8 @@ export function Dashboard({ onBack }: { onBack: () => void }) {
               </div>
 
               <div className="flex flex-col items-center justify-center py-2 text-center h-full pb-4">
-                <div className="w-full h-[140px] relative -mt-2 mb-2">
-                  <ResponsiveContainer width="100%" height="100%">
+                <div className="w-full h-[140px] min-h-[140px] relative -mt-2 mb-2">
+                  <ResponsiveContainer width="100%" height="100%" minHeight={140} minWidth={140}>
                     <PieChart>
                       <Pie
                         data={coAuthorData}
