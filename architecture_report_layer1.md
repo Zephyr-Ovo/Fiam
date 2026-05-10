@@ -92,4 +92,4 @@
 仍需关注的边角：
 - `sweep_outbox` 仍有一条直接调用 postman 的历史路径，后续应完全转为 `fiam/dispatch/*`。
 - `scripts/fiam_lib/jsonl.py` 仍保留 Claude Code session 游标辅助，和 Adapter 层有重叠但仍被维护命令使用。
-- `scripts/harden_server.sh` 与 `scripts/templates/awareness.md` 属于部署/提示参考周边，不在 daemon 主路径内。旧的 AW、训练抽取与服务器检查脚本已移入 `archive/legacy_tools/`，只作参考。
+- `scripts/harden_server.sh` 与 `scripts/templates/awareness.md` 属于部署/提示参考周边，不在 daemon 主路径内。旧的 AW、训练抽取与服务器检查脚本已废弃删除（如需查看可在 git 历史中找）。
