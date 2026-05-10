@@ -25,6 +25,11 @@ class WakeMarker:
 
 
 @dataclass(frozen=True)
+class SleepMarker:
+    at: str  # normalized to ISO with timezone offset
+
+
+@dataclass(frozen=True)
 class TodoMarker:
     at: str  # normalized to ISO with timezone offset
     text: str
@@ -107,18 +112,34 @@ def _xml_markers(text: str):
 
 
 def parse_wake_markers(text: str, *, default_tz=None) -> list["WakeMarker"]:
-    """Parse ``<wake>YYYY-MM-DD HH:MM</wake>`` (or full ISO) markers.
+    """Parse ``<wake at="YYYY-MM-DD HH:MM"/>`` markers.
 
-    The body is the only content; if it does not parse as a timestamp, the
-    marker is skipped silently.
+    Only the ``at`` attribute is read. Sleep must be set first for wake to
+    have meaning at runtime; the parser does not enforce that.
     """
     markers: list[WakeMarker] = []
-    for name, _attrs_dict, body in _xml_markers(text):
+    for name, attrs, _body in _xml_markers(text):
         if name != "wake":
             continue
-        iso = _normalize_short_time(body, default_tz=default_tz)
+        iso = _normalize_short_time(attrs.get("at", ""), default_tz=default_tz)
         if iso:
             markers.append(WakeMarker(at=iso))
+    return markers
+
+
+def parse_sleep_markers(text: str, *, default_tz=None) -> list["SleepMarker"]:
+    """Parse ``<sleep at="YYYY-MM-DD HH:MM"/>`` markers.
+
+    Overwrite-style: a later marker supersedes an earlier one. Only the
+    ``at`` attribute is read.
+    """
+    markers: list[SleepMarker] = []
+    for name, attrs, _body in _xml_markers(text):
+        if name != "sleep":
+            continue
+        iso = _normalize_short_time(attrs.get("at", ""), default_tz=default_tz)
+        if iso:
+            markers.append(SleepMarker(at=iso))
     return markers
 
 
@@ -177,7 +198,7 @@ def parse_state_markers(text: str) -> list[StateMarker]:
     markers: list[StateMarker] = []
     for name, attrs, _body in _xml_markers(text):
         state = name.lower()
-        if state not in {"sleep", "mute", "notify"}:
+        if state not in {"mute", "notify"}:
             continue
         markers.append(StateMarker(
             state=state,

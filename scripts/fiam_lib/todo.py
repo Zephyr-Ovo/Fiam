@@ -9,6 +9,7 @@ from pathlib import Path
 
 from fiam.config import FiamConfig
 from fiam.markers import (
+    parse_sleep_markers,
     parse_state_markers,
     parse_todo_markers,
     parse_wake_markers,
@@ -24,26 +25,12 @@ def _ensure_config_timezone(dt: datetime, config: FiamConfig | None) -> datetime
 
 
 def extract_state_tag(text: str, config: FiamConfig | None = None) -> dict | None:
-    """Extract the last XML state marker from AI text."""
+    """Extract the last XML state marker (mute/notify) from AI text."""
     markers = parse_state_markers(text)
     if not markers:
         return None
     marker = markers[-1]
     result = {"state": marker.state, "reason": marker.reason}
-    if marker.state == "sleep":
-        until_raw = marker.until.strip() or "open"
-        if until_raw.lower() == "open":
-            until = "open"
-        else:
-            try:
-                parsed = datetime.fromisoformat(until_raw.replace("Z", "+00:00"))
-                parsed = _ensure_config_timezone(parsed, config)
-                until = parsed.isoformat()
-            except ValueError:
-                return None
-        result["until"] = until
-        result["sleeping_until"] = until
-        return result
     if marker.until:
         try:
             parsed = datetime.fromisoformat(marker.until.replace("Z", "+00:00"))
@@ -84,6 +71,18 @@ def extract_scheduled_items(text: str, config: FiamConfig | None = None) -> list
                 "at": at.isoformat(),
                 "kind": "todo",
                 "reason": marker.text,
+                "created": datetime.now(timezone.utc).isoformat(),
+            })
+        except ValueError:
+            continue
+    for marker in parse_sleep_markers(text, default_tz=default_tz):
+        try:
+            at = datetime.fromisoformat(marker.at)
+            at = _ensure_config_timezone(at, config)
+            results.append({
+                "at": at.isoformat(),
+                "kind": "sleep",
+                "reason": "",
                 "created": datetime.now(timezone.utc).isoformat(),
             })
         except ValueError:

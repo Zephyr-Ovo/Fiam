@@ -221,9 +221,9 @@
 					</span>
 					<span
 						class="text-[10px] px-1 py-0.5 rounded whitespace-nowrap shrink-0 self-start"
-						style="color: {sourceColors[beat.source] ?? 'var(--color-subtext0)'}; border: 1px solid {sourceColors[beat.source] ?? 'var(--color-surface1)'}"
+						style="color: {sourceColors[beat.channel] ?? 'var(--color-subtext0)'}; border: 1px solid {sourceColors[beat.channel] ?? 'var(--color-surface1)'}"
 					>
-						{beat.source}
+						{beat.channel}
 					</span>
 					<span class="text-[var(--color-text)] break-all flex-1">
 						{beat.text.length > 400 ? beat.text.slice(0, 397) + '…' : beat.text}

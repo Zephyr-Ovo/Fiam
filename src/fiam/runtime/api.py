@@ -431,7 +431,7 @@ class ApiRuntime:
         self,
         text: str,
         *,
-        source: str = "api",
+        channel: str = "api",
         record: bool = True,
         include_recall: bool = True,
         extra_context: str = "",
@@ -443,12 +443,12 @@ class ApiRuntime:
 
         recall_fragments = 0
         if record:
-            recall_fragments = self._record_user(clean, source=source)
+            recall_fragments = self._record_user(clean, channel=channel)
 
         messages = build_api_messages(
             self.config,
             clean,
-            source=source,
+            channel=channel,
             include_recall=include_recall,
             consume_recall_dirty=True,
             extra_context=extra_context,
@@ -499,7 +499,7 @@ class ApiRuntime:
                 raw_args = str(fn.get("arguments") or "{}")
                 result = execute_tool_call(self.config, name, raw_args)
                 if record:
-                    self._record_tool_action(name, raw_args, result, source=source)
+                    self._record_tool_action(name, raw_args, result, channel=channel)
                 executed_calls.append({
                     "id": str(call.get("id") or ""),
                     "name": name,
@@ -529,7 +529,7 @@ class ApiRuntime:
         reply_text = completion.text or "(empty reply)"
         dispatched = self._dispatch(reply_text)
         if record:
-            self._record_assistant(reply_text, source=source)
+            self._record_assistant(reply_text, channel=channel)
 
         return ApiRuntimeResult(
             ok=True,
@@ -570,15 +570,13 @@ class ApiRuntime:
         _merge_usage(usage_total, completion.usage)
         return completion.text or "(no image description)"
 
-    def _record_user(self, text: str, *, source: str) -> int:
+    def _record_user(self, text: str, *, channel: str) -> int:
         if self.conductor is None:
             return 0
-        from fiam.runtime.turns import scene_for_user
-        scene = scene_for_user(source)
         beat = user_beat(
             text,
             t=datetime.now(timezone.utc),
-            scene=scene,
+            channel=channel,
             user_status=self.conductor.user_status,
             ai_status=self.conductor.ai_status,
             user_name=getattr(self.config, "user_name", "") or "zephyr",
@@ -589,7 +587,7 @@ class ApiRuntime:
             return self.recall_refresher(vec)
         return 0
 
-    def _record_assistant(self, text: str, *, source: str) -> None:
+    def _record_assistant(self, text: str, *, channel: str) -> None:
         if self.conductor is None:
             return
         # Apply XML markers (todo/wake/state) before recording the beat.
@@ -598,19 +596,17 @@ class ApiRuntime:
         # benefit. The dashboard layer still runs its own pass for hold/cot/
         # carry_over which require richer context (attachments, runtime label).
         self._apply_simple_markers(text)
-        from fiam.runtime.turns import scene_for_ai
-        scene = scene_for_ai(source)
         for beat in assistant_text_beats(
             text,
             t=datetime.now(timezone.utc),
-            scene=scene,
+            channel=channel,
             user_status=self.conductor.user_status,
             ai_status=self.conductor.ai_status,
             runtime="api",
         ):
             self.conductor._ingest_beat(beat)
 
-    def _record_tool_action(self, name: str, raw_args: str, result: str, *, source: str) -> None:
+    def _record_tool_action(self, name: str, raw_args: str, result: str, *, channel: str) -> None:
         if self.conductor is None:
             return
         args_summary = raw_args.replace("\n", " ")[:300]
@@ -618,7 +614,8 @@ class ApiRuntime:
         self.conductor._ingest_beat(Beat(
             t=datetime.now(timezone.utc),
             text=text,
-            scene="ai@action",
+            actor="ai",
+            channel="action",
             user=self.conductor.user_status,
             ai=self.conductor.ai_status,
             runtime="api",

@@ -203,7 +203,7 @@ def _normalize_wearable_payload(payload: dict) -> dict:
         "type": kind,
         "text": text,
         "ttl_ms": int(payload.get("ttl_ms") or 30000),
-        "source": str(payload.get("source") or "dispatch"),
+        "channel": str(payload.get("channel") or "dispatch"),
     }
 
 
@@ -242,7 +242,7 @@ def _api_wearable_reply() -> dict:
 def _on_wearable_dispatch(target: str, payload: dict) -> None:
     try:
         enriched = dict(payload)
-        enriched.setdefault("source", f"dispatch/{target}")
+        enriched.setdefault("channel", f"dispatch/{target}")
         _enqueue_wearable_message(enriched)
         logger.info("wearable queued target=%s type=%s", target, enriched.get("type", "message"))
     except Exception:
@@ -529,7 +529,7 @@ def _api_plugins() -> dict:
                 "description": plugin.description,
                 "transports": list(plugin.transports),
                 "capabilities": list(plugin.capabilities),
-                "receive_sources": list(plugin.receive_sources),
+                "receive_channels": list(plugin.receive_channels),
                 "dispatch_targets": list(plugin.dispatch_targets),
                 "entrypoint": plugin.entrypoint,
                 "auth": plugin.auth,
@@ -608,7 +608,7 @@ def _api_capture(payload: dict) -> dict:
     Dashboard no longer touches Pool directly — it's a pure HTTP→MQTT
     bridge for clients that can't speak MQTT (e.g. the Android app).
 
-    Expected payload keys: text (required), source (optional),
+    Expected payload keys: text (required), channel (optional),
     url (optional), tags (optional list), kind/interaction/session_id/meta.
     """
     if not _CONFIG:
@@ -616,7 +616,7 @@ def _api_capture(payload: dict) -> dict:
     text = (payload.get("text") or "").strip()
     if not text:
         raise ValueError("missing text")
-    source = (payload.get("source") or "favilla").strip()
+    channel = (payload.get("channel") or "favilla").strip()
     url = (payload.get("url") or "").strip()
     meta = dict(payload.get("meta") or {})
     tags = payload.get("tags") or []
@@ -629,17 +629,17 @@ def _api_capture(payload: dict) -> dict:
         meta["route"] = "vision"
         meta["vision"] = _vision_route()
     from fiam.plugins import is_receive_enabled
-    receive_source = source.lower() if source.lower() in {"xiao", "limen"} else "favilla"
-    if not is_receive_enabled(_CONFIG, receive_source):
-        raise RuntimeError(f"{receive_source} plugin disabled")
+    receive_channel = channel.lower() if channel.lower() in {"xiao", "limen"} else "favilla"
+    if not is_receive_enabled(_CONFIG, receive_channel):
+        raise RuntimeError(f"{receive_channel} plugin disabled")
 
     bus = _get_bus()
     if bus is None:
         raise RuntimeError("MQTT bus unavailable")
-    ok = bus.publish_receive(receive_source, {
+    ok = bus.publish_receive(receive_channel, {
         "text": text,
-        "source": receive_source,
-        "from_name": source,
+        "channel": receive_channel,
+        "from_name": channel,
         "url": url,
         "tags": tags,
         "kind": meta.get("kind"),
@@ -723,7 +723,7 @@ def _recent_browser_action_trail(limit: int = 8) -> list[dict]:
             obj = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if obj.get("scene") != "ai@action" or obj.get("runtime") != "browser":
+        if obj.get("actor") != "ai" or obj.get("channel") != "action" or obj.get("runtime") != "browser":
             continue
         text = str(obj.get("text") or "")
         match = action_re.match(text)
@@ -755,13 +755,13 @@ def _suppress_repeated_browser_actions(actions: list[dict], trail: list[dict]) -
 def _append_browser_flow_text(text: str) -> None:
     if not _CONFIG:
         return
-    from fiam.runtime.turns import scene_for_user, user_beat
+    from fiam.runtime.turns import user_beat
     from fiam.store.beat import append_beat
 
     append_beat(_CONFIG.flow_path, user_beat(
         text,
         t=datetime.now(timezone.utc),
-        scene=scene_for_user("browser"),
+        channel="browser",
         user_status="away",
         ai_status="online",
         user_name=getattr(_CONFIG, "user_name", "") or "zephyr",
@@ -785,7 +785,8 @@ def _append_browser_action_flow(payload: dict) -> dict:
     append_beat(_CONFIG.flow_path, Beat(
         t=datetime.now(timezone.utc),
         text=text,
-        scene="ai@action",
+        actor="ai",
+        channel="action",
         user="away",
         ai="online",
         runtime="browser",
@@ -839,7 +840,8 @@ def _append_browser_ai_decision_flow(reply: str, actions: list[dict], done: dict
     append_beat(_CONFIG.flow_path, Beat(
         t=datetime.now(timezone.utc),
         text=text,
-        scene="ai@browser",
+        actor="ai",
+        channel="browser",
         user="away",
         ai="online",
         runtime=runtime,
@@ -873,7 +875,7 @@ def _browser_snapshot(payload: dict) -> dict:
     if bus is not None:
         ok = bus.publish_receive("browser", {
             "text": text,
-            "source": "browser",
+            "channel": "browser",
             "from_name": meta.get("browser") or "browser",
             "url": meta.get("url") or "",
             "tags": ["browser", "snapshot"],
@@ -883,9 +885,9 @@ def _browser_snapshot(payload: dict) -> dict:
         })
         if not ok:
             raise RuntimeError("publish rejected")
-        return {"ok": True, "queued": True, "source": "browser", "meta": meta, "chars": len(text)}
+        return {"ok": True, "queued": True, "channel": "browser", "meta": meta, "chars": len(text)}
     _append_browser_flow_text(text)
-    return {"ok": True, "queued": False, "recorded": True, "source": "browser", "meta": meta, "chars": len(text)}
+    return {"ok": True, "queued": False, "recorded": True, "channel": "browser", "meta": meta, "chars": len(text)}
 
 
 def _browser_ask(payload: dict) -> dict:
@@ -899,7 +901,7 @@ def _browser_ask(payload: dict) -> dict:
     runtime_text = build_browser_runtime_text(question, payload)
     result = _favilla_chat_send({
         "text": runtime_text,
-        "source": "browser",
+        "channel": "browser",
         "runtime": runtime,
         "record_turn": record_turn,
     })
@@ -941,7 +943,7 @@ def _browser_control_tick(payload: dict) -> dict:
     try:
         result = _favilla_chat_send({
             "text": send_text,
-            "source": "browser",
+            "channel": "browser",
             "runtime": runtime,
             "record_turn": False,
             "attachments": attachments,
@@ -955,7 +957,7 @@ def _browser_control_tick(payload: dict) -> dict:
         send_text = f"{runtime_text}\n\n[browser_screenshot]\nA screenshot was attempted but unavailable for this tick; rely on DOM context."
         result = _favilla_chat_send({
             "text": send_text,
-            "source": "browser",
+            "channel": "browser",
             "runtime": runtime,
             "record_turn": False,
             "attachments": [],
@@ -1020,8 +1022,8 @@ def _favilla_message_units(text: str) -> int:
     return len(units)
 
 
-def _favilla_transcript_digest(source: str, limit: int = 500) -> dict:
-    messages = _favilla_transcript_load(source=source, limit=limit).get("messages") or []
+def _favilla_transcript_digest(channel: str, limit: int = 500) -> dict:
+    messages = _favilla_transcript_load(channel=channel, limit=limit).get("messages") or []
     digest = {
         "turns": 0,
         "user_turns": 0,
@@ -1390,7 +1392,7 @@ def _run_api_studio_edit(prompt: str) -> dict:
     messages = build_api_messages(
         _CONFIG,
         prompt,
-        source="studio",
+        channel="studio",
         include_recall=True,
         consume_recall_dirty=False,
         extra_context=_app_runtime_context(),
@@ -1413,7 +1415,7 @@ def _run_cc_studio_edit(prompt: str) -> dict:
     system_context, user_prompt = build_plain_prompt_parts(
         _CONFIG,
         prompt,
-        source="studio",
+        channel="studio",
         include_recall=True,
         consume_recall_dirty=False,
         extra_context=_app_runtime_context(),
@@ -1505,14 +1507,13 @@ def _select_favilla_chat_runtime(text: str, attachments: list[dict] | None = Non
     return "cc" if any(term in lowered for term in cc_terms) else "api"
 
 
-def _transcript_source(source: str) -> str:
-    clean = re.sub(r"[^A-Za-z0-9_-]+", "_", (source or "chat").strip().lower()).strip("_")
+def _transcript_source(channel: str) -> str:
+    clean = re.sub(r"[^A-Za-z0-9_-]+", "_", (channel or "chat").strip().lower()).strip("_")
     return clean or "chat"
 
 
-def _transcript_path(source: str = "chat") -> Path:
-    return _CONFIG.home_path / "transcript" / f"{_transcript_source(source)}.jsonl"
-
+def _transcript_path(channel: str = "chat") -> Path:
+    return _CONFIG.home_path / "transcript" / f"{_transcript_source(channel)}.jsonl"
 
 def _history_attachments(attachments: list[dict]) -> list[dict]:
     out = []
@@ -1528,8 +1529,8 @@ def _history_attachments(attachments: list[dict]) -> list[dict]:
     return out
 
 
-def _append_transcript(source: str, message: dict) -> dict:
-    path = _transcript_path(source)
+def _append_transcript(channel: str, message: dict) -> dict:
+    path = _transcript_path(channel)
     path.parent.mkdir(parents=True, exist_ok=True)
     now_min = int(time.time() // 60)
     record = {
@@ -1548,7 +1549,7 @@ def _append_transcript(source: str, message: dict) -> dict:
             record[key] = message[key]
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, ensure_ascii=False) + "\n")
-    _append_carryover(source, record)
+    _append_carryover(channel, record)
     return record
 
 
@@ -1604,11 +1605,13 @@ def _normalize_metrics(
     return out
 
 
-def _current_presence(scene: str = "") -> dict:
-    """Best-effort snapshot of user/ai status + scene for transcript record."""
+def _current_presence(actor: str = "", channel: str = "") -> dict:
+    """Best-effort snapshot of user/ai status + actor/channel for transcript record."""
     out: dict = {}
-    if scene:
-        out["scene"] = scene
+    if actor:
+        out["actor"] = actor
+    if channel:
+        out["channel"] = channel
     try:
         if _CONFIG and _CONFIG.ai_state_path.exists():
             data = json.loads(_CONFIG.ai_state_path.read_text(encoding="utf-8"))
@@ -1622,7 +1625,7 @@ def _current_presence(scene: str = "") -> dict:
     return out
 
 
-def _append_carryover(source: str, record: dict) -> None:
+def _append_carryover(channel: str, record: dict) -> None:
     """Append non-cc turns to carryover.md so cc sees what it missed.
 
     Carryover.md is a markdown side-channel consumed by the inject.sh hook
@@ -1639,14 +1642,14 @@ def _append_carryover(source: str, record: dict) -> None:
     ts = datetime.now(timezone.utc).isoformat()
     home = _CONFIG.home_path
     co_path = home / "carryover.md"
-    section = f"## {ts} {role}@{source} runtime={runtime}\n{text}\n\n"
+    section = f"## {ts} {role}@{channel} runtime={runtime}\n{text}\n\n"
     with co_path.open("a", encoding="utf-8") as fh:
         fh.write(section)
     (home / ".carryover_dirty").touch()
 
 
-def _favilla_transcript_load(source: str = "chat", limit: int = 200) -> dict:
-    path = _transcript_path(source)
+def _favilla_transcript_load(channel: str = "chat", limit: int = 200) -> dict:
+    path = _transcript_path(channel)
     if not path.exists():
         return {"ok": True, "messages": []}
     cap = max(1, min(1000, limit))
@@ -1663,7 +1666,7 @@ def _favilla_transcript_load(source: str = "chat", limit: int = 200) -> dict:
 
 
 def _favilla_transcript_append(payload: dict) -> dict:
-    source = str(payload.get("source") or "chat")
+    channel = str(payload.get("channel") or "chat")
     role = str(payload.get("role") or "user")
     if role not in {"user", "ai"}:
         raise ValueError("role must be user or ai")
@@ -1672,7 +1675,7 @@ def _favilla_transcript_append(payload: dict) -> dict:
         attachments = []
     safe_attachments = _validate_app_attachments(attachments)
     text_in = str(payload.get("text") or "")
-    record = _append_transcript(source, {
+    record = _append_transcript(channel, {
         "role": role,
         "text": text_in,
         "raw_text": str(payload.get("raw_text") or text_in),
@@ -1795,7 +1798,7 @@ def _stroll_tick_loop() -> None:
                     "accuracy": location.get("accuracy"),
                 }
             payload = {
-                "source": "stroll",
+                "channel": "stroll",
                 "runtime": "api",
                 "text": f"[stroll_tick] 距上次 tick {int(now - last_tick)}s。看一下当前镜头/周围，决定要不要拍照、记录或给屏幕换图。",
                 "stroll_context": stroll_ctx,
@@ -1847,7 +1850,7 @@ def _validate_app_attachments(attachments: list) -> list[dict]:
 def _apply_app_control_markers(
     reply: str,
     *,
-    source: str,
+    channel: str,
     runtime: str,
     user_text: str,
     attachments: list | None = None,
@@ -1865,7 +1868,7 @@ def _apply_app_control_markers(
 
     if _CONFIG:
         cleaned, hold_kind, retry_todos = apply_hold(
-            reply, _CONFIG, source=source, runtime=runtime,
+            reply, _CONFIG, channel=channel, runtime=runtime,
         )
         if retry_todos:
             append_to_todo(retry_todos, _CONFIG)
@@ -1955,7 +1958,7 @@ def _favilla_chat_send(payload: dict) -> dict:
         raise ValueError("missing text")
     if not text:
         text = "(see attached file)"
-    source = str(payload.get("source") or "chat").strip() or "chat"
+    channel = str(payload.get("channel") or "chat").strip() or "chat"
     default_runtime = getattr(_CONFIG, "app_default_runtime", "auto") or "auto"
     runtime = str(payload.get("runtime") or default_runtime).strip().lower() or "auto"
     if runtime == "auto":
@@ -1963,16 +1966,16 @@ def _favilla_chat_send(payload: dict) -> dict:
     user_text = text
     runtime_text = text
     stroll_context: dict | None = None
-    if source == "stroll":
+    if channel == "stroll":
         from fiam_lib.stroll_store import build_context_block
 
         context_block, stroll_context = build_context_block(_CONFIG, payload.get("stroll_context") if isinstance(payload.get("stroll_context"), dict) else payload.get("context"))
         runtime_text = f"{context_block}\n\n[user_message]\n{user_text}"
     record_turn = payload.get("record_turn", payload.get("record", True)) is not False
     if runtime == "api":
-        result = _run_api_favilla_chat(text=runtime_text, source=source, attachments=safe_attachments, record_turn=record_turn)
+        result = _run_api_favilla_chat(text=runtime_text, channel=channel, attachments=safe_attachments, record_turn=record_turn)
     elif runtime == "cc":
-        result = _run_cc_favilla_chat(text=runtime_text, source=source, attachments=safe_attachments)
+        result = _run_cc_favilla_chat(text=runtime_text, channel=channel, attachments=safe_attachments)
     else:
         raise ValueError("Favilla chat runtime must be auto, cc, or api")
     carry = result.get("carry_over") if isinstance(result.get("carry_over"), dict) else None
@@ -1986,14 +1989,14 @@ def _favilla_chat_send(payload: dict) -> dict:
             reason=str((carry or {}).get("reason") or ""),
         )
         if target == "api":
-            result = _run_api_favilla_chat(text=transfer_text, source=source, attachments=safe_attachments)
+            result = _run_api_favilla_chat(text=transfer_text, channel=channel, attachments=safe_attachments)
         else:
-            result = _run_cc_favilla_chat(text=transfer_text, source=source, attachments=safe_attachments)
+            result = _run_cc_favilla_chat(text=transfer_text, channel=channel, attachments=safe_attachments)
         result["carry_over_from"] = runtime
         runtime = target
     stroll_records: list[dict] = []
     stroll_actions: list[dict] = []
-    if source == "stroll":
+    if channel == "stroll":
         from fiam_lib.stroll_store import apply_spatial_record_markers, apply_stroll_action_markers, strip_spatial_record_markers, strip_stroll_action_markers
 
         cleaned_reply, stroll_records = apply_spatial_record_markers(_CONFIG, str(result.get("reply") or ""), stroll_context or {})
@@ -2008,15 +2011,15 @@ def _favilla_chat_send(payload: dict) -> dict:
                     continue
             cleaned_segments.append(segment)
         result["segments"] = cleaned_segments
-    _append_transcript(source, {
+    _append_transcript(channel, {
         "role": "user",
         "text": user_text,
         "raw_text": user_text,
         "runtime": runtime,
         "attachments": _history_attachments(safe_attachments),
-        "presence": _current_presence(scene=f"user@{source}"),
+        "presence": _current_presence(actor="user", channel=channel),
     })
-    _append_transcript(source, {
+    _append_transcript(channel, {
         "role": "ai",
         "text": result.get("reply", ""),
         "raw_text": result.get("raw_reply", result.get("reply", "")),
@@ -2028,7 +2031,7 @@ def _favilla_chat_send(payload: dict) -> dict:
         "tool_calls_summary": result.get("tool_calls_summary") or [],
         "actions": result.get("actions_list") or [],
         "metrics": result.get("metrics") or {},
-        "presence": _current_presence(scene=f"ai@{source}"),
+        "presence": _current_presence(actor="ai", channel=channel),
     })
     if stroll_context is not None:
         result["stroll_context"] = stroll_context
@@ -2041,7 +2044,7 @@ def _favilla_chat_send(payload: dict) -> dict:
                 bus.publish("record", rec)
         except Exception:
             logger.exception("stroll record publish failed")
-    if source == "stroll" and stroll_actions:
+    if channel == "stroll" and stroll_actions:
         result["stroll_actions"] = stroll_actions
         try:
             from fiam_lib.stroll_events import get_bus
@@ -2232,8 +2235,8 @@ def _favilla_chat_cut(payload: dict) -> dict:
     record = {"flow_offset": int(offset), "ts": datetime.now(timezone.utc).isoformat()}
     with cut_path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record) + "\n")
-    source = str(payload.get("source") or "chat")
-    _append_transcript(source, {
+    channel = str(payload.get("channel") or "chat")
+    _append_transcript(channel, {
         "role": "ai",
         "divider": {"kind": "scissor", "label": "cut"},
     })
@@ -2348,21 +2351,21 @@ def _app_runtime_context() -> str:
     ])
 
 
-def _recent_conversation_for_app(source: str, *, max_n: int = 12, max_chars: int = 4000) -> str:
-    """Read transcript tail for the given source as a block for api context.
+def _recent_conversation_for_app(channel: str, *, max_n: int = 12, max_chars: int = 4000) -> str:
+    """Read transcript tail for the given channel as a block for api context.
 
     Returns formatted lines like:
-        [recent_conversation source=chat]
+        [recent_conversation channel=chat]
         2026-05-07T14:00 user@chat (api): hello
         2026-05-07T14:00 ai@chat (api): hi there
         ...
 
-    Cross-source merge is intentionally NOT done here: chat ↔ stroll keep
+    Cross-channel merge is intentionally NOT done here: chat ↔ stroll keep
     separate threads. Returns "" if no transcript.
     """
     if not _CONFIG:
         return ""
-    path = _transcript_path(source)
+    path = _transcript_path(channel)
     if not path.exists():
         return ""
     try:
@@ -2380,7 +2383,7 @@ def _recent_conversation_for_app(source: str, *, max_n: int = 12, max_chars: int
             continue
     if not records:
         return ""
-    rendered: list[str] = [f"[recent_conversation source={source}]"]
+    rendered: list[str] = [f"[recent_conversation channel={channel}]"]
     rendered.append("# This is the recent transcript on this surface (raw, includes XML markers). Use it as conversational context; do not echo XML markers back.")
     for rec in records[-max_n:]:
         role = str(rec.get("role") or "ai")
@@ -2390,12 +2393,12 @@ def _recent_conversation_for_app(source: str, *, max_n: int = 12, max_chars: int
         body = str(rec.get("raw_text") or rec.get("text") or "").strip()
         if not body:
             continue
-        rendered.append(f"{ts} {role}@{source}{rt_tag}: {body}")
+        rendered.append(f"{ts} {role}@{channel}{rt_tag}: {body}")
     block = "\n".join(rendered)
     if len(block) > max_chars:
         block = block[-max_chars:]
         # Re-anchor with a header so the model still recognises the block
-        block = f"[recent_conversation source={source} truncated]\n...{block}"
+        block = f"[recent_conversation channel={channel} truncated]\n...{block}"
     return block
 
 
@@ -2521,7 +2524,7 @@ def _combine_cc_action_events(action_events: list[dict]) -> list[dict]:
     return combined
 
 
-def _run_cc_favilla_chat(*, text: str, source: str, attachments: list | None = None) -> dict:
+def _run_cc_favilla_chat(*, text: str, channel: str, attachments: list | None = None) -> dict:
     import subprocess
     from fiam.runtime.prompt import build_plain_prompt_parts
 
@@ -2538,7 +2541,7 @@ def _run_cc_favilla_chat(*, text: str, source: str, attachments: list | None = N
     system_context, user_prompt = build_plain_prompt_parts(
         _CONFIG,
         prompt_text,
-        source=source,
+        channel=channel,
         include_recall=True,
         consume_recall_dirty=True,
         extra_context=_app_runtime_context(),
@@ -2613,7 +2616,7 @@ def _run_cc_favilla_chat(*, text: str, source: str, attachments: list | None = N
     raw_reply = reply
     reply, queued_todos, hold_kind, carry_over = _apply_app_control_markers(
         reply,
-        source=source,
+        channel=channel,
         runtime="cc",
         user_text=prompt_text,
         attachments=attachments or [],
@@ -2657,7 +2660,7 @@ def _run_cc_favilla_chat(*, text: str, source: str, attachments: list | None = N
         actions_list.append({"kind": "queued_todo", **(todo if isinstance(todo, dict) else {"text": str(todo)})})
     if carry_over:
         actions_list.append({"kind": "carry_over", **(carry_over if isinstance(carry_over, dict) else {"value": str(carry_over)})})
-    _record_cc_app_turn(prompt_text, cleaned_reply, source, action_events=action_events, session_id=session_id)
+    _record_cc_app_turn(prompt_text, cleaned_reply, channel, action_events=action_events, session_id=session_id)
     return {
         "ok": True,
         "runtime": "cc",
@@ -2680,7 +2683,7 @@ def _run_cc_favilla_chat(*, text: str, source: str, attachments: list | None = N
         "metrics": metrics,
     }
 
-def _record_cc_app_turn(user_text: str, assistant_reply: str, source: str, *, action_events: list[dict] | None = None, session_id: str = "") -> None:
+def _record_cc_app_turn(user_text: str, assistant_reply: str, channel: str, *, action_events: list[dict] | None = None, session_id: str = "") -> None:
     if not _CONFIG or not _POOL:
         return
     from fiam.conductor import Conductor
@@ -2702,13 +2705,10 @@ def _record_cc_app_turn(user_text: str, assistant_reply: str, source: str, *, ac
         feature_store=feature_store,
     )
     now = datetime.now(timezone.utc)
-    from fiam.runtime.turns import scene_for_user, scene_for_ai
-    user_scene = scene_for_user(source)
-    ai_scene = scene_for_ai(source)
     conductor._ingest_beat(user_beat(
         user_text,
         t=now,
-        scene=user_scene,
+        channel=channel,
         user_status=conductor.user_status,
         ai_status=conductor.ai_status,
         user_name=getattr(_CONFIG, "user_name", "") or "zephyr",
@@ -2729,7 +2729,8 @@ def _record_cc_app_turn(user_text: str, assistant_reply: str, source: str, *, ac
         conductor._ingest_beat(Beat(
             t=datetime.now(timezone.utc),
             text=text,
-            scene="ai@action",
+            actor="ai",
+            channel="action",
             user=conductor.user_status,
             ai=conductor.ai_status,
             runtime="cc",
@@ -2737,7 +2738,7 @@ def _record_cc_app_turn(user_text: str, assistant_reply: str, source: str, *, ac
     for beat in assistant_text_beats(
         assistant_reply,
         t=datetime.now(timezone.utc),
-        scene=ai_scene,
+        channel=channel,
         user_status=conductor.user_status,
         ai_status=conductor.ai_status,
         runtime="cc",
@@ -2745,17 +2746,17 @@ def _record_cc_app_turn(user_text: str, assistant_reply: str, source: str, *, ac
         conductor._ingest_beat(beat)
 
 
-def _record_api_turn_light(user_text: str, assistant_reply: str, source: str, *, tool_calls: list[dict] | None = None) -> None:
+def _record_api_turn_light(user_text: str, assistant_reply: str, channel: str, *, tool_calls: list[dict] | None = None) -> None:
     if not _CONFIG:
         return
-    from fiam.runtime.turns import assistant_text_beats, scene_for_ai, scene_for_user, user_beat
+    from fiam.runtime.turns import assistant_text_beats, user_beat
     from fiam.store.beat import Beat, append_beats
 
     now = datetime.now(timezone.utc)
     beats = [user_beat(
         user_text,
         t=now,
-        scene=scene_for_user(source),
+        channel=channel,
         user_status="away",
         ai_status="online",
         user_name=getattr(_CONFIG, "user_name", "") or "zephyr",
@@ -2766,7 +2767,8 @@ def _record_api_turn_light(user_text: str, assistant_reply: str, source: str, *,
         beats.append(Beat(
             t=datetime.now(timezone.utc),
             text=f"action: {tool_name}" + (f" — {input_summary}" if input_summary else ""),
-            scene="ai@action",
+            actor="ai",
+            channel="action",
             user="away",
             ai="online",
             runtime="api",
@@ -2774,7 +2776,7 @@ def _record_api_turn_light(user_text: str, assistant_reply: str, source: str, *,
     beats.extend(assistant_text_beats(
         assistant_reply,
         t=datetime.now(timezone.utc),
-        scene=scene_for_ai(source),
+        channel=channel,
         user_status="away",
         ai_status="online",
         runtime="api",
@@ -2782,7 +2784,7 @@ def _record_api_turn_light(user_text: str, assistant_reply: str, source: str, *,
     append_beats(_CONFIG.flow_path, beats)
 
 
-def _run_api_favilla_chat(*, text: str, source: str, attachments: list | None = None, record_turn: bool = True) -> dict:
+def _run_api_favilla_chat(*, text: str, channel: str, attachments: list | None = None, record_turn: bool = True) -> dict:
     if not _CONFIG or not _POOL:
         raise RuntimeError("config not loaded")
     config = _CONFIG
@@ -2793,7 +2795,7 @@ def _run_api_favilla_chat(*, text: str, source: str, attachments: list | None = 
     from fiam.runtime.recall import refresh_recall
     from fiam.store.features import FeatureStore
 
-    light_browser_record = source == "browser" and getattr(config, "embedding_backend", "local") == "local"
+    light_browser_record = channel == "browser" and getattr(config, "embedding_backend", "local") == "local"
     feature_store = None if light_browser_record else FeatureStore(config.feature_dir, dim=config.embedding_dim)
     bus = None if light_browser_record else _get_bus()
 
@@ -2833,16 +2835,16 @@ def _run_api_favilla_chat(*, text: str, source: str, attachments: list | None = 
         lines.append("")
         api_text = "\n".join(lines) + text
     extras = _app_runtime_context()
-    recent = "" if source == "browser" else _recent_conversation_for_app(source)
+    recent = "" if channel == "browser" else _recent_conversation_for_app(channel)
     if recent:
         extras = f"{extras}\n\n{recent}"
     api_started_at = time.time()
-    result = runtime.ask(api_text, source=source, record=not light_browser_record, extra_context=extras, image_attachments=attachments or [])
+    result = runtime.ask(api_text, channel=channel, record=not light_browser_record, extra_context=extras, image_attachments=attachments or [])
     api_latency_ms = int((time.time() - api_started_at) * 1000)
     raw_reply = str(result.reply or "")
     reply, queued_todos, hold_kind, carry_over = _apply_app_control_markers(
         result.reply,
-        source=source,
+        channel=channel,
         runtime="api",
         user_text=api_text,
         attachments=attachments or [],
@@ -2888,7 +2890,7 @@ def _run_api_favilla_chat(*, text: str, source: str, attachments: list | None = 
             "loop": call.get("loop"),
         })
     if light_browser_record and record_turn:
-        _record_api_turn_light(api_text, cleaned_reply, source=source, tool_calls=api_tool_calls_summary)
+        _record_api_turn_light(api_text, cleaned_reply, channel=channel, tool_calls=api_tool_calls_summary)
     for todo in queued_todos or []:
         actions_list.append({"kind": "queued_todo", **(todo if isinstance(todo, dict) else {"text": str(todo)})})
     if carry_over:
@@ -3343,12 +3345,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             from urllib.parse import parse_qs, urlparse
 
             query = parse_qs(urlparse(raw).query)
-            source = "stroll" if path == "/favilla/stroll/transcript" else (query.get("source") or ["chat"])[0]
+            channel = "stroll" if path == "/favilla/stroll/transcript" else (query.get("channel") or ["chat"])[0]
             try:
                 limit = int((query.get("limit") or ["200"])[0])
             except ValueError:
                 limit = 200
-            self._serve_json(_favilla_transcript_load(source=source, limit=limit))
+            self._serve_json(_favilla_transcript_load(channel=channel, limit=limit))
             return
 
         if path == "/favilla/stroll/nearby":
@@ -3628,7 +3630,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return
             try:
                 if path == "/favilla/stroll/send":
-                    payload["source"] = "stroll"
+                    payload["channel"] = "stroll"
                 result = _favilla_chat_send(payload)
             except ValueError as e:
                 self._serve_json({"error": str(e)}, status=400)
@@ -3744,7 +3746,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return
             try:
                 if path == "/favilla/stroll/transcript":
-                    payload["source"] = "stroll"
+                    payload["channel"] = "stroll"
                 result = _favilla_transcript_append(payload)
             except ValueError as e:
                 self._serve_json({"error": str(e)}, status=400)

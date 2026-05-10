@@ -84,7 +84,7 @@ def _format_beats(beats: list[dict]) -> str:
         t = b.get("t", "?")
         if isinstance(t, str) and len(t) > 19:
             t = t[:19]
-        src = b.get("source", "?")
+        src = b.get("channel") or b.get("actor", "?")
         text = b.get("text", "")
         if len(text) > 500:
             text = text[:497] + "..."
@@ -96,7 +96,7 @@ def propose_cuts(beats: list[dict], config: FiamConfig) -> list[int]:
     """Send beats to DS, get N-1 binary cut list.
 
     Args:
-        beats: list of beat dicts with keys {t, text, source, ...}
+        beats: list of beat dicts with keys {t, text, actor, channel, ...}
         config: FiamConfig for API settings
 
     Returns:

@@ -148,8 +148,7 @@ class Conductor:
 
         # 3. Drift detection → fire callback (recall is caller's responsibility)
         if (self._last_vec is not None
-                and beat.scene != "ai@action"
-                and beat.scene != "action"
+                and not (beat.actor == "ai" and beat.channel == "action")
                 and self._on_drift is not None):
             if detect_drift(self._last_vec, vec, self._drift_threshold):
                 try:
@@ -174,14 +173,13 @@ class Conductor:
 
     @staticmethod
     def _no_event_cut(beat: Beat) -> bool:
-        # Reserved hook: no scene currently opts out of event-cut.
-        # If interaction-window scenes (readalong/call/game) reappear, list them here.
+        # Reserved hook: no channel currently opts out of event-cut.
         return False
 
     def receive(
         self,
         text: str,
-        scene: str,
+        channel: str,
         t: datetime | None = None,
         meta: dict | None = None,
     ) -> str | None:
@@ -193,41 +191,35 @@ class Conductor:
         if t is None:
             t = datetime.now(timezone.utc)
         meta = meta or {}
-        scene = self._normalize_scene(scene)
+        actor = self._actor_for_channel(channel)
         beat = Beat(
             t=t,
-            text=self._format_external_text(text, scene, meta),
-            scene=scene,
+            text=self._format_external_text(text, channel, meta),
+            actor=actor,
+            channel=channel,
             user=self.user_status,
             ai=self.ai_status,
         )
         return self._ingest_beat(beat)
 
     @staticmethod
-    def _normalize_scene(scene: str) -> str:
-        """Promote bare channel names to the actor@channel format."""
-        if not scene or "@" in scene:
-            return scene
-        # Plugin/external inbound channels
-        if scene in {"email"}:
-            return f"external@{scene}"
-        # Scheduler / device triggers
-        if scene in {"schedule", "limen", "xiao", "ring"}:
-            return f"system@{scene}"
-        # User-originated client surfaces
-        if scene in {"favilla", "stroll", "app", "webapp", "browser"}:
-            return f"user@{scene}"
-        return scene
+    def _actor_for_channel(channel: str) -> str:
+        """Default actor for inbound beats by channel."""
+        if channel in {"email"}:
+            return "external"
+        if channel in {"schedule", "limen", "xiao", "ring"}:
+            return "system"
+        return "user"
 
-    def _format_external_text(self, text: str, scene: str, meta: dict) -> str:
+    def _format_external_text(self, text: str, channel: str, meta: dict) -> str:
         speaker = str(meta.get("speaker") or "").strip()
         if not speaker:
-            if scene in {"favilla", "app", "webapp"} or scene.endswith("@favilla") or scene.endswith("@app"):
+            if channel in {"favilla", "app", "webapp"}:
                 speaker = (self.config.user_name or "zephyr").strip()
-            elif scene in {"schedule", "limen", "xiao", "ring"} or scene.startswith("system@"):
-                speaker = scene.split("@", 1)[-1] or scene
+            elif channel in {"schedule", "limen", "xiao", "ring"}:
+                speaker = channel
             else:
-                speaker = str(meta.get("from_name") or scene).strip()
+                speaker = str(meta.get("from_name") or channel).strip()
         clean = text.strip()
         if clean.startswith(f"{speaker}:") or clean.startswith(f"{speaker}："):
             return clean

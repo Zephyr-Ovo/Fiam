@@ -305,7 +305,8 @@ class ClaudeCodeAdapter:
                     entries.append((order, Beat(
                         t=_parse_ts(ts),
                         text=text,
-                        scene="cc",
+                        actor="user",
+                        channel="cc",
                         user=user_status,
                         ai=ai_status,
                     )))
@@ -365,7 +366,7 @@ class ClaudeCodeAdapter:
             if tools:
                 tool_text = "; ".join(tools)
                 entries.append((asst_order[mid], Beat(
-                    t=t, text=tool_text, scene="ai@action",
+                    t=t, text=tool_text, actor="ai", channel="action",
                     user=user_status, ai=ai_status, runtime="cc",
                 )))
 
@@ -374,7 +375,8 @@ class ClaudeCodeAdapter:
                 entries.append((asst_order[mid], Beat(
                     t=t,
                     text=thinking,
-                    scene="ai@think",
+                    actor="ai",
+                    channel="think",
                     user=user_status,
                     ai=ai_status,
                     runtime="cc",
@@ -385,14 +387,15 @@ class ClaudeCodeAdapter:
                 entries.append((asst_order[mid], Beat(
                     t=t,
                     text=marker.body.strip(),
-                    scene=f"ai@{marker.channel}",
+                    actor="ai",
+                    channel=marker.channel,
                     user=user_status, ai=ai_status, runtime="cc",
                 )))
 
             # Remaining CC dialogue text (after stripping routed parts)
             if remaining.strip():
                 entries.append((asst_order[mid], Beat(
-                    t=t, text=remaining.strip(), scene="cc",
+                    t=t, text=remaining.strip(), actor="ai", channel="cc",
                     user=user_status, ai=ai_status, runtime="cc",
                 )))
 

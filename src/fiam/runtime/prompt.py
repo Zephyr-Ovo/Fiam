@@ -43,7 +43,7 @@ def build_api_messages(
     config: "FiamConfig",
     user_text: str,
     *,
-    source: str = "api",
+    channel: str = "api",
     include_recall: bool = True,
     consume_recall_dirty: bool = True,
     extra_context: str = "",
@@ -69,10 +69,10 @@ def build_api_messages(
     # without polluting the persisted user text in flow.jsonl. Emitted as a
     # standalone system block so the recall-routing in build_plain_prompt_parts
     # still sees pure "[recall]\n..." prefix.
-    from fiam.runtime.turns import channel_for_source
-    channel = channel_for_source(source)
-    if channel:
-        messages.append(_system_block(f"[context]\nuser_channel={channel}", cache=False))
+    from fiam.runtime.turns import normalize_channel
+    canon = normalize_channel(channel)
+    if canon:
+        messages.append(_system_block(f"[context]\nuser_channel={canon}", cache=False))
     dynamic_parts: list[str] = []
     if include_recall:
         recall = load_recall_context(config, consume_dirty=consume_recall_dirty)
@@ -93,7 +93,7 @@ def build_plain_prompt(
     config: "FiamConfig",
     user_text: str,
     *,
-    source: str = "app",
+    channel: str = "app",
     include_recall: bool = True,
     consume_recall_dirty: bool = True,
     extra_context: str = "",
@@ -105,7 +105,7 @@ def build_plain_prompt(
     system_context, user_prompt = build_plain_prompt_parts(
         config,
         user_text,
-        source=source,
+        channel=channel,
         include_recall=include_recall,
         consume_recall_dirty=consume_recall_dirty,
         extra_context=extra_context,
@@ -117,7 +117,7 @@ def build_plain_prompt_parts(
     config: "FiamConfig",
     user_text: str,
     *,
-    source: str = "app",
+    channel: str = "app",
     include_recall: bool = True,
     consume_recall_dirty: bool = True,
     extra_context: str = "",
@@ -132,7 +132,7 @@ def build_plain_prompt_parts(
     messages = build_api_messages(
         config,
         user_text,
-        source=source,
+        channel=channel,
         include_recall=include_recall,
         consume_recall_dirty=consume_recall_dirty,
         extra_context=extra_context,

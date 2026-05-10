@@ -22,7 +22,7 @@
 ### 1.3 XML 风格规则
 
 - **有内容**：标准前后夹击，`<cot>...</cot>`、`<carry_over>...</carry_over>`
-- **纯信号**：自闭合，`<hold/>`、`<lock/>`、`<sleep until="..." />`、`<mute until="..." />`、`<notify/>`、`<wake at="..." reason="..." />`、`<todo at="..." reason="..." />`
+- **纯信号**：自闭合，`<hold/>`、`<lock/>`、`<sleep at="..."/>`、`<mute until="..." />`、`<notify/>`、`<wake at="..."/>`、`<todo at="..." reason="..." />`
 - 标签名小写；属性可选；语义明确优先于省 token。
 
 ## 2. 标记集合
@@ -75,19 +75,19 @@
 - 标记当前 cot 块为不展开渲染（dashboard 显示一个静默标记）。
 - 仅在 cot 块内部生效，text 内出现按字面忽略。
 
-### 2.4 `<wake at="…" reason="…" />` — 调度醒来
+### 2.4 `<wake at="…"/>` — 调度醒来
 
 形态：
 
 ```xml
-<wake at="2026-05-08T08:00:00+08:00" reason="提醒早餐" />
+<wake at="2026-05-08T08:00:00+08:00"/>
 ```
 
 行为：
 
 - `at` 必填，ISO 8601 + 时区。
-- `reason` 必填，到点注入给 AI 作为自然语言原因。
-- daemon 写入 `self/todo.jsonl`，到点通过 turn_runner 唤醒新一轮。
+- 只有之前写过 `<sleep>` 后 `<wake>` 才生效；到点触发新一轮 AI session（user message = `[scheduled wake]`）。
+- daemon 写入 `self/todo.jsonl`（`kind="wake"`），到点通过 turn_runner 唤醒。
 
 ### 2.5 `<todo at="…" reason="…" />` — 延迟任务
 
@@ -97,19 +97,19 @@
 
 - 内部统一写 `todo.jsonl`，daemon 到点触发，与 wake 同路径。
 
-### 2.6 `<sleep until="…" reason="…" />` — 进入睡眠
+### 2.6 `<sleep at="…"/>` — 调度入睡
 
 形态：
 
 ```xml
-<sleep until="2026-05-09T08:00:00+08:00" reason="晚安" />
-<sleep until="open" reason="任务完成" />
+<sleep at="2026-05-09T08:00:00+08:00"/>
 ```
 
 行为：
 
-- 退役当前 CC session；`until="open"` 表示等下一次外部事件或调度。
-- `ai_state.json` 写 `state="sleep"`。
+- overwrite-style：后一个 `<sleep>` 覆盖之前的，表示 AI 计划在该时间入睡。
+- 到点后 daemon 将 `ai_state.json` 设为 `state="sleep"`（`until="open"`）；session 不退役。
+- 要自动唤醒：配套 `<wake at="..."/>`。
 
 ### 2.7 `<mute until="…" reason="…" />` / `<notify/>` — 通知开关
 

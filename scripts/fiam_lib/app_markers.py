@@ -106,7 +106,7 @@ def apply_hold(
     text: str,
     config: FiamConfig,
     *,
-    source: str,
+    channel: str,
     runtime: str,
 ) -> tuple[str, str, list[dict[str, Any]]]:
     """Apply ``<hold/>`` / ``<hold all/>`` filtering and queue a retry todo.
@@ -127,7 +127,7 @@ def apply_hold(
         "at": retry_at.isoformat(),
         "type": "private",
         "action": "hold_retry",
-        "source": source,
+        "channel": channel,
         "runtime": runtime,
         "reason": f"hold {kind} retry",
         "created": datetime.now(timezone.utc).isoformat(),

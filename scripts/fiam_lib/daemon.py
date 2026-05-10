@@ -370,21 +370,13 @@ def _wake_session(config, message: str, tag: str = "inbox", conductor=None) -> b
                 state_tag = extract_state_tag(response_text, config)
                 if state_tag:
                     state = state_tag["state"]
-                    if state == "sleep":
-                        _save_sleep_state(config, state_tag["sleeping_until"], state_tag.get("reason", ""))
-                        until_label = state_tag["sleeping_until"]
-                        if until_label != "open":
-                            until_label = until_label[:16].replace("T", " ")
-                        _plog.info("AI sleep  until=%s reason=%s", until_label, state_tag.get("reason", ""))
-                        _console.print(f"  [dim]└ 💤 sleep until {until_label}[/dim]")
-                    else:
-                        _save_ai_state(
-                            config,
-                            state,
-                            until=str(state_tag.get("until") or ""),
-                            reason=str(state_tag.get("reason") or ""),
-                        )
-                        _plog.info("AI state  state=%s reason=%s", state, state_tag.get("reason", ""))
+                    _save_ai_state(
+                        config,
+                        state,
+                        until=str(state_tag.get("until") or ""),
+                        reason=str(state_tag.get("reason") or ""),
+                    )
+                    _plog.info("AI state  state=%s reason=%s", state, state_tag.get("reason", ""))
 
         # Bump per-session event counter and rotate if we've hit the cap
         # (skip if sleep already retired the session above)
@@ -562,16 +554,16 @@ def cmd_start(args: argparse.Namespace) -> None:
     _bus = Bus(client_id="fiam-daemon")
     _inbox_q: _queue.Queue = _queue.Queue()
 
-    def _on_receive(source: str, payload: dict) -> None:
+    def _on_receive(channel: str, payload: dict) -> None:
         """Bus thread → main loop queue. Convert MQTT payload to msg dict."""
         text = (payload.get("text") or "").strip()
         if not text:
             return
-        source_name = str(payload.get("source") or source)
+        channel_name = str(payload.get("channel") or payload.get("source") or channel)
         try:
             from fiam.plugins import is_receive_enabled
-            if not is_receive_enabled(config, source_name):
-                _plog.info("receive skipped disabled plugin source=%s", source_name)
+            if not is_receive_enabled(config, channel_name):
+                _plog.info("receive skipped disabled plugin channel=%s", channel_name)
                 return
         except Exception:
             pass
@@ -586,10 +578,10 @@ def cmd_start(args: argparse.Namespace) -> None:
             t_val = t_raw
         meta = {
             key: value for key, value in payload.items()
-            if key not in {"text", "source", "t"} and value not in (None, "", [])
+            if key not in {"text", "channel", "source", "t"} and value not in (None, "", [])
         }
         _inbox_q.put({
-            "source": source_name,
+            "channel": channel_name,
             "from_name": payload.get("from_name", ""),
             "text": text,
             "t": t_val or datetime.now(timezone.utc),
@@ -686,7 +678,7 @@ def cmd_start(args: argparse.Namespace) -> None:
         """Append pre-formatted external messages for inject.sh hook delivery."""
         parts = []
         for m in msgs:
-            parts.append(f"[{m['source']}:{m['from_name']}] {m['text']}")
+            parts.append(f"[{m['channel']}:{m['from_name']}] {m['text']}")
         formatted = "\n\n".join(parts)
         path = config.pending_external_path
         with open(path, "a", encoding="utf-8") as f:
@@ -700,7 +692,7 @@ def cmd_start(args: argparse.Namespace) -> None:
         """
         parts = []
         for m in msgs:
-            parts.append(f"[{m['source']}:{m['from_name']}] {m['text']}")
+            parts.append(f"[{m['channel']}:{m['from_name']}] {m['text']}")
         body = "\n\n".join(parts)
         return f"{prefix}{body}" if prefix else body
 
@@ -747,16 +739,16 @@ def cmd_start(args: argparse.Namespace) -> None:
                 now = datetime.now(timezone.utc)
                 ts_iso = now.strftime("%Y%m%dT%H%M%SZ")
                 ts_human = now.isoformat()
-            source = str(msg.get("source") or "unknown")
+            channel = str(msg.get("channel") or "unknown")
             text = str(msg.get("text") or "").strip()
             from_name = str(msg.get("from_name") or "")
-            summary = _slugify_for_filename(text.splitlines()[0] if text else source)
-            fname = f"{ts_iso}_{source}_{summary}.md"
+            summary = _slugify_for_filename(text.splitlines()[0] if text else channel)
+            fname = f"{ts_iso}_{channel}_{summary}.md"
             path = inbox / fname
-            header = f"# {source}"
+            header = f"# {channel}"
             if from_name:
                 header += f" / {from_name}"
-            header += f"\n\nt: {ts_human}\nsource: {source}\n"
+            header += f"\n\nt: {ts_human}\nchannel: {channel}\n"
             if from_name:
                 header += f"from: {from_name}\n"
             path.write_text(f"{header}\n---\n\n{text}\n", encoding="utf-8")
@@ -922,9 +914,9 @@ def cmd_start(args: argparse.Namespace) -> None:
             all_msgs.sort(key=lambda m: m.get("t") or datetime.min.replace(tzinfo=timezone.utc))
             source_counts: dict[str, int] = {}
             for msg in all_msgs:
-                source = str(msg.get("source") or "unknown")
-                source_counts[source] = source_counts.get(source, 0) + 1
-            source_summary = " ".join(f"{source}={count}" for source, count in sorted(source_counts.items()))
+                channel = str(msg.get("channel") or "unknown")
+                source_counts[channel] = source_counts.get(channel, 0) + 1
+            source_summary = " ".join(f"{ch}={count}" for ch, count in sorted(source_counts.items()))
             try:
                 ts = _project_time("%H:%M")
                 _console.print(
@@ -946,22 +938,22 @@ def cmd_start(args: argparse.Namespace) -> None:
                     try:
                         _conductor.receive(
                             msg["text"],
-                            msg["source"],
+                            msg["channel"],
                             t=msg.get("t"),
                             meta=msg.get("meta") or {},
                         )
                     except Exception as e:
                         _plog.error("conductor.receive failed: %s", e)
 
-                # ── Split by plugin auto_wake: lazy channels (email/ring/xiao)
+                # ── Split by plugin delivery: lazy channels (email/ring/xiao)
                 # only land in flow.jsonl + notifications/inbox/ and wait for AI
-                # to peek; immediate channels follow the wake path. ──
-                from fiam.plugins import auto_wake_for_source
+                # to peek; instant channels follow the wake path. ──
+                from fiam.plugins import delivery_for_channel
                 immediate_msgs: list[dict] = []
                 lazy_msgs: list[dict] = []
                 for msg in all_msgs:
-                    src = str(msg.get("source") or "unknown")
-                    if auto_wake_for_source(config, src, default=True):
+                    ch = str(msg.get("channel") or "unknown")
+                    if delivery_for_channel(config, ch, default="instant") == "instant":
                         immediate_msgs.append(msg)
                     else:
                         lazy_msgs.append(msg)
@@ -1093,13 +1085,21 @@ def cmd_start(args: argparse.Namespace) -> None:
 
             due = load_due(config)
             for entry in due:
-                # Schema: kind="wake" (no description) or kind="todo" (with reason text).
+                # Schema: kind="wake" (no description), kind="todo" (with reason text),
+                # or kind="sleep" (deferred sleep transition).
                 kind = str(entry.get("kind") or "todo").lower()
-                if kind not in {"wake", "todo"}:
+                if kind not in {"wake", "todo", "sleep"}:
                     kind = "todo"
                 reason = entry.get("reason", "") if kind == "todo" else ""
-                display = reason if kind == "todo" else "scheduled wake"
+                display = reason if kind == "todo" else ("scheduled wake" if kind == "wake" else "scheduled sleep")
                 _plog.info("todo fire  kind=%s reason=%s", kind, reason)
+
+                if kind == "sleep":
+                    _save_sleep_state(config, "open", "")
+                    _plog.info("AI sleep  scheduled sleep fired (open)")
+                    _console.print("  [dim]└ 💤 sleep (scheduled)[/dim]")
+                    mark_done(entry, config, success=True)
+                    continue
 
                 # Budget check before delayed work.
                 # Defer (don't drop) so the todo retries once quota refreshes.

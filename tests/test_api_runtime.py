@@ -128,7 +128,7 @@ class ApiRuntimeTest(unittest.TestCase):
                 conductor=conductor,
                 recall_refresher=refresh_recall,
             )
-            result = runtime.ask("帮我记一下 API 入口", source="favilla")
+            result = runtime.ask("帮我记一下 API 入口", channel="favilla")
 
             self.assertTrue(result.ok)
             self.assertEqual(result.backend, "api")
@@ -148,7 +148,7 @@ class ApiRuntimeTest(unittest.TestCase):
             self.assertIn("帮我记一下 API 入口", prompt_text)
 
             lines = [json.loads(line) for line in config.flow_path.read_text(encoding="utf-8").splitlines()]
-            self.assertEqual([line["scene"] for line in lines], ["user@favilla", "ai@favilla", "ai@favilla"])
+            self.assertEqual([(line["actor"], line["channel"]) for line in lines], [("user", "favilla"), ("ai", "favilla"), ("ai", "favilla")])
             self.assertEqual(lines[1]["runtime"], "api")
             self.assertEqual(lines[2]["runtime"], "api")
             self.assertNotIn("meta", lines[0])
@@ -287,7 +287,7 @@ class ApiRuntimeTest(unittest.TestCase):
             config.background_path.write_text("<!-- hidden -->\nrecall text", encoding="utf-8")
             (config.background_path.parent / ".recall_dirty").touch()
 
-            system_context, user_prompt = build_plain_prompt_parts(config, "hello", source="favilla")
+            system_context, user_prompt = build_plain_prompt_parts(config, "hello", channel="favilla")
 
             self.assertLess(system_context.index("constitution text"), system_context.index("# identity"))
             self.assertLess(system_context.index("# identity"), system_context.index("# impressions"))
@@ -301,7 +301,7 @@ class ApiRuntimeTest(unittest.TestCase):
             client = ToolLoopClient()
             runtime = ApiRuntime(config, client=client)
 
-            result = runtime.ask("list files", source="favilla", record=False, include_recall=False)
+            result = runtime.ask("list files", channel="favilla", record=False, include_recall=False)
 
             self.assertEqual(result.reply, "done")
             self.assertEqual(result.tool_loops, 2)
@@ -324,7 +324,7 @@ class ApiRuntimeTest(unittest.TestCase):
             try:
                 result = runtime.ask(
                     "描述图片",
-                    source="favilla",
+                    channel="favilla",
                     record=False,
                     include_recall=False,
                     image_attachments=[{"path": str(image_path), "mime": "image/jpeg"}],
@@ -361,7 +361,7 @@ class ApiRuntimeTest(unittest.TestCase):
             try:
                 result = runtime.ask(
                     "这张图在哪里？",
-                    source="favilla",
+                    channel="favilla",
                     record=False,
                     include_recall=False,
                     image_attachments=[{"path": str(image_path), "mime": "image/jpeg"}],

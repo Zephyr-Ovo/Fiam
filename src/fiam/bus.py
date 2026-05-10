@@ -4,7 +4,7 @@ Conductor / daemon / bridges all talk through this module.
 The bus replaces per-channel polling with publish/subscribe.
 
 Topic layout (locked 2026-04-24):
-    fiam/receive/<source>     ← inbound from external (email, favilla, limen, ...)
+    fiam/receive/<channel>    ← inbound from external (email, favilla, limen, ...)
     fiam/dispatch/<target>    ← outbound from conductor (email, cc, dashboard, ...)
 
 Reliability: QoS 1 + persistent sessions. The broker (Mosquitto) is
@@ -38,8 +38,8 @@ RECEIVE_ALL = "fiam/receive/+"
 DISPATCH_ALL = "fiam/dispatch/+"
 
 
-def receive_topic(source: str) -> str:
-    return f"{RECEIVE_PREFIX}/{source}"
+def receive_topic(channel: str) -> str:
+    return f"{RECEIVE_PREFIX}/{channel}"
 
 
 def dispatch_topic(target: str) -> str:
@@ -139,8 +139,8 @@ class Bus:
         info = self._client.publish(topic, body, qos=self.qos, retain=retain)
         return info.rc == mqtt.MQTT_ERR_SUCCESS
 
-    def publish_receive(self, source: str, payload: dict) -> bool:
-        return self.publish(receive_topic(source), payload)
+    def publish_receive(self, channel: str, payload: dict) -> bool:
+        return self.publish(receive_topic(channel), payload)
 
     def publish_dispatch(self, target: str, payload: dict) -> bool:
         return self.publish(dispatch_topic(target), payload)

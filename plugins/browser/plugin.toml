@@ -6,14 +6,14 @@ kind = "client_bridge"
 description = "Edge/Firefox extension bridge for compact page snapshots and browser-context runtime asks."
 transports = ["http", "mqtt"]
 capabilities = ["capture_page_snapshot", "ask_with_page_context", "browser_node_action"]
-receive_sources = ["browser"]
+receive_channels = ["browser"]
 dispatch_targets = ["browser"]
 entrypoint = "channels/atrium/browser-extension"
 auth = "FIAM_INGEST_TOKEN configured in the local browser extension; extension should talk to 127.0.0.1 or the private dashboard endpoint"
 latency = "snapshot capture is local; runtime asks depend on api/cc latency"
 env = ["FIAM_INGEST_TOKEN"]
 replaces = []
-auto_wake = false
+delivery = "lazy"
 notes = [
   "Snapshots enter flow through fiam/receive/browser and do not auto-wake by default.",
   "Browser ask endpoints can explicitly run runtime=api or runtime=cc with the compact snapshot as context.",

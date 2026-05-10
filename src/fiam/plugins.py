@@ -1,7 +1,7 @@
 """Plugin manifest registry for optional fiam integrations.
 
 Plugins are intentionally small: a directory under ``plugins/<id>/`` with a
-``plugin.toml`` manifest. Runtime code can ask whether a receive source or
+``plugin.toml`` manifest. Runtime code can ask whether a receive channel or
 dispatch target is enabled without knowing how the plugin is implemented.
 """
 
@@ -24,7 +24,7 @@ class PluginManifest:
     description: str
     transports: tuple[str, ...]
     capabilities: tuple[str, ...]
-    receive_sources: tuple[str, ...]
+    receive_channels: tuple[str, ...]
     dispatch_targets: tuple[str, ...]
     entrypoint: str
     auth: str
@@ -32,7 +32,7 @@ class PluginManifest:
     env: tuple[str, ...]
     replaces: tuple[str, ...]
     notes: tuple[str, ...]
-    auto_wake: bool
+    delivery: str  # "instant" | "lazy"
     path: Path
     raw: dict[str, Any] = field(repr=False, compare=False)
 
@@ -77,7 +77,7 @@ def load_plugin_manifest(manifest_path: Path) -> PluginManifest:
         description=str(raw.get("description", "")),
         transports=_tuple(raw.get("transports")),
         capabilities=_tuple(raw.get("capabilities")),
-        receive_sources=_tuple(raw.get("receive_sources")),
+        receive_channels=_tuple(raw.get("receive_channels")),
         dispatch_targets=_tuple(raw.get("dispatch_targets")),
         entrypoint=str(raw.get("entrypoint", "")),
         auth=str(raw.get("auth", "")),
@@ -85,7 +85,7 @@ def load_plugin_manifest(manifest_path: Path) -> PluginManifest:
         env=_tuple(raw.get("env")),
         replaces=_tuple(raw.get("replaces")),
         notes=_tuple(raw.get("notes")),
-        auto_wake=bool(raw.get("auto_wake", True)),
+        delivery=str(raw.get("delivery", "instant")).strip().lower() or "instant",
         path=manifest_path.parent,
         raw=raw,
     )
@@ -99,10 +99,10 @@ def get_plugin(config_or_path: Any, plugin_id: str) -> PluginManifest | None:
     return None
 
 
-def plugin_for_receive(config_or_path: Any, source: str) -> PluginManifest | None:
-    source = source.strip().lower()
+def plugin_for_receive(config_or_path: Any, channel: str) -> PluginManifest | None:
+    channel = channel.strip().lower()
     for plugin in load_plugins(config_or_path):
-        if source in {item.lower() for item in plugin.receive_sources}:
+        if channel in {item.lower() for item in plugin.receive_channels}:
             return plugin
     return None
 
@@ -115,20 +115,20 @@ def plugin_for_dispatch(config_or_path: Any, target: str) -> PluginManifest | No
     return None
 
 
-def is_receive_enabled(config_or_path: Any, source: str, *, default: bool = True) -> bool:
-    plugin = plugin_for_receive(config_or_path, source)
+def is_receive_enabled(config_or_path: Any, channel: str, *, default: bool = True) -> bool:
+    plugin = plugin_for_receive(config_or_path, channel)
     return default if plugin is None else plugin.enabled
 
 
-def auto_wake_for_source(config_or_path: Any, source: str, *, default: bool = True) -> bool:
-    """Return whether `source` should immediately wake the AI.
+def delivery_for_channel(config_or_path: Any, channel: str, *, default: str = "instant") -> str:
+    """Return delivery mode for `channel`: "instant" (wakes AI) or "lazy" (inbox-only).
 
-    Lazy channels (auto_wake=false) only land in flow.jsonl + notifications/inbox/
-    and wait for AI to look on its own time.
-    Sources without a matching plugin manifest fall back to `default`.
+    Lazy channels only land in flow.jsonl + notifications/inbox/ and wait for
+    AI to look on its own time. Channels without a matching plugin manifest
+    fall back to `default`.
     """
-    plugin = plugin_for_receive(config_or_path, source)
-    return default if plugin is None else plugin.auto_wake
+    plugin = plugin_for_receive(config_or_path, channel)
+    return default if plugin is None else (plugin.delivery or default)
 
 
 def is_dispatch_enabled(config_or_path: Any, target: str, *, default: bool = True) -> bool:

@@ -85,11 +85,9 @@ export interface FlowPayload {
 	beats: {
 		t: string;
 		text: string;
-		// New schema: scene = "<actor>@<channel>"; runtime = "cc"|"api"|...
-		scene?: string;
+		actor?: string;
+		channel?: string;
 		runtime?: string | null;
-		// Legacy fallback (old rows pre-rename)
-		source?: string;
 		meta?: Record<string, unknown>;
 		user: string;
 		ai: string;
@@ -112,7 +110,7 @@ export interface PluginManifest {
 	description: string;
 	transports: string[];
 	capabilities: string[];
-	receive_sources: string[];
+	receive_channels: string[];
 	dispatch_targets: string[];
 	entrypoint: string;
 	auth: string;

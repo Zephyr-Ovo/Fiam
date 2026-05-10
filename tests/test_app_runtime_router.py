@@ -54,7 +54,7 @@ class AppRuntimeRouterTest(unittest.TestCase):
     def test_carry_over_marker_is_private_control(self) -> None:
         reply, queued_todos, hold_kind, carry_over = dashboard_server._apply_app_control_markers(
             'private bridge notes <carry_over to="cc" reason="needs files" />',
-            source="chat",
+            channel="chat",
             runtime="api",
             user_text="check this",
             attachments=[],
@@ -146,14 +146,14 @@ class AppRuntimeRouterTest(unittest.TestCase):
 
             def fake_api(**kwargs):
                 captured["text"] = kwargs["text"]
-                captured["source"] = kwargs["source"]
+                captured["channel"] = kwargs["channel"]
                 return {"ok": True, "runtime": "api", "reply": "I can see the corner"}
 
             dashboard_server._run_api_favilla_chat = fake_api
             result = dashboard_server._favilla_chat_send({
                 "text": "where am I",
                 "runtime": "api",
-                "source": "stroll",
+                "channel": "stroll",
                 "stroll_context": {"current": {"lng": 121.5, "lat": 31.2}, "placeKind": "road"},
             })
             stroll_history = dashboard_server._favilla_transcript_load("stroll")["messages"]
@@ -162,7 +162,7 @@ class AppRuntimeRouterTest(unittest.TestCase):
         dashboard_server._CONFIG = original_config
         dashboard_server._run_api_favilla_chat = original_api
         self.assertTrue(result["ok"])
-        self.assertEqual(captured["source"], "stroll")
+        self.assertEqual(captured["channel"], "stroll")
         self.assertIn("[stroll_context]", captured["text"])
         self.assertIn("where am I", captured["text"])
         self.assertNotIn("[stroll_context]", stroll_history[0]["text"])
@@ -185,7 +185,7 @@ class AppRuntimeRouterTest(unittest.TestCase):
             result = dashboard_server._favilla_chat_send({
                 "text": "mark this place",
                 "runtime": "api",
-                "source": "stroll",
+                "channel": "stroll",
                 "stroll_context": {"current": {"lng": 121.5, "lat": 31.2}, "placeKind": "green"},
             })
             history = dashboard_server._favilla_transcript_load("stroll")["messages"]
@@ -214,7 +214,7 @@ class AppRuntimeRouterTest(unittest.TestCase):
             result = dashboard_server._favilla_chat_send({
                 "text": "look",
                 "runtime": "api",
-                "source": "stroll",
+                "channel": "stroll",
                 "stroll_context": {"current": {"lng": 121.5, "lat": 31.2}, "placeKind": "road"},
             })
             history = dashboard_server._favilla_transcript_load("stroll")["messages"]

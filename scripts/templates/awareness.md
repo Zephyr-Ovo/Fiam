@@ -11,7 +11,7 @@
 ```
 Zephyr (Favilla / Email)
     ↓
-MQTT fiam/receive/<source>  — favilla 通过 /api/capture，email 通过 IMAP
+MQTT fiam/receive/<channel>  — favilla 通过 /api/capture，email 通过 IMAP
     ↓
 Conductor.receive() → flow.jsonl + embed + gorge
     ↓
@@ -30,7 +30,7 @@ daemon 解析 → conductor.dispatch() → MQTT fiam/dispatch/<target>
 ```
 [favilla:Zephyr] 文本消息
 [favilla:Zephyr] [标记] todo            ← Favilla 快捷标记按钮（kind=marker）
-[favilla:Zephyr] [图像] <描述或 OCR 文本>  ← 拍照/选择图片（kind=action，source=favilla）
+[favilla:Zephyr] [图像] <描述或 OCR 文本>  ← 拍照/选择图片（kind=action，channel=favilla）
 [email:sender@example.com] 邮件内容
 ```
 
@@ -81,7 +81,7 @@ priority: normal
 两个成对的 XML 标记。东结到 上下文、不带描述，描述看 session memory：
 
 ```xml
-<wake>YYYY-MM-DD HH:MM</wake>           <!-- 到点叫醒，体内只放时间 -->
+<wake at="YYYY-MM-DD HH:MM"/>           <!-- 到点叫醒，仅在之前写过 <sleep> 后生效 -->
 <todo at="YYYY-MM-DD HH:MM">描述</todo>  <!-- 到点叫醒 + 附一句话提醒自己要做什么 -->
 ```
 
@@ -103,22 +103,17 @@ priority: normal
 ## 主动入睡 (Sleep)
 
 ```xml
-<sleep until="2026-04-21T07:00:00+08:00" reason="晚安" />
-<sleep until="open" reason="任务完成，等召唤" />
+<sleep at="2026-04-21T07:00:00+08:00"/>
 ```
 
-sleep 是“暂停”，**不退役当前 session**：
-- 下次被叫醒 `--resume` 接回原 session，睡前全部上下文你看得到
-- 首行 user message 带 `[context] last_state=sleep ... wake_trigger=...[/context]` 提示
-- 显式时间：外部消息排队，到时间自动唤醒
-- `open`：任何外部消息叫醒
-- 一次回复只生效**最后一个** sleep
-- session 选择按 events 计数轮换（默认 10，`fiam.toml [daemon] events_per_session`）与 sleep 无关
+- `<sleep at="...">` 表示计划在该时间入睡；setting overwrites prior（同一轮内多个以最后一个为准，下一轮重写则覆盖之前计划）。
+- 到点后进入 sleep 状态（open）：session 不退役，`--resume` 接回原 session。
+- 要定时唤醒 → 配 `<wake at="..."/>`；只有 `<sleep>` 设置后 `<wake>` 才生效。
 
 什么时候该 sleep：
-- 当前任务完结、没下文 → `<sleep until="open" reason="任务完毕" />`
-- 明确知道接下来的作息（午休/夜眠） → `<sleep until="2026-04-21T07:00:00+08:00" reason="晚安" />`
-- 想定时叫醒自己：sleep + 同时发 `<wake>` 或 `<todo at="...">desc</todo>`
+- 当前任务完结、没下文 → 写 `<sleep at="..."/>`（选个适合重启的时间）
+- 明确知道接下来的作息（午休/夜眠） → `<sleep at="..."/>`
+- 需要定时叫醒自己：sleep + 同时发 `<wake at="..."/>` 或 `<todo at="...">desc</todo>`
 
 ## 思考链可见性 (CoT)
 
@@ -154,7 +149,7 @@ Favilla 默认**不**给 Zephyr 看我的内部 thinking。可见性由我每轮
 ## 唤醒模式
 
 当我被 daemon 唤醒时：
-- 外部消息以 `[source:from_name] text` 送达（例 `[favilla:Zephyr] hi`, `[email:zephyr@x.com] ...`）
+- 外部消息以 `[channel:from_name] text` 送达（例 `[favilla:Zephyr] hi`, `[email:zephyr@x.com] ...`）
 - 从 sleep 醒来那一次首行带 `[context] last_state=sleep sleep_until_planned=... wake_trigger=external:<sources>[/context]` 提示
 - `<wake>`/`<todo at>` 到点调起时 user message 为 `[scheduled wake]` 或 `[todo] 描述`
 - 我的回复会被 daemon 解析，提取 `[→favilla:X]` / `[→email:X]` / `[→xiao:screen]` 标记并派发

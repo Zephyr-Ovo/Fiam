@@ -22,7 +22,7 @@ capabilities = [
     "actuate_overlay_dialog",
     "actuate_app_spawn",
 ]
-receive_sources = ["desktop"]
+receive_channels = ["desktop"]
 dispatch_targets = ["desktop"]
 entrypoint = "channels/atrium"
 auth = "tailnet only; per-capability trust gating in channels/atrium/capabilities.toml"

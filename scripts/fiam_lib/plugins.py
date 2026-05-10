@@ -34,8 +34,8 @@ def cmd_plugin(args: argparse.Namespace) -> None:
         print(f"kind: {plugin.kind}")
         if plugin.description:
             print(f"description: {plugin.description}")
-        if plugin.receive_sources:
-            print(f"receive_sources: {', '.join(plugin.receive_sources)}")
+        if plugin.receive_channels:
+            print(f"receive_channels: {', '.join(plugin.receive_channels)}")
         if plugin.dispatch_targets:
             print(f"dispatch_targets: {', '.join(plugin.dispatch_targets)}")
         if plugin.transports:

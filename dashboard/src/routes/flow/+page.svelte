@@ -35,16 +35,11 @@
 		gemini: 'var(--color-teal)'
 	};
 
-	function getScene(beat: Beat): string {
-		return (beat.scene ?? beat.source ?? '').toString();
-	}
 	function getActor(beat: Beat): string {
-		const s = getScene(beat);
-		return s.includes('@') ? s.split('@', 1)[0] : '';
+		return (beat.actor ?? '').toString();
 	}
 	function getChannel(beat: Beat): string {
-		const s = getScene(beat);
-		return s.includes('@') ? s.split('@').slice(1).join('@') : s;
+		return (beat.channel ?? '').toString();
 	}
 	function colorForScene(beat: Beat): string {
 		const ch = getChannel(beat);
@@ -57,8 +52,15 @@
 		return runtimeColors[rt] ?? 'var(--color-overlay1)';
 	}
 
+	function sceneOf(beat: Beat): string {
+		const a = getActor(beat);
+		const c = getChannel(beat);
+		if (a && c) return `${a}@${c}`;
+		return a || c;
+	}
+
 	function isThinking(beat: Beat): boolean {
-		return getScene(beat) === 'ai@think' || (beat.meta as any)?.kind === 'thinking';
+		return sceneOf(beat) === 'ai@think' || (beat.meta as any)?.kind === 'thinking';
 	}
 
 	function thinkingTitle(text: string): string {
@@ -101,7 +103,7 @@
 	function legendItems(): { label: string; color: string }[] {
 		const seen = new Map<string, string>();
 		for (const b of beats) {
-			const s = getScene(b);
+			const s = sceneOf(b);
 			if (s) seen.set(s, colorForScene(b));
 			const rt = b.runtime;
 			if (rt) seen.set(`runtime:${rt}`, colorForRuntime(rt));
@@ -143,7 +145,7 @@
 			class="flex-1 overflow-y-auto border border-[var(--color-surface0)] rounded bg-[var(--color-mantle)] p-3 font-mono text-sm space-y-1"
 		>
 			{#each beats as beat}
-				{@const sceneStr = getScene(beat)}
+				{@const sceneStr = sceneOf(beat)}
 				{@const sceneColor = colorForScene(beat)}
 				<div class="leading-relaxed border border-[var(--color-surface0)] rounded p-2 bg-[var(--color-base)]/30">
 					<div class="flex items-start gap-2 flex-wrap text-[10px]">

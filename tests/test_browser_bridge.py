@@ -43,8 +43,8 @@ class FakeBus:
     def __init__(self) -> None:
         self.messages: list[tuple[str, dict]] = []
 
-    def publish_receive(self, source: str, payload: dict) -> bool:
-        self.messages.append((source, payload))
+    def publish_receive(self, channel: str, payload: dict) -> bool:
+        self.messages.append((channel, payload))
         return True
 
 
@@ -145,7 +145,7 @@ class BrowserBridgeTest(unittest.TestCase):
         dashboard_server._CONFIG = original_config
         self.assertEqual(result["browser_done"], {"reason": "enough context"})
         self.assertEqual(result["browser_actions"], [])
-        self.assertEqual(beats[0].scene, "ai@browser")
+        self.assertEqual((beats[0].actor, beats[0].channel), ("ai", "browser"))
         self.assertIn("browser_control_done", beats[0].text)
 
     def test_dashboard_browser_tick_strips_invalid_action_marker_from_segments(self) -> None:
@@ -215,9 +215,9 @@ class BrowserBridgeTest(unittest.TestCase):
 
         dashboard_server._CONFIG = original_config
         self.assertTrue(result["ok"])
-        self.assertEqual(beats[0].scene, "ai@action")
+        self.assertEqual((beats[0].actor, beats[0].channel), ("ai", "action"))
         self.assertEqual(beats[0].runtime, "browser")
-        self.assertEqual(beats[1].scene, "user@browser")
+        self.assertEqual((beats[1].actor, beats[1].channel), ("user", "browser"))
 
     def test_pinterest_profile_keeps_common_controls_and_suppresses_pins(self) -> None:
         snapshot = {
@@ -358,7 +358,7 @@ class BrowserBridgeTest(unittest.TestCase):
             )
             conductor.receive("浏览器页面更新", "browser")
             beats = read_beats(config.flow_path)
-            self.assertEqual(beats[0].scene, "user@browser")
+            self.assertEqual((beats[0].actor, beats[0].channel), ("user", "browser"))
 
     def test_dashboard_browser_snapshot_publishes_receive_source(self) -> None:
         original_config = dashboard_server._CONFIG
@@ -374,7 +374,7 @@ class BrowserBridgeTest(unittest.TestCase):
         dashboard_server._get_bus = original_get_bus
         self.assertTrue(result["ok"])
         self.assertEqual(fake_bus.messages[0][0], "browser")
-        self.assertEqual(fake_bus.messages[0][1]["source"], "browser")
+        self.assertEqual(fake_bus.messages[0][1]["channel"], "browser")
         self.assertIn("[browser_snapshot]", fake_bus.messages[0][1]["text"])
 
     def test_dashboard_browser_snapshot_records_when_bus_unavailable(self) -> None:
@@ -394,7 +394,7 @@ class BrowserBridgeTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertFalse(result["queued"])
         self.assertTrue(result["recorded"])
-        self.assertEqual(beats[0].scene, "user@browser")
+        self.assertEqual((beats[0].actor, beats[0].channel), ("user", "browser"))
 
     def test_dashboard_browser_ask_uses_selected_runtime_and_source(self) -> None:
         original_chat = dashboard_server._favilla_chat_send
@@ -411,7 +411,7 @@ class BrowserBridgeTest(unittest.TestCase):
             dashboard_server._favilla_chat_send = original_chat
 
         self.assertTrue(result["ok"])
-        self.assertEqual(captured["source"], "browser")
+        self.assertEqual(captured["channel"], "browser")
         self.assertEqual(captured["runtime"], "cc")
         self.assertIn("[browser_snapshot]", captured["text"])
 
@@ -447,7 +447,7 @@ class BrowserBridgeTest(unittest.TestCase):
             dashboard_server._append_transcript("browser", {"role": "user", "raw_text": "OLD_BROWSER_CONTEXT", "runtime": "api"})
             with patch.object(dashboard_server, "_get_embedder", side_effect=AssertionError("embedder should not load")):
                 with patch.object(api_module.ApiRuntime, "from_config", classmethod(fake_from_config)):
-                    result = dashboard_server._run_api_favilla_chat(text="看这个页面", source="browser")
+                    result = dashboard_server._run_api_favilla_chat(text="看这个页面", channel="browser")
             beats = read_beats(config.flow_path)
 
         dashboard_server._CONFIG = original_config
@@ -457,7 +457,7 @@ class BrowserBridgeTest(unittest.TestCase):
         self.assertNotIn("OLD_BROWSER_CONTEXT", captured["extra_context"])
         self.assertIsNone(captured["conductor"])
         self.assertIsNone(captured["recall_refresher"])
-        self.assertEqual([beat.scene for beat in beats], ["user@browser", "ai@browser"])
+        self.assertEqual([(beat.actor, beat.channel) for beat in beats], [("user", "browser"), ("ai", "browser")])
 
 
 if __name__ == "__main__":

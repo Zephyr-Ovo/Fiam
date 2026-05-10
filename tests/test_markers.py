@@ -50,8 +50,8 @@ class MarkerParsingTest(unittest.TestCase):
             ("email", "Zephyr", "real body with `[→email:Someone] literal`"),
         ])
 
-    def test_wake_marker_uses_body_for_time(self) -> None:
-        markers = parse_wake_markers('<wake>2026-05-05 20:00</wake>', default_tz=timezone.utc)
+    def test_wake_marker_uses_at_attr(self) -> None:
+        markers = parse_wake_markers('<wake at="2026-05-05 20:00"/>', default_tz=timezone.utc)
 
         self.assertEqual(len(markers), 1)
         self.assertEqual(markers[0].at, "2026-05-05T20:00:00+00:00")
@@ -66,14 +66,15 @@ class MarkerParsingTest(unittest.TestCase):
         self.assertEqual(markers[0].at, "2026-05-05T20:00:00+00:00")
         self.assertEqual(markers[0].text, "写日报")
 
-    def test_extract_scheduled_items_handles_wake_and_todo(self) -> None:
+    def test_extract_scheduled_items_handles_wake_todo_and_sleep(self) -> None:
         tags = extract_scheduled_items(
-            '<wake>2026-05-06 09:00</wake>\n'
-            '<todo at="2026-05-05 20:00">写日报</todo>'
+            '<wake at="2026-05-06 09:00"/>\n'
+            '<todo at="2026-05-05 20:00">写日报</todo>\n'
+            '<sleep at="2026-05-05 23:00"/>'
         )
 
-        self.assertEqual([tag["kind"] for tag in tags], ["wake", "todo"])
-        self.assertEqual([tag["reason"] for tag in tags], ["", "写日报"])
+        self.assertEqual([tag["kind"] for tag in tags], ["wake", "todo", "sleep"])
+        self.assertEqual([tag["reason"] for tag in tags], ["", "写日报", ""])
 
     def test_state_markers_parse_and_last_one_wins(self) -> None:
         markers = parse_state_markers('<mute until="2026-05-05T22:00:00+08:00" reason="写代码" /><notify />')
@@ -82,15 +83,10 @@ class MarkerParsingTest(unittest.TestCase):
         self.assertEqual([m.state for m in markers], ["mute", "notify"])
         self.assertEqual(state, {"state": "notify", "reason": ""})
 
-    def test_sleep_marker_defaults_to_open(self) -> None:
-        state = extract_state_tag('<sleep reason="任务完成" />')
-
-        self.assertEqual(state, {
-            "state": "sleep",
-            "reason": "任务完成",
-            "until": "open",
-            "sleeping_until": "open",
-        })
+    def test_sleep_marker_no_longer_in_state_markers(self) -> None:
+        # sleep is now scheduling, not a state marker
+        state = extract_state_tag('<sleep at="2026-05-05 23:00"/>')
+        self.assertIsNone(state)
 
     def test_carry_over_marker(self) -> None:
         carry = parse_carry_over_markers('<carry_over to="api" reason="回聊天" />')
@@ -110,7 +106,7 @@ class MarkerParsingTest(unittest.TestCase):
             cleaned, kind, todos = apply_hold(
                 "正文 <hold/> 位置",
                 config,
-                source="chat",
+                channel="chat",
                 runtime="api",
             )
 
@@ -128,7 +124,7 @@ class MarkerParsingTest(unittest.TestCase):
             cleaned, kind, todos = apply_hold(
                 "正文 <hold all/>",
                 config,
-                source="chat",
+                channel="chat",
                 runtime="cc",
             )
 
@@ -146,7 +142,7 @@ class MarkerParsingTest(unittest.TestCase):
             cleaned, kind, todos = apply_hold(
                 "普通回复",
                 config,
-                source="chat",
+                channel="chat",
                 runtime="api",
             )
 
@@ -163,7 +159,7 @@ class MarkerParsingTest(unittest.TestCase):
         beats = assistant_text_beats(
             '外层 <hold/> 中间 <hold all/>',
             t=datetime.now(timezone.utc),
-            scene="api",
+            channel="api",
             user_status="together",
             ai_status="online",
         )

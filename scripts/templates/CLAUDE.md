@@ -29,7 +29,7 @@
 
 | 方式 | 触发 | 消息格式 |
 |------|------|----------|
-| 唤醒 | daemon 用 `claude -p` | 外部消息以 `[source:from_name] text` 送达（例 `[favilla:Zephyr] hi`） |
+| 唤醒 | daemon 用 `claude -p` | 外部消息以 `[channel:from_name] text` 送达（例 `[favilla:Zephyr] hi`） |
 | 插入 | 对话中途外部消息到达 | 出现在 `[external]` 区块 |
 | 重启唤醒 | sleep 后被叫醒 或 `<wake>`/`<todo at>` 到点 | 首行带 `[context] last_state=sleep ... wake_trigger=...[/context]` |
 
@@ -62,12 +62,12 @@
 #### 定时触发自己：`<wake>` / `<todo at="...">`
 
 ```xml
-<wake>2026-05-08 08:00</wake>                            <!-- 到点叫醒，不带描述（高 --resume 上下文重记起要做什么） -->
+<wake at="2026-05-08 08:00"/>                            <!-- 到点叫醒，仅在之前写过 <sleep> 后生效 -->
 <todo at="2026-05-08 08:00">写日报</todo>            <!-- 到点叫醒并附带描述 -->
 ```
 
 - 时间格式：`YYYY-MM-DD HH:MM`，默认项目时区（`fiam.toml.timezone`）。也接受完整 ISO。
-- `<wake>` 体内只放时间、不要写描述。被叫醒时 user message 为 `[scheduled wake]`，你靠 session memory 和以前的 `<todo>` 列表判断要做什么。
+- `<wake at="..."/>` 只在之前写过 `<sleep>` 后有意义；到点触发新的 AI session。被叫醒时 user message 为 `[scheduled wake]`。
 - `<todo at="...">desc</todo>` 到点被叫醒时 user message 为 `[todo] desc`。描述是写给未来的自己看的一句话，不要当 todo list 填。
 - 两者都写入 `self/todo.jsonl`，daemon 到点 `_wake_session` 跳起。
 
@@ -87,19 +87,15 @@
 
 `<carry_over>` 外的文字会作为私下交接笔记传给另一侧，不会直接发给 Zephyr。
 
-#### 主动入睡：`<sleep until="..." reason="..." />`
+#### 主动入睡：`<sleep at="..."/>`
 
 ```xml
-<sleep until="2026-04-21T07:00:00+08:00" reason="晚安，明早起床" />
-<sleep until="open" reason="任务完成，等召唤" />
+<sleep at="2026-04-21T07:00:00+08:00"/>
 ```
 
-sleep 是带状态的“暂停”，**不会** 退役当前 session：
-- 下次被叫醒时 `--resume` 接回原 session，你看得到睡前所有上下文
-- 首行 user message 会多一个 `[context] last_state=sleep sleep_until_planned=... wake_trigger=...[/context]` 提示
-- `until` 可以是具体时间或 `"open"`：open-sleep 被任何外部消息叫醒；具体时间 sleep 期间外部消息排队，到点自动唤醒
-- 一次回复中**最后一个**状态标记生效（可改主意）
-- session 选择按 events 计数轮换（默认 10，`fiam.toml [daemon] events_per_session`），与 sleep 无关
+- `<sleep at="...">` 表示你计划在该时间入睡；setting overwrites prior（同一轮内多个以最后一个为准，下一轮内重写则覆盖之前的计划）。
+- 到点后进入 sleep 状态（open）：session 不退役，外部消息按通道 delivery 语义处理。下次被叫醒时 `--resume` 接回原 session。
+- 需要自动唤醒 → 配套写一个 `<wake at="..."/>`。只有 `<sleep>` 已设置后 `<wake>` 才生效。
 
 #### 静音与恢复通知
 
@@ -174,15 +170,15 @@ Favilla 默认**不**向 Zephyr 显示你的内部 thinking。可见性由你决
 
 ## 懒通道与 `notifications/`
 
-不是所有外部消息都会立刻把你叫醒。`plugins/<name>/plugin.toml` 里 `auto_wake = false` 的通道（默认：email、ring、xiao）是 **懒通道**：
+不是所有外部消息都会立刻把你叫醒。`plugins/<name>/plugin.toml` 里 `delivery = "lazy"` 的通道（默认：email、ring、xiao、browser）是 **懒通道**：
 
-- 它们到达时**不**触发 wake，只在 `flow.jsonl` 留痕 + 在 `notifications/inbox/` 落一个 `<时间戳>_<source>_<摘要>.md` 文件
+- 它们到达时**不**触发 wake，只在 `flow.jsonl` 留痕 + 在 `notifications/inbox/` 落一个 `<时间戳>_<channel>_<摘要>.md` 文件
 - 你**从 sleep 醒来时**会在首行 `[context]` 看到 `notifications_inbox_unread=N` 的提示
 - 平时清醒态不会主动告诉你；想看就自己 `ls notifications/inbox/`
 - 用标准工具操作：`Read` 某个文件 → 看完后 `Bash mv notifications/inbox/<file> notifications/archive/`
 - 这是 Maildir 思路：文件系统就是状态机，inbox = 未读，archive = 已读，没有额外 API
 
-立即唤醒的通道（如 favilla）走原来的 wake 路径，不进 `notifications/`。
+立即唤醒的通道（如 favilla，`delivery = "instant"`）走原来的 wake 路径，不进 `notifications/`。
 
 ---
 

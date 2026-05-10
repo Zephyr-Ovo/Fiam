@@ -18,12 +18,11 @@ _ROUTED_BLOCK_RE = re.compile(
     re.DOTALL,
 )
 
-_CONTROL_MARKERS = {"later", "sleep", "mute", "notify", "carry_over", "hold"}
+_CONTROL_MARKERS = {"wake", "todo", "sleep", "mute", "notify", "carry_over", "hold"}
 
 
-# Map raw HTTP `source` field values to known channel names. Keeps the wire
-# protocol stable while flow.jsonl scene stays in the small known set.
-_SOURCE_TO_CHANNEL = {
+# Resolve incoming HTTP channel aliases to canonical channel names.
+_CHANNEL_ALIASES = {
     "chat": "favilla",
     "favilla": "favilla",
     "stroll": "stroll",
@@ -31,26 +30,13 @@ _SOURCE_TO_CHANNEL = {
     "app": "favilla",
     "webapp": "favilla",
     "browser": "browser",
+    "email": "email",
 }
 
 
-def channel_for_source(source: str) -> str:
-    s = (source or "").strip().lower()
-    return _SOURCE_TO_CHANNEL.get(s, s or "favilla")
-
-
-def scene_for_user(source: str) -> str:
-    s = (source or "").strip()
-    if "@" in s:
-        return s
-    return f"user@{channel_for_source(s)}"
-
-
-def scene_for_ai(source: str) -> str:
-    s = (source or "").strip()
-    if "@" in s:
-        return s
-    return f"ai@{channel_for_source(s)}"
+def normalize_channel(channel: str) -> str:
+    s = (channel or "").strip().lower()
+    return _CHANNEL_ALIASES.get(s, s or "favilla")
 
 
 def parse_ts(ts_str: str) -> datetime:
@@ -89,16 +75,17 @@ def user_beat(
     text: str,
     *,
     t: datetime,
-    scene: str,
+    channel: str,
     user_status: "UserStatus",
     ai_status: "AiStatus",
     user_name: str,
 ) -> Beat:
-    """Build a user dialogue beat for a runtime scene."""
+    """Build a user dialogue beat for a channel."""
     return Beat(
         t=t,
         text=text.strip(),
-        scene=scene,
+        actor="user",
+        channel=normalize_channel(channel),
         user=user_status,
         ai=ai_status,
     )
@@ -108,7 +95,7 @@ def assistant_text_beats(
     text: str,
     *,
     t: datetime,
-    scene: str,
+    channel: str,
     user_status: "UserStatus",
     ai_status: "AiStatus",
     runtime: str | None = None,
@@ -118,12 +105,14 @@ def assistant_text_beats(
     from fiam.markers import strip_xml_markers
 
     routed, remaining = split_routed_text(strip_xml_markers(text, _CONTROL_MARKERS))
+    canon = normalize_channel(channel)
 
     for marker in routed:
         beats.append(Beat(
             t=t,
             text=marker.body.strip(),
-            scene=f"ai@{marker.channel}",
+            actor="ai",
+            channel=marker.channel,
             user=user_status,
             ai=ai_status,
             runtime=runtime,
@@ -133,7 +122,8 @@ def assistant_text_beats(
         beats.append(Beat(
             t=t,
             text=remaining.strip(),
-            scene=scene,
+            actor="ai",
+            channel=canon,
             user=user_status,
             ai=ai_status,
             runtime=runtime,

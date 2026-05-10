@@ -15,16 +15,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-# Beat scenes are open-ended (plugins can add receive scenes). Format is
-# "<actor>@<scene>" — examples: user@favilla, ai@favilla, ai@think,
-# external@email, system@schedule. No "console" scene exists (the dashboard is
-# view-only).
-BeatScene = str
-KNOWN_BEAT_SCENES: set[str] = {
-    "user@browser", "user@favilla", "user@stroll", "user@email", "user@studio",
-    "ai@favilla", "ai@stroll", "ai@think", "ai@action", "ai@email",
-    "ai@browser",
-    "external@email", "system@schedule",
+# Beat actor + channel are open-ended (plugins can add channels).
+# - actor: who produced this beat (user / ai / external / system)
+# - channel: which surface it appeared on (favilla / browser / email / stroll /
+#   think / action / schedule / ...)
+Actor = Literal["user", "ai", "external", "system"]
+Channel = str
+KNOWN_CHANNELS: set[str] = {
+    "favilla", "browser", "stroll", "email", "studio",
+    "think", "action", "schedule",
 }
 
 # Status enums
@@ -38,7 +37,8 @@ class Beat:
 
     t: datetime           # timestamp (UTC)
     text: str             # natural-language content
-    scene: BeatScene      # "<actor>@<scene>" — where this beat appears in the narrative
+    actor: Actor          # who produced this beat
+    channel: Channel      # which surface this beat appeared on
     user: UserStatus      # user status at the time of this beat
     ai: AiStatus          # AI status at the time of this beat
     runtime: str | None = None  # AI runtime tag (cc / claude / gemini / api / ...); None for non-AI beats
@@ -51,7 +51,8 @@ class Beat:
         data: dict[str, Any] = {
             "t": self.t.isoformat(),
             "text": self.text,
-            "scene": self.scene,
+            "actor": self.actor,
+            "channel": self.channel,
             "user": self.user,
             "ai": self.ai,
         }
@@ -71,7 +72,8 @@ class Beat:
         return Beat(
             t=t,
             text=d["text"],
-            scene=d.get("scene", ""),
+            actor=d.get("actor", "system"),
+            channel=d.get("channel", ""),
             user=d.get("user", "away"),
             ai=d.get("ai", "online"),
             runtime=d.get("runtime"),
