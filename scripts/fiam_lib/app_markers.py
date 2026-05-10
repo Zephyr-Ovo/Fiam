@@ -15,9 +15,19 @@ from fiam.config import FiamConfig
 from fiam.holds import create_hold_record
 from fiam.markers import parse_hold_markers, strip_xml_markers
 
+# COT markers — new protocol (preferred): <cot>...</cot> + <lock/>
+# Old protocol kept for back-compat with replayed transcripts and AIs that
+# haven't yet seen the updated awareness.md / CLAUDE.md.
+_COT_NEW_RE = re.compile(r"<cot>\s*(.*?)\s*</cot>", re.DOTALL | re.IGNORECASE)
+_LOCK_NEW_RE = re.compile(r"<lock\s*/>", re.IGNORECASE)
 _COT_SHOW_RE = re.compile(r"<<COT:show>>\s*(.*?)\s*<<COT:end>>", re.DOTALL | re.IGNORECASE)
 _COT_LOCK_RE = re.compile(r"<<COT:lock>>", re.IGNORECASE)
 _COT_HIDE_RE = re.compile(r"<<COT:hide>>", re.IGNORECASE)
+# Combined block regex iterated in document order (new + legacy).
+_COT_ANY_BLOCK_RE = re.compile(
+    r"<cot>\s*(?P<new>.*?)\s*</cot>|<<COT:show>>\s*(?P<old>.*?)\s*<<COT:end>>",
+    re.DOTALL | re.IGNORECASE,
+)
 _HOLD_RE = re.compile(r"<<HOLD(?::(?P<body>[^>]*))?>>", re.IGNORECASE)
 
 
@@ -34,15 +44,19 @@ def parse_app_cot(reply: str, config: FiamConfig | None = None) -> AppCotResult:
     if not reply:
         return AppCotResult("", [], False, [])
 
-    locked = bool(_COT_LOCK_RE.search(reply) or _COT_HIDE_RE.search(reply))
+    locked = bool(
+        _LOCK_NEW_RE.search(reply)
+        or _COT_LOCK_RE.search(reply)
+        or _COT_HIDE_RE.search(reply)
+    )
     segments: list[dict[str, Any]] = []
     thoughts_raw: list[dict[str, Any]] = []
     cursor = 0
-    for match in _COT_SHOW_RE.finditer(reply):
+    for match in _COT_ANY_BLOCK_RE.finditer(reply):
         before = _strip_cot_control(reply[cursor:match.start()]).strip()
         if before:
             segments.append({"type": "text", "text": before})
-        body = match.group(1).strip()
+        body = (match.group("new") or match.group("old") or "").strip()
         if body:
             step = {"kind": "think", "text": body, "source": "marker"}
             thoughts_raw.append(step)
@@ -211,7 +225,10 @@ def extract_hold_markers(
 
 
 def _strip_cot_control(text: str) -> str:
-    return _COT_HIDE_RE.sub("", _COT_LOCK_RE.sub("", text))
+    text = _LOCK_NEW_RE.sub("", text)
+    text = _COT_HIDE_RE.sub("", text)
+    text = _COT_LOCK_RE.sub("", text)
+    return text
 
 
 def _split_hold_body(body: str) -> tuple[str, str]:

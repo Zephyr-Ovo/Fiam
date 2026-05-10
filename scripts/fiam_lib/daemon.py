@@ -470,7 +470,7 @@ def _wake_held_reply(config, entry: dict, conductor=None) -> bool:
         "Write one final user-facing reply for Favilla inside <final>...</final>.\n"
         "Text outside <final> is private and will not be shown to the user.\n"
         "Do not mention internal queue mechanics.\n"
-        "Use <<COT:show>>...<<COT:end>> for short visible state notes, and <<COT:lock>> if the turn should stay private.\n"
+        "Use <cot>...</cot> for short visible state notes, and <lock/> if the turn should stay private.\n"
         "Only emit another <hold until=\"ISO_TIME\" reason=\"brief reason\">draft</hold> if it truly still needs more time.\n\n"
         f"Hold reason: {reason}\n\n"
         f"Original user message:\n{original or '(empty)'}\n\n"

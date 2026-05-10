@@ -2314,16 +2314,15 @@ def _favilla_chat_process_status(_payload: dict | None = None) -> dict:
     return {"ok": True, "busy": _SEAL_BUSY}
 
 
-# CoT visibility (new lock protocol):
-# - <<COT:show>>...<<COT:end>> wraps a thought block AI agrees to share.
-# - <<COT:lock>> (anywhere) locks the ENTIRE thought chain for this turn
-#   (covers both marker thoughts AND any native reasoning the runtime may carry).
+# CoT visibility: parsing lives in fiam_lib.app_markers (parse_app_cot).
+# Protocol:
+# - <cot>...</cot> wraps a shareable thought block (preferred).
+# - <lock/> anywhere locks the ENTIRE thought chain for this turn
+#   (covers both marker thoughts AND any native reasoning the runtime carries).
 # - Default = unlocked. AI must opt-in to lock.
-# All COT markers are stripped from the user-facing reply.
-_COT_SHOW_RE = re.compile(r"<<COT:show>>\s*(.*?)\s*<<COT:end>>", re.DOTALL | re.IGNORECASE)
-_COT_LOCK_RE = re.compile(r"<<COT:lock>>", re.IGNORECASE)
-# Legacy hide marker (kept for back-compat during transition; treated as lock).
-_COT_HIDE_RE = re.compile(r"<<COT:hide>>", re.IGNORECASE)
+# Legacy <<COT:show>>/<<COT:end>>/<<COT:lock>>/<<COT:hide>> are still parsed
+# for back-compat with replayed transcripts; new prompts only document the
+# new tags.
 
 _APP_RUNTIME_CONTEXT_BASE = """[Direct runtime awareness]
 The scene tag describes where this turn appears in the narrative. User-side scenes look like user@<channel>: user@favilla and user@stroll are the two Favilla app surfaces. AI-side scenes look like ai@<channel>: ai@favilla and ai@stroll are the matching reply surfaces; ai@think is internal reasoning; ai@action is a tool call. The runtime tag describes the capability surface for this turn: api is the OpenAI-compatible API surface, cc is Claude Code with file/shell/tool capability, and auto means the server selected one. Do not infer a fixed personal name from the runtime tag. The web dashboard is view-only and never originates a user turn — there is no console scene. Reply naturally for the active scene while staying precise about the runtime."""
@@ -2338,7 +2337,7 @@ def _app_runtime_context() -> str:
         f"[uploads]\nFavilla uploads live at {uploads_dir} with an index at {uploads_dir / 'manifest.jsonl'}. Do not mention old uploaded files just because they exist. Only inspect or discuss uploads when the current user message asks about files/images/uploads or includes current attachments.",
         f"[server_time]\nutc={now_utc.isoformat()}\nlocal={local}",
         "[tool_mode]\nUse the structured file/shell tools (Read/Write/Edit/Glob/Grep/Bash/git_diff) only when you must wait on a real result. For fire-and-forget side effects use the XML markers documented in self/awareness.md (and CLAUDE.md): <todo at=\"...\">desc</todo> to wake yourself later, <wake>TIME</wake> for bare wake-ups, <sleep until=\"...\" reason=\"...\" /> to sleep, <mute .../> + <notify /> for do-not-disturb, <state>tag</state> for status. Keep tool details out of the user-facing reply unless the user asks for them.",
-        "[app_markers]\nFor visible thinking summaries, wrap short shareable state notes in <<COT:show>>...<<COT:end>>. Use <<COT:lock>> to lock the entire turn's thought chain. The server strips these markers into structured segments; clients may or may not render them visibly. Do not promise a specific button, bubble, or visual affordance unless the current client explicitly supports it. If a chat reply should be delayed instead of sent now, wrap the held draft in <hold until=\"ISO_TIME\" reason=\"brief reason\">draft</hold>. HOLD is chat-only: the current draft is not shown, and a held_reply todo will continue this chat later. During a held_reply continuation, send the user-facing reply only inside <final>...</final>; text outside <final> stays private.",
+        "[app_markers]\nFor visible thinking summaries, wrap shareable state notes in <cot>...</cot>. To lock the entire turn's thought chain (both <cot> blocks and any native reasoning), include <lock/> anywhere in the reply. The server strips these markers into structured segments; clients may or may not render them visibly. Do not promise a specific button, bubble, or visual affordance unless the current client explicitly supports it. If a chat reply should be delayed instead of sent now, wrap the held draft in <hold until=\"ISO_TIME\" reason=\"brief reason\">draft</hold>. HOLD is chat-only: the current draft is not shown, and a held_reply todo will continue this chat later. During a held_reply continuation, send the user-facing reply only inside <final>...</final>; text outside <final> stays private.",
     ])
 
 
