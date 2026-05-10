@@ -642,43 +642,8 @@ function ThinkingChain({ steps, locked, peerName }: { steps: ThinkStep[]; locked
 
 // ---------- Bubble ----------
 
-function agentBubbleBg(agentId?: string): string {
-  switch ((agentId || "").toLowerCase()) {
-    case "cc":
-      return "rgba(214,200,170,0.62)"      // warm sand — Claude Code
-    case "copilot":
-      return "rgba(195,200,225,0.62)"      // soft indigo — GitHub Copilot
-    case "codex":
-      return "rgba(220,210,180,0.62)"      // pale gold — Codex
-    case "api":
-    case "gemini":
-    default:
-      return "rgba(235,235,235,0.62)"      // neutral — Gemini api / unknown
-  }
-}
-
-// User-side bubble: zephyr keeps the original rose; other agents (copilot,
-// codex...) posting as user get their agent tint so the chat reads like a
-// group conversation on the phone.
-function userBubbleBg(agentId?: string): string {
-  const id = (agentId || "").toLowerCase()
-  if (!id || id === "zephyr") return "rgba(208,188,190,0.72)"
-  return agentBubbleBg(id)
-}
-
-function agentLabel(agentId?: string): string | null {
-  const id = (agentId || "").toLowerCase()
-  switch (id) {
-    case "cc": return "cc"
-    case "copilot": return "copilot"
-    case "codex": return "codex"
-    case "api":
-    case "gemini": return null
-    case "zephyr":
-    case "": return null
-    default: return id
-  }
-}
+const USER_BUBBLE_BG = "rgba(208,188,190,0.72)"
+const AGENT_BUBBLE_BG = "rgba(235,235,235,0.62)"
 
 function NameTag({ children }: { children: React.ReactNode }) {
   return (
@@ -783,7 +748,7 @@ function Bubble({
             orderedSegments.length > 0 ||
             (msg.thinking?.length ?? 0) > 0 ||
             (msg.attachments?.length ?? 0) > 0) && (
-            <NameTag>{isUser ? (agentLabel(msg.agentId) || appConfig.userName || "you") : (agentLabel(msg.agentId) || peerName)}</NameTag>
+            <NameTag>{isUser ? (appConfig.userName || "you") : peerName}</NameTag>
           )}
 
         {!isUser && orderedSegments.length === 0 && (msg.thinkingLocked || (msg.thinking && msg.thinking.length > 0)) && (
@@ -801,7 +766,6 @@ function Bubble({
                 key={`${msg.id}-seg-${index}`}
                 text={segment.text}
                 isUser={isUser}
-                agentId={msg.agentId}
                 recallUsed={!!msg.recallUsed && index === 0}
                 selectionMode={!!selectionMode}
                 selected={!!selected}
@@ -821,7 +785,6 @@ function Bubble({
           <BubbleBody
             text={msg.text}
             isUser={isUser}
-            agentId={msg.agentId}
             recallUsed={!!msg.recallUsed}
             selectionMode={!!selectionMode}
             selected={!!selected}
@@ -841,7 +804,6 @@ function Bubble({
 function BubbleBody({
   text,
   isUser,
-  agentId,
   recallUsed,
   selectionMode,
   selected,
@@ -850,7 +812,6 @@ function BubbleBody({
 }: {
   text: string
   isUser: boolean
-  agentId?: string
   recallUsed: boolean
   selectionMode: boolean
   selected: boolean
@@ -929,9 +890,7 @@ function BubbleBody({
             : "rounded-[18px] rounded-bl-[6px]"
         }`}
         style={{
-          background: isUser
-            ? userBubbleBg(agentId)
-            : agentBubbleBg(agentId),
+          background: isUser ? USER_BUBBLE_BG : AGENT_BUBBLE_BG,
           color: INK,
           border: isUser
             ? "1px solid rgba(255,255,255,0.28)"
