@@ -20,14 +20,23 @@ def refresh_recall(
     query_vec: np.ndarray,
     *,
     top_k: int | None = None,
+    shield_recent: bool = True,
 ) -> int:
-    """Refresh recall.md from a query vector and return fragment count."""
+    """Refresh recall.md from a query vector and return fragment count.
+
+    When ``shield_recent`` is True (default), suppress events created today so
+    automatic recall does not surface in-flight context. Pass False for manual
+    recall flows that explicitly want recent events included.
+    """
+    shield_after = (
+        datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        if shield_recent
+        else None
+    )
     results = retrieve(
         query_vec,
         pool,
-        shield_after=datetime.now(timezone.utc).replace(
-            hour=0, minute=0, second=0, microsecond=0,
-        ),
+        shield_after=shield_after,
         top_k=top_k or config.recall_top_k,
     )
     if not results:
