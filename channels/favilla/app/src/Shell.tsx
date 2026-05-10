@@ -67,7 +67,7 @@ export default function Shell() {
       if (page !== "chat") setUnread(true)
       // Only fire system notification when the app is not foreground+chat.
       const e = ev as CustomEvent<{ peerName?: string; preview?: string }>
-      const peer = e.detail?.peerName || appConfig.aiName || "Favilla"
+      const peer = e.detail?.peerName || appConfig.aiName || "ai"
       const preview = (e.detail?.preview || "").trim().slice(0, 120) || "New reply"
       const appHidden =
         typeof document !== "undefined" && document.visibilityState === "hidden"

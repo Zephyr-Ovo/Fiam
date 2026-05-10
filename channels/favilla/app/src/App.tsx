@@ -1032,7 +1032,7 @@ function SendButton({
 }
 
 export default function App({ onBack }: { onBack?: () => void } = {}) {
-  const peerName = "ai"
+  const peerName = appConfig.aiName || "ai"
   const computerStatus = useComputerStatus()
   const [messages, setMessages] = useState<Msg[]>([])
   const [input, setInput] = useState("")

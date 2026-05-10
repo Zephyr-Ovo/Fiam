@@ -93,14 +93,15 @@ export function Settings({ open, onClose }: Props) {
         </div>
 
         <Field
-          label="AI name"
-          value={draft.aiName}
-          onChange={(v) => setDraft({ ...draft, aiName: v })}
-        />
-        <Field
           label="Your name"
           value={draft.userName}
           onChange={(v) => setDraft({ ...draft, userName: v })}
+        />
+        <Field
+          label="AI name"
+          value={draft.aiName}
+          onChange={(v) => setDraft({ ...draft, aiName: v })}
+          placeholder="ai"
         />
         <Field
           label="API base"

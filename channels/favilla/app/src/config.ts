@@ -8,10 +8,10 @@
 import bgDefault from "./assets/brand/bg.jpg"
 
 export type AppConfig = {
-  /** Display name of the AI persona (header & namechip). */
-  aiName: string
   /** Display name of the user (currently unused but reserved). */
   userName: string
+  /** Display name of the assistant (used in UI labels). */
+  aiName: string
   /** Background image URL (imported asset or remote URL). */
   bg: string
   /** API base for the Favilla server (proxied via vite dev server). */
@@ -25,8 +25,8 @@ export type AppConfig = {
 }
 
 const defaults: AppConfig = {
-  aiName: "Favilla",
   userName: "Zephyr",
+  aiName: "ai",
   bg: bgDefault,
   apiBase: (import.meta.env.VITE_API_BASE as string) ?? (import.meta.env.VITE_API_TARGET as string) ?? "",
   ingestToken: (import.meta.env.VITE_INGEST_TOKEN as string) ?? "",
