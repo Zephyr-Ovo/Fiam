@@ -26,8 +26,9 @@ import { HourglassIcon } from "./components/HourglassIcon"
 import { ConfirmModal } from "./components/ConfirmModal"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
-import { fetchChatHistory, recordChatMessage, sendChat, uploadFiles, recallNow, cutFlow, processFlow, type ChatAttachment, type ChatSegment } from "./lib/api"
-import { appConfig, saveConfig } from "./config"
+import { fetchChatTranscript, recordChatMessage, sendChat, uploadFiles, recallNow, cutFlow, processFlow, type ChatAttachment, type ChatSegment } from "./lib/api"
+import { useComputerStatus, describeEvent } from "./lib/computerStatus"
+import { appConfig } from "./config"
 
 // Module-level set of bubble ids whose entrance animation has already played.
 // Skipping replay prevents jank on tab switch / re-render of long histories.
@@ -1031,7 +1032,8 @@ function SendButton({
 }
 
 export default function App({ onBack }: { onBack?: () => void } = {}) {
-  const [peerName, setPeerName] = useState(appConfig.aiName)
+  const peerName = "ai"
+  const computerStatus = useComputerStatus()
   const [messages, setMessages] = useState<Msg[]>([])
   const [input, setInput] = useState("")
   const [sending, setSending] = useState(false)
@@ -1217,23 +1219,9 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
     ta.style.overflowY = ta.scrollHeight > maxHeight ? "auto" : "hidden"
   }, [input])
 
-  // Persist peer name edits to config
-  useEffect(() => {
-    if (peerName && peerName !== appConfig.aiName) saveConfig({ aiName: peerName })
-  }, [peerName])
-
-  // Re-read peer name when settings save it from elsewhere.
-  useEffect(() => {
-    function onConfigChanged() {
-      setPeerName(appConfig.aiName)
-    }
-    window.addEventListener("favilla:config-changed", onConfigChanged)
-    return () => window.removeEventListener("favilla:config-changed", onConfigChanged)
-  }, [])
-
   useEffect(() => {
     let cancelled = false
-    fetchChatHistory("chat")
+    fetchChatTranscript("chat")
       .then((res) => {
         if (cancelled || !res.ok || !res.messages) return
         setMessages(res.messages.map((msg) => ({
@@ -1608,17 +1596,16 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                 >
                   <ChevronLeft className="h-5 w-5" strokeWidth={1.8} />
                 </button>
-                <input
-                  value={peerName}
-                  onChange={(e) => setPeerName(e.target.value)}
-                  spellCheck={false}
-                  className="rounded bg-transparent px-2 py-0.5 text-center text-[15px] tracking-wide outline-none focus:bg-white/10"
+                <span
+                  className="px-2 py-0.5 text-center text-[15px] tracking-wide"
                   style={{
                     fontFamily: "var(--font-sans)",
                     color: "var(--color-cream)",
                     width: "55%",
                   }}
-                />
+                >
+                  {peerName}
+                </span>
                 <button
                   type="button"
                   onPointerDown={onStableControlPointerDown}
@@ -1631,6 +1618,26 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
               </>
             )}
           </header>
+
+          {/* live computer-control status — pushed via SSE, no polling */}
+          {computerStatus.latest && (
+            <div
+              className="flex shrink-0 items-center gap-2 px-4 py-1.5 text-[12px]"
+              style={{
+                background: "rgba(0,0,0,0.04)",
+                color: "var(--color-cocoa)",
+                fontFamily: "var(--font-sans)",
+                borderBottom: "1px solid rgba(0,0,0,0.06)",
+              }}
+              title={describeEvent(computerStatus.latest)}
+            >
+              <span
+                className="inline-block h-1.5 w-1.5 rounded-full"
+                style={{ background: computerStatus.connected ? "#3b9c5c" : "#a05a5a" }}
+              />
+              <span className="truncate">{describeEvent(computerStatus.latest)}</span>
+            </div>
+          )}
 
           {/* messages — only the most recent 7 sealed blocks (cut-bounded) + live tail */}
           <main

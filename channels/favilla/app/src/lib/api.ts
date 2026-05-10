@@ -94,7 +94,7 @@ export type UploadResponse = {
   error?: string
 }
 
-export type HistoryResponse = {
+export type TranscriptResponse = {
   ok: boolean
   messages?: StoredChatMessage[]
   error?: string
@@ -282,26 +282,26 @@ export async function sendStrollMessage(
   return data as ChatResponse
 }
 
-export async function fetchChatHistory(source = "chat", limit = 300): Promise<HistoryResponse> {
+export async function fetchChatTranscript(source = "chat", limit = 300): Promise<TranscriptResponse> {
   const params = new URLSearchParams({ source, limit: String(limit) })
-  const res = await fetch(`${getBase()}/favilla/chat/history?${params.toString()}`, {
+  const res = await fetch(`${getBase()}/favilla/chat/transcript?${params.toString()}`, {
     method: "GET",
     headers: authHeaders(),
   })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) return { ok: false, error: data.error || `HTTP ${res.status}` }
-  return data as HistoryResponse
+  return data as TranscriptResponse
 }
 
-export async function fetchStrollHistory(limit = 300): Promise<HistoryResponse> {
+export async function fetchStrollTranscript(limit = 300): Promise<TranscriptResponse> {
   const params = new URLSearchParams({ limit: String(limit) })
-  const res = await fetch(`${getBase()}/favilla/stroll/history?${params.toString()}`, {
+  const res = await fetch(`${getBase()}/favilla/stroll/transcript?${params.toString()}`, {
     method: "GET",
     headers: authHeaders(),
   })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) return { ok: false, error: data.error || `HTTP ${res.status}` }
-  return data as HistoryResponse
+  return data as TranscriptResponse
 }
 
 export async function fetchStrollNearby(current: Pick<StrollTrackPoint, "lng" | "lat">, radiusM = 50, changedSince = 0): Promise<StrollNearbyResponse> {
@@ -396,7 +396,7 @@ export async function requestStudioEdit(payload: StudioEditRequest): Promise<Stu
 }
 
 export async function recordChatMessage(message: Omit<StoredChatMessage, "id" | "t">, source = "chat") {
-  const res = await fetch(`${getBase()}/favilla/chat/history`, {
+  const res = await fetch(`${getBase()}/favilla/chat/transcript`, {
     method: "POST",
     headers: authHeaders(),
     body: JSON.stringify({ source, ...message }),

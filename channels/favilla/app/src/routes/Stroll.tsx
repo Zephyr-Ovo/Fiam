@@ -10,7 +10,7 @@ import { strollCellId } from "@stroll-map/spatial"
 import type { StrollMapAnnotation, StrollMapLabel, StrollPhotoMarkerInput, StrollSpatialContext, StrollSpatialRecord, StrollTrackPoint, WeatherSnapshot } from "@stroll-map/types"
 import { fetchWeatherSnapshot } from "@stroll-map/weather"
 import { appConfig } from "../config"
-import { fetchStrollHistory, fetchStrollNearby, reportStrollActionResult, sendStrollMessage, uploadFiles, writeStrollRecord, type ChatAttachment, type StoredChatMessage, type StrollClientAction } from "../lib/api"
+import { fetchStrollTranscript, fetchStrollNearby, reportStrollActionResult, sendStrollMessage, uploadFiles, writeStrollRecord, type ChatAttachment, type StoredChatMessage, type StrollClientAction } from "../lib/api"
 import { captureLimenPhoto, displayLimenScreenText, fetchLimenHealth, limenStreamUrl, normalizeLimenBaseUrl, sendLimenScreenText, type LimenHealthResponse, type LimenScreenContent } from "../lib/limen"
 
 const INK = "#26304A"
@@ -188,7 +188,7 @@ export function Stroll({ onBack, active }: Props) {
     if (!active) return
     let cancelled = false
     setLiveTrack((track) => track.length ? track : loadStoredLiveTrack())
-    fetchStrollHistory().then((history) => {
+    fetchStrollTranscript().then((history) => {
       if (cancelled || !history.ok) return
       setConversationLines(historyToLines(history.messages || []))
     })
@@ -355,7 +355,7 @@ export function Stroll({ onBack, active }: Props) {
     try {
       const result = await sendStrollMessage(text, buildContext())
       if (!result.ok) {
-        setConversationLines((lines) => [...lines, { id: `err-${Date.now()}`, name: appConfig.aiName || "Favilla", text: result.error || "Stroll failed", role: "ai", error: true }])
+        setConversationLines((lines) => [...lines, { id: `err-${Date.now()}`, name: "ai", text: result.error || "Stroll failed", role: "ai", error: true }])
         return
       }
       const reply = result.reply || ""
@@ -378,7 +378,7 @@ export function Stroll({ onBack, active }: Props) {
     const id = `ai-${Date.now()}`
     const chars = Array.from(fullText)
     let count = 0
-    setConversationLines((lines) => [...lines, { id, name: appConfig.aiName || "Favilla", text: "", role: "ai" }])
+    setConversationLines((lines) => [...lines, { id, name: "ai", text: "", role: "ai" }])
     const timer = window.setInterval(() => {
       count = Math.min(chars.length, count + 3)
       const nextText = chars.slice(0, count).join("")
@@ -1046,7 +1046,7 @@ function historyToLines(messages: StoredChatMessage[]): ConversationLine[] {
     .filter((message) => message.text && (message.role === "user" || message.role === "ai"))
     .map((message) => ({
       id: message.id,
-      name: message.role === "user" ? appConfig.userName || "you" : appConfig.aiName || "Favilla",
+      name: message.role === "user" ? appConfig.userName || "you" : "ai",
       text: String(message.text),
       role: message.role,
       error: Boolean(message.error),

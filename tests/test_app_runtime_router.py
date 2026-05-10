@@ -157,8 +157,8 @@ class AppRuntimeRouterTest(unittest.TestCase):
                 "source": "stroll",
                 "stroll_context": {"current": {"lng": 121.5, "lat": 31.2}, "placeKind": "road"},
             })
-            stroll_history = dashboard_server._favilla_history("stroll")["messages"]
-            chat_history = dashboard_server._favilla_history("chat")["messages"]
+            stroll_history = dashboard_server._favilla_transcript_load("stroll")["messages"]
+            chat_history = dashboard_server._favilla_transcript_load("chat")["messages"]
 
         dashboard_server._CONFIG = original_config
         dashboard_server._run_api_favilla_chat = original_api
@@ -189,7 +189,7 @@ class AppRuntimeRouterTest(unittest.TestCase):
                 "source": "stroll",
                 "stroll_context": {"current": {"lng": 121.5, "lat": 31.2}, "placeKind": "green"},
             })
-            history = dashboard_server._favilla_history("stroll")["messages"]
+            history = dashboard_server._favilla_transcript_load("stroll")["messages"]
             nearby = dashboard_server._favilla_stroll_nearby({"lng": 121.5, "lat": 31.2})
 
         dashboard_server._CONFIG = original_config
@@ -218,7 +218,7 @@ class AppRuntimeRouterTest(unittest.TestCase):
                 "source": "stroll",
                 "stroll_context": {"current": {"lng": 121.5, "lat": 31.2}, "placeKind": "road"},
             })
-            history = dashboard_server._favilla_history("stroll")["messages"]
+            history = dashboard_server._favilla_transcript_load("stroll")["messages"]
 
         dashboard_server._CONFIG = original_config
         dashboard_server._run_api_favilla_chat = original_api
@@ -247,7 +247,7 @@ class AppRuntimeRouterTest(unittest.TestCase):
 
             dashboard_server._run_studio_edit_model = fake_model
             result = dashboard_server._favilla_studio_edit({"instruction": "change AAA", "content": "<p>AAA</p>", "runtime": "api"})
-            history = dashboard_server._favilla_history("studio")["messages"]
+            history = dashboard_server._favilla_transcript_load("studio")["messages"]
             flow_exists = dashboard_server._CONFIG.flow_path.exists()
 
         dashboard_server._CONFIG = original_config

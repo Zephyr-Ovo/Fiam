@@ -655,6 +655,337 @@ def _api_capture(payload: dict) -> dict:
     return {"ok": True, "queued": True}
 
 
+def _browser_snapshot_payload(payload: dict) -> tuple[str, dict]:
+    from fiam.browser_bridge import browser_snapshot_meta, format_browser_snapshot
+
+    text = format_browser_snapshot(payload)
+    meta = browser_snapshot_meta(payload)
+    return text, meta
+
+
+def _browser_screenshot_attachments(payload: dict) -> list[dict]:
+    if not _CONFIG:
+        return []
+    screenshot = payload.get("screenshot") if isinstance(payload.get("screenshot"), dict) else None
+    if not screenshot:
+        return []
+    data_url = str(screenshot.get("dataUrl") or screenshot.get("data_url") or "")
+    if not data_url.startswith("data:image/") or "," not in data_url:
+        return []
+    header, b64 = data_url.split(",", 1)
+    mime = header[5:].split(";", 1)[0].lower()
+    if mime not in {"image/jpeg", "image/png", "image/webp"}:
+        return []
+    import base64
+    import hashlib
+
+    try:
+        raw = base64.b64decode(b64, validate=True)
+    except Exception:
+        return []
+    if not raw or len(raw) > 6 * 1024 * 1024:
+        return []
+    ext = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}.get(mime, "jpg")
+    date_dir = _CONFIG.now_local().strftime("%Y-%m-%d")
+    out_dir = _CONFIG.home_path / "uploads" / "browser" / date_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256(raw).hexdigest()
+    name = f"browser-viewport-{digest[:12]}.{ext}"
+    target = out_dir / name
+    target.write_bytes(raw)
+    record = {"path": str(target), "name": name, "mime": mime, "size": len(raw)}
+    snapshot_payload = payload.get("snapshot")
+    snapshot_url = str(snapshot_payload.get("url") or "") if isinstance(snapshot_payload, dict) else ""
+    manifest = _CONFIG.home_path / "uploads" / "manifest.jsonl"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    with manifest.open("a", encoding="utf-8") as mf:
+        mf.write(json.dumps({
+            "uploaded_at": datetime.now(timezone.utc).isoformat(),
+            "kind": "browser_screenshot",
+            "reason": str(screenshot.get("reason") or payload.get("reason") or ""),
+            "url": snapshot_url,
+            "sha256": digest,
+            **record,
+        }, ensure_ascii=False) + "\n")
+    return [record]
+
+
+def _recent_browser_action_trail(limit: int = 8) -> list[dict]:
+    if not _CONFIG or not _CONFIG.flow_path.exists():
+        return []
+    try:
+        lines = _CONFIG.flow_path.read_text(encoding="utf-8").splitlines()[-120:]
+    except OSError:
+        return []
+    trail: list[dict] = []
+    action_re = re.compile(r"^browser_action\s+(\w+):\s+(\w+)\s+(\S+)\s+(.+)$")
+    for line in lines:
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if obj.get("scene") != "ai@action" or obj.get("runtime") != "browser":
+            continue
+        text = str(obj.get("text") or "")
+        match = action_re.match(text)
+        if not match:
+            continue
+        status, action, node_id, name = match.groups()
+        trail.append({"action": action, "nodeId": node_id, "name": name, "result": status})
+    return trail[-limit:]
+
+
+def _action_signature(action: dict) -> tuple[str, str]:
+    return (str(action.get("action") or "click").lower(), str(action.get("name") or action.get("nodeId") or "").casefold())
+
+
+def _suppress_repeated_browser_actions(actions: list[dict], trail: list[dict]) -> list[dict]:
+    if not actions or not trail:
+        return actions
+    latest = _action_signature(trail[-1])
+    filtered = []
+    for action in actions:
+        sig = _action_signature(action)
+        recent_count = sum(1 for item in trail[-6:] if _action_signature(item) == sig)
+        if sig == latest or recent_count >= 2:
+            continue
+        filtered.append(action)
+    return filtered
+
+
+def _append_browser_flow_text(text: str) -> None:
+    if not _CONFIG:
+        return
+    from fiam.runtime.turns import scene_for_user, user_beat
+    from fiam.store.beat import append_beat
+
+    append_beat(_CONFIG.flow_path, user_beat(
+        text,
+        t=datetime.now(timezone.utc),
+        scene=scene_for_user("browser"),
+        user_status="away",
+        ai_status="online",
+        user_name=getattr(_CONFIG, "user_name", "") or "zephyr",
+    ))
+
+
+def _append_browser_action_flow(payload: dict) -> dict:
+    if not _CONFIG:
+        raise RuntimeError("config not loaded")
+    from fiam.store.beat import Beat, append_beat
+
+    raw_action = payload.get("action")
+    raw_result = payload.get("result")
+    action: dict = raw_action if isinstance(raw_action, dict) else {}
+    result: dict = raw_result if isinstance(raw_result, dict) else {}
+    node_id = str(action.get("nodeId") or action.get("node") or "").strip()
+    action_kind = str(action.get("action") or result.get("action") or "browser_action").strip()
+    label = str(action.get("name") or result.get("label") or node_id or "target").strip()
+    status = "ok" if result.get("ok", True) else "error"
+    text = f"browser_action {status}: {action_kind} {node_id} {label}".strip()
+    append_beat(_CONFIG.flow_path, Beat(
+        t=datetime.now(timezone.utc),
+        text=text,
+        scene="ai@action",
+        user="away",
+        ai="online",
+        runtime="browser",
+    ))
+    try:
+        from fiam_lib.computer_events import get_bus as _ce_bus
+        _ce_bus().publish("act", {
+            "surface": "b",
+            "kind": action_kind,
+            "label": label,
+            "node": node_id,
+            "ok": status == "ok",
+            "text": text,
+        })
+    except Exception:
+        logger.exception("computer bus publish (action) failed")
+    snapshot = payload.get("snapshot") if isinstance(payload.get("snapshot"), dict) else None
+    snapshot_result = None
+    if snapshot:
+        try:
+            text_snapshot, _meta = _browser_snapshot_payload({"snapshot": snapshot})
+            _append_browser_flow_text(text_snapshot)
+            snapshot_result = {"recorded": True, "chars": len(text_snapshot)}
+        except Exception as exc:
+            snapshot_result = {"recorded": False, "error": str(exc)}
+    return {"ok": True, "recorded": True, "snapshot": snapshot_result}
+
+
+def _append_browser_ai_decision_flow(reply: str, actions: list[dict], done: dict | None, *, runtime: str) -> None:
+    if not _CONFIG:
+        return
+    from fiam.store.beat import Beat, append_beat
+
+    clean_reply = " ".join(str(reply or "").split())
+    if done:
+        kind = "done"
+        text = f"browser_control_done: {done.get('reason') or 'done'}"
+        if clean_reply:
+            text = f"{text}\n{clean_reply}"
+    elif actions:
+        kind = "decision"
+        action_bits = ", ".join(f"{item.get('action')} {item.get('nodeId')} {item.get('name')}".strip() for item in actions)
+        text = f"browser_control_decision: {action_bits}"
+        if clean_reply:
+            text = f"{text}\n{clean_reply}"
+    elif clean_reply:
+        kind = "note"
+        text = f"browser_control_note: {clean_reply}"
+    else:
+        return
+    append_beat(_CONFIG.flow_path, Beat(
+        t=datetime.now(timezone.utc),
+        text=text,
+        scene="ai@browser",
+        user="away",
+        ai="online",
+        runtime=runtime,
+    ))
+    try:
+        from fiam_lib.computer_events import get_bus as _ce_bus
+        _ce_bus().publish("info", {
+            "surface": "b",
+            "kind": kind,
+            "reply": clean_reply,
+            "actions": [
+                {"action": a.get("action"), "node": a.get("nodeId"), "name": a.get("name")}
+                for a in (actions or [])
+            ],
+            "done": done or None,
+            "text": text,
+        })
+    except Exception:
+        logger.exception("computer bus publish (decision) failed")
+
+
+def _browser_snapshot(payload: dict) -> dict:
+    if not _CONFIG:
+        raise RuntimeError("config not loaded")
+    from fiam.plugins import is_receive_enabled
+
+    if not is_receive_enabled(_CONFIG, "browser"):
+        raise RuntimeError("browser plugin disabled")
+    text, meta = _browser_snapshot_payload(payload)
+    bus = _get_bus()
+    if bus is not None:
+        ok = bus.publish_receive("browser", {
+            "text": text,
+            "source": "browser",
+            "from_name": meta.get("browser") or "browser",
+            "url": meta.get("url") or "",
+            "tags": ["browser", "snapshot"],
+            "kind": "browser_snapshot",
+            "meta": meta,
+            "t": datetime.now(timezone.utc),
+        })
+        if not ok:
+            raise RuntimeError("publish rejected")
+        return {"ok": True, "queued": True, "source": "browser", "meta": meta, "chars": len(text)}
+    _append_browser_flow_text(text)
+    return {"ok": True, "queued": False, "recorded": True, "source": "browser", "meta": meta, "chars": len(text)}
+
+
+def _browser_ask(payload: dict) -> dict:
+    question = str(payload.get("question") or payload.get("text") or "").strip()
+    runtime = str(payload.get("runtime") or "api").strip().lower() or "api"
+    record_turn = payload.get("record", True) is not False
+    if runtime not in {"api", "cc"}:
+        raise ValueError("browser runtime must be api or cc")
+    from fiam.browser_bridge import browser_snapshot_meta, build_browser_runtime_text, extract_browser_actions, strip_browser_action_markers
+
+    runtime_text = build_browser_runtime_text(question, payload)
+    result = _favilla_chat_send({
+        "text": runtime_text,
+        "source": "browser",
+        "runtime": runtime,
+        "record_turn": record_turn,
+    })
+    cleaned_reply, browser_actions = extract_browser_actions(str(result.get("reply") or ""), payload)
+    cleaned_segments = []
+    for segment in result.get("segments") or []:
+        if isinstance(segment, dict) and "text" in segment:
+            segment = dict(segment)
+            segment["text"] = strip_browser_action_markers(str(segment.get("text") or ""))
+        cleaned_segments.append(segment)
+    result["segments"] = cleaned_segments
+    result["reply"] = cleaned_reply
+    if browser_actions:
+        result["browser_actions"] = browser_actions
+    else:
+        result["browser_actions"] = []
+    result["browser"] = browser_snapshot_meta(payload)
+    result["context_chars"] = len(runtime_text)
+    return result
+
+
+def _browser_control_tick(payload: dict) -> dict:
+    runtime = str(payload.get("runtime") or "api").strip().lower() or "api"
+    if runtime not in {"api", "cc"}:
+        raise ValueError("browser runtime must be api or cc")
+    from fiam.browser_bridge import browser_snapshot_meta, build_browser_control_text, extract_browser_actions, extract_browser_done, strip_browser_action_markers
+
+    payload = dict(payload)
+    recent_trail = _recent_browser_action_trail()
+    raw_payload_trail = payload.get("controlTrail")
+    payload_trail = raw_payload_trail if isinstance(raw_payload_trail, list) else []
+    payload["controlTrail"] = [*recent_trail, *payload_trail][-12:]
+    runtime_text = build_browser_control_text(payload)
+    attachments = _browser_screenshot_attachments(payload)
+    if attachments:
+        runtime_text = f"{runtime_text}\n\n[browser_screenshot]\nA current viewport screenshot is attached for visual reasoning."
+    screenshot_error = ""
+    send_text = runtime_text
+    try:
+        result = _favilla_chat_send({
+            "text": send_text,
+            "source": "browser",
+            "runtime": runtime,
+            "record_turn": False,
+            "attachments": attachments,
+        })
+    except Exception as exc:
+        if not attachments:
+            raise
+        screenshot_error = str(exc)[:240]
+        logger.warning("browser screenshot tick failed; retrying without screenshot: %s", screenshot_error)
+        runtime_text = build_browser_control_text(payload)
+        send_text = f"{runtime_text}\n\n[browser_screenshot]\nA screenshot was attempted but unavailable for this tick; rely on DOM context."
+        result = _favilla_chat_send({
+            "text": send_text,
+            "source": "browser",
+            "runtime": runtime,
+            "record_turn": False,
+            "attachments": [],
+        })
+    raw_reply = str(result.get("reply") or "")
+    cleaned_reply, browser_done = extract_browser_done(raw_reply)
+    cleaned_reply, browser_actions = extract_browser_actions(cleaned_reply, payload)
+    browser_actions = _suppress_repeated_browser_actions(browser_actions[:1], payload["controlTrail"])
+    cleaned_segments = []
+    for segment in result.get("segments") or []:
+        if isinstance(segment, dict) and "text" in segment:
+            segment = dict(segment)
+            segment["text"] = strip_browser_action_markers(str(segment.get("text") or ""))
+        cleaned_segments.append(segment)
+    result["reply"] = cleaned_reply
+    result["browser_actions"] = browser_actions
+    result["browser_done"] = browser_done
+    result["segments"] = cleaned_segments
+    result["browser"] = browser_snapshot_meta(payload)
+    result["context_chars"] = len(send_text)
+    result["mode"] = "autonomous"
+    result["screenshot_attempted"] = bool(attachments)
+    result["screenshot_attached"] = bool(attachments) and not screenshot_error
+    if screenshot_error:
+        result["screenshot_fallback_error"] = screenshot_error
+    _append_browser_ai_decision_flow(cleaned_reply, browser_actions, browser_done, runtime=runtime)
+    return result
+
+
 def _favilla_status() -> dict:
     status = _api_status()
     flow_count = 0
@@ -690,8 +1021,8 @@ def _favilla_message_units(text: str) -> int:
     return len(units)
 
 
-def _favilla_history_digest(source: str, limit: int = 500) -> dict:
-    messages = _favilla_history(source=source, limit=limit).get("messages") or []
+def _favilla_transcript_digest(source: str, limit: int = 500) -> dict:
+    messages = _favilla_transcript_load(source=source, limit=limit).get("messages") or []
     digest = {
         "turns": 0,
         "user_turns": 0,
@@ -916,8 +1247,8 @@ def _favilla_dashboard() -> dict:
         "health": _api_health(),
         "events": _api_events(40),
         "todos": _api_todo()[:20],
-        "chat": _favilla_history_digest("chat"),
-        "stroll": _favilla_history_digest("stroll"),
+        "chat": _favilla_transcript_digest("chat"),
+        "stroll": _favilla_transcript_digest("stroll"),
         "studio": _favilla_studio_digest(),
         "locations": _favilla_location_digest(),
     }
@@ -1315,7 +1646,7 @@ def _append_carryover(source: str, record: dict) -> None:
     (home / ".carryover_dirty").touch()
 
 
-def _favilla_history(source: str = "chat", limit: int = 200) -> dict:
+def _favilla_transcript_load(source: str = "chat", limit: int = 200) -> dict:
     path = _transcript_path(source)
     if not path.exists():
         return {"ok": True, "messages": []}
@@ -1332,7 +1663,7 @@ def _favilla_history(source: str = "chat", limit: int = 200) -> dict:
     return {"ok": True, "messages": messages}
 
 
-def _favilla_history_append(payload: dict) -> dict:
+def _favilla_transcript_append(payload: dict) -> dict:
     source = str(payload.get("source") or "chat")
     role = str(payload.get("role") or "user")
     if role not in {"user", "ai"}:
@@ -1627,8 +1958,9 @@ def _favilla_chat_send(payload: dict) -> dict:
 
         context_block, stroll_context = build_context_block(_CONFIG, payload.get("stroll_context") if isinstance(payload.get("stroll_context"), dict) else payload.get("context"))
         runtime_text = f"{context_block}\n\n[user_message]\n{user_text}"
+    record_turn = payload.get("record_turn", payload.get("record", True)) is not False
     if runtime == "api":
-        result = _run_api_favilla_chat(text=runtime_text, source=source, attachments=safe_attachments)
+        result = _run_api_favilla_chat(text=runtime_text, source=source, attachments=safe_attachments, record_turn=record_turn)
     elif runtime == "cc":
         result = _run_cc_favilla_chat(text=runtime_text, source=source, attachments=safe_attachments)
     else:
@@ -2405,45 +2737,89 @@ def _record_cc_app_turn(user_text: str, assistant_reply: str, source: str, *, ac
         scene=ai_scene,
         user_status=conductor.user_status,
         ai_status=conductor.ai_status,
-        ai_name=getattr(_CONFIG, "ai_name", "") or "ai",
         runtime="cc",
     ):
         conductor._ingest_beat(beat)
 
 
-def _run_api_favilla_chat(*, text: str, source: str, attachments: list | None = None) -> dict:
+def _record_api_turn_light(user_text: str, assistant_reply: str, source: str, *, tool_calls: list[dict] | None = None) -> None:
+    if not _CONFIG:
+        return
+    from fiam.runtime.turns import assistant_text_beats, scene_for_ai, scene_for_user, user_beat
+    from fiam.store.beat import Beat, append_beats
+
+    now = datetime.now(timezone.utc)
+    beats = [user_beat(
+        user_text,
+        t=now,
+        scene=scene_for_user(source),
+        user_status="away",
+        ai_status="online",
+        user_name=getattr(_CONFIG, "user_name", "") or "zephyr",
+    )]
+    for call in tool_calls or []:
+        tool_name = str(call.get("tool_name") or "tool")
+        input_summary = str(call.get("input_summary") or "").replace("\n", " ")[:300]
+        beats.append(Beat(
+            t=datetime.now(timezone.utc),
+            text=f"action: {tool_name}" + (f" — {input_summary}" if input_summary else ""),
+            scene="ai@action",
+            user="away",
+            ai="online",
+            runtime="api",
+        ))
+    beats.extend(assistant_text_beats(
+        assistant_reply,
+        t=datetime.now(timezone.utc),
+        scene=scene_for_ai(source),
+        user_status="away",
+        ai_status="online",
+        runtime="api",
+    ))
+    append_beats(_CONFIG.flow_path, beats)
+
+
+def _run_api_favilla_chat(*, text: str, source: str, attachments: list | None = None, record_turn: bool = True) -> dict:
     if not _CONFIG or not _POOL:
         raise RuntimeError("config not loaded")
+    config = _CONFIG
+    pool = _POOL
 
     from fiam.conductor import Conductor
     from fiam.runtime.api import ApiRuntime
     from fiam.runtime.recall import refresh_recall
     from fiam.store.features import FeatureStore
 
-    feature_store = FeatureStore(_CONFIG.feature_dir, dim=_CONFIG.embedding_dim)
-    bus = _get_bus()
+    light_browser_record = source == "browser" and getattr(config, "embedding_backend", "local") == "local"
+    feature_store = None if light_browser_record else FeatureStore(config.feature_dir, dim=config.embedding_dim)
+    bus = None if light_browser_record else _get_bus()
 
     def _refresh(vec):
-        return refresh_recall(_CONFIG, _POOL, vec, top_k=_CONFIG.recall_top_k)
+        return refresh_recall(config, pool, vec, top_k=config.recall_top_k)
 
-    conductor = Conductor(
-        pool=_POOL,
-        embedder=_get_embedder(),
-        config=_CONFIG,
-        flow_path=_CONFIG.flow_path,
-        drift_threshold=_CONFIG.drift_threshold,
-        gorge_max_beat=_CONFIG.gorge_max_beat,
-        gorge_min_depth=_CONFIG.gorge_min_depth,
-        gorge_stream_confirm=_CONFIG.gorge_stream_confirm,
-        bus=bus,
-        memory_mode=_CONFIG.memory_mode,
-        feature_store=feature_store,
-    )
+    conductor = None
+    if not light_browser_record:
+        embedder = _get_embedder()
+        if embedder is None:
+            raise RuntimeError("embedder unavailable")
+        conductor = Conductor(
+            pool=pool,
+            embedder=embedder,
+            config=config,
+            flow_path=config.flow_path,
+            drift_threshold=config.drift_threshold,
+            gorge_max_beat=config.gorge_max_beat,
+            gorge_min_depth=config.gorge_min_depth,
+            gorge_stream_confirm=config.gorge_stream_confirm,
+            bus=bus,
+            memory_mode=config.memory_mode,
+            feature_store=feature_store,
+        )
     runtime = ApiRuntime.from_config(
-        _CONFIG,
+        config,
         conductor=conductor,
-        dispatcher=conductor.dispatch if bus is not None else None,
-        recall_refresher=_refresh,
+        dispatcher=conductor.dispatch if bus is not None and conductor is not None else None,
+        recall_refresher=None if light_browser_record else _refresh,
     )
     api_text = text
     if attachments:
@@ -2454,11 +2830,11 @@ def _run_api_favilla_chat(*, text: str, source: str, attachments: list | None = 
         lines.append("")
         api_text = "\n".join(lines) + text
     extras = _app_runtime_context()
-    recent = _recent_conversation_for_app(source)
+    recent = "" if source == "browser" else _recent_conversation_for_app(source)
     if recent:
         extras = f"{extras}\n\n{recent}"
     api_started_at = time.time()
-    result = runtime.ask(api_text, source=source, extra_context=extras, image_attachments=attachments or [])
+    result = runtime.ask(api_text, source=source, record=not light_browser_record, extra_context=extras, image_attachments=attachments or [])
     api_latency_ms = int((time.time() - api_started_at) * 1000)
     raw_reply = str(result.reply or "")
     reply, queued_todos, queued_holds, immediate_hold, carry_over = _apply_app_control_markers(
@@ -2508,6 +2884,8 @@ def _run_api_favilla_chat(*, text: str, source: str, attachments: list | None = 
             "result_preview": call.get("result_preview") or "",
             "loop": call.get("loop"),
         })
+    if light_browser_record and record_turn:
+        _record_api_turn_light(api_text, cleaned_reply, source=source, tool_calls=api_tool_calls_summary)
     for todo in queued_todos or []:
         actions_list.append({"kind": "queued_todo", **(todo if isinstance(todo, dict) else {"text": str(todo)})})
     for hold_item in queued_holds or []:
@@ -2970,7 +3348,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 limit = int((query.get("limit") or ["200"])[0])
             except ValueError:
                 limit = 200
-            self._serve_json(_favilla_history(source=source, limit=limit))
+            self._serve_json(_favilla_transcript_load(source=source, limit=limit))
             return
 
         if path == "/favilla/stroll/nearby":
@@ -3059,6 +3437,66 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return
             return
 
+        if path == "/favilla/computer/events":
+            # Live push of AI computer-control activity (browser + desktop).
+            # EventSource can't set custom headers, so accept token via
+            # query string (?token=...) in addition to X-Fiam-Token.
+            import os as _os
+            import hmac as _hmac
+            from urllib.parse import parse_qs, urlparse
+
+            query = parse_qs(urlparse(raw).query)
+            expected = _os.environ.get("FIAM_INGEST_TOKEN", "")
+            qtoken = (query.get("token") or [""])[0]
+            authed = False
+            if expected:
+                if _hmac.compare_digest(qtoken, expected):
+                    authed = True
+                else:
+                    htoken = self.headers.get("X-Fiam-Token", "")
+                    if htoken and _hmac.compare_digest(htoken, expected):
+                        authed = True
+            if not authed:
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+
+            from fiam_lib.computer_events import get_bus as _get_computer_bus
+
+            last_id_header = self.headers.get("Last-Event-ID")
+            try:
+                last_id = int(last_id_header) if last_id_header else int((query.get("last_id") or ["0"])[0])
+            except ValueError:
+                last_id = 0
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "keep-alive")
+                self.send_header("X-Accel-Buffering", "no")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                bus = _get_computer_bus()
+                for ev in bus.replay(last_id):
+                    self.wfile.write(_format_sse(ev))
+                    self.wfile.flush()
+                    last_id = ev["id"]
+                while True:
+                    got_any = False
+                    for ev in bus.subscribe(after_id=last_id, timeout=25.0):
+                        self.wfile.write(_format_sse(ev))
+                        self.wfile.flush()
+                        last_id = ev["id"]
+                        got_any = True
+                    if not got_any:
+                        self.wfile.write(b": ping\n\n")
+                        self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                return
+            except Exception:
+                logger.exception("Favilla Computer SSE error")
+                return
+            return
+
         if path == "/api/wearable/reply":
             if not _ingest_token_ok(self):
                 self._serve_json({"error": "unauthorized"}, status=401)
@@ -3105,6 +3543,43 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         is_pool_write = path in pool_write_paths or any(path.startswith(p) for p in pool_write_prefixes)
         is_annotate = path in annotate_paths
         is_config_write = path in config_paths
+
+        if path in {"/browser/snapshot", "/browser/ask", "/browser/tick", "/browser/action-result"}:
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = 0
+            max_browser_post = 8 * 1024 * 1024
+            if length <= 0 or length > max_browser_post:
+                self._serve_json({"error": "bad length"}, status=400)
+                return
+            try:
+                body = self.rfile.read(length).decode("utf-8")
+                payload = json.loads(body)
+            except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                self._serve_json({"error": f"bad json: {e}"}, status=400)
+                return
+            try:
+                if path == "/browser/snapshot":
+                    result = _browser_snapshot(payload)
+                elif path == "/browser/action-result":
+                    result = _append_browser_action_flow(payload)
+                elif path == "/browser/tick":
+                    result = _browser_control_tick(payload)
+                else:
+                    result = _browser_ask(payload)
+            except ValueError as e:
+                self._serve_json({"error": str(e)}, status=400)
+                return
+            except Exception as e:
+                logger.exception("Browser bridge error")
+                self._serve_json({"error": str(e)}, status=500)
+                return
+            self._serve_json(result)
+            return
 
         if path == "/api/capture":
             if not _ingest_token_ok(self):
@@ -3270,12 +3745,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             try:
                 if path == "/favilla/stroll/transcript":
                     payload["source"] = "stroll"
-                result = _favilla_history_append(payload)
+                result = _favilla_transcript_append(payload)
             except ValueError as e:
                 self._serve_json({"error": str(e)}, status=400)
                 return
             except Exception as e:
-                logger.exception("Favilla history error")
+                logger.exception("Favilla transcript error")
                 self._serve_json({"error": str(e)}, status=500)
                 return
             self._serve_json(result)
@@ -3612,13 +4087,16 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
     def _serve_json(self, obj, status: int = 200):
         data = json.dumps(obj, ensure_ascii=False, indent=2).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Cache-Control", "no-cache")
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            return
 
     def log_message(self, format, *args):
         pass  # suppress access logs
