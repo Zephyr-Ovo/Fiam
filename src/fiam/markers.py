@@ -43,16 +43,9 @@ class CarryOverMarker:
     reason: str = ""
 
 
-@dataclass(frozen=True)
-class HoldMarker:
-    until: str
-    reason: str
-    draft: str
-
-
-@dataclass(frozen=True)
-class FinalMarker:
-    text: str
+# Hold kind: "" = no hold, "text" = drop user-facing reply only,
+# "all" = drop everything (no dispatch, no actions, no state updates).
+HoldKind = str
 
 
 _OUTBOUND_RE = re.compile(
@@ -205,25 +198,27 @@ def parse_carry_over_markers(text: str) -> list[CarryOverMarker]:
     return markers
 
 
-def parse_hold_markers(text: str) -> list[HoldMarker]:
-    markers: list[HoldMarker] = []
-    for name, attrs, body in _xml_markers(text):
-        if name != "hold":
-            continue
-        markers.append(HoldMarker(
-            until=attrs.get("until", "").strip(),
-            reason=attrs.get("reason", "").strip(),
-            draft=body.strip(),
-        ))
-    return markers
+_HOLD_TAG_RE = re.compile(
+    r"<\s*hold\b(?P<attrs>[^<>]*)/?\s*>(?:\s*</\s*hold\s*>)?",
+    re.IGNORECASE,
+)
+_HOLD_ALL_RE = re.compile(r"\ball\b", re.IGNORECASE)
 
 
-def parse_final_markers(text: str) -> list[FinalMarker]:
-    markers: list[FinalMarker] = []
-    for name, _attrs_dict, body in _xml_markers(text):
-        if name == "final" and body.strip():
-            markers.append(FinalMarker(text=body.strip()))
-    return markers
+def parse_hold_kind(text: str) -> HoldKind:
+    """Detect ``<hold/>`` (drop reply text) or ``<hold all/>`` (drop everything).
+
+    Returns ``\"all\"`` if any hold-all marker appears, ``\"text\"`` if a bare
+    ``<hold/>`` appears, otherwise ``\"\"``. Hold markers carry no other
+    attributes; the retry is scheduled by the caller.
+    """
+    found_text = False
+    for match in _HOLD_TAG_RE.finditer(text or ""):
+        attrs = match.group("attrs") or ""
+        if _HOLD_ALL_RE.search(attrs):
+            return "all"
+        found_text = True
+    return "text" if found_text else ""
 
 
 def strip_xml_markers(text: str, names: set[str] | Iterable[str]) -> str:

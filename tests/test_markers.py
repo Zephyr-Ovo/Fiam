@@ -16,8 +16,7 @@ for path in (SCRIPTS, SRC):
 
 from fiam.markers import (  # noqa: E402
     parse_carry_over_markers,
-    parse_final_markers,
-    parse_hold_markers,
+    parse_hold_kind,
     parse_outbound_markers,
     parse_state_markers,
     parse_todo_markers,
@@ -25,9 +24,8 @@ from fiam.markers import (  # noqa: E402
     strip_xml_markers,
 )
 from fiam.config import FiamConfig  # noqa: E402
-from fiam.holds import load_hold_record  # noqa: E402
 from fiam.runtime.turns import assistant_text_beats  # noqa: E402
-from fiam_lib.app_markers import extract_hold_markers  # noqa: E402
+from fiam_lib.app_markers import apply_hold  # noqa: E402
 from fiam_lib.todo import extract_scheduled_items, extract_state_tag  # noqa: E402
 
 
@@ -94,51 +92,76 @@ class MarkerParsingTest(unittest.TestCase):
             "sleeping_until": "open",
         })
 
-    def test_carry_over_and_hold_markers(self) -> None:
+    def test_carry_over_marker(self) -> None:
         carry = parse_carry_over_markers('<carry_over to="api" reason="回聊天" />')
-        hold = parse_hold_markers('<hold until="2026-05-05T21:00:00+08:00" reason="等下再发">草稿</hold>')
 
         self.assertEqual((carry[0].target, carry[0].reason), ("api", "回聊天"))
-        self.assertEqual((hold[0].until, hold[0].reason, hold[0].draft), ("2026-05-05T21:00:00+08:00", "等下再发", "草稿"))
 
-    def test_final_marker_parses_hold_delivery_text(self) -> None:
-        final = parse_final_markers('私下笔记 <final>最终发给 Zephyr 的话</final>')
+    def test_hold_kind_detects_text_and_all(self) -> None:
+        self.assertEqual(parse_hold_kind("正文 <hold/>"), "text")
+        self.assertEqual(parse_hold_kind("<hold all/>"), "all")
+        self.assertEqual(parse_hold_kind("<hold/> 后 <hold all/>"), "all")
+        self.assertEqual(parse_hold_kind("没有 hold"), "")
 
-        self.assertEqual(len(final), 1)
-        self.assertEqual(final[0].text, "最终发给 Zephyr 的话")
-
-    def test_held_reply_persists_draft_for_todo(self) -> None:
+    def test_apply_hold_text_drops_reply_and_queues_retry(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
-            config = FiamConfig(home_path=root / "home", code_path=root / "code")
-            clean, queued, immediate = extract_hold_markers(
-                '<hold until="2099-05-05T21:00:00+08:00" reason="等下再发">草稿</hold>',
+            config = FiamConfig(home_path=root / "home", code_path=root / "code", hold_retry_seconds=15)
+            cleaned, kind, todos = apply_hold(
+                "正文 <hold/> 位置",
                 config,
                 source="chat",
                 runtime="api",
-                user_text="原问题",
-                attachments=[],
             )
 
-            self.assertEqual(clean, "")
-            self.assertFalse(immediate)
-            self.assertEqual(len(queued), 1)
-            self.assertEqual(queued[0]["action"], "held_reply")
-            self.assertTrue(queued[0]["hold_id"])
-            record = load_hold_record(config, queued[0]["hold_id"])
-            self.assertIsNotNone(record)
-            assert record is not None
-            self.assertEqual(record["draft"], "草稿")
-            self.assertEqual(record["user_text"], "原问题")
+            self.assertEqual(kind, "text")
+            # cleaned still has the surrounding prose; caller drops the visible reply.
+            self.assertIn("正文", cleaned)
+            self.assertEqual(len(todos), 1)
+            self.assertEqual(todos[0]["action"], "hold_retry")
+            self.assertEqual(todos[0]["reason"], "hold text retry")
+
+    def test_apply_hold_all_queues_retry_only(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = FiamConfig(home_path=root / "home", code_path=root / "code")
+            cleaned, kind, todos = apply_hold(
+                "正文 <hold all/>",
+                config,
+                source="chat",
+                runtime="cc",
+            )
+
+            self.assertEqual(kind, "all")
+            self.assertEqual(len(todos), 1)
+            self.assertEqual(todos[0]["action"], "hold_retry")
+            self.assertEqual(todos[0]["reason"], "hold all retry")
+            # Hold text is stripped from the cleaned reply either way.
+            self.assertNotIn("<hold", cleaned)
+
+    def test_apply_hold_no_marker_is_noop(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = FiamConfig(home_path=root / "home", code_path=root / "code")
+            cleaned, kind, todos = apply_hold(
+                "普通回复",
+                config,
+                source="chat",
+                runtime="api",
+            )
+
+            self.assertEqual(kind, "")
+            self.assertEqual(todos, [])
+            self.assertEqual(cleaned, "普通回复")
 
     def test_strip_xml_markers_removes_control_text(self) -> None:
         text = '正文 <todo at="2026-05-05 20:00">写日报</todo> 后文 <mute reason="专注" />'
 
         self.assertEqual(strip_xml_markers(text, {"todo", "mute"}), "正文  后文")
 
-    def test_assistant_flow_beats_do_not_keep_hold_or_final_body(self) -> None:
+    def test_assistant_flow_beats_strip_hold_marker(self) -> None:
         beats = assistant_text_beats(
-            '外层 <hold until="2099-05-05T21:00:00+08:00" reason="等">草稿</hold> <final>最终</final>',
+            '外层 <hold/> 中间 <hold all/>',
             t=datetime.now(timezone.utc),
             scene="api",
             user_status="together",
@@ -146,7 +169,7 @@ class MarkerParsingTest(unittest.TestCase):
         )
 
         self.assertEqual(len(beats), 1)
-        self.assertEqual(beats[0].text, "外层")
+        self.assertEqual(beats[0].text, "外层  中间")
 
 
 if __name__ == "__main__":

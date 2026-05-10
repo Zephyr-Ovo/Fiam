@@ -236,6 +236,7 @@ class FiamConfig:
     app_cot_summary_model: str = "deepseek-chat"
     app_cot_summary_base_url: str = "https://api.deepseek.com"
     app_cot_summary_api_key_env: str = "FIAM_COT_SUMMARY_API_KEY"
+    hold_retry_seconds: int = 30              # delay before <hold/> auto-retries
 
     # ------------------------------------------------------------------
     # Features
@@ -551,6 +552,7 @@ class FiamConfig:
             f'cot_summary_model = "{self.app_cot_summary_model}"',
             f'cot_summary_base_url = "{self.app_cot_summary_base_url}"',
             f'cot_summary_api_key_env = "{self.app_cot_summary_api_key_env}"',
+            f"hold_retry_seconds = {self.hold_retry_seconds}",
             "",
             "[debug]",
             f"enabled = {str(self.debug_mode).lower()}",
@@ -716,6 +718,7 @@ class FiamConfig:
             app_cot_summary_model=app.get("cot_summary_model", cls.app_cot_summary_model),
             app_cot_summary_base_url=app.get("cot_summary_base_url", cls.app_cot_summary_base_url),
             app_cot_summary_api_key_env=app.get("cot_summary_api_key_env", cls.app_cot_summary_api_key_env),
+            hold_retry_seconds=app.get("hold_retry_seconds", cls.hold_retry_seconds),
             # Debug profile
             debug_mode=debug.get("enabled", cls.debug_mode),
             debug_idle_timeout_minutes=debug.get("idle_timeout_minutes", cls.debug_idle_timeout_minutes),

@@ -8,12 +8,11 @@ import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fiam.config import FiamConfig
-from fiam.holds import create_hold_record
-from fiam.markers import parse_hold_markers, strip_xml_markers
+from fiam.markers import parse_hold_kind, strip_xml_markers
 
 # COT markers — new protocol (preferred): <cot>...</cot> + <lock/>
 # Old protocol kept for back-compat with replayed transcripts and AIs that
@@ -28,7 +27,6 @@ _COT_ANY_BLOCK_RE = re.compile(
     r"<cot>\s*(?P<new>.*?)\s*</cot>|<<COT:show>>\s*(?P<old>.*?)\s*<<COT:end>>",
     re.DOTALL | re.IGNORECASE,
 )
-_HOLD_RE = re.compile(r"<<HOLD(?::(?P<body>[^>]*))?>>", re.IGNORECASE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,115 +111,40 @@ def parse_app_cot(reply: str, config: FiamConfig | None = None) -> AppCotResult:
 
 
 def strip_hold_markers(text: str) -> str:
-    return strip_xml_markers(_HOLD_RE.sub("", text), {"hold"}).strip()
+    return strip_xml_markers(text or "", {"hold"}).strip()
 
 
-def extract_hold_markers(
+def apply_hold(
     text: str,
     config: FiamConfig,
     *,
     source: str,
     runtime: str,
-    user_text: str,
-    attachments: list[dict[str, Any]] | None = None,
-) -> tuple[str, list[dict[str, Any]], bool]:
-    """Extract chat-only HOLD markers.
+) -> tuple[str, str, list[dict[str, Any]]]:
+    """Apply ``<hold/>`` / ``<hold all/>`` filtering and queue a retry todo.
 
-    Returns (cleaned_text, todo_tags, immediate_hold). Todo entries reuse the
-    shared timing/retry mechanics and carry action="held_reply" so daemon can
-    deliver them as Favilla chat continuations rather than generic later work.
+    Returns ``(cleaned_text, kind, retry_todos)`` where ``kind`` is ``""``,
+    ``"text"``, or ``"all"``. When a hold is detected, a single retry todo is
+    scheduled at ``now + config.hold_retry_seconds`` so the AI can take
+    another pass; the original output stays in transcripts/context so the AI
+    can see what it just held.
     """
-    queued: list[dict[str, Any]] = []
-    immediate = False
-    for marker in parse_hold_markers(text or ""):
-        reason = marker.reason or "continue held Favilla chat reply"
-        draft = marker.draft.strip()
-        if not marker.until:
-            create_hold_record(
-                config,
-                source=source,
-                runtime=runtime,
-                user_text=user_text,
-                attachments=attachments or [],
-                reason=reason,
-                draft=draft,
-            )
-            immediate = True
-            continue
-        try:
-            at = datetime.fromisoformat(marker.until.replace("Z", "+00:00"))
-            at = config.ensure_timezone(at)
-        except ValueError:
-            create_hold_record(
-                config,
-                source=source,
-                runtime=runtime,
-                user_text=user_text,
-                attachments=attachments or [],
-                reason=reason,
-                draft=draft,
-            )
-            immediate = True
-            continue
-        hold_record = create_hold_record(
-            config,
-            source=source,
-            runtime=runtime,
-            user_text=user_text,
-            attachments=attachments or [],
-            reason=reason,
-            draft=draft,
-            at=at.isoformat(),
-        )
-        queued.append({
-            "at": at.isoformat(),
-            "type": "private",
-            "action": "held_reply",
-            "hold_id": hold_record["id"],
-            "hold_path": hold_record["path"],
-            "source": source,
-            "runtime": runtime,
-            "reason": reason,
-            "user_text": user_text,
-            "attachments": attachments or [],
-            "created": datetime.now(timezone.utc).isoformat(),
-        })
-    for match in _HOLD_RE.finditer(text or ""):
-        body = (match.group("body") or "").strip()
-        if not body:
-            immediate = True
-            continue
-        at_raw, reason = _split_hold_body(body)
-        try:
-            at = datetime.fromisoformat(at_raw.replace("Z", "+00:00"))
-            at = config.ensure_timezone(at)
-        except ValueError:
-            immediate = True
-            continue
-        hold_record = create_hold_record(
-            config,
-            source=source,
-            runtime=runtime,
-            user_text=user_text,
-            attachments=attachments or [],
-            reason=reason or "continue held Favilla chat reply",
-            draft="",
-            at=at.isoformat(),
-        )
-        queued.append({
-            "at": at.isoformat(),
-            "type": "private",
-            "action": "held_reply",
-            "hold_id": hold_record["id"],
-            "hold_path": hold_record["path"],
-            "source": source,
-            "runtime": runtime,
-            "reason": reason or "continue held Favilla chat reply",
-            "user_text": user_text,
-            "attachments": attachments or [],
-            "created": datetime.now(timezone.utc).isoformat(),
-        })
-    return strip_hold_markers(text), queued, immediate
+    kind = parse_hold_kind(text or "")
+    cleaned = strip_hold_markers(text or "")
+    if not kind:
+        return cleaned, "", []
+    delay = max(1, int(getattr(config, "hold_retry_seconds", 30) or 30))
+    retry_at = config.now_local() + timedelta(seconds=delay)
+    todo = {
+        "at": retry_at.isoformat(),
+        "type": "private",
+        "action": "hold_retry",
+        "source": source,
+        "runtime": runtime,
+        "reason": f"hold {kind} retry",
+        "created": datetime.now(timezone.utc).isoformat(),
+    }
+    return cleaned, kind, [todo]
 
 
 def _strip_cot_control(text: str) -> str:
@@ -229,13 +152,6 @@ def _strip_cot_control(text: str) -> str:
     text = _COT_HIDE_RE.sub("", text)
     text = _COT_LOCK_RE.sub("", text)
     return text
-
-
-def _split_hold_body(body: str) -> tuple[str, str]:
-    if ":" not in body:
-        return body.strip(), ""
-    wake_raw, reason = body.rsplit(":", 1)
-    return wake_raw.strip(), reason.strip()
 
 
 def summarize_cot_steps(steps: list[dict[str, Any]], *, locked: bool, config: FiamConfig | None) -> list[dict[str, Any]]:

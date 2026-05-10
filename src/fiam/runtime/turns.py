@@ -18,7 +18,7 @@ _ROUTED_BLOCK_RE = re.compile(
     re.DOTALL,
 )
 
-_CONTROL_MARKERS = {"later", "sleep", "mute", "notify", "carry_over", "hold", "final"}
+_CONTROL_MARKERS = {"later", "sleep", "mute", "notify", "carry_over", "hold"}
 
 
 # Map raw HTTP `source` field values to known channel names. Keeps the wire

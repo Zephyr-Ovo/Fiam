@@ -38,7 +38,7 @@ from fiam_lib.jsonl import (
 )
 from fiam_lib.postman import sweep_outbox
 from fiam_lib.todo import extract_scheduled_items, extract_state_tag, append_to_todo, load_due
-from fiam_lib.app_markers import extract_hold_markers, parse_app_cot
+from fiam_lib.app_markers import parse_app_cot
 from fiam_lib.cost import log_cost, check_budget
 from fiam_lib.ui import _console, _flow, _ANIM_IDLE, _ANIM_ACTIVE, _animated_sleep
 
@@ -450,97 +450,6 @@ def _wake_session(config, message: str, tag: str = "inbox", conductor=None) -> b
     except FileNotFoundError:
         _console.print(f"  [red]claude not found[/]")
         return False
-
-
-def _wake_held_reply(config, entry: dict, conductor=None) -> bool:
-    """Resolve a delayed Favilla chat HOLD and append the final reply to app history."""
-    from fiam.holds import append_final_to_hold, hold_record_from_entry
-    from fiam.markers import parse_final_markers, strip_xml_markers
-
-    hold = hold_record_from_entry(config, entry)
-    source = str(hold.get("source") or "chat")
-    original = str(hold.get("user_text") or "").strip()
-    reason = str(hold.get("reason") or "continue held Favilla chat reply").strip()
-    draft = str(hold.get("draft") or "").strip()
-    hold_id = str(hold.get("hold_id") or hold.get("id") or "").strip()
-    attachments = hold.get("attachments") if isinstance(hold.get("attachments"), list) else []
-    prompt = (
-        "[held_reply:favilla] Continue a delayed Favilla chat reply now.\n"
-        "The previous draft was intentionally held and was not shown to the user.\n"
-        "Write one final user-facing reply for Favilla inside <final>...</final>.\n"
-        "Text outside <final> is private and will not be shown to the user.\n"
-        "Do not mention internal queue mechanics.\n"
-        "Use <cot>...</cot> for short visible state notes, and <lock/> if the turn should stay private.\n"
-        "Only emit another <hold until=\"ISO_TIME\" reason=\"brief reason\">draft</hold> if it truly still needs more time.\n\n"
-        f"Hold reason: {reason}\n\n"
-        f"Original user message:\n{original or '(empty)'}\n\n"
-        f"Held draft:\n{draft or '(empty)'}"
-    )
-    ok, data = _run_claude_json(config, prompt, tag="favilla")
-    if not ok or not data:
-        return False
-    raw = str(data.get("result") or "").strip()
-    if not raw:
-        return False
-
-    reply, hold_tags, immediate_hold = extract_hold_markers(
-        raw,
-        config,
-        source=source,
-        runtime="cc",
-        user_text=original,
-        attachments=attachments,
-    )
-    if hold_tags:
-        append_to_todo(hold_tags, config)
-    later_todos = extract_scheduled_items(reply, config)
-    if later_todos:
-        append_to_todo(later_todos, config)
-    state_tag = extract_state_tag(reply, config)
-    if state_tag:
-        if state_tag["state"] == "sleep":
-            _save_sleep_state(config, state_tag["sleeping_until"], state_tag.get("reason", ""))
-        else:
-            _save_ai_state(
-                config,
-                state_tag["state"],
-                until=str(state_tag.get("until") or ""),
-                reason=str(state_tag.get("reason") or ""),
-            )
-
-    reply = strip_xml_markers(reply, {"wake", "todo", "sleep", "mute", "notify"}).strip()
-    if hold_tags or immediate_hold:
-        summary = "holding this for later" if hold_tags else "holding this reply"
-        _append_transcript(config, source, {
-            "role": "ai",
-            "thinking": [{"kind": "think", "text": summary, "summary": summary, "source": "marker", "locked": True, "icon": "Clock3"}],
-            "thinkingLocked": True,
-            "segments": [{"type": "thought", "summary": summary, "source": "marker", "locked": True, "icon": "Clock3"}],
-            "hold": {"queued": len(hold_tags), "immediate": immediate_hold},
-        })
-        return True
-
-    finals = parse_final_markers(reply)
-    if not finals:
-        _plog.warning("held_reply missing <final> hold_id=%s", hold_id or "?")
-        return False
-
-    final_text = "\n\n".join(marker.text for marker in finals).strip()
-    if not final_text:
-        _plog.warning("held_reply empty <final> hold_id=%s", hold_id or "?")
-        return False
-    append_final_to_hold(config, hold_id, final_text)
-
-    parsed = parse_app_cot(final_text, config)
-    _append_transcript(config, source, {
-        "role": "ai",
-        "text": parsed.reply,
-        "raw_text": final_text,
-        "thinking": parsed.thoughts,
-        "thinkingLocked": parsed.locked,
-        "segments": parsed.segments,
-    })
-    return True
 
 
 def _run_claude_json(config, message: str, *, tag: str) -> tuple[bool, dict | None]:
@@ -1264,8 +1173,17 @@ def cmd_start(args: argparse.Namespace) -> None:
                         _console.print(f"  [dim]💤 still sleeping — todo skipped[/dim]")
                         mark_done(entry, config, success=True)
                         continue
-                if str(entry.get("action") or "") == "held_reply":
-                    ok = _wake_held_reply(config, entry, conductor=_conductor)
+                action = str(entry.get("action") or "")
+                if action == "hold_retry":
+                    trigger_label = f"hold_retry:{reason[:40]}" if reason else "hold_retry"
+                    body = f"[hold_retry] {reason or 'reconsider held output'}"
+                    todo_prefix = _build_wake_context(prior_sleep_state, trigger_label)
+                    ok = _wake_session(
+                        config,
+                        f"{todo_prefix}{body}",
+                        tag="hold_retry",
+                        conductor=_conductor,
+                    )
                 else:
                     trigger_label = "scheduled" if kind == "wake" else f"todo:{reason[:40]}"
                     body = "[scheduled wake]" if kind == "wake" else f"[todo] {reason}"

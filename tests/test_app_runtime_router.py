@@ -60,7 +60,7 @@ class AppRuntimeRouterTest(unittest.TestCase):
         self.assertNotIn("secret plan detail", str(segments))
 
     def test_carry_over_marker_is_private_control(self) -> None:
-        reply, queued_todos, queued_holds, immediate_hold, carry_over = dashboard_server._apply_app_control_markers(
+        reply, queued_todos, hold_kind, carry_over = dashboard_server._apply_app_control_markers(
             'private bridge notes <carry_over to="cc" reason="needs files" />',
             source="chat",
             runtime="api",
@@ -70,8 +70,7 @@ class AppRuntimeRouterTest(unittest.TestCase):
 
         self.assertEqual(reply, "private bridge notes")
         self.assertEqual(queued_todos, 0)
-        self.assertEqual(queued_holds, 0)
-        self.assertFalse(immediate_hold)
+        self.assertEqual(hold_kind, "")
         self.assertEqual(carry_over, {"to": "cc", "reason": "needs files"})
 
     def test_cc_action_events_merge_tool_use_and_result(self) -> None:

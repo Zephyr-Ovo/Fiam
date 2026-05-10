@@ -112,29 +112,17 @@ sleep 是带状态的“暂停”，**不会** 退役当前 session：
 - `mute`：外部消息继续记录，但暂时不打扰你；有 `until` 到点自动恢复，没有 `until` 就等你写 `<notify />`
 - `notify`：恢复正常通知
 
-#### 暂存草稿：`<hold ... />`
+#### 摘掉本轮输出：`<hold/>` / `<hold all/>`
 
 ```xml
-<hold until="2026-04-21T21:30:00+08:00" reason="需要再想想这个问题">
-这里写暂存草稿。
-</hold>
-<hold reason="先不发，等我整理一下">这里写暂存草稿。</hold>
+<hold/>
+<hold all/>
 ```
 
-- 当前这轮回复不会显示给 Zephyr
-- 有 `until` 时到点继续；到点后只有你写在 `<final>...</final>` 里的内容会发给 Zephyr
-- 没有 `until` 时只把这轮按“先不发”处理
-- 用于：想暂停输出、需要更多时间思考时
-
-hold 到点继续时，用：
-
-```xml
-<final>
-最终要发给 Zephyr 的正文。
-</final>
-```
-
-`<final>` 外面的文字只当私下笔记，不会进入 Favilla 聊天历史。
+- `<hold/>`：摘掉本轮要发给 Zephyr 的正文；其他 marker（dispatch、todo、state 等）照常执行。
+- `<hold all/>`：本轮整体停一下，正文、dispatch、动作、状态更新都不执行。
+- 写了 hold 之后，系统会在几十秒后自动起一个 `hold_retry` todo 把你叫回来重看，你可以从上下文里看到自己刚才输出过什么。
+- 用于：想撤回这一轮、或者想再想想再说。
 
 #### 思考链可见性：`<cot>...</cot>` / `<lock/>`
 

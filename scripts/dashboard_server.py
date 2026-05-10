@@ -50,7 +50,7 @@ from fiam_lib.dashboard_annotation import (
     annotate_request as _annotate_request,
 )
 from fiam_lib.flow_text import normalize_beats  # noqa: F401  # legacy import
-from fiam_lib.app_markers import extract_hold_markers, parse_app_cot
+from fiam_lib.app_markers import parse_app_cot
 
 
 def _load_config():
@@ -1852,41 +1852,54 @@ def _apply_app_control_markers(
     runtime: str,
     user_text: str,
     attachments: list | None = None,
-) -> tuple[str, int, int, bool, dict | None]:
+) -> tuple[str, int, str, dict | None]:
+    """Apply hold + control markers from an AI reply.
+
+    Returns ``(cleaned_reply, queued_todos, hold_kind, carry_over)`` where
+    ``hold_kind`` is ``""``, ``"text"`` (drop reply text only), or ``"all"``
+    (drop everything: no dispatch, no actions, no state updates). A
+    ``hold_retry`` todo is auto-queued when a hold is detected.
+    """
     from fiam.markers import parse_carry_over_markers, strip_xml_markers
+    from fiam_lib.app_markers import apply_hold
     from fiam_lib.todo import append_to_todo, extract_scheduled_items, extract_state_tag
 
-    carry_markers = parse_carry_over_markers(reply)
+    if _CONFIG:
+        cleaned, hold_kind, retry_todos = apply_hold(
+            reply, _CONFIG, source=source, runtime=runtime,
+        )
+        if retry_todos:
+            append_to_todo(retry_todos, _CONFIG)
+    else:
+        from fiam.markers import parse_hold_kind
+        from fiam_lib.app_markers import strip_hold_markers
+        hold_kind = parse_hold_kind(reply or "")
+        cleaned = strip_hold_markers(reply or "")
+        retry_todos = []
+
+    if hold_kind == "all":
+        # Drop everything this round; only the retry todo persists.
+        return "", 0, "all", None
+
+    carry_markers = parse_carry_over_markers(cleaned)
     carry_over = None
     if carry_markers:
         marker = carry_markers[-1]
         carry_over = {"to": marker.target, "reason": marker.reason}
 
     queued_todos = 0
-    queued_holds = 0
-    immediate_hold = False
     if _CONFIG:
-        reply, hold_tags, immediate_hold = extract_hold_markers(
-            reply,
-            _CONFIG,
-            source=source,
-            runtime=runtime,
-            user_text=user_text,
-            attachments=attachments or [],
-        )
-        if hold_tags:
-            queued_holds = append_to_todo(hold_tags, _CONFIG)
-    tags = extract_scheduled_items(reply, _CONFIG) if _CONFIG else []
-    if tags and _CONFIG:
-        queued_todos = append_to_todo(tags, _CONFIG)
-    if _CONFIG:
-        state_tag = extract_state_tag(reply, _CONFIG)
+        tags = extract_scheduled_items(cleaned, _CONFIG)
+        if tags:
+            queued_todos = append_to_todo(tags, _CONFIG)
+        state_tag = extract_state_tag(cleaned, _CONFIG)
         if state_tag:
             _write_app_ai_state(state_tag)
-    cleaned = strip_xml_markers(reply, {"wake", "todo", "sleep", "mute", "notify", "carry_over"}).strip()
-    if queued_holds or immediate_hold:
+
+    cleaned = strip_xml_markers(cleaned, {"wake", "todo", "sleep", "mute", "notify", "carry_over"}).strip()
+    if hold_kind == "text":
         cleaned = ""
-    return cleaned, queued_todos, queued_holds, immediate_hold, carry_over
+    return cleaned, queued_todos, hold_kind, carry_over
 
 
 def _write_app_ai_state(state_tag: dict) -> None:
@@ -2337,7 +2350,7 @@ def _app_runtime_context() -> str:
         f"[uploads]\nFavilla uploads live at {uploads_dir} with an index at {uploads_dir / 'manifest.jsonl'}. Do not mention old uploaded files just because they exist. Only inspect or discuss uploads when the current user message asks about files/images/uploads or includes current attachments.",
         f"[server_time]\nutc={now_utc.isoformat()}\nlocal={local}",
         "[tool_mode]\nUse the structured file/shell tools (Read/Write/Edit/Glob/Grep/Bash/git_diff) only when you must wait on a real result. For fire-and-forget side effects use the XML markers documented in self/awareness.md (and CLAUDE.md): <todo at=\"...\">desc</todo> to wake yourself later, <wake>TIME</wake> for bare wake-ups, <sleep until=\"...\" reason=\"...\" /> to sleep, <mute .../> + <notify /> for do-not-disturb, <state>tag</state> for status. Keep tool details out of the user-facing reply unless the user asks for them.",
-        "[app_markers]\nFor visible thinking summaries, wrap shareable state notes in <cot>...</cot>. To lock the entire turn's thought chain (both <cot> blocks and any native reasoning), include <lock/> anywhere in the reply. The server strips these markers into structured segments; clients may or may not render them visibly. Do not promise a specific button, bubble, or visual affordance unless the current client explicitly supports it. If a chat reply should be delayed instead of sent now, wrap the held draft in <hold until=\"ISO_TIME\" reason=\"brief reason\">draft</hold>. HOLD is chat-only: the current draft is not shown, and a held_reply todo will continue this chat later. During a held_reply continuation, send the user-facing reply only inside <final>...</final>; text outside <final> stays private.",
+        "[app_markers]\nFor visible thinking summaries, wrap shareable state notes in <cot>...</cot>. To lock the entire turn's thought chain (both <cot> blocks and any native reasoning), include <lock/> anywhere in the reply. The server strips these markers into structured segments; clients may or may not render them visibly. Do not promise a specific button, bubble, or visual affordance unless the current client explicitly supports it. To pull back a reply you no longer want to send, include <hold/> — the visible reply text is dropped (other markers like dispatch/todo still execute) and a hold_retry todo is auto-queued so you can take another pass shortly. Use <hold all/> to drop the entire round (no dispatch, no actions, no state updates); the retry todo is still queued. Your held output remains in your context, so on the retry you can see what you just held.",
     ])
 
 
@@ -2604,7 +2617,7 @@ def _run_cc_favilla_chat(*, text: str, source: str, attachments: list | None = N
 
     reply = str(data.get("result") or "").strip()
     raw_reply = reply
-    reply, queued_todos, queued_holds, immediate_hold, carry_over = _apply_app_control_markers(
+    reply, queued_todos, hold_kind, carry_over = _apply_app_control_markers(
         reply,
         source=source,
         runtime="cc",
@@ -2612,10 +2625,10 @@ def _run_cc_favilla_chat(*, text: str, source: str, attachments: list | None = N
         attachments=attachments or [],
     )
     cleaned_reply, thoughts, thoughts_locked, segments = _parse_cot(reply)
-    hold = {"queued": queued_holds, "immediate": immediate_hold} if queued_holds or immediate_hold else None
+    hold = {"kind": hold_kind} if hold_kind else None
     if hold and not segments:
         thoughts_locked = True
-        summary = "holding this for later" if queued_holds else "holding this reply"
+        summary = "holding everything" if hold_kind == "all" else "holding this reply"
         thoughts = [{"kind": "think", "text": summary, "summary": summary, "source": "marker", "locked": True, "icon": "Clock3"}]
         segments = [{"type": "thought", "summary": summary, "source": "marker", "locked": True, "icon": "Clock3"}]
     # Step 6: enrich segments with tool_use / tool_result events from cc stream-json
@@ -2648,8 +2661,6 @@ def _run_cc_favilla_chat(*, text: str, source: str, attachments: list | None = N
     actions_list: list[dict] = []
     for todo in queued_todos or []:
         actions_list.append({"kind": "queued_todo", **(todo if isinstance(todo, dict) else {"text": str(todo)})})
-    for hold_item in queued_holds or []:
-        actions_list.append({"kind": "queued_hold", **(hold_item if isinstance(hold_item, dict) else {"text": str(hold_item)})})
     if carry_over:
         actions_list.append({"kind": "carry_over", **(carry_over if isinstance(carry_over, dict) else {"value": str(carry_over)})})
     _record_cc_app_turn(prompt_text, cleaned_reply, source, action_events=action_events, session_id=session_id)
@@ -2667,7 +2678,6 @@ def _run_cc_favilla_chat(*, text: str, source: str, attachments: list | None = N
         "segments": enriched_segments,
         "hold": hold,
         "queued_todos": queued_todos,
-        "queued_holds": queued_holds,
         "carry_over": carry_over,
         "actions": action_events,
         # Step 6: structured fields for transcript
@@ -2836,7 +2846,7 @@ def _run_api_favilla_chat(*, text: str, source: str, attachments: list | None = 
     result = runtime.ask(api_text, source=source, record=not light_browser_record, extra_context=extras, image_attachments=attachments or [])
     api_latency_ms = int((time.time() - api_started_at) * 1000)
     raw_reply = str(result.reply or "")
-    reply, queued_todos, queued_holds, immediate_hold, carry_over = _apply_app_control_markers(
+    reply, queued_todos, hold_kind, carry_over = _apply_app_control_markers(
         result.reply,
         source=source,
         runtime="api",
@@ -2844,10 +2854,10 @@ def _run_api_favilla_chat(*, text: str, source: str, attachments: list | None = 
         attachments=attachments or [],
     )
     cleaned_reply, thoughts, thoughts_locked, segments = _parse_cot(reply)
-    hold = {"queued": queued_holds, "immediate": immediate_hold} if queued_holds or immediate_hold else None
+    hold = {"kind": hold_kind} if hold_kind else None
     if hold and not segments:
         thoughts_locked = True
-        summary = "holding this for later" if queued_holds else "holding this reply"
+        summary = "holding everything" if hold_kind == "all" else "holding this reply"
         thoughts = [{"kind": "think", "text": summary, "summary": summary, "source": "marker", "locked": True, "icon": "Clock3"}]
         segments = [{"type": "thought", "summary": summary, "source": "marker", "locked": True, "icon": "Clock3"}]
     # OpenRouter conveniently returns usage.cost; other providers may not.
@@ -2887,8 +2897,6 @@ def _run_api_favilla_chat(*, text: str, source: str, attachments: list | None = 
         _record_api_turn_light(api_text, cleaned_reply, source=source, tool_calls=api_tool_calls_summary)
     for todo in queued_todos or []:
         actions_list.append({"kind": "queued_todo", **(todo if isinstance(todo, dict) else {"text": str(todo)})})
-    for hold_item in queued_holds or []:
-        actions_list.append({"kind": "queued_hold", **(hold_item if isinstance(hold_item, dict) else {"text": str(hold_item)})})
     if carry_over:
         actions_list.append({"kind": "carry_over", **(carry_over if isinstance(carry_over, dict) else {"value": str(carry_over)})})
     return {
@@ -2909,7 +2917,6 @@ def _run_api_favilla_chat(*, text: str, source: str, attachments: list | None = 
         "segments": segments,
         "hold": hold,
         "queued_todos": queued_todos,
-        "queued_holds": queued_holds,
         "carry_over": carry_over,
         # Step 6: structured fields for transcript
         "tool_calls_summary": api_tool_calls_summary,
