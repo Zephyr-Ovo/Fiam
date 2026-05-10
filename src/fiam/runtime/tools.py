@@ -8,24 +8,22 @@ touch the rest of the filesystem.
 Tool surface (deliberately small, mirrors editor primitives):
 
 - ``Read(path)``                      — read entire file (Claude Code parity)
-- ``list_dir(path)``                  — list directory entries
-- ``str_replace(path, old, new)``     — replace exactly one occurrence
-- ``insert(path, line, content)``     — insert after ``line`` (0 = file head)
 - ``Write(path, content)``            — create new file, fail if exists
-- ``git_diff(path?, since?)``         — git diff inside home_path
+- ``Edit(path, old_string, new_string, replace_all?)`` — edit a file in place
+- ``Glob(pattern, path?)``            — list files matching glob, mtime sorted
 - ``Grep(path, query)``               — search text files under a path
 - ``Bash(command, timeout?)``         — run a shell command (full freedom; CC parity)
+- ``git_diff(path?, since?)``         — git diff inside home_path
 - ``add_todo(at, kind, reason?)`` — append a wake/todo entry to self/todo.jsonl
 - ``set_ai_state(state, until?, reason?)`` — update self/ai_state.json
 
 Note on freedom: ``Bash`` runs without sandbox by design (CC-like free agent
-per docs/ai_runtime_alignment_notes.md). Path-based tools (Read/Write/Grep/
-list_dir/str_replace/insert/git_diff) keep the home_path sandbox because they
-are scoped to AI memory editing; if AI needs to touch the wider filesystem it
-uses ``Bash``.
+per docs/ai_runtime_alignment_notes.md). Path-based tools (Read/Write/Edit/
+Glob/Grep/git_diff) keep the home_path sandbox because they are scoped to AI
+memory editing; if AI needs to touch the wider filesystem it uses ``Bash``.
 
 The ``remember`` action is intentionally NOT a separate tool: editing
-``self/identity.md`` etc. is just ``str_replace`` on a known path.
+``self/identity.md`` etc. is just ``Edit`` on a known path.
 """
 
 from __future__ import annotations
@@ -66,50 +64,42 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "list_dir",
-            "description": "List entries in a directory inside your home.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "Relative path from home, '.' for root."},
-                },
-                "required": ["path"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "str_replace",
+            "name": "Edit",
             "description": (
-                "Replace exactly one occurrence of `old` with `new` in a file. "
-                "Fails if `old` appears zero or multiple times. Use this to edit "
-                "a section of self/*.md without rewriting the whole file."
+                "Edit a file by replacing `old_string` with `new_string`. "
+                "By default fails if `old_string` is not exactly unique in the "
+                "file. Set `replace_all=true` to replace every occurrence. "
+                "To insert at file head, pass `old_string=''` with the new "
+                "file head text plus the existing first line as `new_string`."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string"},
-                    "old": {"type": "string", "description": "Exact text to find. Must be unique."},
-                    "new": {"type": "string", "description": "Replacement text."},
+                    "path": {"type": "string", "description": "Relative path from home."},
+                    "old_string": {"type": "string", "description": "Exact text to find. Must be unique unless replace_all=true."},
+                    "new_string": {"type": "string", "description": "Replacement text."},
+                    "replace_all": {"type": "boolean", "description": "Replace every occurrence (default false)."},
                 },
-                "required": ["path", "old", "new"],
+                "required": ["path", "old_string", "new_string"],
             },
         },
     },
     {
         "type": "function",
         "function": {
-            "name": "insert",
-            "description": "Insert `content` after line `line` (0 = before first line).",
+            "name": "Glob",
+            "description": (
+                "List files matching a glob pattern, sorted by modification "
+                "time (newest first). Use this instead of listing whole "
+                "directories. Returns at most 200 paths."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string"},
-                    "line": {"type": "integer", "minimum": 0},
-                    "content": {"type": "string"},
+                    "pattern": {"type": "string", "description": "Glob pattern, e.g. '**/*.md' or 'self/*.md'."},
+                    "path": {"type": "string", "description": "Optional search root relative to home (default: home itself)."},
                 },
-                "required": ["path", "line", "content"],
+                "required": ["pattern"],
             },
         },
     },
@@ -262,51 +252,59 @@ def _read_file(home: Path, args: dict[str, Any]) -> str:
         return "error: file is binary or not UTF-8 text; Read cannot inspect image/binary contents"
 
 
-def _list_dir(home: Path, args: dict[str, Any]) -> str:
-    path = _resolve(home, args["path"])
-    if not path.is_dir():
-        raise ToolError(f"not a directory: {args['path']}")
-    entries = []
-    for child in sorted(path.iterdir()):
-        kind = "dir" if child.is_dir() else "file"
-        size = child.stat().st_size if child.is_file() else None
-        entries.append({"name": child.name, "type": kind, "size": size})
-    return json.dumps(entries, ensure_ascii=False)
-
-
-def _str_replace(home: Path, args: dict[str, Any]) -> str:
+def _edit(home: Path, args: dict[str, Any]) -> str:
     path = _resolve(home, args["path"])
     if not path.is_file():
         raise ToolError(f"not a file: {args['path']}")
-    old = args["old"]
-    new = args["new"]
+    old = args.get("old_string", "")
+    new = args.get("new_string", "")
     if not isinstance(old, str) or not isinstance(new, str):
-        raise ToolError("old and new must be strings")
+        raise ToolError("old_string and new_string must be strings")
+    replace_all = bool(args.get("replace_all", False))
     text = path.read_text(encoding="utf-8")
+    if old == "":
+        # Convention: empty old_string means prepend new_string at file head.
+        path.write_text(new + text, encoding="utf-8")
+        return "ok"
     count = text.count(old)
     if count == 0:
-        raise ToolError("old string not found")
-    if count > 1:
-        raise ToolError(f"old string matches {count} times; must be unique")
-    path.write_text(text.replace(old, new, 1), encoding="utf-8")
+        raise ToolError("old_string not found")
+    if count > 1 and not replace_all:
+        raise ToolError(f"old_string matches {count} times; pass replace_all=true or make it unique")
+    if replace_all:
+        path.write_text(text.replace(old, new), encoding="utf-8")
+    else:
+        path.write_text(text.replace(old, new, 1), encoding="utf-8")
     return "ok"
 
 
-def _insert(home: Path, args: dict[str, Any]) -> str:
-    path = _resolve(home, args["path"])
-    if not path.is_file():
-        raise ToolError(f"not a file: {args['path']}")
-    line = int(args["line"])
-    content = args["content"]
-    if not isinstance(content, str):
-        raise ToolError("content must be a string")
-    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-    if line < 0 or line > len(lines):
-        raise ToolError(f"line {line} out of range (0..{len(lines)})")
-    insertion = content if content.endswith("\n") else content + "\n"
-    lines.insert(line, insertion)
-    path.write_text("".join(lines), encoding="utf-8")
-    return "ok"
+def _glob(home: Path, args: dict[str, Any]) -> str:
+    pattern = args.get("pattern")
+    if not isinstance(pattern, str) or not pattern:
+        raise ToolError("pattern must be a non-empty string")
+    rel = args.get("path", ".")
+    root = _resolve(home, rel) if rel else home
+    if not root.exists():
+        raise ToolError(f"path does not exist: {rel!r}")
+    if not root.is_dir():
+        raise ToolError(f"path is not a directory: {rel!r}")
+    matches: list[tuple[float, str]] = []
+    home_resolved = home.resolve()
+    for p in root.glob(pattern):
+        if not p.is_file():
+            continue
+        try:
+            rel_path = p.resolve().relative_to(home_resolved).as_posix()
+        except ValueError:
+            continue
+        try:
+            mtime = p.stat().st_mtime
+        except OSError:
+            continue
+        matches.append((mtime, rel_path))
+    matches.sort(key=lambda x: x[0], reverse=True)
+    out = [path for _, path in matches[:200]]
+    return json.dumps(out, ensure_ascii=False)
 
 
 def _create_file(home: Path, args: dict[str, Any]) -> str:
@@ -499,12 +497,11 @@ _DISPATCH = {
     # Claude Code parity names
     "Read": _read_file,
     "Write": _create_file,
+    "Edit": _edit,
+    "Glob": _glob,
     "Grep": _grep_files,
     "Bash": _bash,
     # fiam-specific tools (no CC counterpart yet; will migrate to fiam CLI)
-    "list_dir": _list_dir,
-    "str_replace": _str_replace,
-    "insert": _insert,
     "git_diff": _git_diff,
     "add_todo": _add_todo,
     "set_ai_state": _set_ai_state,

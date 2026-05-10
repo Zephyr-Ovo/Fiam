@@ -45,21 +45,21 @@ class ToolsTest(unittest.TestCase):
 
             self.assertIn("hello", execute_tool_call(cfg, "Read", json.dumps({"path": "self/identity.md"})))
 
-            entries = json.loads(execute_tool_call(cfg, "list_dir", json.dumps({"path": "self"})))
-            self.assertEqual([e["name"] for e in entries], ["identity.md"])
+            entries = json.loads(execute_tool_call(cfg, "Glob", json.dumps({"pattern": "self/*"})))
+            self.assertIn("self/identity.md", entries)
 
             self.assertEqual(
                 "ok",
-                execute_tool_call(cfg, "str_replace", json.dumps({
-                    "path": "self/identity.md", "old": "hello world", "new": "hi there",
+                execute_tool_call(cfg, "Edit", json.dumps({
+                    "path": "self/identity.md", "old_string": "hello world", "new_string": "hi there",
                 })),
             )
             self.assertTrue((home / "self" / "identity.md").read_text(encoding="utf-8").startswith("hi there"))
 
             self.assertEqual(
                 "ok",
-                execute_tool_call(cfg, "insert", json.dumps({
-                    "path": "self/identity.md", "line": 0, "content": "# top",
+                execute_tool_call(cfg, "Edit", json.dumps({
+                    "path": "self/identity.md", "old_string": "", "new_string": "# top\n",
                 })),
             )
             self.assertTrue((home / "self" / "identity.md").read_text(encoding="utf-8").startswith("# top\n"))
@@ -90,10 +90,10 @@ class ToolsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             (home / "f.md").write_text("xx xx", encoding="utf-8")
-            out = execute_tool_call(_cfg(home), "str_replace", json.dumps({
-                "path": "f.md", "old": "xx", "new": "y",
+            out = execute_tool_call(_cfg(home), "Edit", json.dumps({
+                "path": "f.md", "old_string": "xx", "new_string": "y",
             }))
-            self.assertTrue(out.startswith("error: old string matches 2 times"))
+            self.assertTrue(out.startswith("error: old_string matches 2 times"))
 
     def test_create_file_refuses_existing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -74,7 +74,7 @@ class ToolLoopClient:
                 tool_calls=[{
                     "id": "call_list",
                     "type": "function",
-                    "function": {"name": "list_dir", "arguments": "{\"path\": \".\"}"},
+                    "function": {"name": "Glob", "arguments": "{\"pattern\": \"*\"}"},
                 }],
             )
         return ApiCompletion(
@@ -92,7 +92,6 @@ class ApiRuntimeTest(unittest.TestCase):
         config = FiamConfig(
             home_path=home,
             code_path=code,
-            ai_name="Fiet",
             user_name="Zephyr",
             embedding_dim=3,
             memory_mode="manual",
@@ -101,7 +100,7 @@ class ApiRuntimeTest(unittest.TestCase):
             api_key_env="OPENROUTER_API_KEY",
         )
         config.ensure_dirs()
-        config.claude_md_path.write_text("你是 Fiet。", encoding="utf-8")
+        config.claude_md_path.write_text("你是 ai。", encoding="utf-8")
         config.personality_path.write_text("喜欢保持连续身份。", encoding="utf-8")
         return config
 
@@ -142,7 +141,7 @@ class ApiRuntimeTest(unittest.TestCase):
                 return str(c)
 
             prompt_text = "\n\n".join(_content_text(m["content"]) for m in client.calls[0]["messages"])
-            self.assertIn("你是 Fiet。", prompt_text)
+            self.assertIn("你是 ai。", prompt_text)
             self.assertIn("喜欢保持连续身份。", prompt_text)
             self.assertIn("[recall]", prompt_text)
             self.assertIn("昨天聊过 API runtime", prompt_text)
@@ -163,7 +162,6 @@ class ApiRuntimeTest(unittest.TestCase):
             toml.write_text(
                 "\n".join([
                     f'home_path = "{home.as_posix()}"',
-                    'ai_name = "Fiet"',
                     'user_name = "Zephyr"',
                     "",
                     "[api]",

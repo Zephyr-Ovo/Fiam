@@ -5,18 +5,18 @@ model = sys.argv[1] if len(sys.argv) > 1 else "deepseek/deepseek-chat-v3-0324:fr
 body = {
     "model": model,
     "messages": [
-        {"role": "user", "content": "Call list_dir with path='self', then briefly say what you saw."}
+        {"role": "user", "content": "Call Glob with pattern='self/*', then briefly say what you saw."}
     ],
     "tools": [
         {
             "type": "function",
             "function": {
-                "name": "list_dir",
-                "description": "List directory entries.",
+                "name": "Glob",
+                "description": "List files matching a glob pattern.",
                 "parameters": {
                     "type": "object",
-                    "properties": {"path": {"type": "string"}},
-                    "required": ["path"],
+                    "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}},
+                    "required": ["pattern"],
                 },
             },
         }
