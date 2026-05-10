@@ -1,9 +1,9 @@
 """Function-calling tool schemas + local executors for the API runtime.
 
 Sandboxing: every path argument is resolved relative to ``config.home_path``
-(``~/fiet-home``) and rejected if it escapes that root. The model can read,
-list, and edit files inside its home, run ``git diff`` against it, but cannot
-touch the rest of the filesystem.
+(the AI's project home) and rejected if it escapes that root. The model can
+read, list, and edit files inside its home, run ``git diff`` against it, but
+cannot touch the rest of the filesystem.
 
 Tool surface (deliberately small, mirrors editor primitives):
 
@@ -163,9 +163,9 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "Run a shell command and return its combined stdout+stderr. "
                 "Runs without sandbox: cwd is the project home but absolute "
                 "paths and any binary on PATH are reachable. Use this for "
-                "git, build, test, fiam CLI, file ops outside ~/fiet-home, "
-                "or any task not covered by the Read/Write/Edit/Grep tools. "
-                "Long-running commands are killed at the timeout."
+                "git, build, test, fiam CLI, file ops outside the project "
+                "home, or any task not covered by the Read/Write/Edit/Grep "
+                "tools. Long-running commands are killed at the timeout."
             ),
             "parameters": {
                 "type": "object",

@@ -1,6 +1,7 @@
 """Stroll runtime state: a single-active-walk flag with location + tick.
 
-Persisted at ``~/fiet-home/stroll/state.json`` so dashboard restarts don't
+Persisted at ``<home>/stroll/state.json`` (where ``<home>`` is
+``config.home_path``) so dashboard restarts don't
 lose an in-flight walk. Only one walk active at a time. Heartbeat must
 refresh within ``HEARTBEAT_TIMEOUT_S`` or the walk auto-ends on read.
 """

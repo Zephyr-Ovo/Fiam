@@ -24,7 +24,7 @@ def _sanitize_home_path(home_path: Path) -> str:
     """Derive the sanitized directory name Claude Code uses.
 
     Claude Code replaces path separators and colons with dashes.
-    e.g. D:\\ai-home → D--ai-home, /root/fiet-home → -root-fiet-home
+    e.g. ``F:\\home`` → ``F--home``, ``/home/user/ai-home`` → ``-home-user-ai-home``
     """
     raw = str(home_path.resolve())
     # Replace all separators and colons with dashes

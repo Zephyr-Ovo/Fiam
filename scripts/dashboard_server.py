@@ -2326,18 +2326,18 @@ _COT_LOCK_RE = re.compile(r"<<COT:lock>>", re.IGNORECASE)
 _COT_HIDE_RE = re.compile(r"<<COT:hide>>", re.IGNORECASE)
 
 _APP_RUNTIME_CONTEXT_BASE = """[Direct runtime awareness]
-The scene tag describes where this turn appears in the narrative. User-side scenes look like user@<channel>: user@favilla and user@stroll are the two Favilla app surfaces. AI-side scenes look like ai@<channel>: ai@favilla and ai@stroll are the matching reply surfaces; ai@think is internal reasoning; ai@action is a tool call. The runtime tag describes the capability surface for this turn: api is the OpenAI-compatible API surface, cc is Claude Code with file/shell/tool capability, and auto means the server selected one. Do not infer a fixed personal name from the runtime tag. The web dashboard is view-only and never originates a user turn — there is no console scene. Reply naturally for the active scene while staying precise about the runtime.
-
-Favilla uploads are stored under /home/fiet/fiet-home/uploads/ with an index at /home/fiet/fiet-home/uploads/manifest.jsonl. Do not mention old uploaded files just because they exist. Only inspect or discuss uploads when the current user message asks about files/images/uploads or includes current attachments."""
+The scene tag describes where this turn appears in the narrative. User-side scenes look like user@<channel>: user@favilla and user@stroll are the two Favilla app surfaces. AI-side scenes look like ai@<channel>: ai@favilla and ai@stroll are the matching reply surfaces; ai@think is internal reasoning; ai@action is a tool call. The runtime tag describes the capability surface for this turn: api is the OpenAI-compatible API surface, cc is Claude Code with file/shell/tool capability, and auto means the server selected one. Do not infer a fixed personal name from the runtime tag. The web dashboard is view-only and never originates a user turn — there is no console scene. Reply naturally for the active scene while staying precise about the runtime."""
 
 
 def _app_runtime_context() -> str:
     now_utc = _CONFIG.now_utc() if _CONFIG else datetime.now(timezone.utc)
     local = now_utc.astimezone(_CONFIG.project_tz()).isoformat() if _CONFIG else now_utc.astimezone().isoformat()
+    uploads_dir = (_CONFIG.home_path / "uploads") if _CONFIG else Path("uploads")
     return "\n\n".join([
         _APP_RUNTIME_CONTEXT_BASE,
+        f"[uploads]\nFavilla uploads live at {uploads_dir} with an index at {uploads_dir / 'manifest.jsonl'}. Do not mention old uploaded files just because they exist. Only inspect or discuss uploads when the current user message asks about files/images/uploads or includes current attachments.",
         f"[server_time]\nutc={now_utc.isoformat()}\nlocal={local}",
-        "[tool_mode]\nUse structured JSON tools when a task needs file reading/writing, upload inspection, delayed todo creation, or state changes. Prefer get_time before date-sensitive todo items. Use add_todo for reminders instead of merely saying you will remember. Keep tool details out of the user-facing reply unless the user asks for them.",
+        "[tool_mode]\nUse the structured file/shell tools (Read/Write/Edit/Glob/Grep/Bash/git_diff) only when you must wait on a real result. For fire-and-forget side effects use the XML markers documented in self/awareness.md (and CLAUDE.md): <todo at=\"...\">desc</todo> to wake yourself later, <wake>TIME</wake> for bare wake-ups, <sleep until=\"...\" reason=\"...\" /> to sleep, <mute .../> + <notify /> for do-not-disturb, <state>tag</state> for status. Keep tool details out of the user-facing reply unless the user asks for them.",
         "[app_markers]\nFor visible thinking summaries, wrap short shareable state notes in <<COT:show>>...<<COT:end>>. Use <<COT:lock>> to lock the entire turn's thought chain. The server strips these markers into structured segments; clients may or may not render them visibly. Do not promise a specific button, bubble, or visual affordance unless the current client explicitly supports it. If a chat reply should be delayed instead of sent now, wrap the held draft in <hold until=\"ISO_TIME\" reason=\"brief reason\">draft</hold>. HOLD is chat-only: the current draft is not shown, and a held_reply todo will continue this chat later. During a held_reply continuation, send the user-facing reply only inside <final>...</final>; text outside <final> stays private.",
     ])
 
