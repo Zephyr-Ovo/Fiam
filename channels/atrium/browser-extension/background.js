@@ -313,11 +313,11 @@ async function startAutonomousSession(startUrl) {
   await setSessionBadge("AI");
   try {
     // Open AI-controlled window in background to avoid stealing user focus.
+    // Note: kept as state:"normal" (not minimized) so screenshots and video frames render.
     const windowInfo = await callApi(ext.windows, "create", {
       url,
       type: "normal",
-      focused: false,
-      state: "minimized"
+      focused: false
     });
     const createdTab = await tabFromWindow(windowInfo);
     const tab = await waitForTabReady(createdTab.id);
