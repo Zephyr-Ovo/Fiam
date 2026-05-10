@@ -16,17 +16,18 @@ export default defineConfig(({ mode }) => {
       alias: {
         '@': path.resolve(__dirname, './src'),
         '@stroll-map': path.resolve(__dirname, '../../../packages/stroll-map/src'),
-        react: path.resolve(appNodeModules, 'react'),
-        'react-dom': path.resolve(appNodeModules, 'react-dom'),
         'mapbox-gl': path.resolve(appNodeModules, 'mapbox-gl'),
         gcoord: path.resolve(appNodeModules, 'gcoord'),
       },
       dedupe: ['react', 'react-dom'],
     },
+    optimizeDeps: {
+      include: ['react', 'react-dom', 'react-dom/client', 'react/jsx-runtime'],
+    },
     build: {
       rollupOptions: {
         output: {
-          manualChunks: undefined,
+          manualChunks: () => 'index',
         },
       },
     },
