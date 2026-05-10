@@ -14,8 +14,15 @@ Tool surface (deliberately small, mirrors editor primitives):
 - ``Write(path, content)``            — create new file, fail if exists
 - ``git_diff(path?, since?)``         — git diff inside home_path
 - ``Grep(path, query)``               — search text files under a path
+- ``Bash(command, timeout?)``         — run a shell command (full freedom; CC parity)
 - ``add_todo(at, kind, reason?)`` — append a wake/todo entry to self/todo.jsonl
 - ``set_ai_state(state, until?, reason?)`` — update self/ai_state.json
+
+Note on freedom: ``Bash`` runs without sandbox by design (CC-like free agent
+per docs/ai_runtime_alignment_notes.md). Path-based tools (Read/Write/Grep/
+list_dir/str_replace/insert/git_diff) keep the home_path sandbox because they
+are scoped to AI memory editing; if AI needs to touch the wider filesystem it
+uses ``Bash``.
 
 The ``remember`` action is intentionally NOT a separate tool: editing
 ``self/identity.md`` etc. is just ``str_replace`` on a known path.
@@ -24,7 +31,10 @@ The ``remember`` action is intentionally NOT a separate tool: editing
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -185,6 +195,29 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "reason": {"type": "string"},
                 },
                 "required": ["state"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "Bash",
+            "description": (
+                "Run a shell command and return its combined stdout+stderr. "
+                "Runs without sandbox: cwd is the project home but absolute "
+                "paths and any binary on PATH are reachable. Use this for "
+                "git, build, test, fiam CLI, file ops outside ~/fiet-home, "
+                "or any task not covered by the Read/Write/Edit/Grep tools. "
+                "Long-running commands are killed at the timeout."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "Shell command to execute."},
+                    "timeout": {"type": "integer", "description": "Seconds before forced kill (default 120, max 600).", "minimum": 1, "maximum": 600},
+                    "description": {"type": "string", "description": "Short human-readable label for logs (optional)."},
+                },
+                "required": ["command"],
             },
         },
     },
@@ -403,11 +436,71 @@ def _set_ai_state(home: Path, args: dict[str, Any]) -> str:
     return json.dumps({"ok": True, **record}, ensure_ascii=False)
 
 
+_BASH_DEFAULT_TIMEOUT = 120
+_BASH_MAX_TIMEOUT = 600
+_BASH_OUTPUT_LIMIT = 30_000
+
+
+def _bash(home: Path, args: dict[str, Any]) -> str:
+    command = args.get("command")
+    if not isinstance(command, str) or not command.strip():
+        raise ToolError("command must be a non-empty string")
+    timeout = args.get("timeout", _BASH_DEFAULT_TIMEOUT)
+    try:
+        timeout = int(timeout)
+    except (TypeError, ValueError) as exc:
+        raise ToolError("timeout must be an integer") from exc
+    timeout = max(1, min(_BASH_MAX_TIMEOUT, timeout))
+    cwd = home if home.exists() else None
+    started = time.monotonic()
+    try:
+        completed = subprocess.run(
+            command,
+            shell=True,
+            cwd=str(cwd) if cwd else None,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            env=os.environ.copy(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        partial = (exc.stdout or "") + (exc.stderr or "")
+        return json.dumps({
+            "ok": False,
+            "timeout": True,
+            "timeout_seconds": timeout,
+            "runtime_ms": elapsed_ms,
+            "output": _truncate_bash_output(partial),
+        }, ensure_ascii=False)
+    except OSError as exc:
+        return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    output = (completed.stdout or "") + (completed.stderr or "")
+    return json.dumps({
+        "ok": completed.returncode == 0,
+        "exit_code": completed.returncode,
+        "runtime_ms": elapsed_ms,
+        "output": _truncate_bash_output(output),
+    }, ensure_ascii=False)
+
+
+def _truncate_bash_output(text: str) -> str:
+    if len(text) <= _BASH_OUTPUT_LIMIT:
+        return text
+    head = text[: _BASH_OUTPUT_LIMIT // 2]
+    tail = text[-_BASH_OUTPUT_LIMIT // 2 :]
+    omitted = len(text) - len(head) - len(tail)
+    return f"{head}\n\n... [{omitted} chars omitted] ...\n\n{tail}"
+
+
 _DISPATCH = {
     # Claude Code parity names
     "Read": _read_file,
     "Write": _create_file,
     "Grep": _grep_files,
+    "Bash": _bash,
     # fiam-specific tools (no CC counterpart yet; will migrate to fiam CLI)
     "list_dir": _list_dir,
     "str_replace": _str_replace,
