@@ -52,8 +52,6 @@ type ThinkStep = {
 type Msg = {
   id: string
   role: "user" | "ai"
-  /** Sender identity for multi-agent UIs. user→zephyr; ai→cc/api/copilot/codex. */
-  agentId?: string
   text?: string
   /** Minutes since epoch. Used to decide whether to show a time separator. */
   t: number
@@ -1147,7 +1145,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
     }
   }
 
-  function streamReply(aiId: string, full: string, thoughts: ThinkStep[], locked: boolean, segments?: ChatSegment[], hold?: Msg["hold"], agentId?: string) {
+  function streamReply(aiId: string, full: string, thoughts: ThinkStep[], locked: boolean, segments?: ChatSegment[], hold?: Msg["hold"]) {
     if (segments && segments.length > 0) {
       setMessages((m) =>
         m.map((x) =>
@@ -1155,7 +1153,6 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
             ? {
                 ...x,
                 text: full,
-                agentId,
                 thinking: thoughts.length > 0 ? thoughts : undefined,
                 thinkingLocked: locked,
                 segments,
@@ -1170,7 +1167,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
       setMessages((m) =>
         m.map((x) =>
           x.id === aiId
-            ? { ...x, text: full, agentId, thinking: thoughts.length > 0 ? thoughts : undefined, thinkingLocked: locked, hold }
+            ? { ...x, text: full, thinking: thoughts.length > 0 ? thoughts : undefined, thinkingLocked: locked, hold }
             : x,
         ),
       )
@@ -1238,7 +1235,6 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
         if (cancelled || !res.ok || !res.messages) return
         setMessages(res.messages.map((msg) => ({
           ...msg,
-          agentId: (msg as { agent_id?: string }).agent_id,
           attachments: (msg.attachments || []).map((att) => {
             if (att.kind === "voice") return { kind: "voice", seconds: Number(att.size || 0) || 0 }
             if (att.kind === "image") return { kind: "image", name: att.name }
@@ -1418,7 +1414,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
       }))
       const locked = !!res.thoughts_locked
       const full = res.reply || ""
-      streamReply(aiId, full, thoughts, locked, res.segments, res.hold, res.agent_id)
+      streamReply(aiId, full, thoughts, locked, res.segments, res.hold)
       // Tell Shell to set the home unread dot if user isn't on chat.
       try {
         window.dispatchEvent(

@@ -56,8 +56,6 @@ export type ChatAttachment = {
 export type StoredChatMessage = {
   id: string
   role: "user" | "ai"
-  /** Multi-agent sender id: zephyr | cc | api | copilot | codex */
-  agent_id?: string
   t: number
   text?: string
   attachments?: Array<{ kind: "voice" | "file" | "image"; name: string; size?: string | number; path?: string; mime?: string }>
@@ -73,7 +71,6 @@ export type StoredChatMessage = {
 export type ChatResponse = {
   ok: boolean
   runtime?: "cc" | "api"
-  agent_id?: string
   reply: string
   thoughts?: ChatThought[]
   thoughts_locked?: boolean

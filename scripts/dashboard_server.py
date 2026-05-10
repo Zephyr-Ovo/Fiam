@@ -1648,8 +1648,6 @@ def _append_transcript(channel: str, message: dict) -> dict:
         "divider", "recallUsed", "error",
         # Step 6: extended schema
         "tool_calls_summary", "actions", "presence", "metrics", "meta",
-        # Step 7: multi-agent identity (zephyr/cc/copilot/codex/api)
-        "agent_id",
     ):
         if key in message and message[key] not in (None, [], ""):
             record[key] = message[key]
@@ -1781,14 +1779,10 @@ def _favilla_transcript_append(payload: dict) -> dict:
         attachments = []
     safe_attachments = _validate_app_attachments(attachments)
     text_in = str(payload.get("text") or "")
-    raw_agent_id = str(payload.get("agent_id") or "").strip().lower()
-    if not raw_agent_id:
-        raw_agent_id = "zephyr" if role == "user" else "api"
     record = _append_transcript(channel, {
         "role": role,
         "text": text_in,
         "raw_text": str(payload.get("raw_text") or text_in),
-        "agent_id": raw_agent_id,
         "attachments": _history_attachments(safe_attachments),
     })
     return {"ok": True, "message": record}
@@ -2073,11 +2067,6 @@ def _favilla_chat_send(payload: dict) -> dict:
     runtime = str(payload.get("runtime") or default_runtime).strip().lower() or "auto"
     if runtime == "auto":
         runtime = _select_favilla_chat_runtime(text, safe_attachments)
-    # agent_id: who SENT this message. user role defaults to zephyr; assistant
-    # is determined later by runtime. External AI clients (copilot/codex/...)
-    # may pass agent_id explicitly so the bubble shows the right label/color.
-    raw_agent_id = str(payload.get("agent_id") or "").strip().lower()
-    user_agent_id = raw_agent_id if raw_agent_id else "zephyr"
     user_text = text
     runtime_text = text
     stroll_context: dict | None = None
@@ -2131,17 +2120,14 @@ def _favilla_chat_send(payload: dict) -> dict:
         "text": user_text,
         "raw_text": user_text,
         "runtime": runtime,
-        "agent_id": user_agent_id,
         "attachments": _history_attachments(safe_attachments),
         "presence": _current_presence(actor="user", channel=channel),
     })
-    ai_agent_id = "cc" if runtime == "cc" else "api"
     _append_transcript(channel, {
         "role": "ai",
         "text": result.get("reply", ""),
         "raw_text": result.get("raw_reply", result.get("reply", "")),
         "runtime": runtime,
-        "agent_id": ai_agent_id,
         "thinking": result.get("thoughts") or [],
         "thinkingLocked": bool(result.get("thoughts_locked")),
         "segments": result.get("segments") or [],
@@ -2172,7 +2158,6 @@ def _favilla_chat_send(payload: dict) -> dict:
         except Exception:
             logger.exception("stroll action publish failed")
     result["runtime"] = runtime
-    result["agent_id"] = ai_agent_id
     return result
 
 
