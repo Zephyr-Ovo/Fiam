@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import tempfile
 import unittest
@@ -18,7 +19,7 @@ if str(SRC) in sys.path:
     sys.path.remove(str(SRC))
 sys.path.insert(0, str(SRC))
 
-from fiam.browser_bridge import build_browser_control_text, build_browser_runtime_text, extract_browser_actions, extract_browser_done, format_browser_snapshot, normalize_browser_snapshot
+from fiam.browser_bridge import build_browser_control_text, build_browser_runtime_text, extract_and_save_browser_profile, extract_browser_actions, extract_browser_done, format_browser_snapshot, media_policy_for_payload, normalize_browser_snapshot
 from fiam.config import FiamConfig
 from fiam.conductor import Conductor
 from fiam.store.beat import read_beats
@@ -99,8 +100,8 @@ class BrowserBridgeTest(unittest.TestCase):
     def test_browser_control_prompt_allows_direct_operation(self) -> None:
         text = build_browser_control_text({**SNAPSHOT, "reason": "content_ready"})
         self.assertIn("[browser_control]", text)
-        self.assertIn("operate directly", text)
-        self.assertIn("Prefer taking exactly one low-risk", text)
+        self.assertIn("Operate this tab", text)
+        self.assertIn("at most ONE hidden action", text)
         self.assertIn("<browser_action", text)
 
     def test_browser_control_prompt_includes_recent_actions(self) -> None:
@@ -458,6 +459,69 @@ class BrowserBridgeTest(unittest.TestCase):
         self.assertIsNone(captured["conductor"])
         self.assertIsNone(captured["recall_refresher"])
         self.assertEqual([(beat.actor, beat.channel) for beat in beats], [("user", "browser"), ("ai", "browser")])
+
+
+class BrowserProfileAuthoringTest(unittest.TestCase):
+    def test_extract_and_save_writes_profile_and_invalidates_cache(self) -> None:
+        from fiam import browser_bridge as bb
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            with patch.object(bb, "PROFILE_DIR", tmp_dir):
+                bb._load_profiles.cache_clear()
+                reply = (
+                    "Looking at this site.\n"
+                    "<browser_profile host=\"example.test\" id=\"example-test\">"
+                    "{\"hosts\":[\"example.test\"],\"keep\":[{\"role\":\"button\",\"labelContains\":\"go\"}],\"maxNodes\":10}"
+                    "</browser_profile>\n"
+                    "<browser_action node=\"node_1\" action=\"click\" />"
+                )
+                cleaned, saved = bb.extract_and_save_browser_profile(reply)
+                self.assertNotIn("browser_profile", cleaned)
+                self.assertIn("browser_action", cleaned)
+                self.assertEqual(len(saved), 1)
+                self.assertTrue(saved[0]["ok"])
+                target = tmp_dir / "example-test.json"
+                self.assertTrue(target.exists())
+                # Cache should now serve the new profile.
+                profiles = bb._load_profiles()
+                self.assertTrue(any(p.get("id") == "example-test" for p in profiles))
+
+    def test_extract_rejects_invalid_json(self) -> None:
+        from fiam import browser_bridge as bb
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(bb, "PROFILE_DIR", Path(tmp)):
+                cleaned, saved = bb.extract_and_save_browser_profile(
+                    "<browser_profile host=\"x.test\">not json{</browser_profile>"
+                )
+                self.assertEqual(cleaned, "")
+                self.assertEqual(len(saved), 1)
+                self.assertFalse(saved[0]["ok"])
+
+    def test_media_policy_defaults_to_auto_without_profile(self) -> None:
+        from fiam import browser_bridge as bb
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(bb, "PROFILE_DIR", Path(tmp)):
+                bb._load_profiles.cache_clear()
+                policy = media_policy_for_payload({"snapshot": {"url": "https://unknown.test/"}})
+                self.assertEqual(policy, {"screenshot": "auto", "videoFrames": "auto"})
+
+    def test_media_policy_uses_profile_block(self) -> None:
+        from fiam import browser_bridge as bb
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            (tmp_dir / "media-test.json").write_text(json.dumps({
+                "id": "media-test",
+                "hosts": ["xhs.test"],
+                "media": {"screenshot": "always", "videoFrames": "never"},
+            }), encoding="utf-8")
+            with patch.object(bb, "PROFILE_DIR", tmp_dir):
+                bb._load_profiles.cache_clear()
+                policy = media_policy_for_payload({"snapshot": {"url": "https://xhs.test/foo"}})
+                self.assertEqual(policy, {"screenshot": "always", "videoFrames": "never"})
 
 
 if __name__ == "__main__":

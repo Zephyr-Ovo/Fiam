@@ -1,0 +1,45 @@
+{
+  "hosts": [
+    "en.wikipedia.org"
+  ],
+  "keep": [
+    {
+      "role": "button",
+      "labelContains": [
+        "Search",
+        "hide",
+        "edit"
+      ]
+    },
+    {
+      "role": "link",
+      "hrefContains": [
+        "/wiki/",
+        "Special:",
+        "action=edit"
+      ]
+    },
+    {
+      "role": "searchbox",
+      "labelContains": [
+        "Search"
+      ]
+    }
+  ],
+  "suppress": [
+    {
+      "role": "link",
+      "labelContains": [
+        "Jump to content",
+        "Donate",
+        "footer",
+        "navigation",
+        "sister projects"
+      ]
+    }
+  ],
+  "maxNodes": 15,
+  "strictKeep": true,
+  "strictKeepContextFallback": true,
+  "id": "en-wikipedia-org"
+}

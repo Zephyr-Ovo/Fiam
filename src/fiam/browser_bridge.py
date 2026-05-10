@@ -15,16 +15,26 @@ from typing import Any
 from urllib.parse import urlparse
 
 MAX_TEXT = 220
-MAX_NODE_TEXT = 120
-MAX_SELECTION = 1200
-MAX_HEADINGS = 12
-MAX_TEXT_BLOCKS = 12
-MAX_TEXT_BLOCK_CHARS = 900
-MAX_NODES = 32
-MAX_MEDIA_SAMPLES = 8
+MAX_NODE_TEXT = 100
+MAX_SELECTION = 800
+MAX_HEADINGS = 8
+MAX_TEXT_BLOCKS = 8
+MAX_TEXT_BLOCK_CHARS = 600
+MAX_NODES = 16
+MAX_MEDIA_SAMPLES = 4
+MAX_URL_DISPLAY = 200
+# Names that are almost always low-signal across sites (a11y / utility links).
+DEFAULT_NODE_NOISE = (
+    "skip to main",
+    "accessibility help",
+    "accessibility feedback",
+    "about this result",
+    "feedback",
+)
 PROFILE_DIR = Path(__file__).resolve().parents[2] / "channels" / "atrium" / "browser-profiles"
 BROWSER_ACTION_RE = re.compile(r"<browser_action\b([^>]*)\s*/>|<browser_action\b([^>]*)>.*?</browser_action>", re.IGNORECASE | re.DOTALL)
 BROWSER_DONE_RE = re.compile(r"<browser_done\b([^>]*)\s*/>|<browser_done\b([^>]*)>.*?</browser_done>", re.IGNORECASE | re.DOTALL)
+BROWSER_PROFILE_RE = re.compile(r"<browser_profile\b([^>]*)>(.*?)</browser_profile>", re.IGNORECASE | re.DOTALL)
 ACTION_ATTR_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_-]*)\s*=\s*(['\"])(.*?)\2")
 
 ACTION_ROLES = {
@@ -143,8 +153,36 @@ def _profile_for_page(url: str, page: dict[str, Any], payload: dict[str, Any]) -
     return _merge_profiles(base, override)
 
 
+def media_policy_for_payload(payload: dict[str, Any]) -> dict[str, str]:
+    """Return effective {screenshot, videoFrames} policy for the page.
+    Each value is one of "auto" | "always" | "never".
+    Defaults to "auto" (extension's heuristic stands)."""
+    snapshot = payload.get("snapshot") if isinstance(payload.get("snapshot"), dict) else payload
+    page = dict(snapshot or {})
+    url = _clean_text(page.get("url"), limit=512)
+    profile = _profile_for_page(url, page, payload) or {}
+    media = profile.get("media") if isinstance(profile.get("media"), dict) else {}
+    def normalize(value: Any) -> str:
+        text = str(value or "auto").strip().lower()
+        return text if text in {"auto", "always", "never"} else "auto"
+    return {
+        "screenshot": normalize(media.get("screenshot")),
+        "videoFrames": normalize(media.get("videoFrames") or media.get("video_frames")),
+    }
+
+
 def _node_label(node: dict[str, Any]) -> str:
     return str(node.get("name") or node.get("text") or node.get("href") or node.get("id") or "")
+
+
+def _rule_string_contains(value: Any) -> list[str]:
+    """Normalize a *Contains rule value into a list of casefolded needles.
+    Accepts a string, list of strings, or None."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item).casefold().strip() for item in value if str(item).strip()]
+    return [str(value).casefold().strip()] if str(value).strip() else []
 
 
 def _rule_matches(node: dict[str, Any], rule: dict[str, Any]) -> bool:
@@ -152,8 +190,8 @@ def _rule_matches(node: dict[str, Any], rule: dict[str, Any]) -> bool:
     if role and role != str(node.get("role") or "").strip().lower():
         return False
     label = _node_label(node).casefold()
-    contains = str(rule.get("labelContains") or rule.get("label_contains") or "").casefold().strip()
-    if contains and contains not in label:
+    contains = _rule_string_contains(rule.get("labelContains") or rule.get("label_contains"))
+    if contains and not any(needle in label for needle in contains):
         return False
     regex = str(rule.get("labelRegex") or rule.get("label_regex") or "").strip()
     if regex:
@@ -162,12 +200,14 @@ def _rule_matches(node: dict[str, Any], rule: dict[str, Any]) -> bool:
                 return False
         except re.error:
             return False
-    href_contains = str(rule.get("hrefContains") or rule.get("href_contains") or "").casefold().strip()
-    if href_contains and href_contains not in str(node.get("href") or "").casefold():
+    href_value = str(node.get("href") or "").casefold()
+    href_contains = _rule_string_contains(rule.get("hrefContains") or rule.get("href_contains"))
+    if href_contains and not any(needle in href_value for needle in href_contains):
         return False
     selector = str(node.get("selector") or "")
-    selector_contains = str(rule.get("selectorContains") or rule.get("selector_contains") or "").casefold().strip()
-    if selector_contains and selector_contains not in selector.casefold():
+    selector_value = selector.casefold()
+    selector_contains = _rule_string_contains(rule.get("selectorContains") or rule.get("selector_contains"))
+    if selector_contains and not any(needle in selector_value for needle in selector_contains):
         return False
     selector_regex = str(rule.get("selectorRegex") or rule.get("selector_regex") or "").strip()
     if selector_regex:
@@ -238,15 +278,23 @@ def _take_with_budget(values: list[str], *, max_items: int, max_chars: int) -> l
 def _normalize_media(page: dict[str, Any]) -> dict[str, Any]:
     media = page.get("media") if isinstance(page.get("media"), dict) else {}
     samples: list[dict[str, Any]] = []
-    for item in _list_of_dicts(media.get("samples"))[:MAX_MEDIA_SAMPLES]:
+    seen_keys: set[tuple[str, str, str]] = set()
+    for item in _list_of_dicts(media.get("samples")):
         kind = _clean_text(item.get("kind"), limit=24).lower() or "media"
         label = _clean_text(item.get("label"), limit=120)
+        viewport = _clean_text(item.get("viewport"), limit=24).lower()
+        key = (kind, label.casefold(), viewport)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
         samples.append({
             "kind": kind,
             "label": label,
             "rect": _rect(item.get("rect")),
-            "viewport": _clean_text(item.get("viewport"), limit=24).lower(),
+            "viewport": viewport,
         })
+        if len(samples) >= MAX_MEDIA_SAMPLES:
+            break
     return {
         "imageCount": int(media.get("imageCount") or media.get("image_count") or 0),
         "imageElementCount": int(media.get("imageElementCount") or media.get("image_element_count") or 0),
@@ -298,6 +346,10 @@ def normalize_browser_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
             label_key = (name or text or selector).casefold()
             if not label_key:
                 continue
+            # Drop site-agnostic noise unless an explicit profile keep rule rescues it.
+            if any(token in label_key for token in DEFAULT_NODE_NOISE):
+                if not (profile and _profile_keep_rule(node, profile)):
+                    continue
             dedupe_key = (role, label_key)
             if dedupe_key in seen:
                 continue
@@ -415,12 +467,66 @@ def browser_snapshot_meta(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _truncate_url(url: str) -> str:
+    if len(url) <= MAX_URL_DISPLAY:
+        return url
+    keep = MAX_URL_DISPLAY - 5
+    return f"{url[: keep // 2]}…{url[-(keep - keep // 2) :]}"
+
+
+DIRTY_PAGE_RAW_NODE_THRESHOLD = 30
+
+
+def format_browser_config_digest(payload: dict[str, Any]) -> str:
+    """Compact digest used when a page is unprofiled AND noisy.
+    We refuse to dump the full snapshot to AI; instead we hand back a
+    minimal summary and ask the AI to author a profile first."""
+    snapshot = payload.get("snapshot") if isinstance(payload.get("snapshot"), dict) else payload
+    page = dict(snapshot)
+    raw_nodes = _list_of_dicts(page.get("nodes"))
+    url = _clean_text(page.get("url"), limit=512)
+    title = _clean_text(page.get("title"), limit=240)
+    headings = [_clean_text(item, limit=120) for item in page.get("headings") or []][:4]
+
+    role_counts: dict[str, int] = {}
+    samples_by_role: dict[str, list[str]] = {}
+    for node in raw_nodes:
+        role = _clean_text(node.get("role"), limit=32).lower()
+        if not role:
+            continue
+        role_counts[role] = role_counts.get(role, 0) + 1
+        label = _clean_text(node.get("name") or node.get("label") or node.get("text"), limit=60)
+        if label and len(samples_by_role.setdefault(role, [])) < 2:
+            samples_by_role[role].append(label)
+
+    top_roles = sorted(role_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:8]
+    lines = [
+        "[browser_snapshot_digest]",
+        f"title: {title or '(untitled)'}",
+        f"url: {_truncate_url(url or '(unknown)')}",
+        f"raw_node_count: {len(raw_nodes)}",
+    ]
+    if headings:
+        lines.append("")
+        lines.append("headings:")
+        lines.extend(f"- {h}" for h in headings if h)
+    if top_roles:
+        lines.append("")
+        lines.append("role_distribution:")
+        for role, count in top_roles:
+            samples = samples_by_role.get(role) or []
+            sample_str = " | ".join(s for s in samples if s)
+            suffix = f"  e.g. {sample_str}" if sample_str else ""
+            lines.append(f"- {role}: {count}{suffix}")
+    return "\n".join(lines).strip()
+
+
 def format_browser_snapshot(payload: dict[str, Any]) -> str:
     snapshot = normalize_browser_snapshot(payload)
     lines = [
         "[browser_snapshot]",
         f"title: {snapshot['title'] or '(untitled)'}",
-        f"url: {snapshot['url'] or '(unknown)'}",
+        f"url: {_truncate_url(snapshot['url'] or '(unknown)')}",
     ]
     if snapshot["browser"]:
         lines.append(f"browser: {snapshot['browser']}")
@@ -478,6 +584,72 @@ def strip_browser_action_markers(text: str) -> str:
 
 def strip_browser_done_markers(text: str) -> str:
     return BROWSER_DONE_RE.sub("", text or "").strip()
+
+
+def strip_browser_profile_markers(text: str) -> str:
+    return BROWSER_PROFILE_RE.sub("", text or "").strip()
+
+
+_PROFILE_ID_SAFE = re.compile(r"[^a-z0-9_.-]+")
+
+
+def _safe_profile_filename(host: str, explicit_id: str) -> str:
+    base = (explicit_id or host or "user").strip().lower()
+    base = _PROFILE_ID_SAFE.sub("-", base).strip("-.") or "profile"
+    return f"{base[:80]}.json"
+
+
+def extract_and_save_browser_profile(text: str) -> tuple[str, list[dict[str, Any]]]:
+    """Detect <browser_profile host="..." id="...">JSON</browser_profile>
+    markers in an AI reply and persist them under PROFILE_DIR. Returns the
+    text with the markers stripped and a list of save results."""
+    saved: list[dict[str, Any]] = []
+    matches = list(BROWSER_PROFILE_RE.finditer(text or ""))
+    if not matches:
+        return text or "", saved
+    for match in matches:
+        attrs = _action_attrs(match.group(1) or "")
+        host = _clean_text(attrs.get("host") or attrs.get("hosts") or "", limit=120)
+        explicit_id = _clean_text(attrs.get("id") or attrs.get("name") or "", limit=120)
+        body = (match.group(2) or "").strip()
+        # Strip optional ```json fences.
+        if body.startswith("```"):
+            body = body.split("\n", 1)[-1]
+            if body.endswith("```"):
+                body = body[: -3]
+        body = body.strip()
+        try:
+            data = json.loads(body)
+        except json.JSONDecodeError as exc:
+            saved.append({"ok": False, "host": host, "error": f"json: {exc}"})
+            continue
+        if not isinstance(data, dict):
+            saved.append({"ok": False, "host": host, "error": "profile must be a json object"})
+            continue
+        # Inject host + id when absent.
+        if host and not data.get("hosts"):
+            data["hosts"] = [host]
+        if explicit_id and not data.get("id"):
+            data["id"] = explicit_id
+        if not data.get("id"):
+            data["id"] = host or "ai-authored"
+        # Clamp obvious risk: enforce maxNodes ceiling.
+        try:
+            mx = int(data.get("maxNodes") or data.get("max_nodes") or 0)
+            if mx > 0:
+                data["maxNodes"] = max(4, min(MAX_NODES, mx))
+        except (TypeError, ValueError):
+            data.pop("maxNodes", None)
+            data.pop("max_nodes", None)
+        try:
+            PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+            target = PROFILE_DIR / _safe_profile_filename(host, str(data.get("id") or ""))
+            target.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            _load_profiles.cache_clear()
+            saved.append({"ok": True, "host": host, "path": str(target), "id": str(data.get("id") or "")})
+        except OSError as exc:
+            saved.append({"ok": False, "host": host, "error": f"write: {exc}"})
+    return strip_browser_profile_markers(text), saved
 
 
 def _action_attrs(raw: str) -> dict[str, str]:
@@ -574,9 +746,46 @@ def build_browser_runtime_text(question: str, payload: dict[str, Any]) -> str:
 
 def build_browser_control_text(payload: dict[str, Any]) -> str:
     reason = _clean_text(payload.get("reason"), limit=120) or "page_changed"
+    snapshot_meta = normalize_browser_snapshot(payload)
+    raw_count = int(snapshot_meta.get("rawNodeCount") or 0)
+    has_profile = bool(snapshot_meta.get("profile"))
+    host = ""
+    try:
+        host = urlparse(snapshot_meta.get("url") or "").hostname or ""
+    except ValueError:
+        pass
+    config_mode = bool(host) and not has_profile and raw_count >= DIRTY_PAGE_RAW_NODE_THRESHOLD
+    if config_mode:
+        # Don't waste tokens dumping a noisy unprofiled page; ask the AI to
+        # author a profile first using a digest of the structure.
+        parts = [
+            format_browser_config_digest(payload),
+            (
+                "[browser_config_mode]\n"
+                f"This host '{host}' has no extraction profile and exposes {raw_count} raw nodes — too noisy to operate blindly.\n"
+                "**The point of a profile is selectivity, NOT completeness.** Keep only nodes you would actually use to do work on this site (search, primary actions, content links). Suppress everything else: nav chrome, footers, sister-project links, login/donate, sidebar widgets. A good profile shows 8-15 nodes per page; if you find yourself adding more, delete some.\n"
+                "Author the profile, and ONLY the profile, this turn:\n"
+                f"  <browser_profile host=\"{host}\" id=\"{host.replace('.', '-')}\">{{\n"
+                "    \"hosts\": [\"" + host + "\"],\n"
+                "    \"keep\":     [{\"role\":\"button\",   \"labelContains\":\"...\"},\n"
+                "                 {\"role\":\"link\",     \"hrefContains\":\"://\"},\n"
+                "                 {\"role\":\"searchbox\",\"labelContains\":\"...\"}],\n"
+                "    \"suppress\": [{\"role\":\"link\",    \"labelContains\":\"footer\"}],\n"
+                "    \"maxNodes\": 12,\n"
+                "    \"strictKeep\": true,\n"
+                "    \"strictKeepContextFallback\": true,\n"
+                "    \"media\": {\"screenshot\": \"auto\", \"videoFrames\": \"auto\"}\n"
+                "  }}</browser_profile>\n"
+                "Use role/labelContains/hrefContains/selectorContains rules. Each *Contains accepts a string or list of strings (any-match). strictKeep=true means only matched controls survive (with strictKeepContextFallback=true keeping a few extra context items). The `media` block (optional) controls whether the viewport screenshot and sampled video frames are forwarded to you next tick: \"auto\" keeps the default heuristic, \"always\" forces them on (useful for image-heavy sites like xhs/instagram/pinterest), \"never\" drops them (useful for text sites where they waste tokens). The profile saves server-side and applies on the next tick — and on every other URL under the same host (e.g. different articles, user profiles, items), so think about the SHAPE of the site, not this specific page.\n"
+                "If you cannot guess useful rules, emit <browser_done reason=\"need_human\" /> instead. Do NOT emit any browser_action this turn."
+            ),
+        ]
+        parts.extend(["[browser_event]", reason])
+        return "\n\n".join(parts)
+
     parts = [
         format_browser_snapshot(payload),
-        "[browser_control]\nThis browser tab is available for you to operate directly. You are not just observing it. Prefer taking exactly one low-risk browser operation now. Prefer current page content controls over global navigation. Do not wander between primary navigation items just to explore; after opening a navigation page, inspect/use page content or stop. Good idle first moves are focusing a visible search/text input, opening a clearly relevant content control, or choosing an obviously useful page control. Include exactly one hidden XML action using a listed node id: <browser_action node=\"node_3\" action=\"click\" /> or <browser_action node=\"node_1\" action=\"set_text\" text=\"...\" />. To open a different page directly, use <browser_action action=\"goto\" url=\"https://...\" /> (no node id; only when no listed control gets you there). To scroll, use <browser_action action=\"scroll\" dir=\"down\" /> (down|up|top|bottom). To submit a form after set_text, use <browser_action action=\"key\" node=\"node_1\" key=\"Enter\" />. Use set_text only when the intended text is clear; otherwise focus the relevant input. Do not repeat a recent action if the page did not materially change. When this control loop should stop, include exactly one hidden stop marker and no action: <browser_done reason=\"brief reason\" />. If every available operation is risky, repetitive, global-navigation wandering, or meaningless, stop with browser_done.",
+        "[browser_control]\nOperate this tab. Emit at most ONE hidden action per turn:\n  <browser_action node=\"node_X\" action=\"click\" />\n  <browser_action node=\"node_X\" action=\"set_text\" text=\"...\" />\n  <browser_action node=\"node_X\" action=\"key\" key=\"Enter\" />     (after set_text)\n  <browser_action node=\"node_X\" action=\"focus\" />\n  <browser_action action=\"scroll\" dir=\"down|up|top|bottom\" />\n  <browser_action action=\"goto\" url=\"https://...\" />              (only if no listed node fits)\nStop with <browser_done reason=\"...\" /> when finished, blocked, or only noise remains. Do not repeat the same action; do not wander between nav links. Prefer page content over global nav. Set_text only when the desired text is unambiguous.",
     ]
     trail = _list_of_dicts(payload.get("controlTrail") or payload.get("control_trail"))[-6:]
     if trail:

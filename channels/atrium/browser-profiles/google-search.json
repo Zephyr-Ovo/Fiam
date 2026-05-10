@@ -1,0 +1,46 @@
+{
+  "id": "google-search",
+  "hosts": ["google.com", "www.google.com"],
+  "maxNodes": 18,
+  "strictKeepContextFallback": true,
+  "keep": [
+    {"role": "combobox", "labelContains": "search", "alias": "Search box"},
+    {"role": "searchbox", "labelContains": "search", "alias": "Search box"},
+    {"role": "button", "labelContains": "search", "alias": "Search button"},
+    {"role": "link", "hrefContains": "://"},
+    {"role": "button", "labelContains": "next page", "alias": "Next page"},
+    {"role": "button", "labelContains": "more results", "alias": "More results"}
+  ],
+  "suppress": [
+    {"role": "link", "hrefContains": "google.com/webhp", "group": "google_self_nav"},
+    {"role": "link", "labelContains": "sign in", "group": "google_account"},
+    {"role": "link", "labelContains": "ai mode", "group": "google_ai_nav"},
+    {"role": "link", "labelContains": "all", "group": "google_tabs"},
+    {"role": "link", "labelContains": "images", "group": "google_tabs"},
+    {"role": "link", "labelContains": "shopping", "group": "google_tabs"},
+    {"role": "link", "labelContains": "videos", "group": "google_tabs"},
+    {"role": "link", "labelContains": "news", "group": "google_tabs"},
+    {"role": "link", "labelContains": "forums", "group": "google_tabs"},
+    {"role": "link", "labelContains": "books", "group": "google_tabs"},
+    {"role": "link", "labelContains": "maps", "group": "google_tabs"},
+    {"role": "link", "labelContains": "more", "group": "google_tabs"},
+    {"role": "button", "labelContains": "google apps", "group": "google_chrome"},
+    {"role": "button", "labelContains": "settings", "group": "google_chrome"},
+    {"role": "button", "labelContains": "tools", "group": "google_chrome"},
+    {"role": "button", "labelContains": "search by voice", "group": "google_chrome"},
+    {"role": "button", "labelContains": "search by image", "group": "google_chrome"},
+    {"role": "button", "labelContains": "view related links", "group": "google_chrome"},
+    {"role": "button", "labelContains": "show more ai overview", "group": "google_ai_overview"},
+    {"role": "button", "labelContains": "show all related", "group": "google_ai_overview"},
+    {"labelContains": "play on google", "group": "google_video_thumb"}
+  ],
+  "groups": {
+    "google_self_nav": "self-referential google links",
+    "google_account": "account/auth links",
+    "google_ai_nav": "AI Mode tab",
+    "google_tabs": "vertical search tabs",
+    "google_chrome": "Google chrome controls",
+    "google_ai_overview": "AI Overview expanders",
+    "google_video_thumb": "video thumbnails"
+  }
+}

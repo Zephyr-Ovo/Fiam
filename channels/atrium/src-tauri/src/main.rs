@@ -6,7 +6,8 @@ use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
     fs::{self, OpenOptions},
-    io::Write,
+    io::{Read, Write},
+    net::TcpListener,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{Arc, Mutex},
@@ -1162,6 +1163,100 @@ fn process_inventory() -> Result<Vec<ProcessInfo>, String> {
     Ok(Vec::new())
 }
 
+// process.spawn — Launch an executable detached from atrium. Allowlist is
+// enforced inline (kept in sync with capabilities.toml). Aliases resolve to a
+// best-effort Windows install path; absolute paths bypass alias resolution but
+// must still match a known basename.
+const PROCESS_SPAWN_ALLOWED: &[&str] = &["firefox", "firefox-dev", "msedge", "chrome", "code", "explorer"];
+
+fn resolve_spawn_alias(alias: &str) -> Option<PathBuf> {
+    let alias = alias.to_ascii_lowercase();
+    if let Ok(custom) = std::env::var(format!("FIAM_SPAWN_{}", alias.to_uppercase())) {
+        let p = PathBuf::from(custom);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    let candidates: &[&str] = match alias.as_str() {
+        "firefox" => &[
+            "C:\\Program Files\\Mozilla Firefox\\firefox.exe",
+            "C:\\Program Files (x86)\\Mozilla Firefox\\firefox.exe",
+        ],
+        "firefox-dev" | "firefox-developer" => &[
+            "C:\\Program Files\\Firefox Developer Edition\\firefox.exe",
+            "C:\\Program Files (x86)\\Firefox Developer Edition\\firefox.exe",
+        ],
+        "msedge" | "edge" => &[
+            "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+            "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+        ],
+        "chrome" => &[
+            "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+            "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+        ],
+        "code" | "vscode" => &[
+            "C:\\Program Files\\Microsoft VS Code\\Code.exe",
+            "C:\\Users\\Iris\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe",
+        ],
+        "explorer" => &["C:\\Windows\\explorer.exe"],
+        _ => &[],
+    };
+    candidates.iter().map(PathBuf::from).find(|p| p.exists())
+}
+
+fn spawn_process(payload: &Value) -> Result<Value, String> {
+    let alias = payload.get("alias").and_then(Value::as_str).map(str::to_string);
+    let exe = payload.get("exe").and_then(Value::as_str).map(str::to_string);
+
+    let resolved: PathBuf = match (alias.as_deref(), exe.as_deref()) {
+        (Some(a), _) => {
+            if !PROCESS_SPAWN_ALLOWED.iter().any(|allowed| allowed.eq_ignore_ascii_case(a)) {
+                return Err(format!("alias '{}' not in process.spawn allowlist", a));
+            }
+            resolve_spawn_alias(a).ok_or_else(|| format!("alias '{}' not found on this machine", a))?
+        }
+        (None, Some(p)) => {
+            let path = PathBuf::from(p);
+            let stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if !PROCESS_SPAWN_ALLOWED.iter().any(|allowed| allowed.eq_ignore_ascii_case(&stem)) {
+                return Err(format!("exe basename '{}' not in process.spawn allowlist", stem));
+            }
+            if !path.exists() {
+                return Err(format!("exe path does not exist: {}", path.display()));
+            }
+            path
+        }
+        (None, None) => return Err("process.spawn requires `alias` or `exe`".into()),
+    };
+
+    let args: Vec<String> = payload
+        .get("args")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut cmd = Command::new(&resolved);
+    cmd.args(&args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+
+    let child = cmd.spawn().map_err(|err| format!("spawn failed: {}", err))?;
+    let pid = child.id();
+    drop(child); // detach — let process keep running independently
+
+    Ok(json!({
+        "pid": pid,
+        "exe": resolved.to_string_lossy(),
+        "args": args,
+    }))
+}
+
 fn payload_hwnd(payload: &Value) -> Result<usize, String> {
     payload
         .get("hwnd")
@@ -1446,6 +1541,7 @@ fn execute_capability(
         "proxy.system.restore" => restore_system_proxy(core)?,
         "window.list" => json!({ "windows": window_inventory()? }),
         "process.list" => json!({ "processes": process_inventory()? }),
+        "process.spawn" => spawn_process(payload)?,
         "app.spawn" => spawn_app_surface(core, payload)?,
         "reader.set_text" => reader_set_text(core, payload)?,
         "reader.append_text" => reader_append_text(core, payload)?,
@@ -2086,6 +2182,182 @@ fn setup_tray(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+// --- Local HTTP bridge -------------------------------------------------------
+// Lightweight one-endpoint HTTP server bound to 127.0.0.1:8767. Lets external
+// processes (Fiam dashboard server / AI Bash) trigger Atrium dispatch without
+// requiring a running MQTT broker. Token must match env FIAM_INGEST_TOKEN.
+//
+// Protocol:
+//   POST /dispatch
+//     headers: X-Fiam-Token: <token>
+//     body:    DispatchRequest JSON  -> 200 DispatchResult JSON
+//   GET  /health
+//     -> 200 {"ok":true,"service":"atrium"}
+
+fn http_bind_addr() -> String {
+    std::env::var("FIAM_ATRIUM_HTTP_BIND").unwrap_or_else(|_| "127.0.0.1:8767".to_string())
+}
+
+fn http_token() -> Option<String> {
+    std::env::var("FIAM_INGEST_TOKEN")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn http_response(status: u16, body: &str) -> String {
+    let reason = match status {
+        200 => "OK",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        413 => "Payload Too Large",
+        500 => "Internal Server Error",
+        _ => "Status",
+    };
+    format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        status,
+        reason,
+        body.len(),
+        body
+    )
+}
+
+fn handle_http_request(state: &SharedState, raw: &str) -> String {
+    let mut header_end = match raw.find("\r\n\r\n") {
+        Some(idx) => idx,
+        None => return http_response(400, "{\"error\":\"bad request\"}"),
+    };
+    let head = &raw[..header_end];
+    header_end += 4;
+    let body = &raw[header_end..];
+
+    let mut lines = head.split("\r\n");
+    let request_line = lines.next().unwrap_or("");
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or("");
+    let path = parts.next().unwrap_or("");
+
+    if method == "GET" && path == "/health" {
+        return http_response(200, "{\"ok\":true,\"service\":\"atrium\"}");
+    }
+
+    if method != "POST" {
+        return http_response(405, "{\"error\":\"method not allowed\"}");
+    }
+
+    let mut token_ok = false;
+    let want = http_token();
+    for line in lines {
+        if let Some((name, value)) = line.split_once(':') {
+            if name.trim().eq_ignore_ascii_case("X-Fiam-Token") {
+                if let Some(expected) = &want {
+                    if value.trim() == expected.as_str() {
+                        token_ok = true;
+                    }
+                }
+            }
+        }
+    }
+    if want.is_none() {
+        return http_response(500, "{\"error\":\"FIAM_INGEST_TOKEN not set on server\"}");
+    }
+    if !token_ok {
+        return http_response(401, "{\"error\":\"unauthorized\"}");
+    }
+
+    if path != "/dispatch" {
+        return http_response(404, "{\"error\":\"not found\"}");
+    }
+
+    let request: DispatchRequest = match serde_json::from_str(body.trim()) {
+        Ok(v) => v,
+        Err(err) => {
+            let msg = format!("{{\"error\":\"bad json: {}\"}}", err.to_string().replace('"', "\\\""));
+            return http_response(400, &msg);
+        }
+    };
+
+    match run_dispatch(request, state, DispatchMode::Confirmed) {
+        Ok(result) => match serde_json::to_string(&result) {
+            Ok(body) => http_response(200, &body),
+            Err(err) => http_response(
+                500,
+                &format!("{{\"error\":\"serialize: {}\"}}", err.to_string().replace('"', "\\\"")),
+            ),
+        },
+        Err(err) => http_response(
+            500,
+            &format!("{{\"error\":\"{}\"}}", err.replace('"', "\\\"")),
+        ),
+    }
+}
+
+fn start_http_worker(state: SharedState) {
+    let addr = http_bind_addr();
+    thread::spawn(move || {
+        let listener = match TcpListener::bind(&addr) {
+            Ok(l) => l,
+            Err(err) => {
+                eprintln!("[atrium-http] bind {} failed: {}", addr, err);
+                return;
+            }
+        };
+        eprintln!("[atrium-http] listening on {}", addr);
+        for stream in listener.incoming() {
+            let mut stream = match stream {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let state = state.clone();
+            thread::spawn(move || {
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+                let mut buf = Vec::with_capacity(8192);
+                let mut chunk = [0u8; 4096];
+                let max_size = 256 * 1024;
+                loop {
+                    match stream.read(&mut chunk) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            buf.extend_from_slice(&chunk[..n]);
+                            if buf.len() > max_size {
+                                let _ = stream.write_all(
+                                    http_response(413, "{\"error\":\"payload too large\"}").as_bytes(),
+                                );
+                                return;
+                            }
+                            // Try to parse — if we have headers + full body, respond.
+                            if let Ok(text) = std::str::from_utf8(&buf) {
+                                if let Some(header_end) = text.find("\r\n\r\n") {
+                                    let head = &text[..header_end];
+                                    let body_start = header_end + 4;
+                                    let mut content_length = 0usize;
+                                    for line in head.split("\r\n") {
+                                        if let Some((name, value)) = line.split_once(':') {
+                                            if name.trim().eq_ignore_ascii_case("Content-Length") {
+                                                content_length = value.trim().parse().unwrap_or(0);
+                                            }
+                                        }
+                                    }
+                                    if text.len() - body_start >= content_length {
+                                        let response = handle_http_request(&state, text);
+                                        let _ = stream.write_all(response.as_bytes());
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+        }
+    });
+}
+
 fn main() {
     let root = project_root();
     let registry = load_registry(&root).expect("failed to load capabilities.toml");
@@ -2113,7 +2385,8 @@ fn main() {
             if let Ok(mut core) = state.lock() {
                 core.app = Some(app.handle().clone());
             }
-            start_mqtt_worker(state);
+            start_mqtt_worker(state.clone());
+            start_http_worker(state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

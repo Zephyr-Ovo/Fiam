@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import re
 import sys
 import threading
@@ -666,6 +667,33 @@ def _browser_snapshot_payload(payload: dict) -> tuple[str, dict]:
 _BROWSER_WAKEUP_QUEUE: list[dict] = []
 _BROWSER_WAKEUP_LIMIT = 16
 
+_ATRIUM_HTTP_BASE = os.environ.get("FIAM_ATRIUM_HTTP", "http://127.0.0.1:8767")
+
+
+def _atrium_dispatch(capability: str, payload: dict, *, reason: str = "browser_wakeup") -> dict:
+    """Best-effort POST to the Atrium tauri local HTTP bridge. Failures are
+    swallowed (Atrium may not be running yet); caller treats as advisory."""
+    token = os.environ.get("FIAM_INGEST_TOKEN", "").strip()
+    if not token:
+        return {"ok": False, "error": "no token"}
+    try:
+        import urllib.request
+        body = json.dumps({
+            "capability": capability,
+            "reason": reason,
+            "payload": payload,
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            f"{_ATRIUM_HTTP_BASE}/dispatch",
+            data=body,
+            headers={"Content-Type": "application/json", "X-Fiam-Token": token},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001 — advisory only
+        return {"ok": False, "error": str(exc)}
+
 
 def _browser_wakeup_push(payload: dict) -> dict:
     url = str((payload or {}).get("url") or "").strip()
@@ -679,7 +707,14 @@ def _browser_wakeup_push(payload: dict) -> dict:
     _BROWSER_WAKEUP_QUEUE.append(item)
     if len(_BROWSER_WAKEUP_QUEUE) > _BROWSER_WAKEUP_LIMIT:
         del _BROWSER_WAKEUP_QUEUE[: len(_BROWSER_WAKEUP_QUEUE) - _BROWSER_WAKEUP_LIMIT]
-    return {"ok": True, "queued": item}
+    # Best-effort: also poke Atrium to make sure firefox is running. Idempotent
+    # — firefox single-instance dedupes; if Atrium is down, extension polling
+    # still picks up the queue when the user has firefox open.
+    spawn_target = str((payload or {}).get("spawn") or os.environ.get("FIAM_BROWSER_SPAWN_ALIAS") or "firefox-dev").strip().lower()
+    atrium_result = None
+    if spawn_target and spawn_target != "none":
+        atrium_result = _atrium_dispatch("process.spawn", {"alias": spawn_target})
+    return {"ok": True, "queued": item, "atrium": atrium_result}
 
 
 def _browser_wakeup_pop_all() -> list[dict]:
@@ -971,7 +1006,7 @@ def _browser_control_tick(payload: dict) -> dict:
     runtime = str(payload.get("runtime") or "api").strip().lower() or "api"
     if runtime not in {"api", "cc"}:
         raise ValueError("browser runtime must be api or cc")
-    from fiam.browser_bridge import browser_snapshot_meta, build_browser_control_text, extract_browser_actions, extract_browser_done, strip_browser_action_markers
+    from fiam.browser_bridge import browser_snapshot_meta, build_browser_control_text, extract_browser_actions, extract_browser_done, extract_and_save_browser_profile, media_policy_for_payload, strip_browser_action_markers
 
     payload = dict(payload)
     recent_trail = _recent_browser_action_trail()
@@ -979,6 +1014,12 @@ def _browser_control_tick(payload: dict) -> dict:
     payload_trail = raw_payload_trail if isinstance(raw_payload_trail, list) else []
     payload["controlTrail"] = [*recent_trail, *payload_trail][-12:]
     runtime_text = build_browser_control_text(payload)
+    media_policy = media_policy_for_payload(payload)
+    # Gate attachments by per-host profile policy. "never" → drop before AI sees them.
+    if media_policy["screenshot"] == "never":
+        payload.pop("screenshot", None)
+    if media_policy["videoFrames"] == "never":
+        payload.pop("videoFrames", None)
     attachments = _browser_screenshot_attachments(payload)
     has_video_frames = bool(payload.get("videoFrames"))
     if attachments:
@@ -1011,7 +1052,8 @@ def _browser_control_tick(payload: dict) -> dict:
             "attachments": [],
         })
     raw_reply = str(result.get("reply") or "")
-    cleaned_reply, browser_done = extract_browser_done(raw_reply)
+    cleaned_reply, saved_profiles = extract_and_save_browser_profile(raw_reply)
+    cleaned_reply, browser_done = extract_browser_done(cleaned_reply)
     cleaned_reply, browser_actions = extract_browser_actions(cleaned_reply, payload)
     browser_actions = _suppress_repeated_browser_actions(browser_actions[:1], payload["controlTrail"])
     cleaned_segments = []
@@ -1023,9 +1065,27 @@ def _browser_control_tick(payload: dict) -> dict:
     result["reply"] = cleaned_reply
     result["browser_actions"] = browser_actions
     result["browser_done"] = browser_done
+    result["browser_profiles_saved"] = saved_profiles
     result["segments"] = cleaned_segments
     result["browser"] = browser_snapshot_meta(payload)
     result["context_chars"] = len(send_text)
+    # Debug dump: write every prompt sent to AI for inspection.
+    try:
+        dump_dir = Path("logs/browser-prompts")
+        dump_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+        dump_file = dump_dir / f"tick-{ts}.txt"
+        dump_file.write_text(
+            f"# url: {payload.get('snapshot', {}).get('url', '?')}\n"
+            f"# reason: {payload.get('reason', '?')}\n"
+            f"# attachments: {len(attachments)}\n"
+            f"# context_chars: {len(send_text)}\n"
+            f"---\n{send_text}\n---\n"
+            f"# AI reply:\n{raw_reply}\n",
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
     result["mode"] = "autonomous"
     result["screenshot_attempted"] = bool(attachments)
     result["screenshot_attached"] = bool(attachments) and not screenshot_error

@@ -1,0 +1,48 @@
+{
+  "hosts": [
+    "www.xiaohongshu.com"
+  ],
+  "keep": [
+    {
+      "role": "searchbox",
+      "selectorContains": "input"
+    },
+    {
+      "role": "link",
+      "hrefContains": "/explore/"
+    },
+    {
+      "role": "button",
+      "labelContains": [
+        "登录",
+        "创作中心",
+        "发布"
+      ]
+    }
+  ],
+  "suppress": [
+    {
+      "role": "link",
+      "labelContains": [
+        "用户协议",
+        "隐私政策",
+        "侵权投诉",
+        "社区公约",
+        "诚聘英才"
+      ]
+    },
+    {
+      "role": "link",
+      "labelContains": [
+        "下载App"
+      ]
+    }
+  ],
+  "maxNodes": 15,
+  "strictKeep": true,
+  "strictKeepContextFallback": true,
+  "media": {
+    "screenshot": "always"
+  },
+  "id": "www-xiaohongshu-com"
+}

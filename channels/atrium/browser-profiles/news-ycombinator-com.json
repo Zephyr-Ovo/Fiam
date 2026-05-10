@@ -1,0 +1,77 @@
+{
+  "hosts": [
+    "news.ycombinator.com",
+    "news.ycombinator.net"
+  ],
+  "keep": [
+    {
+      "role": "link",
+      "hrefContains": [
+        "/item?id=",
+        "/user?id="
+      ]
+    },
+    {
+      "role": "link",
+      "labelContains": [
+        "comments",
+        "discuss"
+      ]
+    },
+    {
+      "role": "searchbox",
+      "labelContains": "search"
+    },
+    {
+      "role": "button",
+      "labelContains": [
+        "next",
+        "prev"
+      ]
+    }
+  ],
+  "suppress": [
+    {
+      "role": "link",
+      "labelContains": [
+        "guidelines",
+        "welcome",
+        "news",
+        "past",
+        "new",
+        "comments",
+        "show",
+        "ask",
+        "jobs",
+        "submit",
+        "login",
+        "signup",
+        "about",
+        "contact",
+        "rss",
+        "help"
+      ]
+    },
+    {
+      "role": "link",
+      "hrefContains": [
+        "#",
+        "javascript:",
+        "/login",
+        "/signup"
+      ]
+    },
+    {
+      "role": "region",
+      "selectorContains": [
+        "footer",
+        "sidebar",
+        "nav"
+      ]
+    }
+  ],
+  "maxNodes": 15,
+  "strictKeep": true,
+  "strictKeepContextFallback": true,
+  "id": "news-ycombinator-com"
+}

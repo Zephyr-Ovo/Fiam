@@ -176,6 +176,10 @@ function shouldAttachScreenshot(snapshot, reason, steps) {
   const imageCount = Number(media.imageCount || 0);
   const textCount = Array.isArray(snapshot.textBlocks) ? snapshot.textBlocks.length : 0;
   const nodeCount = Array.isArray(snapshot.nodes) ? snapshot.nodes.length : 0;
+  // Image-heavy pages, post-action confirmation, or noisy DOM (likely to
+  // trigger server-side config mode where AI needs visual context to author
+  // a profile) all benefit from an attached viewport screenshot.
+  if (nodeCount >= 30) return true;
   return imageCount >= 8 && (textCount <= 4 || nodeCount <= 12 || reason === "after_action" || steps > 0);
 }
 

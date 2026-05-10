@@ -127,6 +127,13 @@ enabled = false
 description = "Kill a process by pid. Allowlist enforced by atrium."
 allowlist = []
 
+[capabilities."process.spawn"]
+kind = "actuator"
+trust = 1
+enabled = true
+description = "Launch an executable. Allowlist enforced by atrium; absolute path or known alias."
+allowlist = ["firefox", "firefox-dev", "msedge", "chrome", "code", "explorer"]
+
 [capabilities."window.uia.invoke"]
 kind = "actuator"
 trust = 2
