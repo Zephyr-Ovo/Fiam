@@ -162,6 +162,29 @@ Reader 右上角按钮即跳。
 
 【Codex 批注】顺序建议保持“后端先行”。只要 `/studio/share` 能写 vault + commit，后面的手机/桌面 UI 都能围绕真实数据迭代，避免先画空壳。
 
+### 7.5. 已落地进度 (2026-05-11 copilot, commit 0ca02f7, 本地未推)
+
+- ✅ 后端 4 个 `/studio/*` endpoint (scripts/dashboard_server.py)
+  - POST `/studio/share` — append block 到 inbox/desk，或写 frontmatter 到 shelf
+  - POST `/studio/quicknote` — 等价 share + source=quicknote → desk/今天.md
+  - GET  `/studio/list?dir=&limit=` — 文件列表 + git log（按 mtime 排）
+  - GET  `/studio/file?path=` — 返回 raw markdown
+- ✅ Path-traversal 防护、`.git` 拒绝、`.md` 强制
+- ✅ vault 路径用 env `FIAM_STUDIO_VAULT_DIR` 覆盖（本地/测试），默认 `<home>/studio`
+- ✅ 自动 `git init` + 默认 user.name/email；每次写自动 `git add + commit`（best-effort，失败不抛错）
+- ✅ inbox/desk = 多条 markdown block append；shelf = YAML frontmatter，**拒绝覆盖**
+- ✅ tests/test_studio.py — 11 个用例，全过；主测试套件 77 通过无回归
+- ✅ Atrium 扩展 popup 「送到 Studio」按钮（inbox / desk / shelf 三选一 + note 备注）
+  - content.js 新增 `FIAM_GET_SELECTION` 消息，自动抓 url + title + 选中文本
+  - popup.js 走 `/studio/share` 带 `source=atrium`
+  - xpi 已重新打包到 build/atrium-browser-extension.xpi
+
+待办：
+- [ ] 前端 dashboard 加 `/studio` 路由（Inbox 时间线 + Reader 只读 + Quick）—— 先观察 vault 实际数据形态再做
+- [ ] Favilla app 长按消息 → /studio/share —— 需要先确认 Favilla 端 long-press UX
+- [ ] Obsidian Android URI 跳转 smoke
+- [ ] 部署到 ISP（**用户出门期间 CC 可能在改 ISP 上的东西，等用户回来再决定**）
+
 ### 8. 待 Zephyr 提供 / 决策
 
 - [ ] **新 GitHub repo URL** (vault 用，Zephyr 个人或与 AI 共享的 org 都行)
