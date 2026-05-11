@@ -280,6 +280,77 @@ export async function sendChat(
   return data as ChatResponse
 }
 
+export type StreamChatEvent =
+  | { event: "start"; data: { runtime?: string } }
+  | { event: "tool_use"; data: { tool_use_id?: string; tool_name?: string; input_summary?: string } }
+  | { event: "tool_result"; data: { tool_use_id?: string; tool_name?: string; result_summary?: string; is_error?: boolean } }
+  | { event: "thought"; data: { index: number; text: string; source?: "marker" | "native"; locked?: boolean; summary?: string; icon?: string } }
+  | { event: "thought_summary"; data: { index: number; summary?: string; icon?: string } }
+  | { event: "text"; data: { index: number; text: string } }
+  | { event: "done"; data: ChatResponse }
+  | { event: "error"; data: { message: string } }
+
+export async function sendChatStream(
+  text: string,
+  source: string,
+  attachments: ChatAttachment[],
+  runtime: "auto" | "cc" | "api",
+  onEvent: (ev: StreamChatEvent) => void,
+): Promise<void> {
+  const body: Record<string, unknown> = { text, source, runtime, attachments }
+  const headers = { ...authHeaders(), Accept: "text/event-stream" }
+  const res = await fetch(`${getBase()}/favilla/chat/send`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  })
+  if (!res.ok || !res.body) {
+    let errMsg = `HTTP ${res.status}`
+    try {
+      const data = await res.json()
+      if (data && typeof data.error === "string") errMsg = data.error
+    } catch { /* ignore */ }
+    onEvent({ event: "error", data: { message: errMsg } })
+    return
+  }
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder("utf-8")
+  let buf = ""
+  let curEvent = "message"
+  let curData = ""
+  const flush = () => {
+    if (!curData) { curEvent = "message"; return }
+    let parsed: unknown = {}
+    try { parsed = JSON.parse(curData) } catch { /* ignore */ }
+    onEvent({ event: curEvent as StreamChatEvent["event"], data: parsed as never })
+    curEvent = "message"
+    curData = ""
+  }
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buf += decoder.decode(value, { stream: true })
+    let idx: number
+    while ((idx = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, idx).replace(/\r$/, "")
+      buf = buf.slice(idx + 1)
+      if (line === "") {
+        flush()
+        continue
+      }
+      if (line.startsWith(":")) continue // SSE comment / heartbeat
+      if (line.startsWith("event:")) {
+        curEvent = line.slice(6).trim() || "message"
+      } else if (line.startsWith("data:")) {
+        const part = line.slice(5).replace(/^ /, "")
+        curData = curData ? `${curData}\n${part}` : part
+      } // ignore id: lines
+    }
+  }
+  if (curData) flush()
+}
+
 export async function sendStrollMessage(
   text: string,
   context: StrollSpatialContext,

@@ -19,6 +19,55 @@ from fiam.markers import parse_hold_kind, strip_xml_markers
 # reasoning the runtime carries).
 _COT_BLOCK_RE = re.compile(r"<cot>\s*(.*?)\s*</cot>", re.DOTALL | re.IGNORECASE)
 _LOCK_RE = re.compile(r"<lock\s*/>", re.IGNORECASE)
+_CODE_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
+_INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
+
+
+def _mask_code_spans(text: str) -> tuple[str, dict[str, str]]:
+    """Hide fenced/inline code spans behind placeholders so cot/lock regexes
+    don't trip over `<cot>` literals appearing inside code samples."""
+    placeholders: dict[str, str] = {}
+    counter = [0]
+
+    def _replace(m: "re.Match[str]") -> str:
+        counter[0] += 1
+        key = f"\x00CODE{counter[0]}\x00"
+        placeholders[key] = m.group(0)
+        return key
+
+    masked = _CODE_FENCE_RE.sub(_replace, text)
+    masked = _INLINE_CODE_RE.sub(_replace, masked)
+    return masked, placeholders
+
+
+def _unmask_code_spans(text: str, placeholders: dict[str, str]) -> str:
+    if not placeholders:
+        return text
+    for key, original in placeholders.items():
+        text = text.replace(key, original)
+    return text
+
+
+def split_cot_segments(chunk: str) -> list[tuple[str, str]]:
+    """Split a text chunk into ordered ('text'|'thought', body) segments,
+    skipping <cot> tags that appear inside markdown code spans."""
+    if not chunk:
+        return []
+    masked, placeholders = _mask_code_spans(chunk)
+    segs: list[tuple[str, str]] = []
+    cursor = 0
+    for m in _COT_BLOCK_RE.finditer(masked):
+        before = masked[cursor:m.start()]
+        if before.strip():
+            segs.append(("text", _unmask_code_spans(before, placeholders)))
+        body = (m.group(1) or "").strip()
+        if body:
+            segs.append(("thought", _unmask_code_spans(body, placeholders)))
+        cursor = m.end()
+    tail = masked[cursor:]
+    if tail.strip():
+        segs.append(("text", _unmask_code_spans(tail, placeholders)))
+    return segs
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,24 +83,18 @@ def parse_app_cot(reply: str, config: FiamConfig | None = None) -> AppCotResult:
     if not reply:
         return AppCotResult("", [], False, [])
 
-    locked = bool(_LOCK_RE.search(reply))
+    locked = bool(_LOCK_RE.search(_mask_code_spans(reply)[0]))
     segments: list[dict[str, Any]] = []
     thoughts_raw: list[dict[str, Any]] = []
-    cursor = 0
-    for match in _COT_BLOCK_RE.finditer(reply):
-        before = _strip_cot_control(reply[cursor:match.start()]).strip()
-        if before:
-            segments.append({"type": "text", "text": before})
-        body = (match.group(1) or "").strip()
-        if body:
+    for kind, body in split_cot_segments(reply):
+        if kind == "text":
+            cleaned = _strip_cot_control(body).strip()
+            if cleaned:
+                segments.append({"type": "text", "text": cleaned})
+        else:
             step = {"kind": "think", "text": body, "source": "marker"}
             thoughts_raw.append(step)
             segments.append({"type": "thought", **step})
-        cursor = match.end()
-
-    tail = _strip_cot_control(reply[cursor:]).strip()
-    if tail:
-        segments.append({"type": "text", "text": tail})
 
     text_segments = [s for s in segments if s.get("type") == "text" and str(s.get("text") or "").strip()]
     thought_segments = [s for s in segments if s.get("type") == "thought"]
@@ -228,6 +271,86 @@ def _parse_summary_json(content: str) -> list[dict[str, Any]]:
             clean = match.group(0)
     data = json.loads(clean)
     return data if isinstance(data, list) else []
+
+
+def narrate_recall_fragments(
+    fragments: list[dict[str, Any]],
+    config: FiamConfig | None,
+) -> str | None:
+    """Send recall fragments through ds for AI-voice narration.
+
+    fragments: [{"hint": str, "text": str}, ...]  (hint = "刚才"/"3天前"/...; text = raw event body)
+
+    Returns markdown string (one bullet per fragment) or None if ds is unavailable.
+    The narration is in the AI's first-person voice ('我'), addressing the user as
+    '你', and must NOT add anything that isn't in the fragments.
+    """
+    if not fragments or config is None:
+        return None
+    if not getattr(config, "app_cot_summary_enabled", True):
+        return None
+    api_key, _ = _summary_api_key(config)
+    if not api_key:
+        return None
+
+    base_url = (getattr(config, "app_cot_summary_base_url", "") or "https://api.deepseek.com").rstrip("/")
+    model = getattr(config, "app_cot_summary_model", "") or "deepseek-chat"
+    items = [
+        {"index": i, "hint": str(f.get("hint") or ""), "text": str(f.get("text") or "")[:1800]}
+        for i, f in enumerate(fragments)
+    ]
+    system = (
+        "You are the AI assistant's memory module. Recalled past events come in as raw "
+        "fragments; you narrate them back to the AI in the AI's first-person voice. "
+        "Use '我' for the AI and '你' for the user. Distinguish who said/did what. "
+        "Describe — don't summarize, don't compress hard. Don't add anything that "
+        "isn't in the fragment. Don't editorialize. Keep the time hint at the front. "
+        "Output ONLY a JSON array of objects: {index, line}, where line is one markdown "
+        "bullet starting with '- (time-hint) ' followed by your narration. Match the "
+        "input language; default to Chinese."
+    )
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": json.dumps({"items": items}, ensure_ascii=False)},
+        ],
+        "temperature": 0.4,
+        "max_tokens": 1800,
+    }
+    request = urllib.request.Request(
+        f"{base_url}/chat/completions",
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        content = str(((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "")
+        parsed = _parse_summary_json(content)
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, IndexError, KeyError, TypeError, ValueError):
+        return None
+
+    by_idx: dict[int, str] = {}
+    for item in parsed:
+        try:
+            idx = int(item.get("index"))
+        except (TypeError, ValueError):
+            continue
+        line = str(item.get("line") or "").strip()
+        if line:
+            by_idx[idx] = line
+    if not by_idx:
+        return None
+    out_lines = []
+    for i in range(len(fragments)):
+        if i in by_idx:
+            out_lines.append(by_idx[i])
+        else:
+            f = fragments[i]
+            out_lines.append(f"- ({f.get('hint','')}) {f.get('text','')}")
+    return "\n".join(out_lines)
 
 
 def _fallback_summary(text: str, locked: bool) -> str:

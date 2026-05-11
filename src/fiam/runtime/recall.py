@@ -43,7 +43,8 @@ def refresh_recall(
         return 0
 
     now = datetime.now(timezone.utc)
-    lines = [f"<!-- recall | {now.strftime('%Y-%m-%dT%H:%M:%SZ')} -->", ""]
+    fragments: list[dict[str, str]] = []
+    bullet_lines: list[str] = []
     count = 0
 
     for event_id, activation in results:
@@ -51,8 +52,8 @@ def refresh_recall(
         if ev is None:
             continue
         body = pool.read_body(event_id)
-        fragment = body.strip()[:200]
-        if len(body.strip()) > 200:
+        fragment = body.strip()[:400]
+        if len(body.strip()) > 400:
             fragment += "..."
 
         age = now - ev.t
@@ -65,15 +66,26 @@ def refresh_recall(
         else:
             hint = "刚才"
 
-        lines.append(f"- ({hint}) {fragment}")
+        fragments.append({"hint": hint, "text": fragment})
+        bullet_lines.append(f"- ({hint}) {fragment}")
         ev.access_count += 1
         count += 1
 
     if count == 0:
         return 0
 
+    # Try ds narration; on failure, fall back to raw bullet dump.
+    narrated: str | None = None
+    try:
+        from fiam_lib.app_markers import narrate_recall_fragments
+        narrated = narrate_recall_fragments(fragments, config)
+    except Exception:
+        narrated = None
+
+    header = f"<!-- recall | {now.strftime('%Y-%m-%dT%H:%M:%SZ')} -->"
+    body_md = narrated if narrated else "\n".join(bullet_lines)
     pool.save_events()
     config.background_path.parent.mkdir(parents=True, exist_ok=True)
-    config.background_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    config.background_path.write_text(f"{header}\n\n{body_md}\n", encoding="utf-8")
     (config.background_path.parent / ".recall_dirty").touch()
     return count

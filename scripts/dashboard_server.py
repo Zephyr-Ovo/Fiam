@@ -2161,6 +2161,115 @@ def _favilla_chat_send(payload: dict) -> dict:
     return result
 
 
+def _favilla_chat_send_stream(payload: dict):
+    """Streaming version of _favilla_chat_send. Yields {event, data} dicts.
+
+    For runtime != cc, falls back to single-shot _favilla_chat_send and emits
+    start + done. For runtime == cc, drives _iter_cc_favilla_chat_events and
+    persists transcript after done. Carry-over fallback is not streamed; if a
+    carry_over is requested, a follow-up done event is emitted with the
+    second-runtime result.
+    """
+    if not _CONFIG:
+        yield {"event": "error", "data": {"message": "config not loaded"}}
+        return
+    text = str(payload.get("text") or "").strip()
+    attachments = payload.get("attachments") or []
+    if not isinstance(attachments, list):
+        attachments = []
+    safe_attachments = _validate_app_attachments(attachments)
+    if not text and not safe_attachments:
+        yield {"event": "error", "data": {"message": "missing text"}}
+        return
+    if not text:
+        text = "(see attached file)"
+    channel = str(payload.get("channel") or "chat").strip() or "chat"
+    default_runtime = getattr(_CONFIG, "app_default_runtime", "auto") or "auto"
+    runtime = str(payload.get("runtime") or default_runtime).strip().lower() or "auto"
+    if runtime == "auto":
+        runtime = _select_favilla_chat_runtime(text, safe_attachments)
+    user_text = text
+    runtime_text = text
+    stroll_context: dict | None = None
+    if channel == "stroll":
+        from fiam_lib.stroll_store import build_context_block
+
+        context_block, stroll_context = build_context_block(
+            _CONFIG,
+            payload.get("stroll_context") if isinstance(payload.get("stroll_context"), dict) else payload.get("context"),
+        )
+        runtime_text = f"{context_block}\n\n[user_message]\n{user_text}"
+
+    if runtime != "cc":
+        # Non-streaming runtime: do single-shot and emit start + done.
+        yield {"event": "start", "data": {"runtime": runtime}}
+        try:
+            result = _favilla_chat_send(payload)
+        except Exception as e:
+            yield {"event": "error", "data": {"message": str(e)[:500]}}
+            return
+        yield {"event": "done", "data": result}
+        return
+
+    # Persist user transcript entry up-front so it shows immediately.
+    _append_transcript(channel, {
+        "role": "user",
+        "text": user_text,
+        "raw_text": user_text,
+        "runtime": runtime,
+        "attachments": _history_attachments(safe_attachments),
+        "presence": _current_presence(actor="user", channel=channel),
+    })
+
+    final_result: dict | None = None
+    for ev in _iter_cc_favilla_chat_events(text=runtime_text, channel=channel, attachments=safe_attachments):
+        if ev.get("event") == "done":
+            final_result = ev.get("data") or {}
+        yield ev
+
+    if final_result is None:
+        return
+
+    # Carry-over: if AI marked carry_over, run target runtime synchronously
+    # and emit a follow-up done event with the second result.
+    carry = final_result.get("carry_over") if isinstance(final_result.get("carry_over"), dict) else None
+    target = str((carry or {}).get("to") or "").strip().lower()
+    if target in {"api", "cc"} and target != runtime:
+        transfer_text = _build_carry_over_text(
+            from_runtime=runtime,
+            to_runtime=target,
+            user_text=runtime_text,
+            private_notes=str(final_result.get("reply") or ""),
+            reason=str((carry or {}).get("reason") or ""),
+        )
+        try:
+            if target == "api":
+                final_result = _run_api_favilla_chat(text=transfer_text, channel=channel, attachments=safe_attachments)
+            else:
+                final_result = _run_cc_favilla_chat(text=transfer_text, channel=channel, attachments=safe_attachments)
+            final_result["carry_over_from"] = runtime
+            final_result["runtime"] = target
+            yield {"event": "done", "data": final_result}
+        except Exception:
+            logger.exception("carry_over chain failed")
+
+    # Persist AI transcript entry from the final result.
+    _append_transcript(channel, {
+        "role": "ai",
+        "text": final_result.get("reply", ""),
+        "raw_text": final_result.get("raw_reply", final_result.get("reply", "")),
+        "runtime": final_result.get("runtime") or runtime,
+        "thinking": final_result.get("thoughts") or [],
+        "thinkingLocked": bool(final_result.get("thoughts_locked")),
+        "segments": final_result.get("segments") or [],
+        "hold": final_result.get("hold"),
+        "tool_calls_summary": final_result.get("tool_calls_summary") or [],
+        "actions": final_result.get("actions_list") or [],
+        "metrics": final_result.get("metrics") or {},
+        "presence": _current_presence(actor="ai", channel=channel),
+    })
+
+
 def _build_carry_over_text(*, from_runtime: str, to_runtime: str, user_text: str, private_notes: str, reason: str) -> str:
     parts = [
         f"[carry_over from={from_runtime} to={to_runtime}] Continue this same Favilla chat turn on the target runtime.",
@@ -2789,6 +2898,364 @@ def _run_cc_favilla_chat(*, text: str, channel: str, attachments: list | None = 
         "actions_list": actions_list,
         "metrics": metrics,
     }
+
+
+def _iter_cc_favilla_chat_events(*, text: str, channel: str, attachments: list | None = None):
+    """Stream CC chat as SSE events.
+
+    Yields dicts of shape {"event": str, "data": dict}. Events:
+      - start: {runtime}
+      - tool_use: {tool_use_id, tool_name, input_summary}
+      - tool_result: {tool_use_id, tool_name, result_summary, is_error}
+      - thought: {index, text, source, locked, summary, icon}     (placeholder summary)
+      - thought_summary: {index, summary, icon}                    (async ds patch)
+      - text: {index, text}
+      - done: {full result dict, same shape as _run_cc_favilla_chat return}
+      - error: {message}
+    """
+    import queue
+    import subprocess
+    import threading
+
+    from fiam.runtime.prompt import build_plain_prompt_parts
+    from fiam_lib.app_markers import _fallback_icon, _fallback_summary, split_cot_segments, summarize_cot_steps
+
+    pending_recall = _pending_recall_for_app()
+    session = _load_app_active_session()
+    prompt_text = text
+    if attachments:
+        lines = ["[attachments]"]
+        for a in attachments:
+            mime = a.get("mime") or ""
+            lines.append(f"- {a['path']}  (name={a['name']!r}, mime={mime})")
+        lines.append("")
+        prompt_text = "\n".join(lines) + text
+    system_context, user_prompt = build_plain_prompt_parts(
+        _CONFIG,
+        prompt_text,
+        channel=channel,
+        include_recall=True,
+        consume_recall_dirty=True,
+        extra_context=_app_runtime_context(),
+    )
+    base_command = [
+        "claude", "-p", user_prompt,
+        "--output-format", "stream-json",
+        "--verbose",
+        "--setting-sources", "user,project,local",
+        "--exclude-dynamic-system-prompt-sections",
+        "--permission-mode", "bypassPermissions",
+    ]
+    if system_context:
+        base_command.extend(["--append-system-prompt", system_context])
+    if _CONFIG.cc_model:
+        base_command.extend(["--model", _CONFIG.cc_model])
+    if _CONFIG.cc_disallowed_tools:
+        base_command.extend([
+            "--disallowedTools",
+            *[tool.strip() for tool in _CONFIG.cc_disallowed_tools.split(",") if tool.strip()],
+        ])
+    cwd_path = _CONFIG.home_path
+
+    yield {"event": "start", "data": {"runtime": "cc"}}
+
+    ev_queue: "queue.Queue[dict]" = queue.Queue()
+
+    def fire_summary(idx: int, raw_text: str, locked: bool):
+        try:
+            items = summarize_cot_steps([{"text": raw_text}], locked=locked, config=_CONFIG)
+            if items:
+                item = items[0]
+                ev_queue.put({"event": "thought_summary", "data": {
+                    "index": idx,
+                    "summary": item.get("summary") or _fallback_summary(raw_text, locked),
+                    "icon": item.get("icon") or _fallback_icon(raw_text, locked),
+                }})
+        except Exception:
+            logger.exception("cot summary failed")
+
+    state = {
+        "thought_idx": 0,
+        "text_idx": 0,
+        "tool_names": {},
+        "raw_reply_parts": [],
+        "result_data": {},
+        "action_events": [],
+        "summary_threads": [],
+    }
+
+    def emit_text_and_thoughts(chunk: str):
+        """Scan a fully-formed assistant text block for cot tags; emit segments in order.
+        <cot> inside markdown code spans is skipped (so AI can describe the syntax)."""
+        for kind, body in split_cot_segments(chunk):
+            if kind == "text":
+                ev_queue.put({"event": "text", "data": {"index": state["text_idx"], "text": body.strip()}})
+                state["text_idx"] += 1
+            else:
+                idx = state["thought_idx"]
+                placeholder = _fallback_summary(body, False)
+                icon = _fallback_icon(body, False)
+                ev_queue.put({"event": "thought", "data": {
+                    "index": idx,
+                    "text": body,
+                    "source": "marker",
+                    "locked": False,
+                    "summary": placeholder,
+                    "icon": icon,
+                }})
+                state["thought_idx"] += 1
+                t = threading.Thread(target=fire_summary, args=(idx, body, False), daemon=True)
+                t.start()
+                state["summary_threads"].append(t)
+
+    def reader_for(proc: "subprocess.Popen[str]"):
+        try:
+            assert proc.stdout is not None
+            for raw_line in proc.stdout:
+                raw_line = raw_line.strip()
+                if not raw_line:
+                    continue
+                try:
+                    item = json.loads(raw_line)
+                except json.JSONDecodeError:
+                    continue
+                item_type = item.get("type")
+                if item_type == "result":
+                    state["result_data"] = item
+                    continue
+                if item_type == "assistant":
+                    message = item.get("message") if isinstance(item.get("message"), dict) else {}
+                    for block in message.get("content") or []:
+                        if not isinstance(block, dict):
+                            continue
+                        btype = block.get("type")
+                        if btype == "tool_use":
+                            tool_id = str(block.get("id") or "")
+                            name = str(block.get("name") or "tool")
+                            state["tool_names"][tool_id] = name
+                            input_data = block.get("input") if isinstance(block.get("input"), dict) else {}
+                            summary = _summarize_cc_tool_input(name, input_data)
+                            state["action_events"].append({
+                                "kind": "tool_use",
+                                "tool_use_id": tool_id,
+                                "tool_name": name,
+                                "summary": summary,
+                            })
+                            ev_queue.put({"event": "tool_use", "data": {
+                                "tool_use_id": tool_id,
+                                "tool_name": name,
+                                "input_summary": summary,
+                            }})
+                        elif btype == "text":
+                            text_chunk = str(block.get("text") or "")
+                            if text_chunk:
+                                state["raw_reply_parts"].append(text_chunk)
+                                emit_text_and_thoughts(text_chunk)
+                    continue
+                if item_type == "user":
+                    result = item.get("tool_use_result") if isinstance(item.get("tool_use_result"), dict) else {}
+                    message = item.get("message") if isinstance(item.get("message"), dict) else {}
+                    content = message.get("content") or []
+                    tool_id = ""
+                    content_text = ""
+                    if content and isinstance(content[0], dict):
+                        tool_id = str(content[0].get("tool_use_id") or "")
+                        content_text = str(content[0].get("content") or "")
+                    name = state["tool_names"].get(tool_id, "tool")
+                    stdout_text = result.get("stdout") or content_text
+                    stderr_text = result.get("stderr") or ""
+                    output = stdout_text if stdout_text else stderr_text
+                    is_error = bool(result.get("is_error")) or bool(result.get("isError")) or bool(stderr_text and not stdout_text)
+                    summary = _redact_cc_snippet(output, limit=500)
+                    state["action_events"].append({
+                        "kind": "tool_result",
+                        "tool_use_id": tool_id,
+                        "tool_name": name,
+                        "is_error": is_error,
+                        "summary": summary,
+                    })
+                    ev_queue.put({"event": "tool_result", "data": {
+                        "tool_use_id": tool_id,
+                        "tool_name": name,
+                        "result_summary": summary,
+                        "is_error": is_error,
+                    }})
+        finally:
+            ev_queue.put({"event": "_eof", "data": {}})
+
+    def run_claude(resume_session_id: str | None) -> "subprocess.Popen[str]":
+        cmd = list(base_command)
+        if resume_session_id:
+            cmd.extend(["--resume", resume_session_id])
+        return subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            cwd=str(cwd_path),
+        )
+
+    def consume_until_eof(proc: "subprocess.Popen[str]"):
+        """Drive reader thread + drain queue, yielding events. Returns rc."""
+        rt = threading.Thread(target=reader_for, args=(proc,), daemon=True)
+        rt.start()
+        deadline = time.time() + 240.0
+        while True:
+            try:
+                ev = ev_queue.get(timeout=1.0)
+            except queue.Empty:
+                if time.time() > deadline:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    yield {"event": "error", "data": {"message": "claude chat timeout"}}
+                    return
+                continue
+            if ev.get("event") == "_eof":
+                break
+            yield ev
+        try:
+            proc.wait(timeout=10)
+        except Exception:
+            pass
+        # Drain any thought_summary events fired by ds threads (give them a short window).
+        for _ in range(20):
+            if not any(t.is_alive() for t in state["summary_threads"]):
+                break
+            time.sleep(0.1)
+        while True:
+            try:
+                ev = ev_queue.get_nowait()
+            except queue.Empty:
+                break
+            if ev.get("event") != "_eof":
+                yield ev
+
+    resume_id = session["session_id"] if session else None
+    proc = run_claude(resume_id)
+    rc_holder = {"rc": 0, "stderr": ""}
+    for ev in consume_until_eof(proc):
+        if ev.get("event") == "error":
+            yield ev
+            return
+        yield ev
+    rc_holder["rc"] = proc.returncode or 0
+    try:
+        rc_holder["stderr"] = (proc.stderr.read() if proc.stderr else "") or ""
+    except Exception:
+        pass
+
+    data = state["result_data"]
+    is_partial_success = data.get("subtype") == "error_max_turns"
+    is_error = bool(data.get("is_error")) or rc_holder["rc"] != 0
+
+    # Resume failure → retry without --resume.
+    if (is_error and not is_partial_success) or not data:
+        detail = (data.get("error") or data.get("result") or rc_holder["stderr"] or "")
+        if resume_id and "No conversation found with session ID" in str(detail):
+            try:
+                _CONFIG.active_session_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            # Reset state and try again with no resume.
+            state["result_data"] = {}
+            state["action_events"] = []
+            state["tool_names"] = {}
+            state["raw_reply_parts"] = []
+            proc2 = run_claude(None)
+            for ev in consume_until_eof(proc2):
+                if ev.get("event") == "error":
+                    yield ev
+                    return
+                yield ev
+            rc_holder["rc"] = proc2.returncode or 0
+            data = state["result_data"]
+            is_partial_success = data.get("subtype") == "error_max_turns"
+            is_error = bool(data.get("is_error")) or rc_holder["rc"] != 0
+        if (is_error and not is_partial_success) or not data:
+            msg = str(data.get("error") or data.get("result") or rc_holder["stderr"] or "claude failed").strip()[:500]
+            yield {"event": "error", "data": {"message": msg or "claude failed"}}
+            return
+
+    session_id = str(data.get("session_id") or "").strip()
+    if session_id:
+        _save_app_active_session(session_id)
+
+    reply = str(data.get("result") or "").strip()
+    raw_reply = reply
+    reply, queued_todos, hold_kind, carry_over = _apply_app_control_markers(
+        reply,
+        channel=channel,
+        runtime="cc",
+        user_text=prompt_text,
+        attachments=attachments or [],
+    )
+    cleaned_reply, thoughts, thoughts_locked, segments = _parse_cot(reply)
+    hold = {"kind": hold_kind} if hold_kind else None
+    if hold and not segments:
+        thoughts_locked = True
+        summary = "holding everything" if hold_kind == "all" else "holding this reply"
+        thoughts = [{"kind": "think", "text": summary, "summary": summary, "source": "marker", "locked": True, "icon": "Clock3"}]
+        segments = [{"type": "thought", "summary": summary, "source": "marker", "locked": True, "icon": "Clock3"}]
+    action_events = _combine_cc_action_events(state["action_events"])
+    tool_segments: list[dict] = []
+    for action in action_events or []:
+        tool_id = str(action.get("tool_use_id") or "")
+        tool_name = str(action.get("tool_name") or "tool")
+        if action.get("input_summary"):
+            tool_segments.append({
+                "type": "tool_use",
+                "tool_use_id": tool_id,
+                "tool_name": tool_name,
+                "input_summary": str(action.get("input_summary") or ""),
+            })
+        if action.get("result_summary") or action.get("is_error"):
+            tool_segments.append({
+                "type": "tool_result",
+                "tool_use_id": tool_id,
+                "tool_name": tool_name,
+                "result_summary": str(action.get("result_summary") or ""),
+                "is_error": bool(action.get("is_error")),
+            })
+    enriched_segments = tool_segments + list(segments)
+    metrics = _normalize_metrics(
+        runtime="cc",
+        model=str(data.get("model") or _CONFIG.cc_model or ""),
+        usage=data.get("usage") if isinstance(data.get("usage"), dict) else None,
+        latency_ms=int(data.get("duration_ms") or 0) or None,
+        cost_usd=data.get("total_cost_usd"),
+    )
+    actions_list: list[dict] = []
+    for todo in queued_todos or []:
+        actions_list.append({"kind": "queued_todo", **(todo if isinstance(todo, dict) else {"text": str(todo)})})
+    if carry_over:
+        actions_list.append({"kind": "carry_over", **(carry_over if isinstance(carry_over, dict) else {"value": str(carry_over)})})
+    _record_cc_app_turn(prompt_text, cleaned_reply, channel, action_events=action_events, session_id=session_id)
+    final = {
+        "ok": True,
+        "runtime": "cc",
+        "reply": cleaned_reply,
+        "raw_reply": raw_reply,
+        "recall": pending_recall,
+        "session_id": session_id,
+        "subtype": data.get("subtype"),
+        "cost_usd": data.get("total_cost_usd", 0),
+        "thoughts": thoughts,
+        "thoughts_locked": thoughts_locked,
+        "segments": enriched_segments,
+        "hold": hold,
+        "queued_todos": queued_todos,
+        "carry_over": carry_over,
+        "actions": action_events,
+        "tool_calls_summary": action_events or [],
+        "actions_list": actions_list,
+        "metrics": metrics,
+    }
+    yield {"event": "done", "data": final}
+
 
 def _record_cc_app_turn(user_text: str, assistant_reply: str, channel: str, *, action_events: list[dict] | None = None, session_id: str = "") -> None:
     if not _CONFIG or not _POOL:
@@ -3747,6 +4214,40 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             try:
                 if path == "/favilla/stroll/send":
                     payload["channel"] = "stroll"
+                # Stream branch: client opted into SSE via Accept header or ?stream=1.
+                from urllib.parse import parse_qs, urlparse
+                accept_hdr = (self.headers.get("Accept") or "").lower()
+                want_stream = "text/event-stream" in accept_hdr or (parse_qs(urlparse(raw).query).get("stream") or [""])[0] in ("1", "true")
+                if want_stream:
+                    try:
+                        self.send_response(200)
+                        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                        self.send_header("Cache-Control", "no-cache, no-transform")
+                        self.send_header("Content-Encoding", "identity")
+                        # Force close so the client's stream reader sees EOF when the
+                        # generator finishes (no Content-Length, no chunked encoding).
+                        self.send_header("Connection", "close")
+                        self.close_connection = True
+                        self.send_header("X-Accel-Buffering", "no")
+                        self.send_header("Access-Control-Allow-Origin", "*")
+                        self.end_headers()
+                        # Flush a leading comment so proxies see the response start immediately.
+                        try:
+                            self.wfile.write(b": stream-start\n\n")
+                            self.wfile.flush()
+                        except (BrokenPipeError, ConnectionResetError):
+                            return
+                        sse_id = 0
+                        for ev in _favilla_chat_send_stream(payload):
+                            sse_id += 1
+                            frame = _format_sse({"id": sse_id, "event": ev.get("event") or "message", "data": ev.get("data") or {}})
+                            self.wfile.write(frame)
+                            self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError):
+                        return
+                    except Exception:
+                        logger.exception("Favilla chat SSE error")
+                    return
                 result = _favilla_chat_send(payload)
             except ValueError as e:
                 self._serve_json({"error": str(e)}, status=400)

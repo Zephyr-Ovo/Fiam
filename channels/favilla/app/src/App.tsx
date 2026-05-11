@@ -26,7 +26,7 @@ import { HourglassIcon } from "./components/HourglassIcon"
 import { ConfirmModal } from "./components/ConfirmModal"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
-import { fetchChatTranscript, recordChatMessage, sendChat, uploadFiles, recallNow, cutFlow, processFlow, type ChatAttachment, type ChatSegment } from "./lib/api"
+import { fetchChatTranscript, recordChatMessage, sendChatStream, uploadFiles, recallNow, cutFlow, processFlow, type ChatAttachment, type ChatSegment } from "./lib/api"
 import { useComputerStatus, describeEvent } from "./lib/computerStatus"
 import { appConfig } from "./config"
 
@@ -1704,46 +1704,134 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
       }
 
       const combinedText = items.map((x) => x.text).filter(Boolean).join("\n\n")
-      const res = await sendChat(combinedText || "(see attached file)", "chat", attachments)
-      if (!res.ok) {
+      const segs: ChatSegment[] = []
+      const thoughts: ThinkStep[] = []
+      const thoughtSegIdx = new Map<number, number>()
+      let lastError: string | null = null
+
+      const apply = (next: { segments?: ChatSegment[]; thoughts?: ThinkStep[]; thoughtsLocked?: boolean; text?: string; hold?: Msg["hold"] }) => {
         setMessages((m) =>
           m.map((x) =>
             x.id === aiId
-              ? { ...x, text: `error: ${res.error || "unknown"}`, error: true }
+              ? {
+                  ...x,
+                  ...(next.text !== undefined ? { text: next.text } : {}),
+                  ...(next.segments !== undefined ? { segments: next.segments } : {}),
+                  ...(next.thoughts !== undefined ? { thinking: next.thoughts.length > 0 ? next.thoughts : undefined } : {}),
+                  ...(next.thoughtsLocked !== undefined ? { thinkingLocked: next.thoughtsLocked } : {}),
+                  ...(next.hold !== undefined ? { hold: next.hold } : {}),
+                }
               : x,
           ),
         )
-        return
       }
-      const thoughts: ThinkStep[] = (res.thoughts || []).map((t) => ({
-        kind: t.kind || "think",
-        text: t.text,
-        summary: t.summary,
-        result: t.result,
-        source: t.source,
-        locked: t.locked,
-        icon: t.icon,
-      }))
-      const locked = !!res.thoughts_locked
-      const full = res.reply || ""
-      streamReply(aiId, full, thoughts, locked, res.segments, res.hold)
-      // Tell Shell to set the home unread dot if user isn't on chat.
-      try {
-        window.dispatchEvent(
-          new CustomEvent("favilla:newAiReply", {
-            detail: { peerName, preview: full },
-          }),
-        )
-      } catch {
-        /* ignore */
+
+      await sendChatStream(combinedText || "(see attached file)", "chat", attachments, "auto", (ev) => {
+        if (ev.event === "tool_use") {
+          segs.push({
+            type: "tool_use",
+            tool_use_id: ev.data.tool_use_id,
+            tool_name: ev.data.tool_name,
+            input_summary: ev.data.input_summary,
+          })
+          apply({ segments: [...segs] })
+        } else if (ev.event === "tool_result") {
+          segs.push({
+            type: "tool_result",
+            tool_use_id: ev.data.tool_use_id,
+            tool_name: ev.data.tool_name,
+            result_summary: ev.data.result_summary,
+            is_error: ev.data.is_error,
+          })
+          apply({ segments: [...segs] })
+        } else if (ev.event === "thought") {
+          const segIdx = segs.length
+          segs.push({
+            type: "thought",
+            kind: "think",
+            text: ev.data.text,
+            summary: ev.data.summary,
+            icon: ev.data.icon,
+            source: ev.data.source,
+            locked: ev.data.locked,
+          })
+          thoughtSegIdx.set(ev.data.index, segIdx)
+          thoughts.push({
+            kind: "think",
+            text: ev.data.text,
+            summary: ev.data.summary,
+            icon: ev.data.icon,
+            source: ev.data.source,
+            locked: ev.data.locked,
+          })
+          apply({ segments: [...segs], thoughts: [...thoughts] })
+        } else if (ev.event === "thought_summary") {
+          const segIdx = thoughtSegIdx.get(ev.data.index)
+          if (segIdx !== undefined && segs[segIdx] && segs[segIdx].type === "thought") {
+            segs[segIdx] = { ...segs[segIdx], summary: ev.data.summary, icon: ev.data.icon } as ChatSegment
+            if (thoughts[ev.data.index]) {
+              thoughts[ev.data.index] = { ...thoughts[ev.data.index], summary: ev.data.summary || thoughts[ev.data.index].summary, icon: ev.data.icon || thoughts[ev.data.index].icon }
+            }
+            apply({ segments: [...segs], thoughts: [...thoughts] })
+          }
+        } else if (ev.event === "text") {
+          segs.push({ type: "text", text: ev.data.text })
+          apply({ segments: [...segs] })
+        } else if (ev.event === "done") {
+          const r = ev.data
+          // Final reconciliation: trust server's authoritative segments/thoughts/hold/text.
+          const finalThoughts: ThinkStep[] = (r.thoughts || []).map((t) => ({
+            kind: t.kind || "think",
+            text: t.text,
+            summary: t.summary,
+            result: t.result,
+            source: t.source,
+            locked: t.locked,
+            icon: t.icon,
+          }))
+          apply({
+            text: r.reply || "",
+            segments: r.segments,
+            thoughts: finalThoughts,
+            thoughtsLocked: !!r.thoughts_locked,
+            hold: r.hold,
+          })
+          try {
+            window.dispatchEvent(
+              new CustomEvent("favilla:newAiReply", {
+                detail: { peerName, preview: r.reply || "" },
+              }),
+            )
+          } catch { /* ignore */ }
+        } else if (ev.event === "error") {
+          lastError = ev.data.message || "unknown"
+        }
+      })
+
+      if (lastError) {
+        setMessages((m) => {
+          const hasContent = m.some((x) => x.id === aiId && ((x.segments && x.segments.length > 0) || (x.text && x.text.trim())))
+          if (hasContent) {
+            // Stream died mid-flight — keep what's already rendered, append a separate error note below.
+            return [...m, { id: `e-${Date.now()}`, role: "ai", t: currentT(), text: `network error: ${lastError}`, error: true }]
+          }
+          return m.map((x) =>
+            x.id === aiId ? { ...x, text: `error: ${lastError}`, error: true } : x,
+          )
+        })
+        return
       }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e)
-      setMessages((m) =>
-        m.map((x) =>
+      setMessages((m) => {
+        const hasContent = m.some((x) => x.id === aiId && ((x.segments && x.segments.length > 0) || (x.text && x.text.trim())))
+        if (hasContent) {
+          return [...m, { id: `e-${Date.now()}`, role: "ai", t: currentT(), text: `network error: ${msg}`, error: true }]
+        }
+        return m.map((x) =>
           x.id === aiId ? { ...x, text: `network error: ${msg}`, error: true } : x,
-        ),
-      )
+        )
+      })
     } finally {
       setSending(false)
     }
