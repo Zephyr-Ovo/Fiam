@@ -2732,26 +2732,30 @@ def _run_cc_favilla_chat(*, text: str, channel: str, attachments: list | None = 
         summary = "holding everything" if hold_kind == "all" else "holding this reply"
         thoughts = [{"kind": "think", "text": summary, "summary": summary, "source": "marker", "locked": True, "icon": "Clock3"}]
         segments = [{"type": "thought", "summary": summary, "source": "marker", "locked": True, "icon": "Clock3"}]
-    # Step 6: enrich segments with tool_use / tool_result events from cc stream-json
-    enriched_segments = list(segments)
+    # Step 6: enrich segments with tool_use / tool_result events from cc stream-json.
+    # Real-time order: tools fire while cc is working, then it emits the final
+    # reply (which contains <cot>...</cot> markers + visible text). So tool
+    # events come BEFORE the parsed cot/text segments, in arrival order.
+    tool_segments: list[dict] = []
     for action in action_events or []:
         tool_id = str(action.get("tool_use_id") or "")
         tool_name = str(action.get("tool_name") or "tool")
         if action.get("input_summary"):
-            enriched_segments.append({
+            tool_segments.append({
                 "type": "tool_use",
                 "tool_use_id": tool_id,
                 "tool_name": tool_name,
                 "input_summary": str(action.get("input_summary") or ""),
             })
         if action.get("result_summary") or action.get("is_error"):
-            enriched_segments.append({
+            tool_segments.append({
                 "type": "tool_result",
                 "tool_use_id": tool_id,
                 "tool_name": tool_name,
                 "result_summary": str(action.get("result_summary") or ""),
                 "is_error": bool(action.get("is_error")),
             })
+    enriched_segments = tool_segments + list(segments)
     metrics = _normalize_metrics(
         runtime="cc",
         model=str(data.get("model") or _CONFIG.cc_model or ""),

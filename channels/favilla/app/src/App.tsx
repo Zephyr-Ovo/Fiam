@@ -693,32 +693,50 @@ function ThinkingChain({ steps, locked, peerName }: { steps: ThinkStep[]; locked
   }
   const collapsedLabel = shortSummary || (isPureThinking ? "Show thinking" : `Used ${toolLabel}`)
   const expandedLabel = isPureThinking ? "Hide thinking" : `Hide ${toolLabel}`
+  const hasExpandable = expandedSteps.length > 0
   return (
     <div className="w-full">
-      <button
-        type="button"
-        onPointerDown={(e) => {
-          e.preventDefault()
-          e.stopPropagation()
-        }}
-        onClick={() => setOpen((v) => !v)}
-        className="mb-2 inline-flex items-center gap-1.5 text-[12px] leading-[14px]"
-        style={{
-          color: "rgba(63,47,41,0.55)",
-          fontFamily: "var(--font-sans)",
-        }}
-      >
-        {summaryStep && (
-          <span className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center" style={{ color: "rgba(63,47,41,0.6)" }}>
-            <ThinkIcon step={summaryStep} />
-          </span>
-        )}
-        <span className="leading-[14px] text-left">{open ? expandedLabel : collapsedLabel}</span>
-        <ChevronRight
-          className={`h-3 w-3 shrink-0 transition-transform ${open ? "rotate-90" : ""}`}
-          strokeWidth={2}
-        />
-      </button>
+      {hasExpandable ? (
+        <button
+          type="button"
+          onPointerDown={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+          }}
+          onClick={() => setOpen((v) => !v)}
+          className="mb-2 inline-flex items-center gap-1.5 text-[12px] leading-[14px]"
+          style={{
+            color: "rgba(63,47,41,0.55)",
+            fontFamily: "var(--font-sans)",
+          }}
+        >
+          {summaryStep && (
+            <span className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center" style={{ color: "rgba(63,47,41,0.6)" }}>
+              <ThinkIcon step={summaryStep} />
+            </span>
+          )}
+          <span className="leading-[14px] text-left">{open ? expandedLabel : collapsedLabel}</span>
+          <ChevronRight
+            className={`h-3 w-3 shrink-0 transition-transform ${open ? "rotate-90" : ""}`}
+            strokeWidth={2}
+          />
+        </button>
+      ) : (
+        <div
+          className="mb-2 inline-flex items-center gap-1.5 text-[12px] leading-[14px]"
+          style={{
+            color: "rgba(63,47,41,0.55)",
+            fontFamily: "var(--font-sans)",
+          }}
+        >
+          {summaryStep && (
+            <span className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center" style={{ color: "rgba(63,47,41,0.6)" }}>
+              <ThinkIcon step={summaryStep} />
+            </span>
+          )}
+          <span className="leading-[14px] text-left">{collapsedLabel}</span>
+        </div>
+      )}
       <AnimatePresence initial={false}>
         {open && expandedSteps.length > 0 && (
           <motion.div
