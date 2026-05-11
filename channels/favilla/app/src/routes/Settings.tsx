@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { appConfig, saveConfig, type AppConfig } from "../config"
 
 type Props = {
@@ -138,12 +138,9 @@ export function Settings({ open, onClose }: Props) {
           onChange={(v) => setDraft({ ...draft, agentBubbleBg: v })}
           placeholder="rgba(245,245,245,0.88)"
         />
-        <Field
-          label="Background URL"
+        <BgField
           value={draft.bg}
           onChange={(v) => setDraft({ ...draft, bg: v })}
-          placeholder="/bg.jpg or https://…"
-          last
         />
 
         <div className="mt-5 flex justify-end gap-2">
@@ -355,5 +352,144 @@ function ColorField({
         </span>
       </div>
     </label>
+  )
+}
+
+// BgField — Background image. Accepts a URL/data-URI in the text box, plus
+// a "Pick file" button that reads any local image (computer or phone) and
+// stores it as a data: URI so it survives reloads without a server upload.
+// A "Clear" button resets to the bundled default (empty string → defaults
+// fall back to the imported asset). A small thumbnail previews the current
+// value so users can confirm before saving.
+function BgField({
+  value,
+  onChange,
+}: {
+  value: string
+  onChange: (v: string) => void
+}) {
+  const [focused, setFocused] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState("")
+  const inputRef = useRef<HTMLInputElement | null>(null)
+
+  const onPick = (file: File | null | undefined) => {
+    if (!file) return
+    setError("")
+    // Cap at ~3 MB; data URIs blow up localStorage past that.
+    if (file.size > 3 * 1024 * 1024) {
+      setError(`图片 ${(file.size / 1024 / 1024).toFixed(1)}MB 太大了，建议 ≤3MB`)
+      return
+    }
+    setBusy(true)
+    const reader = new FileReader()
+    reader.onload = () => {
+      setBusy(false)
+      const result = typeof reader.result === "string" ? reader.result : ""
+      if (result) onChange(result)
+    }
+    reader.onerror = () => {
+      setBusy(false)
+      setError("读取失败")
+    }
+    reader.readAsDataURL(file)
+  }
+
+  const isDataUri = value.startsWith("data:")
+  const display = isDataUri
+    ? `data:${value.length.toLocaleString()} bytes`
+    : value
+
+  return (
+    <div
+      style={{
+        paddingTop: 8,
+        paddingBottom: 8,
+      }}
+    >
+      <div
+        className="text-[10.5px] uppercase tracking-[0.08em]"
+        style={{ color: "rgba(63, 47, 41, 0.55)" }}
+      >
+        Background
+      </div>
+      <div className="mt-1 flex items-center gap-2">
+        <input
+          type="text"
+          value={display}
+          onChange={(e) => {
+            // Only commit text edits when not in data-uri summary mode
+            if (!isDataUri) onChange(e.target.value)
+          }}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+          placeholder="/bg.jpg or https://…  (or pick a file →)"
+          spellCheck={false}
+          readOnly={isDataUri}
+          className="flex-1 bg-transparent px-0 py-1 text-[14px] outline-none"
+          style={{
+            color: "#3f2f29",
+            fontFamily: "var(--font-mono, var(--font-sans))",
+            boxShadow: focused
+              ? "inset 0 -1px 0 rgba(176, 139, 127, 0.85)"
+              : "inset 0 -1px 0 rgba(63, 47, 41, 0.05)",
+            transition: "box-shadow 140ms ease-out",
+          }}
+        />
+        <span
+          aria-hidden
+          style={{
+            display: "inline-block",
+            width: 28,
+            height: 28,
+            borderRadius: 6,
+            backgroundImage: value ? `url(${value})` : "none",
+            backgroundColor: value ? "transparent" : "rgba(63,47,41,0.08)",
+            backgroundSize: "cover",
+            backgroundPosition: "center",
+            border: "1px solid rgba(63,47,41,0.18)",
+          }}
+        />
+      </div>
+      <div className="mt-2 flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => inputRef.current?.click()}
+          disabled={busy}
+          className="rounded-full px-3 py-1 text-[12px]"
+          style={{
+            color: "rgba(63, 47, 41, 0.85)",
+            background: "rgba(63, 47, 41, 0.08)",
+          }}
+        >
+          {busy ? "读取中…" : "选择图片"}
+        </button>
+        {value && (
+          <button
+            type="button"
+            onClick={() => onChange("")}
+            className="rounded-full px-3 py-1 text-[12px]"
+            style={{
+              color: "rgba(63, 47, 41, 0.6)",
+              background: "transparent",
+            }}
+          >
+            恢复默认
+          </button>
+        )}
+        <input
+          ref={inputRef}
+          type="file"
+          accept="image/*"
+          onChange={(e) => onPick(e.target.files?.[0])}
+          style={{ display: "none" }}
+        />
+      </div>
+      {error && (
+        <div className="mt-1 text-[11px]" style={{ color: "#a83a2a" }}>
+          {error}
+        </div>
+      )}
+    </div>
   )
 }
