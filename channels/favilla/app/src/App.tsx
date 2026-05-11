@@ -427,7 +427,7 @@ const STREAMLINE_THINK_ICONS = new Set([
   "twitter",
   "video",
   "cat-claw",
-  "surfing",
+  "browser",
   "bulingbuling",
   "butterfly",
   "lock",
@@ -447,7 +447,7 @@ const EXPLICIT_STREAMLINE_ICON: Record<string, string> = {
   multiedit: "edit",
   write: "write",
   notebookedit: "edit",
-  webfetch: "surfing",
+  webfetch: "browser",
   websearch: "search",
   task: "clipboard-check",
   todowrite: "clipboard-check",
@@ -525,9 +525,12 @@ const EXPLICIT_STREAMLINE_ICON: Record<string, string> = {
   videocamera: "video",
   film: "video",
   playcircle: "video",
-  globe: "surfing",
-  compass: "surfing",
-  navigation: "surfing",
+  globe: "browser",
+  compass: "browser",
+  navigation: "browser",
+  browser: "browser",
+  internet: "browser",
+  web: "browser",
   sparkles: "bulingbuling",
   sparkle: "bulingbuling",
   stars: "bulingbuling",
@@ -536,8 +539,8 @@ const EXPLICIT_STREAMLINE_ICON: Record<string, string> = {
   butterfly: "butterfly",
   catclaw: "cat-claw",
   paw: "cat-claw",
-  surfing: "surfing",
-  surf: "surfing",
+  surfing: "browser",
+  surf: "browser",
   lock: "lock",
   locked: "lock",
   shieldcheck: "lock",
@@ -961,89 +964,123 @@ function Bubble({
   // entrance entirely (no jank scrolling/switching tabs back to chat).
   const wasSeen = SEEN_BUBBLE_IDS.has(msg.id)
   if (!wasSeen) SEEN_BUBBLE_IDS.add(msg.id)
-  return (
-    <motion.div
-      initial={wasSeen ? false : { opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.25, ease: "easeOut" }}
-      className={`flex w-full ${isUser ? "justify-end" : "justify-start"}`}
-    >
-      <div
-        className={`flex max-w-[82%] flex-col gap-1 ${
-          isUser ? "items-end" : "items-start"
-        }`}
+
+  // Build "blocks" — when actions interrupt a reply, each block renders as
+  // its own bubble row. A block is either: a run of consecutive text items,
+  // OR a single chain (thought/tools). Voice attachments lead, file
+  // attachments trail. Only the first visible block carries the name tag.
+  type Block =
+    | { kind: "text-group"; items: Extract<RenderItem, { kind: "text" }>[]; firstIndex: number }
+    | { kind: "chain-thought"; item: Extract<RenderItem, { kind: "thought" }> }
+    | { kind: "chain-tools"; item: Extract<RenderItem, { kind: "tools" }> }
+    | { kind: "voice" }
+    | { kind: "files" }
+  const blocks: Block[] = []
+  if (voiceAttachments.length > 0) blocks.push({ kind: "voice" })
+  if (orderedSegments.length > 0) {
+    let buf: Extract<RenderItem, { kind: "text" }>[] = []
+    let bufIdx = -1
+    const flush = () => {
+      if (buf.length > 0) {
+        blocks.push({ kind: "text-group", items: buf, firstIndex: bufIdx })
+        buf = []
+        bufIdx = -1
+      }
+    }
+    for (const item of orderedSegments) {
+      if (item.kind === "text") {
+        if (buf.length === 0) bufIdx = item.index
+        buf.push(item)
+      } else if (item.kind === "thought") {
+        flush()
+        blocks.push({ kind: "chain-thought", item })
+      } else {
+        flush()
+        blocks.push({ kind: "chain-tools", item })
+      }
+    }
+    flush()
+  } else if (msg.text) {
+    // Synthetic single text block from msg.text fallback
+    blocks.push({
+      kind: "text-group",
+      items: [{ kind: "text", index: 0, text: msg.text }],
+      firstIndex: 0,
+    })
+  }
+  const hasAgentLockedThoughts = !isUser && orderedSegments.length === 0 && (msg.thinkingLocked || (msg.thinking && msg.thinking.length > 0))
+  if (hasAgentLockedThoughts) {
+    // Promote msg.thinking into a single chain-thought-equivalent block at start
+    blocks.unshift({
+      kind: "chain-tools",
+      item: { kind: "tools", index: -1, steps: msg.thinking || [] },
+    })
+  }
+  if (fileAttachments.length > 0) blocks.push({ kind: "files" })
+  if (blocks.length === 0) {
+    // Empty message — nothing to render
+    return null
+  }
+  // Determine which block index gets the NameTag (first visible one)
+  const nameBlockIdx = 0
+
+  const renderBlock = (block: Block, blockIdx: number) => {
+    const isFirstBlock = blockIdx === nameBlockIdx
+    const showThisName = showName && isFirstBlock
+    return (
+      <motion.div
+        key={`${msg.id}-block-${blockIdx}`}
+        initial={wasSeen ? false : { opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.25, ease: "easeOut", delay: wasSeen ? 0 : Math.min(blockIdx * 0.04, 0.2) }}
+        className={`flex w-full ${isUser ? "justify-end" : "justify-start"}`}
       >
-        {showName &&
-          (isUser ||
-            !!msg.text ||
-            !!msg.thinkingLocked ||
-            orderedSegments.length > 0 ||
-            (msg.thinking?.length ?? 0) > 0 ||
-            (msg.attachments?.length ?? 0) > 0) && (
+        <div
+          className={`flex max-w-[82%] flex-col gap-1 ${
+            isUser ? "items-end" : "items-start"
+          }`}
+        >
+          {showThisName && (
             <NameTag>{isUser ? (appConfig.userName || "you") : peerName}</NameTag>
           )}
+          {block.kind === "voice" && (
+            <Attachments list={voiceAttachments} isUser={isUser} />
+          )}
+          {block.kind === "files" && (
+            <Attachments list={fileAttachments} isUser={isUser} />
+          )}
+          {block.kind === "chain-thought" && (
+            <ThinkingChain
+              steps={[block.item.step]}
+              locked={msg.thinkingLocked || !!block.item.locked}
+              peerName={peerName}
+            />
+          )}
+          {block.kind === "chain-tools" && (
+            <ThinkingChain
+              steps={block.item.steps}
+              locked={msg.thinkingLocked}
+              peerName={peerName}
+            />
+          )}
+          {block.kind === "text-group" && block.items.map((item, i) => (
+            <BubbleBody
+              key={`${msg.id}-seg-${block.firstIndex}-${i}`}
+              text={item.text}
+              isUser={isUser}
+              recallUsed={!!msg.recallUsed && blockIdx === 0 && i === 0}
+              selectionMode={!!selectionMode}
+              selected={!!selected}
+              onSelect={onSelect}
+              onLongSelect={onLongSelect}
+            />
+          ))}
+        </div>
+      </motion.div>
+    )
+  }
 
-        {!isUser && orderedSegments.length === 0 && (msg.thinkingLocked || (msg.thinking && msg.thinking.length > 0)) && (
-          <ThinkingChain steps={msg.thinking || []} locked={msg.thinkingLocked} peerName={peerName} />
-        )}
-
-        {voiceAttachments.length > 0 && (
-          <Attachments list={voiceAttachments} isUser={isUser} />
-        )}
-
-        {orderedSegments.length > 0 ? (
-          orderedSegments.map((item, index) => {
-            if (item.kind === "text") {
-              return (
-                <BubbleBody
-                  key={`${msg.id}-seg-${index}`}
-                  text={item.text}
-                  isUser={isUser}
-                  recallUsed={!!msg.recallUsed && index === 0}
-                  selectionMode={!!selectionMode}
-                  selected={!!selected}
-                  onSelect={onSelect}
-                  onLongSelect={onLongSelect}
-                />
-              )
-            }
-            if (item.kind === "thought") {
-              return (
-                <ThinkingChain
-                  key={`${msg.id}-seg-${index}`}
-                  steps={[item.step]}
-                  locked={msg.thinkingLocked || !!item.locked}
-                  peerName={peerName}
-                />
-              )
-            }
-            return (
-              <ThinkingChain
-                key={`${msg.id}-seg-${index}`}
-                steps={item.steps}
-                locked={msg.thinkingLocked}
-                peerName={peerName}
-              />
-            )
-          })
-        ) : msg.text ? (
-          <BubbleBody
-            text={msg.text}
-            isUser={isUser}
-            recallUsed={!!msg.recallUsed}
-            selectionMode={!!selectionMode}
-            selected={!!selected}
-            onSelect={onSelect}
-            onLongSelect={onLongSelect}
-          />
-        ) : null}
-
-        {fileAttachments.length > 0 && (
-          <Attachments list={fileAttachments} isUser={isUser} />
-        )}
-      </div>
-    </motion.div>
-  )
+  return <>{blocks.map(renderBlock)}</>
 }
 
 function BubbleBody({
