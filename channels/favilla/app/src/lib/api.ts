@@ -299,11 +299,38 @@ export async function sendChatStream(
 ): Promise<void> {
   const body: Record<string, unknown> = { text, source, runtime, attachments }
   const headers = { ...authHeaders(), Accept: "text/event-stream" }
-  const res = await fetch(`${getBase()}/favilla/chat/send`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-  })
+  // Two-phase abort:
+  //  1) Initial fetch must complete within INITIAL_TIMEOUT_MS or we bail.
+  //  2) Once streaming, every chunk resets the idle watchdog. If no chunk
+  //     arrives for IDLE_TIMEOUT_MS the SSE is considered stalled and aborted.
+  // Without these, a flaky uplink leaves the request hanging on OS-level
+  // socket timeouts (often 1-3 minutes) with zero UI feedback.
+  const INITIAL_TIMEOUT_MS = 30_000
+  const IDLE_TIMEOUT_MS = 90_000
+  const controller = new AbortController()
+  let stalled = false
+  let timedOutInitial = false
+  const initialTimer: ReturnType<typeof setTimeout> = setTimeout(() => {
+    timedOutInitial = true
+    try { controller.abort() } catch { /* ignore */ }
+  }, INITIAL_TIMEOUT_MS)
+  let res: Response
+  try {
+    res = await fetch(`${getBase()}/favilla/chat/send`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    })
+  } catch (e) {
+    clearTimeout(initialTimer)
+    const msg = timedOutInitial
+      ? `connect timeout after ${Math.round(INITIAL_TIMEOUT_MS / 1000)}s`
+      : (e instanceof Error ? e.message : String(e))
+    onEvent({ event: "error", data: { message: msg } })
+    return
+  }
+  clearTimeout(initialTimer)
   if (!res.ok || !res.body) {
     let errMsg = `HTTP ${res.status}`
     try {
@@ -318,6 +345,19 @@ export async function sendChatStream(
   let buf = ""
   let curEvent = "message"
   let curData = ""
+  let idleTimer: ReturnType<typeof setTimeout> | null = null
+  const armIdle = () => {
+    if (idleTimer) clearTimeout(idleTimer)
+    idleTimer = setTimeout(() => {
+      stalled = true
+      try { controller.abort() } catch { /* ignore */ }
+      try { reader.cancel() } catch { /* ignore */ }
+    }, IDLE_TIMEOUT_MS)
+  }
+  const disarmIdle = () => {
+    if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
+  }
+  armIdle()
   const flush = () => {
     if (!curData) { curEvent = "message"; return }
     let parsed: unknown = {}
@@ -326,29 +366,46 @@ export async function sendChatStream(
     curEvent = "message"
     curData = ""
   }
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
-    const { value, done } = await reader.read()
-    if (done) break
-    buf += decoder.decode(value, { stream: true })
-    let idx: number
-    while ((idx = buf.indexOf("\n")) >= 0) {
-      const line = buf.slice(0, idx).replace(/\r$/, "")
-      buf = buf.slice(idx + 1)
-      if (line === "") {
-        flush()
-        continue
+  try {
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      let chunk: ReadableStreamReadResult<Uint8Array>
+      try {
+        chunk = await reader.read()
+      } catch (e) {
+        if (stalled) {
+          onEvent({ event: "error", data: { message: `stream stalled (no data for ${Math.round(IDLE_TIMEOUT_MS / 1000)}s)` } })
+        } else {
+          const msg = e instanceof Error ? e.message : String(e)
+          onEvent({ event: "error", data: { message: `stream error: ${msg}` } })
+        }
+        return
       }
-      if (line.startsWith(":")) continue // SSE comment / heartbeat
-      if (line.startsWith("event:")) {
-        curEvent = line.slice(6).trim() || "message"
-      } else if (line.startsWith("data:")) {
-        const part = line.slice(5).replace(/^ /, "")
-        curData = curData ? `${curData}\n${part}` : part
-      } // ignore id: lines
+      const { value, done } = chunk
+      if (done) break
+      armIdle() // any chunk resets the watchdog
+      buf += decoder.decode(value, { stream: true })
+      let idx: number
+      while ((idx = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, idx).replace(/\r$/, "")
+        buf = buf.slice(idx + 1)
+        if (line === "") {
+          flush()
+          continue
+        }
+        if (line.startsWith(":")) continue // SSE comment / heartbeat
+        if (line.startsWith("event:")) {
+          curEvent = line.slice(6).trim() || "message"
+        } else if (line.startsWith("data:")) {
+          const part = line.slice(5).replace(/^ /, "")
+          curData = curData ? `${curData}\n${part}` : part
+        } // ignore id: lines
+      }
     }
+    if (curData) flush()
+  } finally {
+    disarmIdle()
   }
-  if (curData) flush()
 }
 
 export async function sendStrollMessage(

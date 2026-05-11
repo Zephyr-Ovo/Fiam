@@ -3151,12 +3151,17 @@ def _record_debug_context(runtime: str, *, metrics: dict | None = None,
     if rt not in {"api", "cc"}:
         return
     src = _CONFIG.home_path / ".debug_last_assembly.json"
-    if not src.exists():
-        return
-    try:
-        payload = json.loads(src.read_text(encoding="utf-8"))
-    except Exception:
-        return
+    payload: dict
+    if src.exists():
+        try:
+            payload = json.loads(src.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+    else:
+        payload = {}
+    # Always stamp with the turn-completion time, so /context KPIs reflect
+    # this actual call rather than an older assembly write.
+    payload["timestamp"] = time.time()
     payload["runtime"] = rt
     if session_id:
         payload["session_id"] = session_id
