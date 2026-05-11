@@ -83,6 +83,11 @@ def build_api_messages(
     carryover = load_carryover_context(config, consume=consume_co)
     if carryover:
         dynamic_parts.append(f"[carryover]\n{carryover}")
+    # [recent_conversation] — last few transcript turns for THIS channel,
+    # so api-side picks up cc-side tool work that isn't in carryover.
+    recent = load_recent_conversation_context(config, channel)
+    if recent:
+        dynamic_parts.append(f"[recent_conversation]\n{recent}")
     if extra_context.strip():
         dynamic_parts.append(extra_context.strip())
     if dynamic_parts:
@@ -210,6 +215,111 @@ def load_recall_context(config: "FiamConfig", *, consume_dirty: bool = False) ->
     return text
 
 
+def _read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def _transcript_channel_slug(channel: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9_-]+", "_", (channel or "chat").strip().lower()).strip("_")
+    return slug or "chat"
+
+
+def _format_recent_turn(rec: dict, *, tool_result_chars: int = 800) -> str:
+    """Render one transcript record as markdown for [recent_conversation].
+
+    AI turns include their tool calls inline so the next runtime can see what
+    cc actually read/did. Result text is truncated per-tool to keep the block
+    bounded.
+    """
+    role = str(rec.get("role") or "ai")
+    runtime = str(rec.get("runtime") or "")
+    text = str(rec.get("raw_text") or rec.get("text") or "").strip()
+    header_runtime = f" runtime={runtime}" if runtime else ""
+    header = f"## {role}{header_runtime}"
+    body_parts: list[str] = []
+    tools = rec.get("tool_calls_summary") or []
+    if isinstance(tools, list):
+        for t in tools:
+            if not isinstance(t, dict):
+                continue
+            name = str(t.get("tool_name") or "tool")
+            inp = str(t.get("input_summary") or "").strip().replace("\n", " ")
+            full = str(t.get("result_full") or "").strip()
+            summary = str(t.get("result_summary") or "").strip()
+            output = full or summary
+            if len(output) > tool_result_chars:
+                output = output[:tool_result_chars] + f"… [truncated, {len(output) - tool_result_chars} more chars]"
+            is_err = bool(t.get("is_error"))
+            tag = "tool!" if is_err else "tool"
+            line = f"- {tag} {name}"
+            if inp:
+                line += f" ← {inp[:200]}"
+            if output:
+                # indent multi-line output for readability
+                indented = output.replace("\n", "\n    ")
+                line += f"\n    {indented}"
+            body_parts.append(line)
+    if text:
+        body_parts.append(text)
+    if not body_parts:
+        return ""
+    return f"{header}\n" + "\n".join(body_parts)
+
+
+def load_recent_conversation_context(
+    config: "FiamConfig",
+    channel: str,
+    *,
+    max_turns: int = 8,
+    max_chars: int = 6000,
+) -> str:
+    """Read transcript tail for ``channel`` and format as markdown context.
+
+    Used by build_api_messages so api-side sees cc-side tool work (which
+    isn't captured in carryover.md). Truncates oldest first if the total
+    exceeds ``max_chars``.
+    """
+    import json as _json
+
+    slug = _transcript_channel_slug(channel)
+    path = config.home_path / "transcript" / f"{slug}.jsonl"
+    if not path.exists():
+        return ""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    records: list[dict] = []
+    for line in lines[-max_turns * 2:]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = _json.loads(line)
+        except (ValueError, _json.JSONDecodeError):
+            continue
+        if isinstance(rec, dict):
+            records.append(rec)
+    records = records[-max_turns:]
+    if not records:
+        return ""
+    rendered = [seg for seg in (_format_recent_turn(r) for r in records) if seg]
+    if not rendered:
+        return ""
+    blob = "\n\n".join(rendered)
+    if len(blob) > max_chars:
+        # drop oldest until within budget; if still over, hard truncate
+        while len(blob) > max_chars and len(rendered) > 1:
+            rendered = rendered[1:]
+            blob = "[…earlier turns omitted…]\n\n" + "\n\n".join(rendered)
+        if len(blob) > max_chars:
+            blob = blob[:max_chars] + "\n[…truncated]"
+    return blob
+
+
 def load_carryover_context(config: "FiamConfig", *, consume: bool = True) -> str:
     """Load carryover.md (one-shot session-summary + missed-turns context).
 
@@ -240,13 +350,6 @@ def load_carryover_context(config: "FiamConfig", *, consume: bool = True) -> str
         except OSError:
             pass
     return text
-
-
-def _read_text(path: Path) -> str:
-    try:
-        return path.read_text(encoding="utf-8")
-    except OSError:
-        return ""
 
 
 def _write_debug_assembly(
