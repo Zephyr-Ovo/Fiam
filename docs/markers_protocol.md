@@ -142,7 +142,23 @@
 - `to` 允许 `api | cc`。
 - delta-context 由 daemon 自动按目标 runtime 补足，AI 不参与计算。
 
-### 2.9 `[→channel:recipient]` — 路由前缀
+### 2.10 `<cot>` — 私下思考（marker thinking）
+
+形态：
+
+```xml
+<cot>记录推理 / 犹豫 / 选项权衡。仅写入 flow（channel=think），不发给收件人。</cot>
+```
+
+行为：
+
+- 由 AI 主动写入。**不嗅探**任何自由文本——没有 `<cot>` 就没有 think beat。
+- `<cot>` 内容产生一条 `Beat(channel="think", actor="ai")`，留在 flow 供未来回顾。
+- 块本身从对外文本剥离，不影响其余正文与其它 marker 的解析顺序。
+- 一轮内可多次出现，每次独立一条 think beat。
+- 与 cc / api runtime 的 native thinking（推理 token）并存：marker `<cot>` source 标 `marker`，runtime native thinking source 标 `native`。
+
+### 2.11 `[→channel:recipient]` — 路由前缀
 
 形态（行首）：
 

@@ -16,6 +16,7 @@ for path in (SCRIPTS, SRC):
 
 from fiam.markers import (  # noqa: E402
     parse_carry_over_markers,
+    parse_cot_markers,
     parse_hold_kind,
     parse_outbound_markers,
     parse_state_markers,
@@ -166,6 +167,32 @@ class MarkerParsingTest(unittest.TestCase):
 
         self.assertEqual(len(beats), 1)
         self.assertEqual(beats[0].text, "外层  中间")
+
+    def test_parse_cot_markers_extracts_bodies(self) -> None:
+        text = "前 <cot>第一段思考</cot> 中 <cot>  第二段  </cot> 后 <cot></cot>"
+        cots = parse_cot_markers(text)
+        self.assertEqual(cots, ["第一段思考", "第二段"])
+
+    def test_assistant_flow_beats_emit_think_from_cot(self) -> None:
+        beats = assistant_text_beats(
+            "对外正文 <cot>私下推理 A</cot> 继续 <cot>私下推理 B</cot> 收尾",
+            t=datetime.now(timezone.utc),
+            channel="favilla",
+            user_status="together",
+            ai_status="online",
+            runtime="api",
+        )
+
+        think_beats = [b for b in beats if b.channel == "think"]
+        dialogue = [b for b in beats if b.channel == "favilla"]
+        self.assertEqual([b.text for b in think_beats], ["私下推理 A", "私下推理 B"])
+        self.assertEqual(len(dialogue), 1)
+        self.assertNotIn("<cot", dialogue[0].text)
+        self.assertIn("对外正文", dialogue[0].text)
+        self.assertIn("收尾", dialogue[0].text)
+
+    def test_strip_xml_markers_strips_cot(self) -> None:
+        self.assertEqual(strip_xml_markers("a <cot>x</cot> b", {"cot"}), "a  b")
 
 
 if __name__ == "__main__":

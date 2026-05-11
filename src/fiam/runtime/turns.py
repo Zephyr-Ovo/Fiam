@@ -18,7 +18,7 @@ _ROUTED_BLOCK_RE = re.compile(
     re.DOTALL,
 )
 
-_CONTROL_MARKERS = {"wake", "todo", "sleep", "mute", "notify", "carry_over", "hold"}
+_CONTROL_MARKERS = {"wake", "todo", "sleep", "mute", "notify", "carry_over", "hold", "cot"}
 
 
 # Resolve incoming HTTP channel aliases to canonical channel names.
@@ -102,10 +102,23 @@ def assistant_text_beats(
 ) -> list[Beat]:
     """Build assistant dialogue and dispatch beats from a text response."""
     beats: list[Beat] = []
-    from fiam.markers import strip_xml_markers
+    from fiam.markers import parse_cot_markers, strip_xml_markers
+
+    canon = normalize_channel(channel)
+
+    # Marker-authored thinking: AI opts in via <cot>...</cot>. No sniffing.
+    for cot_text in parse_cot_markers(text):
+        beats.append(Beat(
+            t=t,
+            text=cot_text,
+            actor="ai",
+            channel="think",
+            user=user_status,
+            ai=ai_status,
+            runtime=runtime,
+        ))
 
     routed, remaining = split_routed_text(strip_xml_markers(text, _CONTROL_MARKERS))
-    canon = normalize_channel(channel)
 
     for marker in routed:
         beats.append(Beat(

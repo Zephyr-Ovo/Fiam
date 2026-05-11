@@ -2312,7 +2312,7 @@ def _apply_app_control_markers(
         if state_tag:
             _write_app_ai_state(state_tag)
 
-    cleaned = strip_xml_markers(cleaned, {"wake", "todo", "sleep", "mute", "notify", "carry_over", "route"}).strip()
+    cleaned = strip_xml_markers(cleaned, {"wake", "todo", "sleep", "mute", "notify", "carry_over", "route", "cot"}).strip()
     if hold_kind == "text":
         cleaned = ""
     return cleaned, queued_todos, hold_kind, carry_over

@@ -103,7 +103,7 @@ def dispatch_file(path: Path, config: FiamConfig) -> bool:
     if later_todos:
         added = append_to_todo(later_todos, config)
         print(f"[postman] todo +{added} item(s) from {path.name}")
-    body = strip_xml_markers(body, {"wake", "todo", "sleep", "mute", "notify"})
+    body = strip_xml_markers(body, {"wake", "todo", "sleep", "mute", "notify", "cot"})
     if not body:
         return True  # Only had control markers, nothing to send
 

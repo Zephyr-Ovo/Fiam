@@ -236,6 +236,22 @@ def parse_route_markers(text: str) -> list[RouteMarker]:
     return markers
 
 
+def parse_cot_markers(text: str) -> list[str]:
+    """Extract bodies of ``<cot>...</cot>`` markers (marker-authored thinking).
+
+    The AI opts in by emitting ``<cot>`` blocks; we never sniff free text.
+    Bodies are returned in source order, stripped. Empty bodies are skipped.
+    """
+    out: list[str] = []
+    for name, _attrs, body in _xml_markers(text):
+        if name != "cot":
+            continue
+        cleaned = (body or "").strip()
+        if cleaned:
+            out.append(cleaned)
+    return out
+
+
 _HOLD_TAG_RE = re.compile(
     r"<\s*hold\b(?P<attrs>[^<>]*)/?\s*>(?:\s*</\s*hold\s*>)?",
     re.IGNORECASE,
