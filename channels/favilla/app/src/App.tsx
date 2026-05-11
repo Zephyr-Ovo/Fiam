@@ -403,28 +403,49 @@ const STREAMLINE_THINK_ICONS = new Set([
   "user-profile",
   "write",
   "write-paper",
+  // 2026-05-13 batch — chat-state icons (Zephyr/Figma)
+  "search",
+  "supervise",
+  "edit",
+  "setting",
+  "view",
+  "capture",
+  "coding",
+  "read-book",
+  "desktop",
+  "sleep",
+  "git",
+  "game",
+  "twitter",
+  "video",
+  "cat-claw",
+  "surfing",
+  "bulingbuling",
+  "butterfly",
+  "lock",
+  "brain",
 ])
 
 const EXPLICIT_STREAMLINE_ICON: Record<string, string> = {
   alarmclock: "clock",
   // CC native tools (no exact streamline match → closest visual)
-  bash: "settings",
-  terminal: "settings",
-  shell: "settings",
+  bash: "coding",
+  terminal: "coding",
+  shell: "coding",
   read: "file-text",
-  glob: "folder",
-  grep: "file-text",
+  glob: "search",
+  grep: "search",
   ls: "folder",
-  multiedit: "write-paper",
+  multiedit: "edit",
   write: "write",
-  notebookedit: "write-paper",
-  webfetch: "share",
-  websearch: "file-text",
+  notebookedit: "edit",
+  webfetch: "surfing",
+  websearch: "search",
   task: "clipboard-check",
   todowrite: "clipboard-check",
-  filesearch: "file-text",
+  filesearch: "search",
   testtube: "clipboard-check",
-  zap: "settings",
+  zap: "bulingbuling",
   bookmark: "bookmark",
   calendar: "calendar",
   calendarcheck: "calendar-check",
@@ -437,7 +458,7 @@ const EXPLICIT_STREAMLINE_ICON: Record<string, string> = {
   clock: "clock",
   clock3: "clock",
   download: "download",
-  edit: "write-paper",
+  edit: "edit",
   file: "file-text",
   filetext: "file-text",
   folder: "folder",
@@ -460,10 +481,62 @@ const EXPLICIT_STREAMLINE_ICON: Record<string, string> = {
   share: "share",
   share2: "share",
   slidershorizontal: "sliders",
-  squarepen: "write-paper",
+  squarepen: "edit",
   user: "user-profile",
   userround: "user-profile",
-  wrench: "settings",
+  wrench: "setting",
+  // 2026-05-13 batch — chat-state icons
+  search: "search",
+  eye: "view",
+  eyeoff: "lock",
+  view: "view",
+  monitor: "desktop",
+  screenshot: "capture",
+  camera: "capture",
+  code: "coding",
+  code2: "coding",
+  book: "read-book",
+  bookopen: "read-book",
+  bookopentext: "read-book",
+  desktop: "desktop",
+  laptop: "desktop",
+  chrome: "desktop",
+  moon: "sleep",
+  bed: "sleep",
+  zzz: "sleep",
+  git: "git",
+  gitbranch: "git",
+  gitcommit: "git",
+  github: "git",
+  gamepad: "game",
+  gamepad2: "game",
+  joystick: "game",
+  twitter: "twitter",
+  x: "twitter",
+  video: "video",
+  videocamera: "video",
+  film: "video",
+  playcircle: "video",
+  globe: "surfing",
+  compass: "surfing",
+  navigation: "surfing",
+  sparkles: "bulingbuling",
+  sparkle: "bulingbuling",
+  stars: "bulingbuling",
+  wand: "bulingbuling",
+  wand2: "bulingbuling",
+  butterfly: "butterfly",
+  catclaw: "cat-claw",
+  paw: "cat-claw",
+  surfing: "surfing",
+  surf: "surfing",
+  lock: "lock",
+  locked: "lock",
+  shieldcheck: "lock",
+  brain: "brain",
+  cpu: "brain",
+  thinking: "brain",
+  thought: "brain",
 }
 
 const STREAMLINE_KEYWORD_RULES: Array<{ pattern: RegExp; slug: string }> = [
@@ -514,6 +587,11 @@ function inferStreamlineIcon(step: ThinkStep): string {
   }
   // 3. native tool calls without a more specific signal → settings cog
   if (step.source === "native" && step.kind !== "think") return "settings"
+  // 4. step.kind hints (search/check) when no explicit icon
+  if (step.kind === "search") return "search"
+  if (step.kind === "check") return "clipboard-check"
+  // 5. pure thinking with no other signal → brain (streamline)
+  if (step.kind === "think" || (!step.icon && !step.source)) return "brain"
   return ""
 }
 
@@ -1764,7 +1842,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
           {/* messages — only the most recent 7 sealed blocks (cut-bounded) + live tail */}
           <main
             ref={scrollRef}
-            className="flex flex-1 flex-col gap-[9px] overflow-y-auto px-4 pt-8 pb-36"
+            className="flex flex-1 flex-col gap-[9px] overflow-y-auto overflow-x-hidden px-4 pt-8 pb-36"
             onScroll={rememberScrollPin}
             onPointerDown={(e) => {
               if (e.target !== e.currentTarget) return

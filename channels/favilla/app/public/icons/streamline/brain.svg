@@ -1,0 +1,9 @@
+<svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <path d="M7 2.5C6.17 2.5 5.5 3.17 5.5 4C4.67 4 4 4.67 4 5.5C3.17 5.5 2.5 6.17 2.5 7C2.5 7.55 2.79 8.04 3.23 8.31C2.79 8.58 2.5 9.07 2.5 9.62C2.5 10.45 3.17 11.12 4 11.12C4 11.95 4.67 12.62 5.5 12.62C6.05 12.62 6.54 12.33 6.81 11.89C6.87 11.92 6.93 11.94 7 11.94" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M7 2.5C7.83 2.5 8.5 3.17 8.5 4C9.33 4 10 4.67 10 5.5C10.83 5.5 11.5 6.17 11.5 7C11.5 7.55 11.21 8.04 10.77 8.31C11.21 8.58 11.5 9.07 11.5 9.62C11.5 10.45 10.83 11.12 10 11.12C10 11.95 9.33 12.62 8.5 12.62C7.95 12.62 7.46 12.33 7.19 11.89C7.13 11.92 7.07 11.94 7 11.94" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M7 2.5V11.94" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M5.5 6.5C5.5 6.5 6 7 6.5 7" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M8.5 6.5C8.5 6.5 8 7 7.5 7" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M5.5 9C5.5 9 6 8.5 6.5 8.5" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M8.5 9C8.5 9 8 8.5 7.5 8.5" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
