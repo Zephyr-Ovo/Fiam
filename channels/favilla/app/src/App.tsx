@@ -600,12 +600,12 @@ function inferStreamlineIcon(step: ThinkStep): string {
     }
   }
   // 3. native tool calls without a more specific signal → settings cog
-  if (step.source === "native" && step.kind !== "think") return "settings"
+  if (step.source === "native") return "settings"
   // 4. step.kind hints (search/check) when no explicit icon
   if (step.kind === "search") return "search"
   if (step.kind === "check") return "clipboard-check"
   // 5. pure thinking with no other signal → brain (streamline)
-  if (step.kind === "think" || (!step.icon && !step.source)) return "brain"
+  if (!step.icon && !step.source) return "brain"
   return ""
 }
 
@@ -1429,58 +1429,6 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
     } finally {
       setSharing(false)
     }
-  }
-
-  function streamReply(aiId: string, full: string, thoughts: ThinkStep[], locked: boolean, segments?: ChatSegment[], hold?: Msg["hold"]) {
-    if (segments && segments.length > 0) {
-      setMessages((m) =>
-        m.map((x) =>
-          x.id === aiId
-            ? {
-                ...x,
-                text: full,
-                thinking: thoughts.length > 0 ? thoughts : undefined,
-                thinkingLocked: locked,
-                segments,
-                hold,
-              }
-            : x,
-        ),
-      )
-      return
-    }
-    if (!full) {
-      setMessages((m) =>
-        m.map((x) =>
-          x.id === aiId
-            ? { ...x, text: full, thinking: thoughts.length > 0 ? thoughts : undefined, thinkingLocked: locked, hold }
-            : x,
-        ),
-      )
-      return
-    }
-    const chars = Array.from(full)
-    let index = 0
-    const chunk = chars.length < 140 ? 1 : chars.length < 520 ? 3 : 5
-    const tick = () => {
-      index = Math.min(chars.length, index + chunk)
-      const shown = chars.slice(0, index).join("")
-      setMessages((m) =>
-        m.map((x) =>
-          x.id === aiId
-            ? {
-                ...x,
-                text: shown,
-                thinking: thoughts.length > 0 ? thoughts : undefined,
-                thinkingLocked: locked,
-                hold,
-              }
-            : x,
-        ),
-      )
-      if (index < chars.length) window.setTimeout(tick, 42)
-    }
-    tick()
   }
 
   // Auto-scroll only while the user is reading the live tail.
