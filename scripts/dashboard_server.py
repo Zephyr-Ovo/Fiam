@@ -2810,6 +2810,43 @@ def _check_and_run_session_rollover(channel: str) -> dict | None:
     return _session_rollover(channel)
 
 
+# ---------------------------------------------------------------------------
+# Debug context snapshot (for /debug/context UI)
+#
+# build_api_messages writes home/.debug_last_assembly.json on every call.
+# After the runtime returns we copy it to a runtime-specific file with
+# metrics + reply length attached. The reply text itself is intentionally
+# omitted — this UI is "what the model received", not "what came back".
+# ---------------------------------------------------------------------------
+
+def _record_debug_context(runtime: str, *, metrics: dict | None = None,
+                          session_id: str = "", channel: str = "") -> None:
+    if not _CONFIG:
+        return
+    rt = (runtime or "").strip().lower()
+    if rt not in {"api", "cc"}:
+        return
+    src = _CONFIG.home_path / ".debug_last_assembly.json"
+    if not src.exists():
+        return
+    try:
+        payload = json.loads(src.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    payload["runtime"] = rt
+    if session_id:
+        payload["session_id"] = session_id
+    if channel:
+        payload["channel"] = channel
+    if isinstance(metrics, dict):
+        payload["metrics"] = metrics
+    dst = _CONFIG.home_path / f".debug_last_context_{rt}.json"
+    try:
+        dst.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+
 # CoT visibility: parsing lives in fiam_lib.app_markers (parse_app_cot).
 # Protocol:
 # - <cot>...</cot> wraps a shareable thought block.
@@ -3148,6 +3185,10 @@ def _run_cc_favilla_chat(*, text: str, channel: str, attachments: list | None = 
     if carry_over:
         actions_list.append({"kind": "carry_over", **(carry_over if isinstance(carry_over, dict) else {"value": str(carry_over)})})
     _record_cc_app_turn(prompt_text, cleaned_reply, channel, action_events=action_events, session_id=session_id)
+    try:
+        _record_debug_context("cc", metrics=metrics, session_id=session_id, channel=channel)
+    except Exception:
+        logger.exception("debug context record (cc) failed")
     return {
         "ok": True,
         "runtime": "cc",
@@ -3741,6 +3782,10 @@ def _run_api_favilla_chat(*, text: str, channel: str, attachments: list | None =
         actions_list.append({"kind": "queued_todo", **(todo if isinstance(todo, dict) else {"text": str(todo)})})
     if carry_over:
         actions_list.append({"kind": "carry_over", **(carry_over if isinstance(carry_over, dict) else {"value": str(carry_over)})})
+    try:
+        _record_debug_context("api", metrics=metrics, channel=channel)
+    except Exception:
+        logger.exception("debug context record (api) failed")
     return {
         "ok": True,
         "runtime": "api",
@@ -4438,6 +4483,52 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 self._serve_json({"types": list(Pool.EDGE_TYPE_NAMES.values())})
             elif path == "/api/annotate/proposal":
                 self._serve_json(_annotate_proposal())
+            elif path == "/api/debug/context":
+                rt = (query.get("runtime", "api") or "api").lower()
+                if rt not in {"api", "cc"}:
+                    self._serve_json({"error": "runtime must be api or cc"}, status=400)
+                    return
+                if not _CONFIG:
+                    self._serve_json({"error": "config not loaded"}, status=503)
+                    return
+                ctx_path = _CONFIG.home_path / f".debug_last_context_{rt}.json"
+                if not ctx_path.exists():
+                    self._serve_json({"runtime": rt, "empty": True})
+                    return
+                try:
+                    payload = json.loads(ctx_path.read_text(encoding="utf-8"))
+                except Exception as e:
+                    self._serve_json({"error": f"read failed: {e}"}, status=500)
+                    return
+                self._serve_json(payload)
+            elif path == "/api/debug/flow":
+                try:
+                    limit = max(1, min(2000, int(query.get("limit", "200") or "200")))
+                except ValueError:
+                    limit = 200
+                if not _CONFIG:
+                    self._serve_json({"error": "config not loaded"}, status=503)
+                    return
+                flow_path = _CONFIG.flow_path
+                if not flow_path.exists():
+                    self._serve_json({"rows": [], "total": 0, "returned": 0})
+                    return
+                try:
+                    lines = flow_path.read_text(encoding="utf-8").splitlines()
+                except OSError as e:
+                    self._serve_json({"error": f"read failed: {e}"}, status=500)
+                    return
+                tail = lines[-limit:]
+                rows: list[dict] = []
+                for line in tail:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rows.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        rows.append({"_raw": line, "_parse_error": True})
+                self._serve_json({"rows": rows, "total": len(lines), "returned": len(rows)})
             else:
                 self.send_error(404)
         except Exception as e:

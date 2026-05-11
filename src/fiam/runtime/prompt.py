@@ -91,6 +91,14 @@ def build_api_messages(
     messages.append(
         {"role": "user", "content": user_text.strip()}
     )
+
+    # Debug snapshot — record the assembled prompt for the /debug/context UI.
+    # Single-writer best-effort; ignored on any error.
+    try:
+        _write_debug_assembly(config, messages, channel=channel)
+    except Exception:
+        pass
+
     return messages
 
 
@@ -239,3 +247,62 @@ def _read_text(path: Path) -> str:
         return path.read_text(encoding="utf-8")
     except OSError:
         return ""
+
+
+def _write_debug_assembly(
+    config: "FiamConfig",
+    messages: list[dict[str, Any]],
+    *,
+    channel: str,
+) -> None:
+    """Record the just-assembled prompt to home/.debug_last_assembly.json.
+
+    Used by /debug/context UI. AI's reply is intentionally NOT included —
+    this snapshot is "what the model received", not "what came back".
+    """
+    import json
+    import time
+
+    parts: list[dict[str, Any]] = []
+    for msg in messages:
+        role = msg.get("role", "")
+        content = msg.get("content")
+        text = _content_text(content)
+        cache = False
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("cache_control"):
+                    cache = True
+                    break
+        # Label the system blocks by content for the UI ("constitution"/"self"/"context"/"recall+carryover")
+        label = role
+        if role == "system":
+            if cache and parts and not any(p.get("label") == "constitution" for p in parts if p.get("role") == "system"):
+                label = "constitution"
+            elif cache:
+                label = "self"
+            elif text.startswith("[context]"):
+                label = "context"
+            elif text.startswith("[recall]") or text.startswith("[carryover]") or "[recall]" in text[:40] or "[carryover]" in text[:40]:
+                label = "recall+carryover"
+            else:
+                label = "system-extra"
+        parts.append({
+            "role": role,
+            "label": label,
+            "cache": cache,
+            "length": len(text),
+            "text": text,
+        })
+
+    snapshot = {
+        "timestamp": time.time(),
+        "channel": channel,
+        "parts": parts,
+    }
+
+    out = config.home_path / ".debug_last_assembly.json"
+    try:
+        out.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError:
+        pass

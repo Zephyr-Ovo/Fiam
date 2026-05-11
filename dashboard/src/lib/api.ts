@@ -101,6 +101,44 @@ export interface RuntimeConfig {
 	annotation: { processed_until: number };
 }
 
+export interface DebugContextPart {
+	role: string;
+	label: string;
+	cache: boolean;
+	length: number;
+	text: string;
+}
+
+export interface DebugContextMetrics {
+	runtime?: string;
+	model?: string;
+	latency_ms?: number;
+	cost_usd?: number;
+	tokens_in?: number;
+	tokens_out?: number;
+	tokens_cache_read?: number;
+	tokens_cache_creation?: number;
+	raw_usage?: Record<string, unknown>;
+}
+
+export interface DebugContextPayload {
+	timestamp?: number;
+	runtime?: string;
+	channel?: string;
+	session_id?: string;
+	parts?: DebugContextPart[];
+	metrics?: DebugContextMetrics;
+	empty?: boolean;
+	error?: string;
+}
+
+export interface DebugFlowPayload {
+	rows: Record<string, unknown>[];
+	total: number;
+	returned: number;
+	error?: string;
+}
+
 export interface PluginManifest {
 	id: string;
 	name: string;
@@ -181,6 +219,10 @@ export const api = {
 
 	// Flow
 	flow: (offset = 0, limit = 50) => j<FlowPayload>(`/flow?offset=${offset}&limit=${limit}`),
+
+	// Debug — last assembled context per runtime + raw flow tail
+	debugContext: (runtime: 'api' | 'cc') => j<DebugContextPayload>(`/debug/context?runtime=${runtime}`),
+	debugFlow: (limit = 200) => j<DebugFlowPayload>(`/debug/flow?limit=${limit}`),
 
 	// Annotation
 	annotateProposal: () => j<AnnotateProposal>('/annotate/proposal'),
