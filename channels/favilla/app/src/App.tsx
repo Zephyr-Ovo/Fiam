@@ -570,6 +570,10 @@ function compactIconKey(value?: string) {
 }
 
 function inferStreamlineIcon(step: ThinkStep): string {
+  // 0. pure thinking ALWAYS shows brain. CC sometimes tags its monologue
+  //    with sparkles/zap/wand which previously won here and rendered the
+  //    bulingbuling icon — but for cot we want brain, period.
+  if (step.kind === "think") return "brain"
   // 1. explicit icon hint from the step → highest priority
   const explicit = EXPLICIT_STREAMLINE_ICON[compactIconKey(step.icon)]
   if (explicit && STREAMLINE_THINK_ICONS.has(explicit)) return explicit
@@ -636,6 +640,7 @@ function ThinkIcon({ step }: { step: ThinkStep }) {
 function ThinkingChain({ steps, locked, peerName }: { steps: ThinkStep[]; locked?: boolean; peerName?: string }) {
   const [open, setOpen] = useState(false)
   const summary = steps.find((step) => step.summary || step.text)?.summary || steps.find((step) => step.text)?.text
+  const summaryStep = steps[0]
   if (locked) {
     return (
       <div className="w-full">
@@ -643,6 +648,11 @@ function ThinkingChain({ steps, locked, peerName }: { steps: ThinkStep[]; locked
           className="mb-2 inline-flex items-center gap-1 text-[12px]"
           style={{ color: "rgba(63,47,41,0.45)", fontFamily: "var(--font-sans)" }}
         >
+          {summaryStep && (
+            <span className="grid h-3.5 w-3.5 place-items-center" style={{ color: "rgba(63,47,41,0.55)" }}>
+              <ThinkIcon step={summaryStep} />
+            </span>
+          )}
           <span>{summary || `${peerName || "AI"} thought silently`}</span>
           <LockIcon className="h-3.5 w-3" strokeWidth={1} />
         </div>
@@ -664,6 +674,11 @@ function ThinkingChain({ steps, locked, peerName }: { steps: ThinkStep[]; locked
           fontFamily: "var(--font-sans)",
         }}
       >
+        {summaryStep && (
+          <span className="grid h-3.5 w-3.5 place-items-center" style={{ color: "rgba(63,47,41,0.6)" }}>
+            <ThinkIcon step={summaryStep} />
+          </span>
+        )}
         <span>{open ? "Hide thinking" : (summary || "Show thinking")}</span>
         <ChevronRight
           className={`h-3 w-3 transition-transform ${open ? "rotate-90" : ""}`}
