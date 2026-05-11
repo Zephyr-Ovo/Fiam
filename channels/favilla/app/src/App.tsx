@@ -318,6 +318,14 @@ function VoiceChip({ seconds }: { seconds: number }) {
 function FilePill({ a }: { a: Extract<Attachment, { kind: "file" | "image" }> }) {
   const isImage = a.kind === "image"
   const Icon = isImage ? ImageIcon : FileText
+  // Strip directory portion: server sometimes hands us absolute paths
+  // ("/home/fiet/.../foo.md") and the long path overflows the pill.
+  const displayName = (() => {
+    const raw = a.name || ""
+    if (!raw) return raw
+    const m = raw.match(/[^/\\]+$/)
+    return m ? m[0] : raw
+  })()
   const bgColor = isImage
     ? "rgba(199,195,176,0.85)" // sage
     : "rgba(255,232,214,0.92)" // peach
@@ -343,7 +351,7 @@ function FilePill({ a }: { a: Extract<Attachment, { kind: "file" | "image" }> })
           lineHeight: "1.3",
         }}
       >
-        {a.name}
+        {displayName}
       </span>
     </div>
   )
@@ -570,10 +578,9 @@ function compactIconKey(value?: string) {
 }
 
 function inferStreamlineIcon(step: ThinkStep): string {
-  // 0. pure thinking ALWAYS shows brain. CC sometimes tags its monologue
-  //    with sparkles/zap/wand which previously won here and rendered the
-  //    bulingbuling icon — but for cot we want brain, period.
-  if (step.kind === "think") return "brain"
+  // 0. pure thinking shows the sparkle (bulingbuling) icon — the brain
+  //    glyph was visually busy and hard to align at 14px.
+  if (step.kind === "think") return "bulingbuling"
   // 1. explicit icon hint from the step → highest priority
   const explicit = EXPLICIT_STREAMLINE_ICON[compactIconKey(step.icon)]
   if (explicit && STREAMLINE_THINK_ICONS.has(explicit)) return explicit
@@ -648,6 +655,17 @@ function ThinkingChain({ steps, locked, peerName }: { steps: ThinkStep[]; locked
     const named = steps.find((s) => s.icon || s.source)
     return (named?.icon || named?.source || "tool").toString()
   })()
+  // If the summary looks like a file path, show only the basename so the
+  // header doesn't blow out the bubble width.
+  const shortSummary = (() => {
+    const s = (summary || "").trim()
+    if (!s) return s
+    if (/^[/\\]|^[A-Za-z]:[/\\]/.test(s) || (s.includes("/") && !s.includes(" "))) {
+      const m = s.match(/[^/\\]+$/)
+      if (m) return m[0]
+    }
+    return s
+  })()
   // Skip the first step in the expanded list if its text would just repeat
   // the summary line we already show in the header.
   const expandedSteps = steps.filter((s, i) => {
@@ -667,13 +685,13 @@ function ThinkingChain({ steps, locked, peerName }: { steps: ThinkStep[]; locked
               <ThinkIcon step={summaryStep} />
             </span>
           )}
-          <span className="leading-[14px]">{summary || `${peerName || "AI"} thought silently`}</span>
+          <span className="leading-[14px]">{shortSummary || `${peerName || "AI"} thought silently`}</span>
           <LockIcon className="h-3.5 w-3 shrink-0" strokeWidth={1} />
         </div>
       </div>
     )
   }
-  const collapsedLabel = summary || (isPureThinking ? "Show thinking" : `Used ${toolLabel}`)
+  const collapsedLabel = shortSummary || (isPureThinking ? "Show thinking" : `Used ${toolLabel}`)
   const expandedLabel = isPureThinking ? "Hide thinking" : `Hide ${toolLabel}`
   return (
     <div className="w-full">
@@ -714,15 +732,13 @@ function ThinkingChain({ steps, locked, peerName }: { steps: ThinkStep[]; locked
               {expandedSteps.map((s, i) => {
                 const isLast = i === expandedSteps.length - 1
                 return (
-                  <li key={i} className="grid grid-cols-[14px_1fr] gap-2.5">
-                    {/* icon column with rail */}
-                    <div className="relative flex flex-col items-center">
-                      <div
-                        className="inline-flex h-3.5 w-3.5 items-center justify-center"
-                        style={{ color: "rgba(63,47,41,0.6)" }}
-                      >
-                        <ThinkIcon step={s} />
-                      </div>
+                  <li key={i} className="grid grid-cols-[6px_1fr] gap-2.5">
+                    {/* thin connector rail (no icon — summary header already shows it) */}
+                    <div className="relative flex flex-col items-center pt-1.5">
+                      <span
+                        className="h-1.5 w-1.5 shrink-0 rounded-full"
+                        style={{ background: "rgba(63,47,41,0.35)" }}
+                      />
                       {!isLast && (
                         <span
                           className="mt-0.5 w-px flex-1"
