@@ -1,14 +1,17 @@
 #!/bin/bash
-# fiam hook: UserPromptSubmit -> inject self + recall + carryover + external as additionalContext
+# fiam hook: UserPromptSubmit -> inject recall + carryover + external as additionalContext
 #
-# Injection order (cache-optimized: static → semi-static → dynamic):
-#   1. self/*.md          -- AI's identity/personality (AI-maintained, changes rarely)
-#   2. recall.md          -- memory fragments (surfaced by retrieval, changes on drift)
-#   3. carryover.md       -- conversation turns from other runtimes (api) cc missed
-#   4. pending_external.txt -- external messages (changes per-message)
+# Injection order (cache-friendly: semi-static -> dynamic):
+#   1. recall.md          -- memory fragments (surfaced by retrieval, changes on drift)
+#   2. carryover.md       -- conversation turns from other runtimes (api) cc missed
+#   3. pending_external.txt -- external messages (changes per-message)
+#
+# self/*.md (identity / awareness / etc.) is NOT injected here. The dashboard
+# already passes self/*.md to CC via --append-system-prompt (assembled by
+# build_plain_prompt_parts -> load_self_context). Doing it here too caused
+# a double injection of identity material into every CC turn.
 
 HOME_DIR="$CLAUDE_PROJECT_DIR"
-SELF_DIR="$HOME_DIR/self"
 RECALL_FILE="$HOME_DIR/recall.md"
 RECALL_DIRTY="$HOME_DIR/.recall_dirty"
 CARRYOVER_FILE="$HOME_DIR/carryover.md"
@@ -18,27 +21,7 @@ PENDING_PROCESSING="$HOME_DIR/pending_external.processing"
 
 PARTS=""
 
-# ── 1. Self (AI's identity — all .md files in self/, skip journal/) ──
-if [ -d "$SELF_DIR" ]; then
-    SELF_CONTENT=""
-    for f in "$SELF_DIR"/*.md; do
-        [ -f "$f" ] || continue
-        [ -s "$f" ] || continue
-        CONTENT=$(cat "$f")
-        if [ -n "$CONTENT" ]; then
-            FNAME=$(basename "$f")
-            if [ -n "$SELF_CONTENT" ]; then
-                SELF_CONTENT="${SELF_CONTENT}\n"
-            fi
-            SELF_CONTENT="${SELF_CONTENT}# ${FNAME%.md}\n${CONTENT}"
-        fi
-    done
-    if [ -n "$SELF_CONTENT" ]; then
-        PARTS="[self]\n${SELF_CONTENT}"
-    fi
-fi
-
-# ── 2. Recall (only if .recall_dirty marker exists) ──
+# ── 1. Recall (only if .recall_dirty marker exists) ──
 if [ -f "$RECALL_DIRTY" ] && [ -f "$RECALL_FILE" ] && [ -s "$RECALL_FILE" ]; then
     RECALL=$(sed 's/<!--.*-->//g' "$RECALL_FILE" | tr -s '\n' | sed '/^$/d')
     if [ -n "$RECALL" ]; then

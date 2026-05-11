@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from fiam_lib.core import _project_root, _toml_path, _detect_platform
-from fiam_lib.hooks import write_claude_md, write_awareness_md, write_gitignore, install_hooks
+from fiam_lib.hooks import write_constitution_md, write_awareness_md, write_gitignore, install_hooks
 
 
 def cmd_add_home(args: argparse.Namespace) -> None:
@@ -38,12 +38,12 @@ def cmd_add_home(args: argparse.Namespace) -> None:
     # Create directory structure for this home
     config.ensure_dirs()
 
-    # CLAUDE.md + .gitignore (skip if exists)
-    result = write_claude_md(config)
+    # constitution.md + .gitignore (skip if exists)
+    result = write_constitution_md(config)
     if result:
-        print(f"  CLAUDE.md    {config.claude_md_path}")
+        print(f"  constitution.md  {config.constitution_md_path}")
     else:
-        print(f"  CLAUDE.md    {config.claude_md_path}  (exists, not overwritten)")
+        print(f"  constitution.md  {config.constitution_md_path}  (exists, not overwritten)")
     awareness_dest = config.self_dir / "awareness.md"
     if write_awareness_md(config):
         print(f"  awareness.md {awareness_dest}")

@@ -238,16 +238,23 @@ def install_hooks(config: "FiamConfig", platform: str) -> list[str]:
 
 
 # ------------------------------------------------------------------
-# CLAUDE.md bootstrap
+# constitution.md bootstrap
 # ------------------------------------------------------------------
 
-def write_claude_md(config: "FiamConfig") -> bool:
-    """Write CLAUDE.md to home from template. Returns False if already exists."""
-    dest = config.claude_md_path
+def write_constitution_md(config: "FiamConfig") -> bool:
+    """Write constitution.md to home from template. Returns False if exists.
+
+    constitution.md is the fiam-owned system guide injected as system[0] by
+    runtime/prompt.build_api_messages and via --append-system-prompt for CC.
+    Claude Code does NOT auto-load it (that's the whole point of the rename
+    away from CLAUDE.md), so fiam keeps full control over what reaches the
+    model and there's no double-injection with CC's own auto-loader.
+    """
+    dest = config.constitution_md_path
     if dest.exists():
         return False
 
-    template_path = config.code_path / "scripts" / "templates" / "CLAUDE.md"
+    template_path = config.code_path / "scripts" / "templates" / "constitution.md"
     if template_path.exists():
         content = template_path.read_text(encoding="utf-8")
         if config.user_name:

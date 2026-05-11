@@ -348,15 +348,13 @@ class FiamConfig:
         return self.home_path / "recall.md"
 
     @property
-    def claude_md_path(self) -> Path:
-        """Claude Code's auto-loaded CLAUDE.md (separate from constitution.md)."""
-        return self.home_path / "CLAUDE.md"
-
-    @property
     def constitution_md_path(self) -> Path:
         """Project knowledge / environment / system guide injected as system[0].
 
-        Renamed from CLAUDE.md so CC no longer auto-loads it; fiam owns it.
+        Owned by fiam (not auto-loaded by Claude Code). Replaces the legacy
+        ``CLAUDE.md`` slot — kept here without a ``claude_md_path`` shim so
+        nothing accidentally rewrites a file CC would auto-load on top of
+        whatever fiam already injects via --append-system-prompt.
         """
         return self.home_path / "constitution.md"
 
