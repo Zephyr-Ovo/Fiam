@@ -3779,7 +3779,7 @@ def _viewer_token_ok(handler) -> bool:
     import os
     import hmac
     forwarded_user = handler.headers.get("X-Forwarded-User", "").lower()
-    if forwarded_user in {"Zephyr", "ai", "fiet"}:
+    if forwarded_user in {"Zephyr", "ai", "live"}:
         return True
     expected = os.environ.get("FIAM_VIEW_TOKEN", "")
     if not expected:
@@ -3856,7 +3856,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             elif path == "/api/whoami":
                 # Determine role from Caddy-forwarded header (basic-auth user)
                 user = self.headers.get("X-Forwarded-User", "anon").lower()
-                role = user if user in ("Zephyr", "ai", "fiet") else "anon"
+                role = user if user in ("Zephyr", "ai", "live") else "anon"
                 self._serve_json({"role": role})
             elif path == "/api/health":
                 self._serve_json(_api_health())

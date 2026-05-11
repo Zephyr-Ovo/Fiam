@@ -162,7 +162,7 @@ export const api = {
 		mutate<{ ok: boolean; id: string; enabled: boolean }>('POST', '/config/plugin', { id, enabled }),
 	graph: () => j<GraphPayload>('/graph'),
 	pipeline: () => j<{ lines: string[] }>('/pipeline'),
-	whoami: () => j<{ role: 'iris' | 'ai' | 'fiet' | 'anon' }>('/whoami'),
+	whoami: () => j<{ role: 'iris' | 'ai' | 'live' | 'anon' }>('/whoami'),
 
 	// Pool APIs
 	poolGraph: () => j<GraphPayload>('/pool/graph'),

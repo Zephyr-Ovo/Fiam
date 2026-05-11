@@ -16,7 +16,7 @@ StandardError=journal
 
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/home/fiet/fiet-home /home/fiet/fiam-code/logs /home/fiet/fiam-code/store
+ReadWritePaths=/home/fiet/live /home/fiet/fiam-code/logs /home/fiet/fiam-code/store
 PrivateTmp=true
 NoNewPrivileges=true
 

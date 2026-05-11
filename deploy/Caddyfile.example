@@ -24,7 +24,7 @@ http://fiet.cc, http://www.fiet.cc {
 	basic_auth @protected {
 		iris  $2a$14$REPLACE_WITH_HASH_FROM_caddy_hash_password
 		ai    $2a$14$REPLACE_WITH_HASH_FROM_caddy_hash_password
-		fiet  $2a$14$REPLACE_WITH_HASH_FROM_caddy_hash_password
+		live  $2a$14$REPLACE_WITH_HASH_FROM_caddy_hash_password
 	}
 
 	# /api/* → Python dashboard_server.py on localhost:8766

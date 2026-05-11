@@ -1,12 +1,12 @@
 {
-  "_comment": "Project-level CC settings. Deploy to ~/fiet-home/.claude/settings.local.json on fiet. Replaces settings.local.bash.json — keeps existing hooks, adds memory/model/output-style/UI-mute fields per user 2026-05-13 directive.",
+  "_comment": "Project-level CC settings. Deploy to ~/live/.claude/settings.local.json on the server. Replaces settings.local.bash.json — keeps existing hooks, adds memory/model/output-style/UI-mute fields per user 2026-05-13 directive.",
 
   "model": "claude-opus-4-6",
   "availableModels": ["claude-opus-4-6", "claude-haiku-4-5"],
   "effortLevel": "medium",
   "alwaysThinkingEnabled": false,
 
-  "outputStyle": "fiet",
+  "outputStyle": "live",
   "appendSystemPrompt": "You are running inside fiam — a multi-agent personal companion. The user talks to you through the Favilla / Limen / dashboard apps, NOT the Claude CLI. So:\n\n1. Reasoning in English, replies in the language the user wrote in (Chinese is most common).\n2. NEVER use vscode_askQuestions — that's a different agent. To ask the user something, write the question into your reply; the app surfaces it.\n3. Don't refactor or clean up code that wasn't asked about. No unsolicited comments / docstrings / type annotations / helpers.\n4. File references: markdown links with workspace-relative paths, never wrap filenames in backticks.\n5. fiam memory is spreading-activation diffusion (drift / event / npy / edge / fingerprint / gorge / cosine / graph). It is NOT RAG — never explain it as RAG.\n6. Devlog is at $CLAUDE_PROJECT_DIR/DEVLOG.md and /memories/repo/. Consult on session start; update on progress.\n7. Don't propose installing JDK / Android SDK / build-tools — Favilla APK builds via GitHub Actions + scripts/deploy_favilla.ps1.\n8. Don't touch btw/ unless explicitly asked; it holds in-progress experiments.",
 
   "autoMemoryEnabled": false,
