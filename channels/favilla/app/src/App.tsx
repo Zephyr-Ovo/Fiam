@@ -698,7 +698,6 @@ function ThinkingChain({ steps, locked, peerName }: { steps: ThinkStep[]; locked
     )
   }
   const collapsedLabel = shortSummary || (isPureThinking ? "Show thinking" : `Used ${toolLabel}`)
-  const expandedLabel = isPureThinking ? "Hide thinking" : `Hide ${toolLabel}`
   const hasExpandable = expandedSteps.length > 0
   return (
     <div className="w-full">
@@ -721,7 +720,7 @@ function ThinkingChain({ steps, locked, peerName }: { steps: ThinkStep[]; locked
               <ThinkIcon step={summaryStep} />
             </span>
           )}
-          <span className="leading-[14px] text-left">{open ? expandedLabel : collapsedLabel}</span>
+          <span className="leading-[14px] text-left">{collapsedLabel}</span>
           <ChevronRight
             className={`h-3 w-3 shrink-0 transition-transform ${open ? "rotate-90" : ""}`}
             strokeWidth={2}
@@ -773,13 +772,13 @@ function ThinkingChain({ steps, locked, peerName }: { steps: ThinkStep[]; locked
                     {/* content */}
                     <div className="pb-1">
                       <div
-                        className="text-[13px] leading-[1.5]"
+                        className="md text-[13px] leading-[1.55]"
                         style={{
                           color: "rgba(63,47,41,0.78)",
                           fontFamily: "var(--font-sans)",
                         }}
                       >
-                        {s.text}
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{s.text}</ReactMarkdown>
                       </div>
                       {s.result && (
                         <div
