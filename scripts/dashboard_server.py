@@ -3282,10 +3282,11 @@ def _summarize_cc_tool_input(name: str, data: dict) -> str:
     return ""
 
 
-def _parse_cc_stream(stdout: str) -> tuple[dict, list[dict]]:
+def _parse_cc_stream(stdout: str) -> tuple[dict, list[dict], list[dict]]:
     result_data: dict = {}
     tool_names: dict[str, str] = {}
     action_events: list[dict] = []
+    thinking_events: list[dict] = []
     for raw_line in (stdout or "").splitlines():
         raw_line = raw_line.strip()
         if not raw_line:
@@ -3301,7 +3302,18 @@ def _parse_cc_stream(stdout: str) -> tuple[dict, list[dict]]:
         if item_type == "assistant":
             message = item.get("message") if isinstance(item.get("message"), dict) else {}
             for block in message.get("content") or []:
-                if not isinstance(block, dict) or block.get("type") != "tool_use":
+                if not isinstance(block, dict):
+                    continue
+                btype = block.get("type")
+                if btype == "thinking":
+                    text = str(block.get("thinking") or "").strip()
+                    if text:
+                        thinking_events.append({
+                            "text": text,
+                            "signature": str(block.get("signature") or ""),
+                        })
+                    continue
+                if btype != "tool_use":
                     continue
                 tool_id = str(block.get("id") or "")
                 name = str(block.get("name") or "tool")
@@ -3336,7 +3348,7 @@ def _parse_cc_stream(stdout: str) -> tuple[dict, list[dict]]:
                 "summary": _redact_cc_snippet(output, limit=500),
                 "output_text": str(output or ""),
             })
-    return result_data, action_events
+    return result_data, action_events, thinking_events
 
 
 def _combine_cc_action_events(action_events: list[dict]) -> list[dict]:
@@ -3430,17 +3442,17 @@ def _run_cc_favilla_chat(*, text: str, channel: str, attachments: list | None = 
             raise RuntimeError("claude not found on server PATH") from exc
 
     def parse_claude_result(result):
-        data, action_events = _parse_cc_stream(result.stdout or "")
+        data, action_events, thinking_events = _parse_cc_stream(result.stdout or "")
         if not data:
             detail = (result.stderr or result.stdout or "").strip()[:500]
             raise RuntimeError(f"bad claude stream-json: {detail}")
         is_partial_success = data.get("subtype") == "error_max_turns"
         is_error = bool(data.get("is_error")) or result.returncode != 0
-        return data, _combine_cc_action_events(action_events), is_partial_success, is_error
+        return data, _combine_cc_action_events(action_events), thinking_events, is_partial_success, is_error
 
     resume_id = session["session_id"] if session else None
     result = run_claude(resume_id)
-    data, action_events, is_partial_success, is_error = parse_claude_result(result)
+    data, action_events, thinking_events, is_partial_success, is_error = parse_claude_result(result)
     if is_error and not is_partial_success:
         detail = (data.get("error") or data.get("result") or result.stderr or result.stdout or "claude failed")
         if resume_id and "No conversation found with session ID" in str(detail):
@@ -3449,7 +3461,7 @@ def _run_cc_favilla_chat(*, text: str, channel: str, attachments: list | None = 
             except OSError:
                 pass
             result = run_claude(None)
-            data, action_events, is_partial_success, is_error = parse_claude_result(result)
+            data, action_events, thinking_events, is_partial_success, is_error = parse_claude_result(result)
             detail = (data.get("error") or data.get("result") or result.stderr or result.stdout or "claude failed")
         if is_error and not is_partial_success:
             raise RuntimeError(str(detail).strip()[:500])
@@ -3468,6 +3480,35 @@ def _run_cc_favilla_chat(*, text: str, channel: str, attachments: list | None = 
         attachments=attachments or [],
     )
     cleaned_reply, thoughts, thoughts_locked, segments = _parse_cot(reply)
+    # Anthropic native extended-thinking blocks (separate from <cot> markers).
+    # These are model-internal raw thought, not echoed back to cc on next turn
+    # by Anthropic policy. Surface them so transcript / api side / /context UI
+    # can see them.
+    native_thoughts: list[dict] = []
+    native_segments: list[dict] = []
+    for ev in thinking_events or []:
+        text_t = str(ev.get("text") or "").strip()
+        if not text_t:
+            continue
+        native_thoughts.append({
+            "kind": "think",
+            "text": text_t,
+            "summary": text_t[:160],
+            "source": "native",
+            "locked": False,
+            "icon": "NativeThinking",
+        })
+        native_segments.append({
+            "type": "thought",
+            "text": text_t,
+            "summary": text_t[:160],
+            "source": "native",
+            "locked": False,
+            "icon": "NativeThinking",
+        })
+    if native_thoughts:
+        thoughts = native_thoughts + thoughts
+        segments = native_segments + list(segments)
     hold = {"kind": hold_kind} if hold_kind else None
     if hold and not segments:
         thoughts_locked = True
@@ -3510,7 +3551,7 @@ def _run_cc_favilla_chat(*, text: str, channel: str, attachments: list | None = 
         actions_list.append({"kind": "queued_todo", **(todo if isinstance(todo, dict) else {"text": str(todo)})})
     if carry_over:
         actions_list.append({"kind": "carry_over", **(carry_over if isinstance(carry_over, dict) else {"value": str(carry_over)})})
-    _record_cc_app_turn(prompt_text, cleaned_reply, channel, action_events=action_events, session_id=session_id)
+    _record_cc_app_turn(prompt_text, cleaned_reply, channel, action_events=action_events, thinking_events=thinking_events, session_id=session_id)
     try:
         _record_debug_context("cc", metrics=metrics, session_id=session_id, channel=channel)
     except Exception:
@@ -3620,6 +3661,7 @@ def _iter_cc_favilla_chat_events(*, text: str, channel: str, attachments: list |
         "raw_reply_parts": [],
         "result_data": {},
         "action_events": [],
+        "thinking_events": [],
         "summary_threads": [],
     }
 
@@ -3690,6 +3732,24 @@ def _iter_cc_favilla_chat_events(*, text: str, channel: str, attachments: list |
                             if text_chunk:
                                 state["raw_reply_parts"].append(text_chunk)
                                 emit_text_and_thoughts(text_chunk)
+                        elif btype == "thinking":
+                            think_text = str(block.get("thinking") or "").strip()
+                            if think_text:
+                                ev = {
+                                    "text": think_text,
+                                    "signature": str(block.get("signature") or ""),
+                                }
+                                state["thinking_events"].append(ev)
+                                idx = state["thought_idx"]
+                                state["thought_idx"] += 1
+                                ev_queue.put({"event": "thought", "data": {
+                                    "index": idx,
+                                    "text": think_text,
+                                    "summary": think_text[:160],
+                                    "source": "native",
+                                    "locked": False,
+                                    "icon": "NativeThinking",
+                                }})
                     continue
                 if item_type == "user":
                     result = item.get("tool_use_result") if isinstance(item.get("tool_use_result"), dict) else {}
@@ -3834,6 +3894,32 @@ def _iter_cc_favilla_chat_events(*, text: str, channel: str, attachments: list |
         attachments=attachments or [],
     )
     cleaned_reply, thoughts, thoughts_locked, segments = _parse_cot(reply)
+    thinking_events = state.get("thinking_events") or []
+    native_thoughts: list[dict] = []
+    native_segments: list[dict] = []
+    for ev in thinking_events:
+        text_t = str(ev.get("text") or "").strip()
+        if not text_t:
+            continue
+        native_thoughts.append({
+            "kind": "think",
+            "text": text_t,
+            "summary": text_t[:160],
+            "source": "native",
+            "locked": False,
+            "icon": "NativeThinking",
+        })
+        native_segments.append({
+            "type": "thought",
+            "text": text_t,
+            "summary": text_t[:160],
+            "source": "native",
+            "locked": False,
+            "icon": "NativeThinking",
+        })
+    if native_thoughts:
+        thoughts = native_thoughts + thoughts
+        segments = native_segments + list(segments)
     hold = {"kind": hold_kind} if hold_kind else None
     if hold and not segments:
         thoughts_locked = True
@@ -3873,7 +3959,7 @@ def _iter_cc_favilla_chat_events(*, text: str, channel: str, attachments: list |
         actions_list.append({"kind": "queued_todo", **(todo if isinstance(todo, dict) else {"text": str(todo)})})
     if carry_over:
         actions_list.append({"kind": "carry_over", **(carry_over if isinstance(carry_over, dict) else {"value": str(carry_over)})})
-    _record_cc_app_turn(prompt_text, cleaned_reply, channel, action_events=action_events, session_id=session_id)
+    _record_cc_app_turn(prompt_text, cleaned_reply, channel, action_events=action_events, thinking_events=thinking_events, session_id=session_id)
     try:
         _record_debug_context("cc", metrics=metrics, session_id=session_id, channel=channel)
     except Exception:
@@ -3901,7 +3987,7 @@ def _iter_cc_favilla_chat_events(*, text: str, channel: str, attachments: list |
     yield {"event": "done", "data": final}
 
 
-def _record_cc_app_turn(user_text: str, assistant_reply: str, channel: str, *, action_events: list[dict] | None = None, session_id: str = "") -> None:
+def _record_cc_app_turn(user_text: str, assistant_reply: str, channel: str, *, action_events: list[dict] | None = None, thinking_events: list[dict] | None = None, session_id: str = "") -> None:
     if not _CONFIG or not _POOL:
         return
     from fiam.conductor import Conductor
@@ -3931,6 +4017,22 @@ def _record_cc_app_turn(user_text: str, assistant_reply: str, channel: str, *, a
         ai_status=conductor.ai_status,
         user_name=getattr(_CONFIG, "user_name", "") or "zephyr",
     ))
+    # Native thinking beats — Anthropic extended-thinking blocks captured from
+    # cc stream-json. Emitted before tool actions so flow order matches model
+    # output order (think first, then act, then answer).
+    for ev in thinking_events or []:
+        text_t = str(ev.get("text") or "").strip()
+        if not text_t:
+            continue
+        conductor._ingest_beat(Beat(
+            t=datetime.now(timezone.utc),
+            text=text_t,
+            actor="ai",
+            channel="think",
+            user=conductor.user_status,
+            ai=conductor.ai_status,
+            runtime="cc",
+        ))
     for action in action_events or []:
         kind = str(action.get("kind") or "tool")
         name = str(action.get("tool_name") or "tool")
