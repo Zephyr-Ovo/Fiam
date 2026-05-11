@@ -4831,7 +4831,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 # Stream branch: client opted into SSE via Accept header or ?stream=1.
                 from urllib.parse import parse_qs, urlparse
                 accept_hdr = (self.headers.get("Accept") or "").lower()
-                want_stream = "text/event-stream" in accept_hdr or (parse_qs(urlparse(raw).query).get("stream") or [""])[0] in ("1", "true")
+                want_stream = "text/event-stream" in accept_hdr or (parse_qs(urlparse(self.path).query).get("stream") or [""])[0] in ("1", "true")
                 if want_stream:
                     try:
                         self.send_response(200)
