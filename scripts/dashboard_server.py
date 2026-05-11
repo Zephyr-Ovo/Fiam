@@ -3547,6 +3547,10 @@ def _iter_cc_favilla_chat_events(*, text: str, channel: str, attachments: list |
     if carry_over:
         actions_list.append({"kind": "carry_over", **(carry_over if isinstance(carry_over, dict) else {"value": str(carry_over)})})
     _record_cc_app_turn(prompt_text, cleaned_reply, channel, action_events=action_events, session_id=session_id)
+    try:
+        _record_debug_context("cc", metrics=metrics, session_id=session_id, channel=channel)
+    except Exception:
+        logger.exception("debug context record (cc stream) failed")
     final = {
         "ok": True,
         "runtime": "cc",
