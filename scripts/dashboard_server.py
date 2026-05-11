@@ -18,6 +18,9 @@ import re
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
+from dataclasses import replace
 from datetime import datetime, timezone
 from http.server import HTTPServer, ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
@@ -34,6 +37,14 @@ _EMBEDDER = None    # Embedder instance (lazy)
 _BUS = None         # Bus instance (lazy, for /api/capture publishing)
 _COMPUTE_LOCK = threading.Lock()  # gate concurrent mutations
 _WEARABLE_LOCK = threading.Lock()
+_ROUTE_STICK_TURNS = 3
+POE_KNOWN_MODELS = [
+    "Claude-Opus-4.6",
+    "Claude-Sonnet-4.6",
+    "Claude-Haiku-4.5",
+    "GPT-5.1",
+    "GPT-5-mini",
+]
 
 # Fix sys.path before importing helpers that may themselves import fiam.*.
 _src_dir = str(_ROOT / "src")
@@ -3010,6 +3021,7 @@ def _parse_cc_stream(stdout: str) -> tuple[dict, list[dict]]:
                 "tool_name": name,
                 "is_error": bool(result.get("is_error")) or bool(result.get("isError")) or bool(stderr_text and not stdout_text),
                 "summary": _redact_cc_snippet(output, limit=500),
+                "output_text": str(output or ""),
             })
     return result_data, action_events
 
@@ -3039,6 +3051,7 @@ def _combine_cc_action_events(action_events: list[dict]) -> list[dict]:
             action["input_summary"] = str(event.get("summary") or "")
         elif event.get("kind") == "tool_result":
             action["result_summary"] = str(event.get("summary") or "")
+            action["result_full"] = str(event.get("output_text") or "")
             action["is_error"] = bool(event.get("is_error"))
             action["status"] = "error" if action["is_error"] else "ok"
     return combined
@@ -3386,6 +3399,7 @@ def _iter_cc_favilla_chat_events(*, text: str, channel: str, attachments: list |
                         "tool_name": name,
                         "is_error": is_error,
                         "summary": summary,
+                        "output_text": str(output or ""),
                     })
                     ev_queue.put({"event": "tool_result", "data": {
                         "tool_use_id": tool_id,
@@ -3607,6 +3621,8 @@ def _record_cc_app_turn(user_text: str, assistant_reply: str, channel: str, *, a
     for action in action_events or []:
         kind = str(action.get("kind") or "tool")
         name = str(action.get("tool_name") or "tool")
+        result_summary = str(action.get("result_summary") or "").strip()
+        is_error = bool(action.get("is_error"))
         if kind == "tool_action":
             input_summary = str(action.get("input_summary") or "").strip()
             text = f"action: {name}" + (f" — {input_summary}" if input_summary else "")
@@ -3614,8 +3630,11 @@ def _record_cc_app_turn(user_text: str, assistant_reply: str, channel: str, *, a
             summary = str(action.get("summary") or "").strip()
             if kind == "tool_use":
                 text = f"action: {name}" + (f" — {summary}" if summary else "")
+            elif kind == "tool_result":
+                # standalone tool_result event (rare — combined path puts it on tool_action)
+                prefix = "error" if is_error else "result"
+                text = f"{prefix}: {name}" + (f" — {summary}" if summary else "")
             else:
-                # legacy path: 单独的 result 事件不再入 flow
                 continue
         conductor._ingest_beat(Beat(
             t=datetime.now(timezone.utc),
@@ -3626,6 +3645,20 @@ def _record_cc_app_turn(user_text: str, assistant_reply: str, channel: str, *, a
             ai=conductor.ai_status,
             runtime="cc",
         ))
+        # paired result beat: emit immediately after the action beat so flow
+        # readers (and DS summarizer) see both call and outcome in order.
+        if kind == "tool_action" and (result_summary or is_error):
+            prefix = "error" if is_error else "result"
+            result_text = f"{prefix}: {name}" + (f" — {result_summary}" if result_summary else " — (no output)")
+            conductor._ingest_beat(Beat(
+                t=datetime.now(timezone.utc),
+                text=result_text,
+                actor="ai",
+                channel="action",
+                user=conductor.user_status,
+                ai=conductor.ai_status,
+                runtime="cc",
+            ))
     for beat in assistant_text_beats(
         assistant_reply,
         t=datetime.now(timezone.utc),
@@ -3770,6 +3803,8 @@ def _run_api_favilla_chat(*, text: str, channel: str, attachments: list | None =
             "tool_name": name,
             "tool_id": call.get("id") or "",
             "input_summary": str(call.get("arguments") or "")[:300],
+            "result_summary": str(call.get("result_preview") or "")[:500],
+            "result_full": str(call.get("result") or call.get("result_preview") or ""),
             "loop": call.get("loop"),
         })
         actions_list.append({
