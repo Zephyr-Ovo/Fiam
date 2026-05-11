@@ -2654,7 +2654,6 @@ def _run_cc_favilla_chat(*, text: str, channel: str, attachments: list | None = 
         "claude", "-p", user_prompt,
         "--output-format", "stream-json",
         "--verbose",
-        "--max-turns", "10",
         "--setting-sources", "user,project,local",
         "--exclude-dynamic-system-prompt-sections",
         "--permission-mode", "bypassPermissions",
