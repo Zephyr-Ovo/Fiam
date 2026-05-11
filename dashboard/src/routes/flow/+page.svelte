@@ -19,20 +19,26 @@
 		system: 'var(--color-lavender)'
 	};
 	const channelColors: Record<string, string> = {
-		think: 'var(--color-mauve)',
-		action: 'var(--color-peach)',
 		favilla: 'var(--color-pink)',
 		stroll: 'var(--color-sapphire)',
 		email: 'var(--color-yellow)',
-		schedule: 'var(--color-lavender)',
 		studio: 'var(--color-maroon)',
-		console: 'var(--color-mauve)' // legacy old rows
+		browser: 'var(--color-peach)',
+		cc: 'var(--color-blue)',
+		system: 'var(--color-lavender)'
+	};
+	const kindColors: Record<string, string> = {
+		think: 'var(--color-mauve)',
+		action: 'var(--color-peach)',
+		tool_result: 'var(--color-overlay2)',
+		schedule: 'var(--color-lavender)',
+		message: 'var(--color-text)'
 	};
 	const runtimeColors: Record<string, string> = {
 		cc: 'var(--color-blue)',
-		api: 'var(--color-green)',
 		claude: 'var(--color-blue)',
-		gemini: 'var(--color-teal)'
+		gemini: 'var(--color-teal)',
+		gpt: 'var(--color-green)'
 	};
 
 	function getActor(beat: Beat): string {
@@ -41,7 +47,15 @@
 	function getChannel(beat: Beat): string {
 		return (beat.channel ?? '').toString();
 	}
+	function getKind(beat: Beat): string {
+		return ((beat as any).kind ?? '').toString();
+	}
+	function getContent(beat: Beat): string {
+		return ((beat as any).content ?? '').toString();
+	}
 	function colorForScene(beat: Beat): string {
+		const k = getKind(beat);
+		if (k && kindColors[k] && k !== 'message') return kindColors[k];
 		const ch = getChannel(beat);
 		if (ch && channelColors[ch]) return channelColors[ch];
 		const actor = getActor(beat);
@@ -55,12 +69,14 @@
 	function sceneOf(beat: Beat): string {
 		const a = getActor(beat);
 		const c = getChannel(beat);
-		if (a && c) return `${a}@${c}`;
-		return a || c;
+		const k = getKind(beat);
+		const tail = k && k !== 'message' ? `·${k}` : '';
+		if (a && c) return `${a}@${c}${tail}`;
+		return (a || c) + tail;
 	}
 
 	function isThinking(beat: Beat): boolean {
-		return sceneOf(beat) === 'ai@think' || (beat.meta as any)?.kind === 'thinking';
+		return getKind(beat) === 'think';
 	}
 
 	function thinkingTitle(text: string): string {
@@ -162,20 +178,19 @@
 								style="color:{colorForRuntime(beat.runtime)}; border-color:{colorForRuntime(beat.runtime)}"
 							>{beat.runtime}</span>
 						{/if}
-						<span class="px-1.5 py-0.5 rounded border border-[var(--color-surface1)] text-[var(--color-overlay1)]">ai={beat.ai}</span>
 					</div>
 					{#if isThinking(beat)}
 						<details class="mt-2 min-w-0 text-[var(--color-text)]">
 							<summary class="cursor-pointer text-[var(--color-mauve)] break-all">
-								{thinkingTitle(beat.text)}
+								{thinkingTitle(getContent(beat))}
 							</summary>
 							<div class="mt-1 whitespace-pre-wrap break-all text-[var(--color-subtext1)]">
-								{beat.text}
+								{getContent(beat)}
 							</div>
 						</details>
 					{:else}
 						<div class="mt-2 text-[var(--color-text)] whitespace-pre-wrap break-words min-w-0">
-							{beat.text}
+							{getContent(beat)}
 						</div>
 					{/if}
 				</div>

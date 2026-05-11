@@ -226,7 +226,7 @@
 						{beat.channel}
 					</span>
 					<span class="text-[var(--color-text)] break-all flex-1">
-						{beat.text.length > 400 ? beat.text.slice(0, 397) + '…' : beat.text}
+						{(((beat as any).content ?? '') as string).length > 400 ? (((beat as any).content ?? '') as string).slice(0, 397) + '…' : ((beat as any).content ?? '')}
 					</span>
 					<span class="text-[var(--color-overlay0)] text-[10px] shrink-0 self-start w-4 text-right">
 						{i}

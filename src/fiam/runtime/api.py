@@ -20,6 +20,20 @@ from fiam.runtime.turns import assistant_text_beats, user_beat
 from fiam.store.beat import Beat
 
 
+def _infer_runtime_family(model: str) -> str | None:
+    """Map a model id to a runtime family tag (claude / gemini / gpt / ...)."""
+    m = (model or "").lower()
+    if not m:
+        return None
+    if "gemini" in m:
+        return "gemini"
+    if "claude" in m or "anthropic" in m:
+        return "claude"
+    if "gpt" in m or "openai" in m or m.startswith("o1") or m.startswith("o3"):
+        return "gpt"
+    return m.split("/", 1)[0] or None
+
+
 class ApiClient(Protocol):
     def complete(
         self,
@@ -759,8 +773,6 @@ class ApiRuntime:
             text,
             t=datetime.now(timezone.utc),
             channel=channel,
-            user_status=self.conductor.user_status,
-            ai_status=self.conductor.ai_status,
             user_name=getattr(self.config, "user_name", "") or "zephyr",
         )
         self.conductor._ingest_beat(beat)
@@ -782,9 +794,7 @@ class ApiRuntime:
             text,
             t=datetime.now(timezone.utc),
             channel=channel,
-            user_status=self.conductor.user_status,
-            ai_status=self.conductor.ai_status,
-            runtime="api",
+            runtime=_infer_runtime_family(self.config.api_model),
         ):
             self.conductor._ingest_beat(beat)
 
@@ -795,12 +805,12 @@ class ApiRuntime:
         text = f"action: {name}" + (f" — {args_summary}" if args_summary else "")
         self.conductor._ingest_beat(Beat(
             t=datetime.now(timezone.utc),
-            text=text,
             actor="ai",
-            channel="action",
-            user=self.conductor.user_status,
-            ai=self.conductor.ai_status,
-            runtime="api",
+            channel=channel,
+            kind="action",
+            content=text,
+            runtime=_infer_runtime_family(self.config.api_model),
+            meta={"tool": name},
         ))
 
     def _dispatch(self, text: str) -> int:

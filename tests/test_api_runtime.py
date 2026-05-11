@@ -149,10 +149,10 @@ class ApiRuntimeTest(unittest.TestCase):
 
             lines = [json.loads(line) for line in config.flow_path.read_text(encoding="utf-8").splitlines()]
             self.assertEqual([(line["actor"], line["channel"]) for line in lines], [("user", "favilla"), ("ai", "favilla"), ("ai", "favilla")])
-            self.assertEqual(lines[1]["runtime"], "api")
-            self.assertEqual(lines[2]["runtime"], "api")
+            self.assertEqual(lines[1]["runtime"], "cheap")
+            self.assertEqual(lines[2]["runtime"], "cheap")
             self.assertNotIn("meta", lines[0])
-            self.assertEqual(lines[2]["text"], "收到。")
+            self.assertEqual(lines[2]["content"], "收到。")
 
     def test_api_config_loads_from_toml(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -84,13 +84,12 @@ export interface PoolEventDetail {
 export interface FlowPayload {
 	beats: {
 		t: string;
-		text: string;
-		actor?: string;
-		channel?: string;
+		actor: string;
+		channel: string;
+		kind: string;
+		content: string;
 		runtime?: string | null;
 		meta?: Record<string, unknown>;
-		user: string;
-		ai: string;
 	}[];
 	offset: number;
 	total: number;

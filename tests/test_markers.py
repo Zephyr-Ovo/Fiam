@@ -161,12 +161,10 @@ class MarkerParsingTest(unittest.TestCase):
             '外层 <hold/> 中间 <hold all/>',
             t=datetime.now(timezone.utc),
             channel="api",
-            user_status="together",
-            ai_status="online",
         )
 
         self.assertEqual(len(beats), 1)
-        self.assertEqual(beats[0].text, "外层  中间")
+        self.assertEqual(beats[0].content, "外层  中间")
 
     def test_parse_cot_markers_extracts_bodies(self) -> None:
         text = "前 <cot>第一段思考</cot> 中 <cot>  第二段  </cot> 后 <cot></cot>"
@@ -178,18 +176,17 @@ class MarkerParsingTest(unittest.TestCase):
             "对外正文 <cot>私下推理 A</cot> 继续 <cot>私下推理 B</cot> 收尾",
             t=datetime.now(timezone.utc),
             channel="favilla",
-            user_status="together",
-            ai_status="online",
-            runtime="api",
+            runtime="claude",
         )
 
-        think_beats = [b for b in beats if b.channel == "think"]
-        dialogue = [b for b in beats if b.channel == "favilla"]
-        self.assertEqual([b.text for b in think_beats], ["私下推理 A", "私下推理 B"])
+        think_beats = [b for b in beats if b.kind == "think"]
+        dialogue = [b for b in beats if b.kind == "message"]
+        self.assertEqual([b.content for b in think_beats], ["私下推理 A", "私下推理 B"])
+        self.assertTrue(all(b.channel == "favilla" for b in think_beats))
         self.assertEqual(len(dialogue), 1)
-        self.assertNotIn("<cot", dialogue[0].text)
-        self.assertIn("对外正文", dialogue[0].text)
-        self.assertIn("收尾", dialogue[0].text)
+        self.assertNotIn("<cot", dialogue[0].content)
+        self.assertIn("对外正文", dialogue[0].content)
+        self.assertIn("收尾", dialogue[0].content)
 
     def test_strip_xml_markers_strips_cot(self) -> None:
         self.assertEqual(strip_xml_markers("a <cot>x</cot> b", {"cot"}), "a  b")

@@ -1153,8 +1153,6 @@ def _append_browser_flow_text(text: str) -> None:
         text,
         t=datetime.now(timezone.utc),
         channel="browser",
-        user_status="away",
-        ai_status="online",
         user_name=getattr(_CONFIG, "user_name", "") or "zephyr",
     ))
 
@@ -1177,12 +1175,10 @@ def _append_browser_action_flow(payload: dict) -> dict:
     text = f"browser_action {status}: {action_kind} {node_token} {label}".strip()
     append_beat(_CONFIG.flow_path, Beat(
         t=datetime.now(timezone.utc),
-        text=text,
         actor="ai",
-        channel="action",
-        user="away",
-        ai="online",
-        runtime="browser",
+        channel="browser",
+        kind="action",
+        content=text,
     ))
     try:
         from fiam_lib.computer_events import get_bus as _ce_bus
@@ -1232,11 +1228,10 @@ def _append_browser_ai_decision_flow(reply: str, actions: list[dict], done: dict
         return
     append_beat(_CONFIG.flow_path, Beat(
         t=datetime.now(timezone.utc),
-        text=text,
         actor="ai",
         channel="browser",
-        user="away",
-        ai="online",
+        kind="message",
+        content=text,
         runtime=runtime,
     ))
     try:
@@ -4018,8 +4013,6 @@ def _record_cc_app_turn(user_text: str, assistant_reply: str, channel: str, *, a
         user_text,
         t=now,
         channel=channel,
-        user_status=conductor.user_status,
-        ai_status=conductor.ai_status,
         user_name=getattr(_CONFIG, "user_name", "") or "zephyr",
     ))
     # Native thinking beats — Anthropic extended-thinking blocks captured from
@@ -4031,12 +4024,12 @@ def _record_cc_app_turn(user_text: str, assistant_reply: str, channel: str, *, a
             continue
         conductor._ingest_beat(Beat(
             t=datetime.now(timezone.utc),
-            text=text_t,
             actor="ai",
-            channel="think",
-            user=conductor.user_status,
-            ai=conductor.ai_status,
+            channel=channel,
+            kind="think",
+            content=text_t,
             runtime="cc",
+            meta={"source": "native"},
         ))
     for action in action_events or []:
         kind = str(action.get("kind") or "tool")
@@ -4058,12 +4051,12 @@ def _record_cc_app_turn(user_text: str, assistant_reply: str, channel: str, *, a
                 continue
         conductor._ingest_beat(Beat(
             t=datetime.now(timezone.utc),
-            text=text,
             actor="ai",
-            channel="action",
-            user=conductor.user_status,
-            ai=conductor.ai_status,
+            channel=channel,
+            kind="action",
+            content=text,
             runtime="cc",
+            meta={"tool": name},
         ))
         # paired result beat: emit immediately after the action beat so flow
         # readers (and DS summarizer) see both call and outcome in order.
@@ -4072,37 +4065,34 @@ def _record_cc_app_turn(user_text: str, assistant_reply: str, channel: str, *, a
             result_text = f"{prefix}: {name}" + (f" — {result_summary}" if result_summary else " — (no output)")
             conductor._ingest_beat(Beat(
                 t=datetime.now(timezone.utc),
-                text=result_text,
                 actor="ai",
-                channel="action",
-                user=conductor.user_status,
-                ai=conductor.ai_status,
+                channel=channel,
+                kind="tool_result",
+                content=result_text,
                 runtime="cc",
+                meta={"tool": name, "is_error": is_error},
             ))
     for beat in assistant_text_beats(
         assistant_reply,
         t=datetime.now(timezone.utc),
         channel=channel,
-        user_status=conductor.user_status,
-        ai_status=conductor.ai_status,
         runtime="cc",
     ):
         conductor._ingest_beat(beat)
 
 
-def _record_api_turn_light(user_text: str, assistant_reply: str, channel: str, *, tool_calls: list[dict] | None = None) -> None:
+def _record_api_turn_light(user_text: str, assistant_reply: str, channel: str, *, tool_calls: list[dict] | None = None, family: str = "") -> None:
     if not _CONFIG:
         return
     from fiam.runtime.turns import assistant_text_beats, user_beat
     from fiam.store.beat import Beat, append_beats
 
+    runtime_tag = (family or "").strip().lower() or None
     now = datetime.now(timezone.utc)
     beats = [user_beat(
         user_text,
         t=now,
         channel=channel,
-        user_status="away",
-        ai_status="online",
         user_name=getattr(_CONFIG, "user_name", "") or "zephyr",
     )]
     for call in tool_calls or []:
@@ -4110,20 +4100,18 @@ def _record_api_turn_light(user_text: str, assistant_reply: str, channel: str, *
         input_summary = str(call.get("input_summary") or "").replace("\n", " ")[:300]
         beats.append(Beat(
             t=datetime.now(timezone.utc),
-            text=f"action: {tool_name}" + (f" — {input_summary}" if input_summary else ""),
             actor="ai",
-            channel="action",
-            user="away",
-            ai="online",
-            runtime="api",
+            channel=channel,
+            kind="action",
+            content=f"action: {tool_name}" + (f" — {input_summary}" if input_summary else ""),
+            runtime=runtime_tag,
+            meta={"tool": tool_name},
         ))
     beats.extend(assistant_text_beats(
         assistant_reply,
         t=datetime.now(timezone.utc),
         channel=channel,
-        user_status="away",
-        ai_status="online",
-        runtime="api",
+        runtime=runtime_tag,
     ))
     append_beats(_CONFIG.flow_path, beats)
 
@@ -4236,7 +4224,7 @@ def _run_api_favilla_chat(*, text: str, channel: str, attachments: list | None =
             "loop": call.get("loop"),
         })
     if light_browser_record and record_turn:
-        _record_api_turn_light(api_text, cleaned_reply, channel=channel, tool_calls=api_tool_calls_summary)
+        _record_api_turn_light(api_text, cleaned_reply, channel=channel, tool_calls=api_tool_calls_summary, family=family)
     for todo in queued_todos or []:
         actions_list.append({"kind": "queued_todo", **(todo if isinstance(todo, dict) else {"text": str(todo)})})
     if carry_over:

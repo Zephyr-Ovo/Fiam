@@ -10,7 +10,6 @@ from fiam.store.beat import Beat
 
 if TYPE_CHECKING:
     from fiam.markers import OutboundMarker
-    from fiam.store.beat import AiStatus, UserStatus
 
 
 _ROUTED_BLOCK_RE = re.compile(
@@ -76,18 +75,15 @@ def user_beat(
     *,
     t: datetime,
     channel: str,
-    user_status: "UserStatus",
-    ai_status: "AiStatus",
     user_name: str,
 ) -> Beat:
     """Build a user dialogue beat for a channel."""
     return Beat(
         t=t,
-        text=text.strip(),
         actor="user",
         channel=normalize_channel(channel),
-        user=user_status,
-        ai=ai_status,
+        kind="message",
+        content=text.strip(),
     )
 
 
@@ -96,8 +92,6 @@ def assistant_text_beats(
     *,
     t: datetime,
     channel: str,
-    user_status: "UserStatus",
-    ai_status: "AiStatus",
     runtime: str | None = None,
 ) -> list[Beat]:
     """Build assistant dialogue and dispatch beats from a text response."""
@@ -110,12 +104,12 @@ def assistant_text_beats(
     for cot_text in parse_cot_markers(text):
         beats.append(Beat(
             t=t,
-            text=cot_text,
             actor="ai",
-            channel="think",
-            user=user_status,
-            ai=ai_status,
+            channel=canon,
+            kind="think",
+            content=cot_text,
             runtime=runtime,
+            meta={"source": "marker"},
         ))
 
     routed, remaining = split_routed_text(strip_xml_markers(text, _CONTROL_MARKERS))
@@ -123,22 +117,20 @@ def assistant_text_beats(
     for marker in routed:
         beats.append(Beat(
             t=t,
-            text=marker.body.strip(),
             actor="ai",
             channel=marker.channel,
-            user=user_status,
-            ai=ai_status,
+            kind="message",
+            content=marker.body.strip(),
             runtime=runtime,
         ))
 
     if remaining.strip():
         beats.append(Beat(
             t=t,
-            text=remaining.strip(),
             actor="ai",
             channel=canon,
-            user=user_status,
-            ai=ai_status,
+            kind="message",
+            content=remaining.strip(),
             runtime=runtime,
         ))
 

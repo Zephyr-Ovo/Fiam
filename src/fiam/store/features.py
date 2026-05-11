@@ -138,7 +138,7 @@ class FeatureStore:
         next_idx = self._next_vector_idx()
         vector_file, row_idx = self._append_chunk(row)
 
-        text_hash = hashlib.sha256(beat.text.encode("utf-8")).hexdigest()
+        text_hash = hashlib.sha256(beat.content.encode("utf-8")).hexdigest()
         rec = FeatureRecord(
             key=key,
             vector_idx=next_idx,

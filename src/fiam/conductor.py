@@ -127,7 +127,7 @@ class Conductor:
 
         # 2. Embed (may fail — beat is persisted in flow.jsonl regardless)
         try:
-            vec = self.embedder.embed(beat.text)
+            vec = self.embedder.embed(beat.content)
         except Exception:
             logger.error("embed failed for beat at %s, skipping gorge", beat.t.isoformat())
             return None
@@ -148,7 +148,7 @@ class Conductor:
 
         # 3. Drift detection → fire callback (recall is caller's responsibility)
         if (self._last_vec is not None
-                and not (beat.actor == "ai" and beat.channel == "action")
+                and not (beat.actor == "ai" and beat.kind == "action")
                 and self._on_drift is not None):
             if detect_drift(self._last_vec, vec, self._drift_threshold):
                 try:
@@ -194,11 +194,10 @@ class Conductor:
         actor = self._actor_for_channel(channel)
         beat = Beat(
             t=t,
-            text=self._format_external_text(text, channel, meta),
             actor=actor,
             channel=channel,
-            user=self.user_status,
-            ai=self.ai_status,
+            kind="message",
+            content=self._format_external_text(text, channel, meta),
         )
         return self._ingest_beat(beat)
 
@@ -239,8 +238,6 @@ class Conductor:
         adapter = ClaudeCodeAdapter()
         beats, new_offset = adapter.parse_beats(
             jsonl_path, byte_offset,
-            user_status=self.user_status,
-            ai_status=self.ai_status,
             user_name=getattr(self.config, "user_name", "") or "zephyr",
         )
         results = []
@@ -260,7 +257,7 @@ class Conductor:
         self._beat_buf = self._beat_buf[gap_index + 1 :]
 
         # Build event body from beats
-        body = "\n".join(b.text for b in consumed_beats)
+        body = "\n".join(b.content for b in consumed_beats)
 
         # Event fingerprint = mean of constituent beat embeddings
         fp = np.mean(consumed_vecs, axis=0).astype(np.float32)
@@ -295,7 +292,7 @@ class Conductor:
         if not beats:
             return []
 
-        body = "\n".join(b.text for b in beats)
+        body = "\n".join(b.content for b in beats)
         fp = np.mean(vecs, axis=0).astype(np.float32) if vecs else np.zeros(
             self.pool.dim, dtype=np.float32
         )

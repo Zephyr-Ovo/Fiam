@@ -147,7 +147,7 @@ class BrowserBridgeTest(unittest.TestCase):
         self.assertEqual(result["browser_done"], {"reason": "enough context"})
         self.assertEqual(result["browser_actions"], [])
         self.assertEqual((beats[0].actor, beats[0].channel), ("ai", "browser"))
-        self.assertIn("browser_control_done", beats[0].text)
+        self.assertIn("browser_control_done", beats[0].content)
 
     def test_dashboard_browser_tick_strips_invalid_action_marker_from_segments(self) -> None:
         with patch.object(dashboard_server, "_favilla_chat_send", return_value={
@@ -216,8 +216,8 @@ class BrowserBridgeTest(unittest.TestCase):
 
         dashboard_server._CONFIG = original_config
         self.assertTrue(result["ok"])
-        self.assertEqual((beats[0].actor, beats[0].channel), ("ai", "action"))
-        self.assertEqual(beats[0].runtime, "browser")
+        self.assertEqual((beats[0].actor, beats[0].channel, beats[0].kind), ("ai", "browser", "action"))
+        self.assertIsNone(beats[0].runtime)
         self.assertEqual((beats[1].actor, beats[1].channel), ("user", "browser"))
 
     def test_pinterest_profile_keeps_common_controls_and_suppresses_pins(self) -> None:

@@ -38,7 +38,8 @@ from fiam.runtime.turns import (
 )
 
 if TYPE_CHECKING:
-    from fiam.store.beat import Beat, UserStatus, AiStatus
+if TYPE_CHECKING:
+    from fiam.store.beat import Beat
     from fiam.markers import OutboundMarker
 
 # XML tags injected by Claude Code infrastructure (Agent Teams, hooks, etc.)
@@ -228,8 +229,6 @@ class ClaudeCodeAdapter:
         source: Path,
         byte_offset: int = 0,
         *,
-        user_status: UserStatus = "cc",
-        ai_status: AiStatus = "online",
         user_name: str = "zephyr",
     ) -> tuple[list["Beat"], int]:
         """Parse JSONL into Beat objects for the narrative stream.
@@ -304,11 +303,10 @@ class ClaudeCodeAdapter:
                 if text and not _is_system_message(text):
                     entries.append((order, Beat(
                         t=_parse_ts(ts),
-                        text=text,
                         actor="user",
                         channel="cc",
-                        user=user_status,
-                        ai=ai_status,
+                        kind="message",
+                        content=text,
                     )))
                     order += 1
 
@@ -366,37 +364,38 @@ class ClaudeCodeAdapter:
             if tools:
                 tool_text = "; ".join(tools)
                 entries.append((asst_order[mid], Beat(
-                    t=t, text=tool_text, actor="ai", channel="action",
-                    user=user_status, ai=ai_status, runtime="cc",
+                    t=t, actor="ai", channel="cc", kind="action",
+                    content=tool_text, runtime="cc",
                 )))
 
-            # Thinking blocks are part of AI activity.
+            # Native thinking (Claude extended thinking) → kind=think on cc.
             if thinking:
                 entries.append((asst_order[mid], Beat(
                     t=t,
-                    text=thinking,
                     actor="ai",
-                    channel="think",
-                    user=user_status,
-                    ai=ai_status,
+                    channel="cc",
+                    kind="think",
+                    content=thinking,
                     runtime="cc",
+                    meta={"source": "native"},
                 )))
 
             # Routed messages → dispatch beats keyed by target channel.
             for marker in routed:
                 entries.append((asst_order[mid], Beat(
                     t=t,
-                    text=marker.body.strip(),
                     actor="ai",
                     channel=marker.channel,
-                    user=user_status, ai=ai_status, runtime="cc",
+                    kind="message",
+                    content=marker.body.strip(),
+                    runtime="cc",
                 )))
 
             # Remaining CC dialogue text (after stripping routed parts)
             if remaining.strip():
                 entries.append((asst_order[mid], Beat(
-                    t=t, text=remaining.strip(), actor="ai", channel="cc",
-                    user=user_status, ai=ai_status, runtime="cc",
+                    t=t, actor="ai", channel="cc", kind="message",
+                    content=remaining.strip(), runtime="cc",
                 )))
 
         entries.sort(key=lambda e: e[0])

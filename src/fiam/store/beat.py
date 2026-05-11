@@ -15,18 +15,24 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-# Beat actor + channel are open-ended (plugins can add channels).
-# - actor: who produced this beat (user / ai / external / system)
-# - channel: which surface it appeared on (favilla / browser / email / stroll /
-#   think / action / schedule / ...)
+# Two orthogonal dimensions:
+#   actor   — who produced this beat
+#   channel — which surface it appeared on (favilla, browser, ...)
+#   kind    — what kind of beat it is (message, action, think, ...)
+# A beat with channel="browser" + kind="action" is a browser tool action;
+# channel="favilla" + kind="think" is a private thought during a Favilla turn.
 Actor = Literal["user", "ai", "external", "system"]
+Kind = Literal["message", "action", "tool_result", "think", "schedule"]
 Channel = str
 KNOWN_CHANNELS: set[str] = {
-    "favilla", "browser", "stroll", "email", "studio",
-    "think", "action", "schedule",
+    "favilla", "browser", "stroll", "email", "studio", "cc", "system",
 }
+# Runtime tags the model family that produced an AI beat.
+# None for user/external/system beats.
+KNOWN_RUNTIMES: set[str] = {"cc", "claude", "gemini"}
 
-# Status enums
+# Conductor-level state types (NOT Beat fields — these describe the daemon's
+# current state, e.g. "AI is asleep right now"). Beats no longer carry these.
 UserStatus = Literal["cc", "away", "together"]
 AiStatus = Literal["online", "sleep", "busy", "together", "block", "mute", "notify"]
 
@@ -35,13 +41,13 @@ AiStatus = Literal["online", "sleep", "busy", "together", "block", "mute", "noti
 class Beat:
     """One atomic entry in the narrative stream."""
 
-    t: datetime           # timestamp (UTC)
-    text: str             # natural-language content
-    actor: Actor          # who produced this beat
-    channel: Channel      # which surface this beat appeared on
-    user: UserStatus      # user status at the time of this beat
-    ai: AiStatus          # AI status at the time of this beat
-    runtime: str | None = None  # AI runtime tag (cc / claude / gemini / api / ...); None for non-AI beats
+    t: datetime              # timestamp (UTC)
+    actor: Actor             # who produced this beat
+    channel: Channel         # which surface it appeared on
+    kind: Kind               # what kind of beat (message/action/think/...)
+    content: str             # natural-language content
+    runtime: str | None = None  # model family: cc / claude / gemini / ... (None for non-AI)
+    meta: dict[str, Any] | None = None  # extra info (tool name, source=marker/native, ...)
 
     # ------------------------------------------------------------------
     # Serialisation
@@ -50,14 +56,15 @@ class Beat:
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {
             "t": self.t.isoformat(),
-            "text": self.text,
             "actor": self.actor,
             "channel": self.channel,
-            "user": self.user,
-            "ai": self.ai,
+            "kind": self.kind,
+            "content": self.content,
         }
         if self.runtime:
             data["runtime"] = self.runtime
+        if self.meta:
+            data["meta"] = self.meta
         return data
 
     def to_json(self) -> str:
@@ -71,12 +78,12 @@ class Beat:
             t = datetime.fromisoformat(t.replace("Z", "+00:00"))
         return Beat(
             t=t,
-            text=d["text"],
             actor=d.get("actor", "system"),
             channel=d.get("channel", ""),
-            user=d.get("user", "away"),
-            ai=d.get("ai", "online"),
+            kind=d.get("kind", "message"),
+            content=d["content"],
             runtime=d.get("runtime"),
+            meta=d.get("meta"),
         )
 
 
