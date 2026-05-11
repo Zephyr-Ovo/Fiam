@@ -806,8 +806,12 @@ function ThinkingChain({ steps, locked, peerName }: { steps: ThinkStep[]; locked
 
 // ---------- Bubble ----------
 
-const USER_BUBBLE_BG = "rgba(208,188,190,0.92)"
-const AGENT_BUBBLE_BG = "rgba(245,245,245,0.88)"
+// Bubble backgrounds are exposed as CSS custom properties so the Settings
+// panel can hot-swap them without forcing a re-render of every Bubble.
+// Defaults are also baked here as a fallback when the var is missing
+// (e.g. during very first paint before config.ts applyThemeVars runs).
+const USER_BUBBLE_BG = "var(--user-bubble-bg, rgba(208,188,190,0.92))"
+const AGENT_BUBBLE_BG = "var(--agent-bubble-bg, rgba(245,245,245,0.88))"
 
 function NameTag({ children }: { children: React.ReactNode }) {
   return (

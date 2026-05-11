@@ -126,6 +126,25 @@ export function Settings({ open, onClose }: Props) {
           value={draft.defaultRuntime}
           onChange={(v) => setDraft({ ...draft, defaultRuntime: v })}
         />
+        <ColorField
+          label="Your bubble"
+          value={draft.userBubbleBg}
+          onChange={(v) => setDraft({ ...draft, userBubbleBg: v })}
+          placeholder="rgba(208,188,190,0.92)"
+        />
+        <ColorField
+          label="AI bubble"
+          value={draft.agentBubbleBg}
+          onChange={(v) => setDraft({ ...draft, agentBubbleBg: v })}
+          placeholder="rgba(245,245,245,0.88)"
+        />
+        <Field
+          label="Background URL"
+          value={draft.bg}
+          onChange={(v) => setDraft({ ...draft, bg: v })}
+          placeholder="/bg.jpg or https://…"
+          last
+        />
 
         <div className="mt-5 flex justify-end gap-2">
           <button
@@ -247,6 +266,94 @@ function Field({
           transition: "box-shadow 140ms ease-out",
         }}
       />
+    </label>
+  )
+}
+
+// ColorField — text input for any CSS color (rgba/hex/named) plus a small
+// swatch+native picker on the right. Picker only sets opaque hex; users who
+// want alpha keep typing in the text box. Live-previews into the swatch as
+// you type so you can see the color before committing.
+function ColorField({
+  label,
+  value,
+  onChange,
+  placeholder,
+}: {
+  label: string
+  value: string
+  onChange: (v: string) => void
+  placeholder?: string
+}) {
+  const [focused, setFocused] = useState(false)
+  // Native <input type=color> only accepts #RRGGBB. Try to derive one from
+  // the current value; fall back to a sensible default if it's rgba/named.
+  const hex = /^#([0-9a-f]{6})$/i.test(value) ? value : "#d0bcbe"
+  return (
+    <label
+      className="block"
+      style={{
+        paddingTop: 8,
+        paddingBottom: 8,
+        borderBottom: "1px solid rgba(63, 47, 41, 0.12)",
+      }}
+    >
+      <div
+        className="text-[10.5px] uppercase tracking-[0.08em]"
+        style={{ color: "rgba(63, 47, 41, 0.55)" }}
+      >
+        {label}
+      </div>
+      <div className="mt-1 flex items-center gap-2">
+        <input
+          type="text"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+          placeholder={placeholder}
+          spellCheck={false}
+          className="flex-1 bg-transparent px-0 py-1 text-[14px] outline-none"
+          style={{
+            color: "#3f2f29",
+            fontFamily: "var(--font-mono, var(--font-sans))",
+            boxShadow: focused
+              ? "inset 0 -1px 0 rgba(176, 139, 127, 0.85)"
+              : "inset 0 -1px 0 rgba(63, 47, 41, 0.05)",
+            transition: "box-shadow 140ms ease-out",
+          }}
+        />
+        <span
+          aria-hidden
+          style={{
+            display: "inline-block",
+            width: 22,
+            height: 22,
+            borderRadius: 6,
+            background: value || placeholder || "#fff",
+            border: "1px solid rgba(63,47,41,0.18)",
+            position: "relative",
+            overflow: "hidden",
+          }}
+        >
+          <input
+            type="color"
+            value={hex}
+            onChange={(e) => onChange(e.target.value)}
+            aria-label={`${label} color picker`}
+            style={{
+              position: "absolute",
+              inset: 0,
+              width: "100%",
+              height: "100%",
+              opacity: 0,
+              cursor: "pointer",
+              border: 0,
+              padding: 0,
+            }}
+          />
+        </span>
+      </div>
     </label>
   )
 }

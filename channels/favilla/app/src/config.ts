@@ -20,6 +20,10 @@ export type AppConfig = {
   aiName: string
   /** Background image URL (imported asset or remote URL). */
   bg: string
+  /** Chat user bubble background (any CSS color). */
+  userBubbleBg: string
+  /** Chat agent bubble background (any CSS color). */
+  agentBubbleBg: string
   /** API base for the Favilla server (proxied via vite dev server). */
   apiBase: string
   /** Auth token for the Favilla server. */
@@ -34,6 +38,8 @@ const defaults: AppConfig = {
   userName: "Zephyr",
   aiName: "ai",
   bg: bgDefault,
+  userBubbleBg: "rgba(208,188,190,0.92)",
+  agentBubbleBg: "rgba(245,245,245,0.88)",
   apiBase: (import.meta.env.VITE_API_BASE as string) ?? (import.meta.env.VITE_API_TARGET as string) ?? "",
   ingestToken: (import.meta.env.VITE_INGEST_TOKEN as string) ?? "",
   limenBaseUrl: (import.meta.env.VITE_LIMEN_BASE_URL as string) ?? "",
@@ -55,6 +61,20 @@ function loadOverrides(): Partial<AppConfig> {
 
 export const appConfig: AppConfig = { ...defaults, ...loadOverrides() }
 
+/** Push themable colors into CSS custom properties so all chat bubbles
+ *  re-paint immediately when settings change — no React re-render dance.
+ *  Safe to call repeatedly; idempotent. */
+function applyThemeVars(cfg: AppConfig) {
+  if (typeof document === "undefined") return
+  try {
+    document.documentElement.style.setProperty("--user-bubble-bg", cfg.userBubbleBg)
+    document.documentElement.style.setProperty("--agent-bubble-bg", cfg.agentBubbleBg)
+  } catch {
+    /* SSR / no DOM */
+  }
+}
+applyThemeVars(appConfig)
+
 /** Persist a partial config patch and update the live `appConfig` object. */
 export function saveConfig(patch: Partial<AppConfig>) {
   Object.assign(appConfig, patch)
@@ -64,6 +84,7 @@ export function saveConfig(patch: Partial<AppConfig>) {
   } catch {
     /* quota / privacy mode */
   }
+  applyThemeVars(appConfig)
   // Notify subscribers so live components (header peer name, etc.) re-read.
   try {
     window.dispatchEvent(new CustomEvent("favilla:config-changed"))
