@@ -2158,6 +2158,12 @@ def _favilla_chat_send(payload: dict) -> dict:
         except Exception:
             logger.exception("stroll action publish failed")
     result["runtime"] = runtime
+    try:
+        rollover = _check_and_run_session_rollover(channel)
+        if rollover:
+            result["session_rollover"] = rollover
+    except Exception:
+        logger.exception("session rollover check failed")
     return result
 
 
@@ -2268,6 +2274,10 @@ def _favilla_chat_send_stream(payload: dict):
         "metrics": final_result.get("metrics") or {},
         "presence": _current_presence(actor="ai", channel=channel),
     })
+    try:
+        _check_and_run_session_rollover(channel)
+    except Exception:
+        logger.exception("session rollover check failed (stream)")
 
 
 def _build_carry_over_text(*, from_runtime: str, to_runtime: str, user_text: str, private_notes: str, reason: str) -> str:
@@ -2416,11 +2426,34 @@ def _favilla_chat_recall(payload: dict) -> dict:
     )
     if isinstance(include_recent, str):
         include_recent = include_recent.strip().lower() not in {"0", "false", "no", "off"}
+    # Compute the shield-after cutoff: events created on or after this time
+    # are excluded from recall. The cutoff is the *later* of today-midnight
+    # (default shield) and the current session boundary (so events from the
+    # in-flight session — which the AI already sees in its live context —
+    # do not get re-surfaced via recall regardless of processed/unprocessed
+    # status). When ``include_recent`` is True we drop the today-midnight
+    # floor and use only the session boundary, letting freshly processed
+    # events from earlier sessions today still surface.
+    today_midnight = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    boundary_dt: datetime | None = None
+    try:
+        boundary_iso = _load_session_state().get("boundary_ts") or ""
+        if boundary_iso:
+            boundary_dt = datetime.fromisoformat(boundary_iso.replace("Z", "+00:00"))
+            if boundary_dt.tzinfo is None:
+                boundary_dt = boundary_dt.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        boundary_dt = None
+    if include_recent:
+        shield_after = boundary_dt
+    else:
+        shield_after = max(today_midnight, boundary_dt) if boundary_dt else today_midnight
     count = refresh_recall(
         _CONFIG,
         _POOL,
         seed_vec,
         top_k=_CONFIG.recall_top_k,
+        shield_after=shield_after,
     )
     return {"ok": True, "count": count, "path": str(_CONFIG.background_path)}
 
@@ -2538,6 +2571,243 @@ def _favilla_chat_process(payload: dict) -> dict:
 
 def _favilla_chat_process_status(_payload: dict | None = None) -> dict:
     return {"ok": True, "busy": _SEAL_BUSY}
+
+
+# ---------------------------------------------------------------------------
+# Session rollover (auto-cut + auto-process + summarize → carryover at threshold)
+# ---------------------------------------------------------------------------
+#
+# Trigger: Favilla user/AI turn count since the last session boundary reaches
+# `events_per_session` (default 10). On rollover:
+#   1. Append a flow cut marker.
+#   2. Run process so pending beats become events.
+#   3. Summarize the recent transcript window via the cot_summary API.
+#   4. Replace carryover.md with the summary + touch .carryover_dirty.
+#   5. Unlink active_session.json so CC opens a fresh session next turn.
+#   6. Reset session_state.json (turns_since_boundary=0, advance boundary
+#      flow_offset + ts).
+#
+# The carryover summary is consumed exactly once on the next chat turn:
+#   - CC: inject.sh reads carryover.md → injects → truncates file.
+#   - API: build_api_messages reads carryover.md → injects → unlinks file.
+# Either path leaves carryover.md missing/empty, so the *next* turn will not
+# re-inject the same summary. The summary therefore appears in the AI's
+# prompt exactly once, never enters transcript.jsonl or flow.jsonl, and so
+# does not pollute persisted history.
+
+_SESSION_TRANSCRIPT_TAIL = 30  # how many transcript entries feed the summary
+
+
+def _session_state_path():
+    return _CONFIG.home_path / "session_state.json"
+
+
+def _load_session_state() -> dict:
+    path = _session_state_path()
+    if not path.exists():
+        return {"turns_since_boundary": 0, "boundary_flow_offset": 0, "boundary_ts": ""}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return {
+                "turns_since_boundary": int(data.get("turns_since_boundary", 0) or 0),
+                "boundary_flow_offset": int(data.get("boundary_flow_offset", 0) or 0),
+                "boundary_ts": str(data.get("boundary_ts", "") or ""),
+            }
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        pass
+    return {"turns_since_boundary": 0, "boundary_flow_offset": 0, "boundary_ts": ""}
+
+
+def _save_session_state(state: dict) -> None:
+    path = _session_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+
+def _carryover_path():
+    return _CONFIG.home_path / "carryover.md"
+
+
+def _carryover_dirty_path():
+    return _CONFIG.home_path / ".carryover_dirty"
+
+
+def _write_carryover_summary(summary: str) -> None:
+    """Replace carryover.md with the new session summary block.
+
+    Existing carryover content (e.g. accumulated non-cc turns from
+    `_append_carryover`) is preserved BELOW the summary so the CC inject hook
+    sees both. The combined file is consumed (truncated) on next inject.
+    """
+    text = (summary or "").strip()
+    if not text:
+        return
+    co = _carryover_path()
+    co.parent.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).isoformat()
+    block = f"## {ts} session_summary\n{text}\n\n"
+    existing = ""
+    if co.exists():
+        try:
+            existing = co.read_text(encoding="utf-8")
+        except OSError:
+            existing = ""
+    co.write_text(block + existing, encoding="utf-8")
+    _carryover_dirty_path().touch()
+
+
+def _read_transcript_tail(channel: str, n: int) -> list[dict]:
+    path = _transcript_path(channel)
+    if not path.exists():
+        return []
+    out: list[dict] = []
+    for line in path.read_text(encoding="utf-8").splitlines()[-n:]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return out
+
+
+def _summarize_session_window(channel: str) -> str:
+    """Call the cot_summary API to summarize the recent transcript tail.
+
+    Returns "" on any failure (network, no api key, parse) — the rollover
+    proceeds without a carryover summary in that case.
+    """
+    if not _CONFIG:
+        return ""
+    if not getattr(_CONFIG, "app_cot_summary_enabled", True):
+        return ""
+    tail = _read_transcript_tail(channel, _SESSION_TRANSCRIPT_TAIL)
+    if not tail:
+        return ""
+    env_name = getattr(_CONFIG, "app_cot_summary_api_key_env", "") or "FIAM_COT_SUMMARY_API_KEY"
+    api_key = os.environ.get(env_name, "").strip()
+    if not api_key:
+        fallback_env = getattr(_CONFIG, "graph_edge_api_key_env", "") or ""
+        if fallback_env and fallback_env != env_name:
+            api_key = os.environ.get(fallback_env, "").strip()
+    if not api_key:
+        return ""
+    base_url = (getattr(_CONFIG, "app_cot_summary_base_url", "") or "https://api.deepseek.com").rstrip("/")
+    model = getattr(_CONFIG, "app_cot_summary_model", "") or "deepseek-chat"
+    lines: list[str] = []
+    for rec in tail:
+        role = str(rec.get("role") or "")
+        if role not in {"user", "ai"}:
+            continue
+        text = str(rec.get("raw_text") or rec.get("text") or "").strip()
+        if not text:
+            continue
+        lines.append(f"[{role}] {text[:600]}")
+    if not lines:
+        return ""
+    transcript_blob = "\n".join(lines)[-6000:]
+    system = (
+        "你在为 AI 自己写 session 切换时的 carryover 总结。"
+        "下面是上一段对话窗口的 user/ai 轮次。请用第一人称（我=AI，你=用户）"
+        "用 80-160 字写一段 markdown，紧扣事实，覆盖：用户提了什么、我做了什么、"
+        "悬而未决的事 / 承诺 / 下一步。不要列点、不要标题、不要解释你在做什么，"
+        "直接输出那段总结文本。"
+    )
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": transcript_blob},
+        ],
+        "temperature": 0.3,
+        "max_tokens": 400,
+    }
+    request = urllib.request.Request(
+        f"{base_url}/chat/completions",
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        content = str(((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, IndexError, KeyError, TypeError, ValueError):
+        return ""
+    return content
+
+
+def _flow_offset_now() -> int:
+    flow_path = _CONFIG.flow_path
+    if not flow_path.exists():
+        return 0
+    try:
+        return sum(1 for line in flow_path.read_text(encoding="utf-8").splitlines() if line.strip())
+    except OSError:
+        return 0
+
+
+def _session_rollover(channel: str) -> dict:
+    """Auto cut + process + summarize + write carryover + clear active_session.
+
+    Returns a small dict describing what happened, swallowing exceptions so
+    rollover failures cannot break the chat handler that calls it.
+    """
+    info: dict = {"ok": True}
+    try:
+        cut_res = _favilla_chat_cut({"channel": channel})
+        info["cut_offset"] = cut_res.get("flow_offset")
+    except Exception as exc:
+        info["cut_error"] = str(exc)[:200]
+    try:
+        proc_res = _favilla_chat_process({})
+        info["process"] = {
+            "events_created": proc_res.get("events_created", []),
+            "ok": proc_res.get("ok"),
+        }
+    except Exception as exc:
+        info["process_error"] = str(exc)[:200]
+    try:
+        summary = _summarize_session_window(channel)
+        if summary:
+            _write_carryover_summary(summary)
+            info["summary_chars"] = len(summary)
+    except Exception as exc:
+        info["summary_error"] = str(exc)[:200]
+    try:
+        _CONFIG.active_session_path.unlink(missing_ok=True)
+    except Exception as exc:
+        info["unlink_error"] = str(exc)[:200]
+    new_state = {
+        "turns_since_boundary": 0,
+        "boundary_flow_offset": _flow_offset_now(),
+        "boundary_ts": datetime.now(timezone.utc).isoformat(),
+    }
+    _save_session_state(new_state)
+    info["new_state"] = new_state
+    logger.info("session rollover channel=%s info=%s", channel, info)
+    return info
+
+
+def _check_and_run_session_rollover(channel: str) -> dict | None:
+    """Bump the turn counter; if it crosses events_per_session, run rollover.
+
+    Called once per fully-persisted chat turn (after both user and ai
+    transcript records are written).
+    """
+    if not _CONFIG:
+        return None
+    cap = max(1, int(getattr(_CONFIG, "events_per_session", 10)))
+    state = _load_session_state()
+    state["turns_since_boundary"] = int(state.get("turns_since_boundary", 0) or 0) + 1
+    if state["turns_since_boundary"] < cap:
+        _save_session_state(state)
+        return None
+    # Persist the bumped count first so concurrent failures don't double-fire.
+    _save_session_state(state)
+    return _session_rollover(channel)
 
 
 # CoT visibility: parsing lives in fiam_lib.app_markers (parse_app_cot).
@@ -2757,6 +3027,7 @@ def _run_cc_favilla_chat(*, text: str, channel: str, attachments: list | None = 
         channel=channel,
         include_recall=True,
         consume_recall_dirty=True,
+        consume_carryover=False,
         extra_context=_app_runtime_context(),
     )
     command = [
@@ -2936,6 +3207,7 @@ def _iter_cc_favilla_chat_events(*, text: str, channel: str, attachments: list |
         channel=channel,
         include_recall=True,
         consume_recall_dirty=True,
+        consume_carryover=False,
         extra_context=_app_runtime_context(),
     )
     base_command = [

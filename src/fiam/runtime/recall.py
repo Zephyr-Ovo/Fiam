@@ -21,18 +21,26 @@ def refresh_recall(
     *,
     top_k: int | None = None,
     shield_recent: bool = True,
+    shield_after: datetime | None = None,
 ) -> int:
     """Refresh recall.md from a query vector and return fragment count.
 
     When ``shield_recent`` is True (default), suppress events created today so
     automatic recall does not surface in-flight context. Pass False for manual
     recall flows that explicitly want recent events included.
+
+    ``shield_after`` overrides the default today-midnight cutoff: any event
+    whose ``t >= shield_after`` is suppressed. Used by the chat /recall
+    endpoint to exclude events from the *current* session window (events
+    created since the last session boundary are still in the AI's live
+    context, so re-surfacing them via recall would be redundant).
     """
-    shield_after = (
-        datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-        if shield_recent
-        else None
-    )
+    if shield_after is None:
+        shield_after = (
+            datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+            if shield_recent
+            else None
+        )
     results = retrieve(
         query_vec,
         pool,

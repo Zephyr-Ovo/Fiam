@@ -37,10 +37,13 @@ cc_disallowed_tools = ""     # comma-separated CC tools to disable (e.g. "WebFet
 
 [api]
 # OpenAI-compatible AI source used outside Claude Code. Keep the key in env, never here.
-provider = "google_openai"          # Gemini API key quota first
-model = "gemini-2.5-flash"
-base_url = ""                       # auto: https://generativelanguage.googleapis.com/v1beta/openai
-api_key_env = "GEMINI_API_KEY"
+# Default points at Poe (https://api.poe.com/v1) — single subscription gives access to
+# Claude / Gemini / GPT family. Swap `model` to any Poe bot id (PascalCase, e.g.
+# "Claude-Opus-4.6", "Claude-Sonnet-4.6", "Gemini-3.1-Pro").
+provider = "openai_compatible"
+model = "Claude-Opus-4.6"
+base_url = "https://api.poe.com/v1"
+api_key_env = "POE_API_KEY"
 temperature = 0.7
 max_tokens = 2048
 timeout_seconds = 60
@@ -48,10 +51,11 @@ tools_enabled = true
 tools_max_loops = 10
 
 [api.fallback]
-provider = "vertex_openai"          # GCP/Vertex service account fallback
-model = "google/gemini-2.5-flash"
-base_url = ""                       # auto-built from GOOGLE_CLOUD_PROJECT / GOOGLE_CLOUD_LOCATION
-api_key_env = "GOOGLE_APPLICATION_CREDENTIALS"
+# Fall back to Gemini Flash if the primary call fails (rate-limited or 5xx).
+provider = "google_openai"
+model = "gemini-2.5-flash"
+base_url = ""                       # auto: https://generativelanguage.googleapis.com/v1beta/openai
+api_key_env = "GEMINI_API_KEY"
 
 [app]
 default_runtime = "auto"          # "auto" | "api" | "cc"

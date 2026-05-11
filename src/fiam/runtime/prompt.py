@@ -46,6 +46,7 @@ def build_api_messages(
     channel: str = "api",
     include_recall: bool = True,
     consume_recall_dirty: bool = True,
+    consume_carryover: bool | None = None,
     extra_context: str = "",
 ) -> list[dict[str, Any]]:
     """Build OpenAI-compatible messages with three system segments.
@@ -78,6 +79,10 @@ def build_api_messages(
         recall = load_recall_context(config, consume_dirty=consume_recall_dirty)
         if recall:
             dynamic_parts.append(f"[recall]\n{recall}")
+    consume_co = consume_recall_dirty if consume_carryover is None else bool(consume_carryover)
+    carryover = load_carryover_context(config, consume=consume_co)
+    if carryover:
+        dynamic_parts.append(f"[carryover]\n{carryover}")
     if extra_context.strip():
         dynamic_parts.append(extra_context.strip())
     if dynamic_parts:
@@ -192,6 +197,38 @@ def load_recall_context(config: "FiamConfig", *, consume_dirty: bool = False) ->
     text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL).strip()
     if consume_dirty:
         dirty.unlink(missing_ok=True)
+    return text
+
+
+def load_carryover_context(config: "FiamConfig", *, consume: bool = True) -> str:
+    """Load carryover.md (one-shot session-summary + missed-turns context).
+
+    Mirrors the CC inject.sh hook semantics: read, then truncate. The next
+    turn will see an empty file (carryover.md exists but 0-byte) and skip
+    injection. New content is written by the server-side session rollover
+    or by `_append_carryover` for non-cc turns.
+
+    Set ``consume=False`` for diagnostic / dry-run reads.
+    """
+    co_path = config.home_path / "carryover.md"
+    if not co_path.exists():
+        return ""
+    try:
+        text = co_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    if not text:
+        return ""
+    if consume:
+        try:
+            co_path.write_text("", encoding="utf-8")
+        except OSError:
+            pass
+        dirty = config.home_path / ".carryover_dirty"
+        try:
+            dirty.unlink(missing_ok=True)
+        except OSError:
+            pass
     return text
 
 
