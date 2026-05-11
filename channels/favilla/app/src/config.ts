@@ -24,6 +24,8 @@ export type AppConfig = {
   userBubbleBg: string
   /** Chat agent bubble background (any CSS color). */
   agentBubbleBg: string
+  /** Brand/theme color (drives --color-cocoa: send button, accents). */
+  themeColor: string
   /** API base for the Favilla server (proxied via vite dev server). */
   apiBase: string
   /** Auth token for the Favilla server. */
@@ -38,8 +40,9 @@ const defaults: AppConfig = {
   userName: "Zephyr",
   aiName: "ai",
   bg: bgDefault,
-  userBubbleBg: "rgba(208,188,190,0.92)",
-  agentBubbleBg: "rgba(245,245,245,0.88)",
+  userBubbleBg: "#d0bcbe",
+  agentBubbleBg: "#f5f5f5",
+  themeColor: "#664E44",
   apiBase: (import.meta.env.VITE_API_BASE as string) ?? (import.meta.env.VITE_API_TARGET as string) ?? "",
   ingestToken: (import.meta.env.VITE_INGEST_TOKEN as string) ?? "",
   limenBaseUrl: (import.meta.env.VITE_LIMEN_BASE_URL as string) ?? "",
@@ -69,6 +72,7 @@ function applyThemeVars(cfg: AppConfig) {
   try {
     document.documentElement.style.setProperty("--user-bubble-bg", cfg.userBubbleBg)
     document.documentElement.style.setProperty("--agent-bubble-bg", cfg.agentBubbleBg)
+    document.documentElement.style.setProperty("--color-cocoa", cfg.themeColor)
   } catch {
     /* SSR / no DOM */
   }

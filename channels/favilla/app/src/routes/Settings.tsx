@@ -126,17 +126,24 @@ export function Settings({ open, onClose }: Props) {
           value={draft.defaultRuntime}
           onChange={(v) => setDraft({ ...draft, defaultRuntime: v })}
         />
-        <ColorField
-          label="Your bubble"
-          value={draft.userBubbleBg}
-          onChange={(v) => setDraft({ ...draft, userBubbleBg: v })}
-          placeholder="rgba(208,188,190,0.92)"
-        />
-        <ColorField
-          label="AI bubble"
-          value={draft.agentBubbleBg}
-          onChange={(v) => setDraft({ ...draft, agentBubbleBg: v })}
-          placeholder="rgba(245,245,245,0.88)"
+        <ColorRow
+          items={[
+            {
+              label: "你",
+              value: draft.userBubbleBg,
+              onChange: (v) => setDraft({ ...draft, userBubbleBg: v }),
+            },
+            {
+              label: "AI",
+              value: draft.agentBubbleBg,
+              onChange: (v) => setDraft({ ...draft, agentBubbleBg: v }),
+            },
+            {
+              label: "主题",
+              value: draft.themeColor,
+              onChange: (v) => setDraft({ ...draft, themeColor: v }),
+            },
+          ]}
         />
         <BgField
           value={draft.bg}
@@ -267,31 +274,21 @@ function Field({
   )
 }
 
-// ColorField — text input for any CSS color (rgba/hex/named) plus a small
-// swatch+native picker on the right. Picker only sets opaque hex; users who
-// want alpha keep typing in the text box. Live-previews into the swatch as
-// you type so you can see the color before committing.
-function ColorField({
-  label,
-  value,
-  onChange,
-  placeholder,
+// ColorRow — three compact hex swatches in one row. Each item shows a
+// small swatch driven by the native color picker plus a short hex code
+// underneath. Saves vertical space and lets users compare the three
+// theme colors side-by-side. Non-hex existing values are coerced into
+// hex via toHex on first interaction.
+function ColorRow({
+  items,
 }: {
-  label: string
-  value: string
-  onChange: (v: string) => void
-  placeholder?: string
+  items: { label: string; value: string; onChange: (v: string) => void }[]
 }) {
-  const [focused, setFocused] = useState(false)
-  // Native <input type=color> only accepts #RRGGBB. Try to derive one from
-  // the current value; fall back to a sensible default if it's rgba/named.
-  const hex = /^#([0-9a-f]{6})$/i.test(value) ? value : "#d0bcbe"
   return (
-    <label
-      className="block"
+    <div
       style={{
-        paddingTop: 8,
-        paddingBottom: 8,
+        paddingTop: 10,
+        paddingBottom: 10,
         borderBottom: "1px solid rgba(63, 47, 41, 0.12)",
       }}
     >
@@ -299,60 +296,84 @@ function ColorField({
         className="text-[10.5px] uppercase tracking-[0.08em]"
         style={{ color: "rgba(63, 47, 41, 0.55)" }}
       >
-        {label}
+        Colors
       </div>
-      <div className="mt-1 flex items-center gap-2">
-        <input
-          type="text"
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          onFocus={() => setFocused(true)}
-          onBlur={() => setFocused(false)}
-          placeholder={placeholder}
-          spellCheck={false}
-          className="flex-1 bg-transparent px-0 py-1 text-[14px] outline-none"
-          style={{
-            color: "#3f2f29",
-            fontFamily: "var(--font-mono, var(--font-sans))",
-            boxShadow: focused
-              ? "inset 0 -1px 0 rgba(176, 139, 127, 0.85)"
-              : "inset 0 -1px 0 rgba(63, 47, 41, 0.05)",
-            transition: "box-shadow 140ms ease-out",
-          }}
-        />
-        <span
-          aria-hidden
-          style={{
-            display: "inline-block",
-            width: 22,
-            height: 22,
-            borderRadius: 6,
-            background: value || placeholder || "#fff",
-            border: "1px solid rgba(63,47,41,0.18)",
-            position: "relative",
-            overflow: "hidden",
-          }}
-        >
-          <input
-            type="color"
-            value={hex}
-            onChange={(e) => onChange(e.target.value)}
-            aria-label={`${label} color picker`}
-            style={{
-              position: "absolute",
-              inset: 0,
-              width: "100%",
-              height: "100%",
-              opacity: 0,
-              cursor: "pointer",
-              border: 0,
-              padding: 0,
-            }}
-          />
-        </span>
+      <div className="mt-2 flex items-center gap-4">
+        {items.map((it) => {
+          const hex = toHex(it.value) || "#cccccc"
+          return (
+            <div key={it.label} className="flex flex-col items-center gap-1">
+              <span
+                aria-hidden
+                style={{
+                  display: "inline-block",
+                  width: 32,
+                  height: 32,
+                  borderRadius: 8,
+                  background: hex,
+                  border: "1px solid rgba(63,47,41,0.18)",
+                  position: "relative",
+                  overflow: "hidden",
+                }}
+              >
+                <input
+                  type="color"
+                  value={hex}
+                  onChange={(e) => it.onChange(e.target.value)}
+                  aria-label={`${it.label} color`}
+                  style={{
+                    position: "absolute",
+                    inset: 0,
+                    width: "100%",
+                    height: "100%",
+                    opacity: 0,
+                    cursor: "pointer",
+                    border: 0,
+                    padding: 0,
+                  }}
+                />
+              </span>
+              <span
+                className="text-[10px] tracking-tight"
+                style={{
+                  color: "rgba(63, 47, 41, 0.7)",
+                  fontFamily: "var(--font-mono, var(--font-sans))",
+                }}
+              >
+                {it.label}
+              </span>
+              <span
+                className="text-[10px]"
+                style={{ color: "rgba(63,47,41,0.5)", fontFamily: "var(--font-mono)" }}
+              >
+                {hex}
+              </span>
+            </div>
+          )
+        })}
       </div>
-    </label>
+    </div>
   )
+}
+
+// Best-effort coercion of any CSS color string into #RRGGBB. Returns "" if
+// it can't be resolved (e.g. SSR / unknown name). Uses a hidden canvas as
+// the parser, which handles named colors, hex, rgb/rgba, hsl, etc.
+function toHex(input: string): string {
+  if (!input) return ""
+  if (/^#([0-9a-f]{6})$/i.test(input)) return input.toLowerCase()
+  if (typeof document === "undefined") return ""
+  try {
+    const ctx = document.createElement("canvas").getContext("2d")
+    if (!ctx) return ""
+    ctx.fillStyle = "#000"
+    ctx.fillStyle = input
+    const out = ctx.fillStyle
+    if (typeof out === "string" && /^#[0-9a-f]{6}$/i.test(out)) return out.toLowerCase()
+    return ""
+  } catch {
+    return ""
+  }
 }
 
 // BgField — Background image. Accepts a URL/data-URI in the text box, plus
@@ -368,7 +389,6 @@ function BgField({
   value: string
   onChange: (v: string) => void
 }) {
-  const [focused, setFocused] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState("")
   const inputRef = useRef<HTMLInputElement | null>(null)
@@ -376,7 +396,6 @@ function BgField({
   const onPick = (file: File | null | undefined) => {
     if (!file) return
     setError("")
-    // Cap at ~3 MB; data URIs blow up localStorage past that.
     if (file.size > 3 * 1024 * 1024) {
       setError(`图片 ${(file.size / 1024 / 1024).toFixed(1)}MB 太大了，建议 ≤3MB`)
       return
@@ -395,54 +414,22 @@ function BgField({
     reader.readAsDataURL(file)
   }
 
-  const isDataUri = value.startsWith("data:")
-  const display = isDataUri
-    ? `data:${value.length.toLocaleString()} bytes`
-    : value
-
   return (
-    <div
-      style={{
-        paddingTop: 8,
-        paddingBottom: 8,
-      }}
-    >
+    <div style={{ paddingTop: 10, paddingBottom: 10 }}>
       <div
         className="text-[10.5px] uppercase tracking-[0.08em]"
         style={{ color: "rgba(63, 47, 41, 0.55)" }}
       >
         Background
       </div>
-      <div className="mt-1 flex items-center gap-2">
-        <input
-          type="text"
-          value={display}
-          onChange={(e) => {
-            // Only commit text edits when not in data-uri summary mode
-            if (!isDataUri) onChange(e.target.value)
-          }}
-          onFocus={() => setFocused(true)}
-          onBlur={() => setFocused(false)}
-          placeholder="/bg.jpg or https://…  (or pick a file →)"
-          spellCheck={false}
-          readOnly={isDataUri}
-          className="flex-1 bg-transparent px-0 py-1 text-[14px] outline-none"
-          style={{
-            color: "#3f2f29",
-            fontFamily: "var(--font-mono, var(--font-sans))",
-            boxShadow: focused
-              ? "inset 0 -1px 0 rgba(176, 139, 127, 0.85)"
-              : "inset 0 -1px 0 rgba(63, 47, 41, 0.05)",
-            transition: "box-shadow 140ms ease-out",
-          }}
-        />
+      <div className="mt-2 flex items-center gap-3">
         <span
           aria-hidden
           style={{
             display: "inline-block",
-            width: 28,
-            height: 28,
-            borderRadius: 6,
+            width: 56,
+            height: 56,
+            borderRadius: 8,
             backgroundImage: value ? `url(${value})` : "none",
             backgroundColor: value ? "transparent" : "rgba(63,47,41,0.08)",
             backgroundSize: "cover",
@@ -450,8 +437,6 @@ function BgField({
             border: "1px solid rgba(63,47,41,0.18)",
           }}
         />
-      </div>
-      <div className="mt-2 flex items-center gap-2">
         <button
           type="button"
           onClick={() => inputRef.current?.click()}
