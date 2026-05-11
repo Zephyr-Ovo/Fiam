@@ -1775,29 +1775,24 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
       })
 
       if (lastError) {
-        setMessages((m) => {
-          const hasContent = m.some((x) => x.id === aiId && ((x.segments && x.segments.length > 0) || (x.text && x.text.trim())))
-          if (hasContent) {
-            // Stream died mid-flight — keep what's already rendered, append a separate error note below.
-            return [...m, { id: `e-${Date.now()}`, role: "ai", t: currentT(), text: `network error: ${lastError}`, error: true }]
-          }
-          return m.map((x) =>
-            x.id === aiId ? { ...x, text: `error: ${lastError}`, error: true } : x,
-          )
-        })
+        setMessages((m) =>
+          m.map((x) =>
+            x.id === aiId
+              ? { ...x, text: `error: ${lastError}`, error: true, segments: undefined, thinking: undefined }
+              : x,
+          ),
+        )
         return
       }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e)
-      setMessages((m) => {
-        const hasContent = m.some((x) => x.id === aiId && ((x.segments && x.segments.length > 0) || (x.text && x.text.trim())))
-        if (hasContent) {
-          return [...m, { id: `e-${Date.now()}`, role: "ai", t: currentT(), text: `network error: ${msg}`, error: true }]
-        }
-        return m.map((x) =>
-          x.id === aiId ? { ...x, text: `network error: ${msg}`, error: true } : x,
-        )
-      })
+      setMessages((m) =>
+        m.map((x) =>
+          x.id === aiId
+            ? { ...x, text: `network error: ${msg}`, error: true, segments: undefined, thinking: undefined }
+            : x,
+        ),
+      )
     } finally {
       setSending(false)
     }
