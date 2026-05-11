@@ -641,24 +641,40 @@ function ThinkingChain({ steps, locked, peerName }: { steps: ThinkStep[]; locked
   const [open, setOpen] = useState(false)
   const summary = steps.find((step) => step.summary || step.text)?.summary || steps.find((step) => step.text)?.text
   const summaryStep = steps[0]
+  // Detect if this chain is purely thinking vs contains tool actions.
+  const isPureThinking = steps.every((s) => s.kind === "think" && !s.source)
+  const toolLabel = (() => {
+    if (isPureThinking) return null
+    const named = steps.find((s) => s.icon || s.source)
+    return (named?.icon || named?.source || "tool").toString()
+  })()
+  // Skip the first step in the expanded list if its text would just repeat
+  // the summary line we already show in the header.
+  const expandedSteps = steps.filter((s, i) => {
+    if (i !== 0) return true
+    const t = (s.text || "").trim()
+    return !!t && t !== (summary || "").trim()
+  })
   if (locked) {
     return (
       <div className="w-full">
         <div
-          className="mb-2 inline-flex items-center gap-1 text-[12px]"
+          className="mb-2 inline-flex items-center gap-1.5 text-[12px] leading-[14px]"
           style={{ color: "rgba(63,47,41,0.45)", fontFamily: "var(--font-sans)" }}
         >
           {summaryStep && (
-            <span className="grid h-3.5 w-3.5 place-items-center" style={{ color: "rgba(63,47,41,0.55)" }}>
+            <span className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center" style={{ color: "rgba(63,47,41,0.55)" }}>
               <ThinkIcon step={summaryStep} />
             </span>
           )}
-          <span>{summary || `${peerName || "AI"} thought silently`}</span>
-          <LockIcon className="h-3.5 w-3" strokeWidth={1} />
+          <span className="leading-[14px]">{summary || `${peerName || "AI"} thought silently`}</span>
+          <LockIcon className="h-3.5 w-3 shrink-0" strokeWidth={1} />
         </div>
       </div>
     )
   }
+  const collapsedLabel = summary || (isPureThinking ? "Show thinking" : `Used ${toolLabel}`)
+  const expandedLabel = isPureThinking ? "Hide thinking" : `Hide ${toolLabel}`
   return (
     <div className="w-full">
       <button
@@ -668,25 +684,25 @@ function ThinkingChain({ steps, locked, peerName }: { steps: ThinkStep[]; locked
           e.stopPropagation()
         }}
         onClick={() => setOpen((v) => !v)}
-        className="mb-2 inline-flex items-center gap-1 text-[12px]"
+        className="mb-2 inline-flex items-center gap-1.5 text-[12px] leading-[14px]"
         style={{
           color: "rgba(63,47,41,0.55)",
           fontFamily: "var(--font-sans)",
         }}
       >
         {summaryStep && (
-          <span className="grid h-3.5 w-3.5 place-items-center" style={{ color: "rgba(63,47,41,0.6)" }}>
+          <span className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center" style={{ color: "rgba(63,47,41,0.6)" }}>
             <ThinkIcon step={summaryStep} />
           </span>
         )}
-        <span>{open ? "Hide thinking" : (summary || "Show thinking")}</span>
+        <span className="leading-[14px] text-left">{open ? expandedLabel : collapsedLabel}</span>
         <ChevronRight
-          className={`h-3 w-3 transition-transform ${open ? "rotate-90" : ""}`}
+          className={`h-3 w-3 shrink-0 transition-transform ${open ? "rotate-90" : ""}`}
           strokeWidth={2}
         />
       </button>
       <AnimatePresence initial={false}>
-        {open && (
+        {open && expandedSteps.length > 0 && (
           <motion.div
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: "auto", opacity: 1 }}
@@ -695,14 +711,14 @@ function ThinkingChain({ steps, locked, peerName }: { steps: ThinkStep[]; locked
             className="mb-3 overflow-hidden"
           >
             <ol className="flex flex-col gap-1.5">
-              {steps.map((s, i) => {
-                const isLast = i === steps.length - 1
+              {expandedSteps.map((s, i) => {
+                const isLast = i === expandedSteps.length - 1
                 return (
-                  <li key={i} className="grid grid-cols-[16px_1fr] gap-2.5">
+                  <li key={i} className="grid grid-cols-[14px_1fr] gap-2.5">
                     {/* icon column with rail */}
                     <div className="relative flex flex-col items-center">
                       <div
-                        className="grid h-4 w-4 place-items-center"
+                        className="inline-flex h-3.5 w-3.5 items-center justify-center"
                         style={{ color: "rgba(63,47,41,0.6)" }}
                       >
                         <ThinkIcon step={s} />
