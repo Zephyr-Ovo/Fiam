@@ -45,6 +45,15 @@ LANGUAGE_PROFILES: dict[str, dict[str, Any]] = {
 
 
 @dataclass
+class Catalog:
+    provider: str = ""
+    model: str = ""
+    fallbacks: list[str] = field(default_factory=list)
+    extended_thinking: bool = False
+    budget_tokens: int = 0
+
+
+@dataclass
 class FiamConfig:
     # ------------------------------------------------------------------
     # Two root paths (set by CLI or caller)
@@ -225,6 +234,11 @@ class FiamConfig:
     api_fallback_model: str = ""
     api_fallback_base_url: str = ""
     api_fallback_key_env: str = ""
+
+    # ------------------------------------------------------------------
+    # Model catalog: family -> provider/model/fallback chain.
+    # ------------------------------------------------------------------
+    catalog: dict[str, Catalog] = field(default_factory=dict)
 
     # ------------------------------------------------------------------
     # Favilla app runtime defaults
@@ -600,6 +614,21 @@ class FiamConfig:
             f'email_smtp_host = "{self.email_smtp_host}"',
             f"email_smtp_port = {self.email_smtp_port}",
         ]
+        if self.catalog:
+            if lines and lines[-1].strip():
+                lines.append("")
+            for family in sorted(self.catalog):
+                item = self.catalog[family]
+                fallback_items = ", ".join(f'"{value}"' for value in item.fallbacks)
+                lines.extend([
+                    f"[catalog.{family}]",
+                    f'provider = "{item.provider}"',
+                    f'model = "{item.model}"',
+                    f"fallbacks = [{fallback_items}]",
+                    f"extended_thinking = {str(item.extended_thinking).lower()}",
+                    f"budget_tokens = {int(item.budget_tokens or 0)}",
+                    "",
+                ])
         dest = path or self.toml_path
         dest.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -629,6 +658,7 @@ class FiamConfig:
         voice = raw.get("voice", {})
         stt = voice.get("stt", {}) if isinstance(voice, dict) else {}
         tts = voice.get("tts", {}) if isinstance(voice, dict) else {}
+        catalog = cls._parse_catalog(raw.get("catalog", {}), api=api, api_fallback=api_fallback)
 
         config = cls(
             home_path=home_path,
@@ -699,6 +729,7 @@ class FiamConfig:
             api_fallback_model=api_fallback.get("model", cls.api_fallback_model),
             api_fallback_base_url=api_fallback.get("base_url", cls.api_fallback_base_url),
             api_fallback_key_env=api_fallback.get("api_key_env", cls.api_fallback_key_env),
+            catalog=catalog,
             # Favilla app runtime
             app_default_runtime=app.get("default_runtime", cls.app_default_runtime),
             app_recall_include_recent=app.get("recall_include_recent", cls.app_recall_include_recent),
@@ -747,3 +778,64 @@ class FiamConfig:
         )
         config.apply_debug_overrides()
         return config
+
+    @staticmethod
+    def _parse_catalog(raw_catalog: Any, *, api: dict, api_fallback: dict) -> dict[str, Catalog]:
+        catalog: dict[str, Catalog] = {}
+        if isinstance(raw_catalog, dict):
+            for raw_family, raw_item in raw_catalog.items():
+                if not isinstance(raw_item, dict):
+                    continue
+                family = str(raw_family or "").strip().lower()
+                if not family:
+                    continue
+                fallbacks_raw = raw_item.get("fallbacks", [])
+                if isinstance(fallbacks_raw, list):
+                    fallbacks = [str(item).strip() for item in fallbacks_raw if str(item).strip()]
+                elif isinstance(fallbacks_raw, str):
+                    fallbacks = [item.strip() for item in fallbacks_raw.split(",") if item.strip()]
+                else:
+                    fallbacks = []
+                catalog[family] = Catalog(
+                    provider=str(raw_item.get("provider") or "").strip(),
+                    model=str(raw_item.get("model") or "").strip(),
+                    fallbacks=fallbacks,
+                    extended_thinking=bool(raw_item.get("extended_thinking", False)),
+                    budget_tokens=int(raw_item.get("budget_tokens") or 0),
+                )
+        if catalog:
+            return catalog
+
+        primary_model = str(api.get("model") or "").strip()
+        primary_provider = str(api.get("provider") or "").strip()
+        if primary_model:
+            family = "gemini" if "gemini" in primary_model.lower() else "claude"
+            catalog[family] = Catalog(
+                provider=_catalog_provider_from_api_provider(primary_provider, model=primary_model),
+                model=primary_model,
+            )
+        fallback_model = str(api_fallback.get("model") or "").strip()
+        fallback_provider = str(api_fallback.get("provider") or "").strip()
+        if fallback_model:
+            family = "gemini" if "gemini" in fallback_model.lower() else "claude"
+            existing = catalog.get(family)
+            if existing and existing.model != fallback_model:
+                existing.fallbacks.append(fallback_model)
+            elif not existing:
+                catalog[family] = Catalog(
+                    provider=_catalog_provider_from_api_provider(fallback_provider, model=fallback_model),
+                    model=fallback_model,
+                )
+        return catalog
+
+
+def _catalog_provider_from_api_provider(provider: str, *, model: str = "") -> str:
+    provider_norm = (provider or "").strip().lower()
+    model_norm = (model or "").strip().lower()
+    if provider_norm in {"google", "google_openai", "google_ai", "gemini", "gemini_openai"}:
+        return "aistudio"
+    if provider_norm in {"vertex", "vertex_openai", "google_vertex", "google_vertex_openai"}:
+        return "vertex"
+    if "claude-" in model_norm:
+        return "poe"
+    return provider_norm or ("aistudio" if "gemini" in model_norm else "poe")

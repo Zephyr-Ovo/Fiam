@@ -99,6 +99,22 @@ export interface FlowPayload {
 export interface RuntimeConfig {
 	memory_mode: 'manual' | 'auto';
 	annotation: { processed_until: number };
+	catalog?: Record<string, CatalogEntry>;
+}
+
+export interface CatalogEntry {
+	provider: string;
+	model: string;
+	fallbacks: string[];
+	extended_thinking: boolean;
+	budget_tokens: number;
+}
+
+export interface CatalogPayload {
+	catalog: Record<string, CatalogEntry>;
+	cache: Record<string, { models: string[]; refreshed_at?: string }>;
+	providers: string[];
+	families: string[];
 }
 
 export interface DebugContextPart {
@@ -193,6 +209,17 @@ export const api = {
 	todo: () => j<TodoRow[]>('/todo'),
 	state: () => j<StateSnapshot>('/state'),
 	config: () => j<RuntimeConfig>('/config'),
+	catalog: () => j<CatalogPayload>('/catalog/list'),
+	refreshCatalog: (provider: string) =>
+		mutate<{ ok: boolean; provider: string; models: string[] }>('POST', '/catalog/refresh', { provider }),
+	saveCatalog: (payload: {
+		family: string;
+		provider: string;
+		model: string;
+		fallbacks?: string[];
+		extended_thinking?: boolean;
+		budget_tokens?: number;
+	}) => mutate<{ ok: boolean; family: string; catalog: CatalogEntry }>('POST', '/config/catalog', payload),
 	setMemoryMode: (memory_mode: 'manual' | 'auto') =>
 		mutate<{ ok: boolean; memory_mode: 'manual' | 'auto' }>('POST', '/config/memory-mode', { memory_mode }),
 	plugins: () => j<{ plugins: PluginManifest[] }>('/plugins'),

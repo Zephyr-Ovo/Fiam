@@ -517,6 +517,10 @@ def _api_config() -> dict:
     return {
         "memory_mode": _CONFIG.memory_mode,
         "annotation": _annotation_state(),
+        "catalog": {
+            family: _catalog_item_to_dict(item)
+            for family, item in sorted((getattr(_CONFIG, "catalog", {}) or {}).items())
+        },
         "multimodal": {
             "vision": _vision_route(),
             "voice": _voice_routes(),
@@ -553,6 +557,135 @@ def _api_plugins() -> dict:
             for plugin in load_plugins(_CONFIG)
         ]
     }
+
+
+def _catalog_item_to_dict(item) -> dict:
+    return {
+        "provider": str(getattr(item, "provider", "") or ""),
+        "model": str(getattr(item, "model", "") or ""),
+        "fallbacks": list(getattr(item, "fallbacks", []) or []),
+        "extended_thinking": bool(getattr(item, "extended_thinking", False)),
+        "budget_tokens": int(getattr(item, "budget_tokens", 0) or 0),
+    }
+
+
+def _provider_api_settings(provider: str) -> dict:
+    provider = (provider or "").strip().lower()
+    if provider == "poe":
+        return {"api_provider": "openai_compatible", "api_base_url": "https://api.poe.com/v1", "api_key_env": "POE_API_KEY"}
+    if provider == "anthropic":
+        return {"api_provider": "anthropic", "api_base_url": "https://api.anthropic.com/v1", "api_key_env": "ANTHROPIC_API_KEY"}
+    if provider == "aistudio":
+        return {"api_provider": "google_openai", "api_base_url": "", "api_key_env": "GEMINI_API_KEY"}
+    if provider == "vertex":
+        return {"api_provider": "vertex_openai", "api_base_url": "", "api_key_env": "GOOGLE_APPLICATION_CREDENTIALS"}
+    return {"api_provider": provider or "openai_compatible", "api_base_url": "", "api_key_env": "FIAM_API_KEY"}
+
+
+def _config_for_catalog_family(config, family: str):
+    family = (family or "").strip().lower()
+    item = (getattr(config, "catalog", {}) or {}).get(family)
+    if not item:
+        return config
+    settings = _provider_api_settings(str(getattr(item, "provider", "") or ""))
+    fallbacks = list(getattr(item, "fallbacks", []) or [])
+    fallback_model = fallbacks[0] if fallbacks else ""
+    fallback_provider = str(getattr(item, "provider", "") or "")
+    return replace(
+        config,
+        api_provider=settings["api_provider"],
+        api_model=str(getattr(item, "model", "") or getattr(config, "api_model", "")),
+        api_base_url=settings["api_base_url"],
+        api_key_env=settings["api_key_env"],
+        api_fallback_provider=settings["api_provider"] if fallback_model else "",
+        api_fallback_model=fallback_model,
+        api_fallback_base_url=settings["api_base_url"] if fallback_model else "",
+        api_fallback_key_env=settings["api_key_env"] if fallback_model else "",
+    )
+
+
+def _route_state_path() -> Path:
+    return _CONFIG.home_path / ".model_route_state.json"
+
+
+def _load_route_state() -> dict:
+    if not _CONFIG:
+        return {}
+    path = _route_state_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_route_family(family: str, *, reason: str = "", turns: int = _ROUTE_STICK_TURNS) -> None:
+    if not _CONFIG:
+        return
+    family = family.strip().lower()
+    if not family:
+        return
+    path = _route_state_path()
+    path.write_text(json.dumps({
+        "family": family,
+        "reason": reason,
+        "remaining_turns": max(1, int(turns)),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }, indent=2), encoding="utf-8")
+
+
+def _consume_route_family() -> str:
+    if not _CONFIG:
+        return ""
+    state = _load_route_state()
+    family = str(state.get("family") or "").strip().lower()
+    remaining = int(state.get("remaining_turns") or 0)
+    if not family or remaining <= 0:
+        _route_state_path().unlink(missing_ok=True)
+        return ""
+    state["remaining_turns"] = remaining - 1
+    if state["remaining_turns"] <= 0:
+        _route_state_path().unlink(missing_ok=True)
+    else:
+        _route_state_path().write_text(json.dumps(state, indent=2), encoding="utf-8")
+    return family
+
+
+def _runtime_for_family(family: str, *, fallback: str = "cc") -> str:
+    family = (family or "").strip().lower()
+    if family == "gemini":
+        return "api"
+    if family == "claude":
+        return fallback if fallback in {"api", "cc"} else "cc"
+    return fallback if fallback in {"api", "cc"} else "cc"
+
+
+def _select_favilla_chat_route(text: str, attachments: list[dict] | None = None) -> dict:
+    if attachments:
+        return {"runtime": "cc", "family": "claude", "source": "attachments"}
+    lowered = text.lower()
+    api_token = r"(?<![a-z0-9])api(?![a-z0-9])|gemini"
+    cc_token = r"(?<![a-z0-9])cc(?![a-z0-9])|claude\s*code"
+    if re.search(rf"runtime\s*(=|:|：)\s*({api_token})|(换|切|切换|转|去|到|用|走).{{0,8}}({api_token})|({api_token}).{{0,8}}(模式|运行|runtime)", lowered):
+        family = "gemini" if "gemini" in lowered else "claude"
+        return {"runtime": "api", "family": family, "source": "user_text"}
+    if re.search(rf"runtime\s*(=|:|：)\s*({cc_token})|(换|切|切换|转|去|到|用|走).{{0,8}}({cc_token})|({cc_token}).{{0,8}}(模式|运行|runtime)", lowered):
+        return {"runtime": "cc", "family": "claude", "source": "user_text"}
+    if re.search(r"(另一边|另一侧|另一端|切换过去|换过去|切过去)", lowered):
+        return {"runtime": "api", "family": "claude", "source": "user_text"}
+    family = _consume_route_family()
+    if family:
+        return {"runtime": _runtime_for_family(family), "family": family, "source": "route_state"}
+    return {"runtime": "cc", "family": "claude", "source": "default"}
+
+
+def _apply_route_from_result(result: dict) -> None:
+    carry = result.get("carry_over") if isinstance(result.get("carry_over"), dict) else None
+    family = str((carry or {}).get("family") or "").strip().lower()
+    if family:
+        _save_route_family(family, reason=str((carry or {}).get("reason") or ""))
 
 
 def _update_memory_mode(payload: dict) -> dict:
@@ -610,6 +743,176 @@ def _update_plugin(payload: dict) -> dict:
     from fiam.plugins import set_plugin_enabled
     plugin = set_plugin_enabled(_CONFIG, plugin_id, enabled)
     return {"ok": True, "id": plugin.id, "enabled": plugin.enabled}
+
+
+def _catalog_cache_path() -> Path:
+    return _CONFIG.home_path / ".catalog_cache.json"
+
+
+def _api_catalog_list() -> dict:
+    if not _CONFIG:
+        return {"catalog": {}, "cache": {}}
+    cache = {}
+    path = _catalog_cache_path()
+    if path.exists():
+        try:
+            cache = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            cache = {}
+    return {
+        "catalog": {
+            family: _catalog_item_to_dict(item)
+            for family, item in sorted((getattr(_CONFIG, "catalog", {}) or {}).items())
+        },
+        "cache": cache if isinstance(cache, dict) else {},
+        "providers": ["poe", "anthropic", "aistudio"],
+        "families": ["claude", "gemini"],
+    }
+
+
+def _fetch_json(url: str, *, headers: dict[str, str] | None = None, timeout: int = 30) -> dict:
+    request = urllib.request.Request(url, headers=headers or {}, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:500]
+        raise RuntimeError(f"catalog refresh failed ({exc.code}): {detail}") from exc
+
+
+def _fetch_anthropic_models() -> list[str]:
+    key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if not key:
+        raise RuntimeError("Missing env var: ANTHROPIC_API_KEY")
+    data = _fetch_json(
+        "https://api.anthropic.com/v1/models",
+        headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
+    )
+    rows = data.get("data") if isinstance(data, dict) else []
+    models = [str(row.get("id") or "").strip() for row in rows if isinstance(row, dict) and row.get("id")]
+    return sorted(set(models))
+
+
+def _fetch_aistudio_models() -> list[str]:
+    key = os.environ.get("GOOGLE_AI_STUDIO_KEY", "").strip() or os.environ.get("GEMINI_API_KEY", "").strip()
+    if not key:
+        raise RuntimeError("Missing env var: GOOGLE_AI_STUDIO_KEY or GEMINI_API_KEY")
+    data = _fetch_json(f"https://generativelanguage.googleapis.com/v1beta/models?key={key}")
+    rows = data.get("models") if isinstance(data, dict) else []
+    models: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        methods = row.get("supportedGenerationMethods") or []
+        if methods and "generateContent" not in methods:
+            continue
+        name = str(row.get("name") or "").strip()
+        if name.startswith("models/"):
+            name = name[len("models/"):]
+        if name:
+            models.append(name)
+    return sorted(set(models))
+
+
+def _api_catalog_refresh(payload: dict) -> dict:
+    if not _CONFIG:
+        raise RuntimeError("config not loaded")
+    provider = str(payload.get("provider") or "").strip().lower()
+    if provider not in {"poe", "anthropic", "aistudio"}:
+        raise ValueError("provider must be poe, anthropic, or aistudio")
+    if provider == "poe":
+        models = list(POE_KNOWN_MODELS)
+    elif provider == "anthropic":
+        models = _fetch_anthropic_models()
+    else:
+        models = _fetch_aistudio_models()
+    cache = {}
+    path = _catalog_cache_path()
+    if path.exists():
+        try:
+            cache = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            cache = {}
+    if not isinstance(cache, dict):
+        cache = {}
+    cache[provider] = {"models": models, "refreshed_at": datetime.now(timezone.utc).isoformat()}
+    path.write_text(json.dumps(cache, indent=2), encoding="utf-8")
+    return {"ok": True, "provider": provider, "models": models}
+
+
+def _toml_quote(value: str) -> str:
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _catalog_section_lines(family: str, item: dict) -> list[str]:
+    fallbacks = item.get("fallbacks") if isinstance(item.get("fallbacks"), list) else []
+    fallback_text = ", ".join(_toml_quote(str(value)) for value in fallbacks)
+    return [
+        f"[catalog.{family}]",
+        f"provider = {_toml_quote(str(item.get('provider') or ''))}",
+        f"model = {_toml_quote(str(item.get('model') or ''))}",
+        f"fallbacks = [{fallback_text}]",
+        f"extended_thinking = {str(bool(item.get('extended_thinking'))).lower()}",
+        f"budget_tokens = {int(item.get('budget_tokens') or 0)}",
+    ]
+
+
+def _replace_toml_section(text: str, section: str, new_lines: list[str]) -> str:
+    lines = text.splitlines()
+    header = f"[{section}]"
+    start = -1
+    end = len(lines)
+    for idx, line in enumerate(lines):
+        if line.strip() == header:
+            start = idx
+            break
+    if start >= 0:
+        for idx in range(start + 1, len(lines)):
+            stripped = lines[idx].strip()
+            if stripped.startswith("[") and stripped.endswith("]"):
+                end = idx
+                break
+        out = lines[:start] + new_lines + lines[end:]
+    else:
+        out = list(lines)
+        if out and out[-1].strip():
+            out.append("")
+        out.extend(new_lines)
+    return "\n".join(out).rstrip() + "\n"
+
+
+def _update_catalog(payload: dict) -> dict:
+    if not _CONFIG:
+        raise RuntimeError("config not loaded")
+    family = str(payload.get("family") or "").strip().lower()
+    if not re.fullmatch(r"[a-z0-9_-]+", family):
+        raise ValueError("family must be a simple identifier")
+    provider = str(payload.get("provider") or "").strip().lower()
+    if provider not in {"poe", "anthropic", "aistudio", "vertex"}:
+        raise ValueError("provider must be poe, anthropic, aistudio, or vertex")
+    model = str(payload.get("model") or "").strip()
+    if not model:
+        raise ValueError("model is required")
+    fallbacks_raw = payload.get("fallbacks", [])
+    if isinstance(fallbacks_raw, str):
+        fallbacks = [item.strip() for item in fallbacks_raw.split(",") if item.strip()]
+    elif isinstance(fallbacks_raw, list):
+        fallbacks = [str(item).strip() for item in fallbacks_raw if str(item).strip()]
+    else:
+        fallbacks = []
+    item = {
+        "provider": provider,
+        "model": model,
+        "fallbacks": fallbacks,
+        "extended_thinking": bool(payload.get("extended_thinking")),
+        "budget_tokens": int(payload.get("budget_tokens") or 0),
+    }
+    path = _CONFIG.toml_path
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    path.write_text(_replace_toml_section(text, f"catalog.{family}", _catalog_section_lines(family, item)), encoding="utf-8")
+    from fiam.config import Catalog
+    _CONFIG.catalog[family] = Catalog(**item)
+    return {"ok": True, "family": family, "catalog": _catalog_item_to_dict(_CONFIG.catalog[family])}
 
 
 def _api_capture(payload: dict) -> dict:
@@ -1606,20 +1909,7 @@ def _favilla_studio_edit(payload: dict) -> dict:
 
 
 def _select_favilla_chat_runtime(text: str, attachments: list[dict] | None = None) -> str:
-    # Default to cc (Claude Code). User preference: avoid gemini/api unless
-    # explicitly requested. Only switch to api when the user says so out loud.
-    if attachments:
-        return "cc"
-    lowered = text.lower()
-    api_token = r"(?<![a-z0-9])api(?![a-z0-9])|gemini"
-    cc_token = r"(?<![a-z0-9])cc(?![a-z0-9])|claude\s*code"
-    if re.search(rf"runtime\s*(=|:|：)\s*({api_token})|(换|切|切换|转|去|到|用|走).{{0,8}}({api_token})|({api_token}).{{0,8}}(模式|运行|runtime)", lowered):
-        return "api"
-    if re.search(rf"runtime\s*(=|:|：)\s*({cc_token})|(换|切|切换|转|去|到|用|走).{{0,8}}({cc_token})|({cc_token}).{{0,8}}(模式|运行|runtime)", lowered):
-        return "cc"
-    if re.search(r"(另一边|另一侧|另一端|切换过去|换过去|切过去)", lowered):
-        return "api"
-    return "cc"
+    return str(_select_favilla_chat_route(text, attachments).get("runtime") or "cc")
 
 
 def _transcript_source(channel: str) -> str:
@@ -1977,7 +2267,7 @@ def _apply_app_control_markers(
     (drop everything: no dispatch, no actions, no state updates). A
     ``hold_retry`` todo is auto-queued when a hold is detected.
     """
-    from fiam.markers import parse_carry_over_markers, strip_xml_markers
+    from fiam.markers import parse_carry_over_markers, parse_route_markers, strip_xml_markers
     from fiam_lib.app_markers import apply_hold
     from fiam_lib.todo import append_to_todo, extract_scheduled_items, extract_state_tag
 
@@ -1999,10 +2289,19 @@ def _apply_app_control_markers(
         return "", 0, "all", None
 
     carry_markers = parse_carry_over_markers(cleaned)
+    route_markers = parse_route_markers(cleaned)
     carry_over = None
     if carry_markers:
         marker = carry_markers[-1]
         carry_over = {"to": marker.target, "reason": marker.reason}
+    if route_markers:
+        marker = route_markers[-1]
+        if carry_over is None:
+            carry_over = {"family": marker.family, "reason": marker.reason}
+        else:
+            carry_over["family"] = marker.family
+            if marker.reason and not carry_over.get("reason"):
+                carry_over["reason"] = marker.reason
 
     queued_todos = 0
     if _CONFIG:
@@ -2013,7 +2312,7 @@ def _apply_app_control_markers(
         if state_tag:
             _write_app_ai_state(state_tag)
 
-    cleaned = strip_xml_markers(cleaned, {"wake", "todo", "sleep", "mute", "notify", "carry_over"}).strip()
+    cleaned = strip_xml_markers(cleaned, {"wake", "todo", "sleep", "mute", "notify", "carry_over", "route"}).strip()
     if hold_kind == "text":
         cleaned = ""
     return cleaned, queued_todos, hold_kind, carry_over
@@ -2076,8 +2375,11 @@ def _favilla_chat_send(payload: dict) -> dict:
     channel = str(payload.get("channel") or "chat").strip() or "chat"
     default_runtime = getattr(_CONFIG, "app_default_runtime", "auto") or "auto"
     runtime = str(payload.get("runtime") or default_runtime).strip().lower() or "auto"
+    family = str(payload.get("family") or "").strip().lower()
     if runtime == "auto":
-        runtime = _select_favilla_chat_runtime(text, safe_attachments)
+        route = _select_favilla_chat_route(text, safe_attachments)
+        runtime = str(route.get("runtime") or "cc")
+        family = family or str(route.get("family") or "")
     user_text = text
     runtime_text = text
     stroll_context: dict | None = None
@@ -2088,12 +2390,13 @@ def _favilla_chat_send(payload: dict) -> dict:
         runtime_text = f"{context_block}\n\n[user_message]\n{user_text}"
     record_turn = payload.get("record_turn", payload.get("record", True)) is not False
     if runtime == "api":
-        result = _run_api_favilla_chat(text=runtime_text, channel=channel, attachments=safe_attachments, record_turn=record_turn)
+        result = _run_api_favilla_chat(text=runtime_text, channel=channel, attachments=safe_attachments, record_turn=record_turn, family=family)
     elif runtime == "cc":
         result = _run_cc_favilla_chat(text=runtime_text, channel=channel, attachments=safe_attachments)
     else:
         raise ValueError("Favilla chat runtime must be auto, cc, or api")
     carry = result.get("carry_over") if isinstance(result.get("carry_over"), dict) else None
+    _apply_route_from_result(result)
     target = str((carry or {}).get("to") or "").strip().lower()
     if target in {"api", "cc"} and target != runtime:
         transfer_text = _build_carry_over_text(
@@ -2104,11 +2407,12 @@ def _favilla_chat_send(payload: dict) -> dict:
             reason=str((carry or {}).get("reason") or ""),
         )
         if target == "api":
-            result = _run_api_favilla_chat(text=transfer_text, channel=channel, attachments=safe_attachments)
+            result = _run_api_favilla_chat(text=transfer_text, channel=channel, attachments=safe_attachments, family=str((carry or {}).get("family") or ""))
         else:
             result = _run_cc_favilla_chat(text=transfer_text, channel=channel, attachments=safe_attachments)
         result["carry_over_from"] = runtime
         runtime = target
+        _apply_route_from_result(result)
     stroll_records: list[dict] = []
     stroll_actions: list[dict] = []
     if channel == "stroll":
@@ -2203,8 +2507,11 @@ def _favilla_chat_send_stream(payload: dict):
     channel = str(payload.get("channel") or "chat").strip() or "chat"
     default_runtime = getattr(_CONFIG, "app_default_runtime", "auto") or "auto"
     runtime = str(payload.get("runtime") or default_runtime).strip().lower() or "auto"
+    family = str(payload.get("family") or "").strip().lower()
     if runtime == "auto":
-        runtime = _select_favilla_chat_runtime(text, safe_attachments)
+        route = _select_favilla_chat_route(text, safe_attachments)
+        runtime = str(route.get("runtime") or "cc")
+        family = family or str(route.get("family") or "")
     user_text = text
     runtime_text = text
     stroll_context: dict | None = None
@@ -2221,7 +2528,11 @@ def _favilla_chat_send_stream(payload: dict):
         # Non-streaming runtime: do single-shot and emit start + done.
         yield {"event": "start", "data": {"runtime": runtime}}
         try:
-            result = _favilla_chat_send(payload)
+            routed_payload = dict(payload)
+            routed_payload["runtime"] = runtime
+            if family:
+                routed_payload["family"] = family
+            result = _favilla_chat_send(routed_payload)
         except Exception as e:
             yield {"event": "error", "data": {"message": str(e)[:500]}}
             return
@@ -2250,6 +2561,7 @@ def _favilla_chat_send_stream(payload: dict):
     # Carry-over: if AI marked carry_over, run target runtime synchronously
     # and emit a follow-up done event with the second result.
     carry = final_result.get("carry_over") if isinstance(final_result.get("carry_over"), dict) else None
+    _apply_route_from_result(final_result)
     target = str((carry or {}).get("to") or "").strip().lower()
     if target in {"api", "cc"} and target != runtime:
         transfer_text = _build_carry_over_text(
@@ -2261,11 +2573,12 @@ def _favilla_chat_send_stream(payload: dict):
         )
         try:
             if target == "api":
-                final_result = _run_api_favilla_chat(text=transfer_text, channel=channel, attachments=safe_attachments)
+                final_result = _run_api_favilla_chat(text=transfer_text, channel=channel, attachments=safe_attachments, family=str((carry or {}).get("family") or ""))
             else:
                 final_result = _run_cc_favilla_chat(text=transfer_text, channel=channel, attachments=safe_attachments)
             final_result["carry_over_from"] = runtime
             final_result["runtime"] = target
+            _apply_route_from_result(final_result)
             yield {"event": "done", "data": final_result}
         except Exception:
             logger.exception("carry_over chain failed")
@@ -3708,10 +4021,10 @@ def _record_api_turn_light(user_text: str, assistant_reply: str, channel: str, *
     append_beats(_CONFIG.flow_path, beats)
 
 
-def _run_api_favilla_chat(*, text: str, channel: str, attachments: list | None = None, record_turn: bool = True) -> dict:
+def _run_api_favilla_chat(*, text: str, channel: str, attachments: list | None = None, record_turn: bool = True, family: str = "") -> dict:
     if not _CONFIG or not _POOL:
         raise RuntimeError("config not loaded")
-    config = _CONFIG
+    config = _config_for_catalog_family(_CONFIG, family)
     pool = _POOL
 
     from fiam.conductor import Conductor
@@ -4515,6 +4828,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 self._serve_json(_api_health())
             elif path == "/api/config":
                 self._serve_json(_api_config())
+            elif path == "/api/catalog/list":
+                self._serve_json(_api_catalog_list())
             elif path == "/api/plugins":
                 self._serve_json(_api_plugins())
             elif path == "/api/pool/edge-types":
@@ -4866,7 +5181,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         pool_write_paths = {"/api/pool/edge", "/api/pool/edge/delete"}
         pool_write_prefixes = ("/api/pool/event/",)
         annotate_paths = {"/api/annotate/request", "/api/annotate/edges", "/api/annotate/confirm"}
-        config_paths = {"/api/config/memory-mode", "/api/config/plugin"}
+        config_paths = {"/api/config/memory-mode", "/api/config/plugin", "/api/config/catalog", "/api/catalog/refresh"}
         is_pool_write = path in pool_write_paths or any(path.startswith(p) for p in pool_write_prefixes)
         is_annotate = path in annotate_paths
         is_config_write = path in config_paths
@@ -5372,6 +5687,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     result = _update_memory_mode(payload)
                 elif path == "/api/config/plugin":
                     result = _update_plugin(payload)
+                elif path == "/api/config/catalog":
+                    result = _update_catalog(payload)
+                elif path == "/api/catalog/refresh":
+                    result = _api_catalog_refresh(payload)
                 else:
                     self.send_error(404)
                     return

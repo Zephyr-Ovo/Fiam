@@ -278,6 +278,179 @@ class GoogleOpenAICompatibleClient(OpenAICompatibleClient):
         return cls(base_url=base_url, api_key=api_key, timeout=config.api_timeout_seconds)
 
 
+class AnthropicMessagesClient:
+    """Anthropic Messages API client with an OpenAI-like ApiClient facade."""
+
+    @classmethod
+    def from_config(cls, config) -> "AnthropicMessagesClient":
+        key_env = config.api_key_env or "ANTHROPIC_API_KEY"
+        api_key = os.environ.get(key_env, "").strip()
+        if not api_key:
+            raise RuntimeError(f"Missing env var: {key_env}")
+        base_url = str(config.api_base_url or "").strip().rstrip("/") or "https://api.anthropic.com/v1"
+        return cls(base_url=base_url, api_key=api_key, timeout=config.api_timeout_seconds)
+
+    def __init__(self, *, base_url: str, api_key: str, timeout: int = 60) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.timeout = timeout
+
+    def complete(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        model: str,
+        temperature: float,
+        max_tokens: int,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> ApiCompletion:
+        system, converted = self._convert_messages(messages)
+        body: dict[str, Any] = {
+            "model": model,
+            "messages": converted,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        if system:
+            body["system"] = system
+        if tools:
+            body["tools"] = [self._convert_tool_schema(tool) for tool in tools if isinstance(tool, dict)]
+        request = urllib.request.Request(
+            f"{self.base_url}/messages",
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": self.api_key,
+                "anthropic-version": "2023-06-01",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:500]
+            raise RuntimeError(f"API request failed ({exc.code}): {detail}") from exc
+        content = data.get("content") or []
+        text_parts: list[str] = []
+        tool_calls: list[dict[str, Any]] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            block_type = block.get("type")
+            if block_type == "text":
+                text_parts.append(str(block.get("text") or ""))
+            elif block_type == "tool_use":
+                tool_calls.append({
+                    "id": str(block.get("id") or ""),
+                    "type": "function",
+                    "function": {
+                        "name": str(block.get("name") or ""),
+                        "arguments": json.dumps(block.get("input") or {}, ensure_ascii=False),
+                    },
+                })
+        return ApiCompletion(
+            text="\n".join(part for part in text_parts if part).strip(),
+            model=str(data.get("model") or model),
+            usage=dict(data.get("usage") or {}),
+            raw=data,
+            tool_calls=tool_calls,
+            finish_reason=str(data.get("stop_reason") or ""),
+        )
+
+    def _convert_messages(self, messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
+        system_parts: list[str] = []
+        converted: list[dict[str, Any]] = []
+        for message in messages:
+            role = str(message.get("role") or "")
+            if role == "system":
+                text = self._content_to_text(message.get("content"))
+                if text:
+                    system_parts.append(text)
+                continue
+            if role == "tool":
+                converted.append({
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": str(message.get("tool_call_id") or ""),
+                        "content": str(message.get("content") or ""),
+                    }],
+                })
+                continue
+            if role == "assistant" and message.get("tool_calls"):
+                blocks: list[dict[str, Any]] = []
+                text = self._content_to_text(message.get("content"))
+                if text:
+                    blocks.append({"type": "text", "text": text})
+                for call in message.get("tool_calls") or []:
+                    if not isinstance(call, dict):
+                        continue
+                    fn = call.get("function") if isinstance(call.get("function"), dict) else {}
+                    try:
+                        args = json.loads(str(fn.get("arguments") or "{}"))
+                    except json.JSONDecodeError:
+                        args = {}
+                    blocks.append({
+                        "type": "tool_use",
+                        "id": str(call.get("id") or ""),
+                        "name": str(fn.get("name") or ""),
+                        "input": args,
+                    })
+                converted.append({"role": "assistant", "content": blocks})
+                continue
+            if role in {"user", "assistant"}:
+                converted.append({"role": role, "content": self._convert_content(message.get("content"))})
+        return "\n\n".join(system_parts), converted
+
+    def _content_to_text(self, content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for block in content:
+                if isinstance(block, dict):
+                    parts.append(str(block.get("text") or ""))
+            return "\n".join(part for part in parts if part).strip()
+        return ""
+
+    def _convert_content(self, content: Any) -> str | list[dict[str, Any]]:
+        if isinstance(content, str):
+            return content
+        if not isinstance(content, list):
+            return str(content or "")
+        blocks: list[dict[str, Any]] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "text":
+                blocks.append({"type": "text", "text": str(block.get("text") or "")})
+                continue
+            if block.get("type") == "image_url":
+                url = str((block.get("image_url") or {}).get("url") or "")
+                if not url.startswith("data:") or ";base64," not in url:
+                    continue
+                header, data = url.split(";base64,", 1)
+                media_type = header.removeprefix("data:")
+                blocks.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": data,
+                    },
+                })
+        return blocks or ""
+
+    def _convert_tool_schema(self, tool: dict[str, Any]) -> dict[str, Any]:
+        fn = tool.get("function") if isinstance(tool.get("function"), dict) else {}
+        return {
+            "name": str(fn.get("name") or ""),
+            "description": str(fn.get("description") or ""),
+            "input_schema": fn.get("parameters") if isinstance(fn.get("parameters"), dict) else {"type": "object"},
+        }
+
+
 class VertexOpenAICompatibleClient(OpenAICompatibleClient):
     """OpenAI-compatible Vertex AI Gemini client using service-account OAuth."""
 
@@ -381,6 +554,8 @@ class FallbackApiClient:
 
 def _single_api_client_from_config(config) -> ApiClient:
     provider = str(getattr(config, "api_provider", "openai_compatible") or "").lower()
+    if provider in {"anthropic", "anthropic_messages"}:
+        return AnthropicMessagesClient.from_config(config)
     if provider in {"google", "google_openai", "google_ai", "gemini", "gemini_openai"}:
         return GoogleOpenAICompatibleClient.from_config(config)
     if provider in {"vertex", "vertex_openai", "google_vertex", "google_vertex_openai"}:

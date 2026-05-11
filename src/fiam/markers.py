@@ -48,6 +48,12 @@ class CarryOverMarker:
     reason: str = ""
 
 
+@dataclass(frozen=True)
+class RouteMarker:
+    family: str
+    reason: str = ""
+
+
 # Hold kind: "" = no hold, "text" = drop user-facing reply only,
 # "all" = drop everything (no dispatch, no actions, no state updates).
 HoldKind = str
@@ -216,6 +222,17 @@ def parse_carry_over_markers(text: str) -> list[CarryOverMarker]:
         target = attrs.get("to", "").strip().lower()
         if target:
             markers.append(CarryOverMarker(target=target, reason=attrs.get("reason", "").strip()))
+    return markers
+
+
+def parse_route_markers(text: str) -> list[RouteMarker]:
+    markers: list[RouteMarker] = []
+    for name, attrs, _body in _xml_markers(text):
+        if name != "route":
+            continue
+        family = attrs.get("family", "").strip().lower()
+        if family:
+            markers.append(RouteMarker(family=family, reason=attrs.get("reason", "").strip()))
     return markers
 
 
