@@ -1352,6 +1352,10 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
   const confirmTimerRef = useRef<number | null>(null)
   const maxViewportHeightRef = useRef(0)
   const stickToBottomRef = useRef(true)
+  // Mirror `sending` into a ref so background refetches (visibilitychange,
+  // config-changed) can bail out without racing an in-flight stream.
+  const sendingRef = useRef(false)
+  useEffect(() => { sendingRef.current = sending }, [sending])
 
   function blurActiveInput() {
     const active = document.activeElement
@@ -1465,6 +1469,10 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
   useEffect(() => {
     let cancelled = false
     function loadTranscript() {
+      // Skip while a stream is in flight — replacing messages mid-stream
+      // wipes the in-progress AI bubble and the streamed segments never
+      // surface (root cause of "回复消失，去网页才看到").
+      if (sendingRef.current) return
       fetchChatTranscript("chat")
         .then((res) => {
           if (cancelled || !res.ok || !res.messages || res.messages.length === 0) return
@@ -1478,14 +1486,24 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
             seen.add(m.id)
             deduped.unshift(m)
           }
-          setMessages(deduped.map((msg) => ({
+          const fromServer: Msg[] = deduped.map((msg) => ({
             ...msg,
             attachments: (msg.attachments || []).map((att) => {
               if (att.kind === "voice") return { kind: "voice", seconds: Number(att.size || 0) || 0 }
               if (att.kind === "image") return { kind: "image", name: att.name }
               return { kind: "file", name: att.name, size: att.size }
             }),
-          })))
+          }))
+          // Merge instead of replace: keep any local-only messages whose id
+          // isn't on the server yet (in-flight sends, optimistic chips).
+          // Server always wins for shared ids.
+          setMessages((local) => {
+            const serverIds = new Set(fromServer.map((m) => m.id))
+            const localOnly = local.filter((m) => !serverIds.has(m.id))
+            // Preserve relative order: server history first, then any
+            // local-only tail that happened during the refetch window.
+            return [...fromServer, ...localOnly]
+          })
         })
         .catch(() => {})
     }
