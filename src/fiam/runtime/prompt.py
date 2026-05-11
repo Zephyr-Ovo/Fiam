@@ -125,6 +125,7 @@ def build_plain_prompt_parts(
     channel: str = "app",
     include_recall: bool = True,
     consume_recall_dirty: bool = True,
+    consume_carryover: bool | None = None,
     extra_context: str = "",
 ) -> tuple[str, str]:
     """Return ``(system_context, user_prompt)`` for non-API runtimes.
@@ -140,6 +141,7 @@ def build_plain_prompt_parts(
         channel=channel,
         include_recall=include_recall,
         consume_recall_dirty=consume_recall_dirty,
+        consume_carryover=consume_carryover,
         extra_context=extra_context,
     )
     system_parts: list[str] = []
