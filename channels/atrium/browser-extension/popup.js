@@ -286,3 +286,42 @@ document.getElementById("ask").addEventListener("click", async () => {
     show(error instanceof Error ? error.message : String(error));
   }
 });
+
+document.getElementById("studio-send").addEventListener("click", async () => {
+  show("Sending to Studio...");
+  try {
+    const settings = await getSettings();
+    const tab = await activeTab();
+    let pageInfo = { selection: "", url: tab.url || "", title: tab.title || "" };
+    try {
+      const resp = await callApi(ext.tabs, "sendMessage", tab.id, { type: "FIAM_GET_SELECTION" });
+      if (resp && resp.ok) pageInfo = { ...pageInfo, ...resp };
+    } catch (_) { /* page may not allow content scripts */ }
+    const note = document.getElementById("studio-note").value.trim();
+    const targetMode = document.getElementById("studio-target").value;
+    let target_file;
+    if (targetMode === "desk") {
+      const today = new Date().toISOString().slice(0, 10);
+      target_file = `desk/${today}.md`;
+    } else if (targetMode === "shelf") {
+      let host = "page";
+      try { host = new URL(pageInfo.url).hostname.replace(/[^a-z0-9.-]/gi, "_") || "page"; } catch (_) {}
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      target_file = `shelf/web/${host}-${stamp}.md`;
+    }
+    const selection = pageInfo.selection || pageInfo.title || pageInfo.url || "(empty)";
+    const result = await postJson("/studio/share", {
+      source: "atrium",
+      url: pageInfo.url,
+      selection,
+      note: note || undefined,
+      target_file,
+      agent: "zephyr",
+      tags: ["web"],
+    }, settings);
+    document.getElementById("studio-note").value = "";
+    show(result);
+  } catch (error) {
+    show(error instanceof Error ? error.message : String(error));
+  }
+});

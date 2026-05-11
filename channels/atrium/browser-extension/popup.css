@@ -69,6 +69,24 @@ button {
   background: #eef4ff;
 }
 
+.studio {
+  display: grid;
+  gap: 8px;
+  border-top: 1px dashed #bfae9f;
+  padding-top: 12px;
+}
+
+.studio-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+#studio-send {
+  border-color: #b07b5a;
+  background: #fff3e8;
+}
+
 
 input,
 textarea,

@@ -3768,6 +3768,303 @@ def _ingest_token_ok(handler) -> bool:
     return hmac.compare_digest(got, expected)
 
 
+# ---------------------------------------------------------------------------
+# Studio vault (markdown + git, design v0.1)
+# ---------------------------------------------------------------------------
+# Endpoints (POST /studio/share, POST /studio/quicknote, GET /studio/list,
+# GET /studio/file) write markdown into a vault directory and (best-effort)
+# git-commit each change. Vault path defaults to <home>/studio but can be
+# overridden via FIAM_STUDIO_VAULT_DIR (used for tests / local dev).
+# All endpoints require X-Fiam-Token (FIAM_INGEST_TOKEN).
+
+import os as _studio_os
+import subprocess as _studio_subprocess
+
+
+_STUDIO_DEFAULT_DIRS = ("inbox", "shelf", "desk")
+_STUDIO_AGENT_VALUES = {"zephyr", "cc", "copilot", "codex", "ai", "system"}
+_STUDIO_SOURCE_VALUES = {"atrium", "favilla", "quicknote", "manual", "email"}
+_STUDIO_MAX_TEXT = 1024 * 1024  # 1 MiB per write
+_STUDIO_LIST_LIMIT = 200
+
+
+def _studio_vault_dir() -> Path:
+    override = _studio_os.environ.get("FIAM_STUDIO_VAULT_DIR", "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    if not _CONFIG:
+        raise RuntimeError("config not loaded")
+    return (_CONFIG.home_path / "studio").resolve()
+
+
+def _studio_ensure_vault() -> Path:
+    vault = _studio_vault_dir()
+    vault.mkdir(parents=True, exist_ok=True)
+    for sub in _STUDIO_DEFAULT_DIRS:
+        (vault / sub).mkdir(parents=True, exist_ok=True)
+    if not (vault / ".git").exists():
+        try:
+            _studio_subprocess.run(
+                ["git", "init", "--quiet"],
+                cwd=str(vault), check=False, capture_output=True, timeout=5,
+            )
+            # Configure a local identity so commits don't fail on a fresh box.
+            _studio_subprocess.run(
+                ["git", "config", "user.email", "studio@fiam.local"],
+                cwd=str(vault), check=False, capture_output=True, timeout=5,
+            )
+            _studio_subprocess.run(
+                ["git", "config", "user.name", "fiam-studio"],
+                cwd=str(vault), check=False, capture_output=True, timeout=5,
+            )
+        except (OSError, _studio_subprocess.SubprocessError):
+            pass
+    return vault
+
+
+def _studio_normalize_rel(rel: str) -> Path:
+    """Resolve a vault-relative path safely. Raises ValueError on traversal."""
+    if not rel or not isinstance(rel, str):
+        raise ValueError("missing path")
+    cleaned = rel.replace("\\", "/").lstrip("/")
+    if not cleaned or cleaned in {".", ".."}:
+        raise ValueError("invalid path")
+    if any(part in {"", "..", "."} for part in cleaned.split("/")):
+        raise ValueError("invalid path")
+    if cleaned.startswith(".git/") or cleaned == ".git" or "/.git/" in f"/{cleaned}":
+        raise ValueError("path inside .git")
+    vault = _studio_ensure_vault()
+    abs_path = (vault / cleaned).resolve()
+    try:
+        abs_path.relative_to(vault)
+    except ValueError as exc:
+        raise ValueError("path escapes vault") from exc
+    return abs_path
+
+
+def _studio_today_relpath(sub: str) -> str:
+    sub = sub if sub in _STUDIO_DEFAULT_DIRS else "inbox"
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return f"{sub}/{today}.md"
+
+
+def _studio_default_target(source: str, has_url: bool) -> str:
+    if source == "quicknote":
+        return _studio_today_relpath("desk")
+    if source == "atrium" and has_url:
+        # v0.1: park web shares in inbox until shelf/web/* is finalized.
+        return _studio_today_relpath("inbox")
+    return _studio_today_relpath("inbox")
+
+
+def _studio_format_block(payload: dict) -> str:
+    when = datetime.now(timezone.utc).astimezone().strftime("%H:%M")
+    source = str(payload.get("source") or "manual").strip().lower() or "manual"
+    if source not in _STUDIO_SOURCE_VALUES:
+        source = "manual"
+    agent = str(payload.get("agent") or "zephyr").strip().lower() or "zephyr"
+    if agent not in _STUDIO_AGENT_VALUES:
+        agent = "system"
+    selection = str(payload.get("selection") or "").strip()
+    note = str(payload.get("note") or "").strip()
+    url = str(payload.get("url") or "").strip()
+    lines = [f"## {when} · {source} · {agent}"]
+    if selection:
+        for sel_line in selection.splitlines() or [""]:
+            lines.append(f"> {sel_line}" if sel_line else ">")
+        lines.append("")
+    if note:
+        lines.append(note)
+        lines.append("")
+    meta = []
+    if url:
+        meta.append(f"source: {url}")
+    tags = payload.get("tags")
+    if isinstance(tags, list):
+        clean_tags = [f"#{str(t).lstrip('#').strip()}" for t in tags if str(t).strip()]
+        if clean_tags:
+            meta.append("tags: " + " ".join(clean_tags))
+    if meta:
+        lines.extend(meta)
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _studio_format_archive(payload: dict) -> str:
+    source = str(payload.get("source") or "manual").strip().lower() or "manual"
+    url = str(payload.get("url") or "").strip()
+    agent = str(payload.get("agent") or "system").strip().lower() or "system"
+    ts = datetime.now(timezone.utc).isoformat()
+    tags = payload.get("tags")
+    tag_list = []
+    if isinstance(tags, list):
+        tag_list = [str(t).lstrip("#").strip() for t in tags if str(t).strip()]
+    front = ["---"]
+    front.append(f"source: {source}")
+    if url:
+        front.append(f"url: {url}")
+    front.append(f"ts: {ts}")
+    front.append(f"agent: {agent}")
+    if tag_list:
+        front.append("tags: [" + ", ".join(tag_list) + "]")
+    front.append("---")
+    body = str(payload.get("selection") or payload.get("note") or "").strip()
+    return "\n".join(front) + "\n\n" + body + "\n"
+
+
+def _studio_git_commit(vault: Path, rel: str, message: str) -> str | None:
+    """Best-effort git add+commit. Returns commit sha or None on failure."""
+    try:
+        add = _studio_subprocess.run(
+            ["git", "add", "--", rel],
+            cwd=str(vault), capture_output=True, timeout=10,
+        )
+        if add.returncode != 0:
+            return None
+        # If nothing staged (e.g. file unchanged), skip commit.
+        diff = _studio_subprocess.run(
+            ["git", "diff", "--cached", "--quiet"],
+            cwd=str(vault), capture_output=True, timeout=10,
+        )
+        if diff.returncode == 0:
+            return None
+        commit = _studio_subprocess.run(
+            ["git", "commit", "-m", message[:500]],
+            cwd=str(vault), capture_output=True, timeout=15,
+        )
+        if commit.returncode != 0:
+            return None
+        sha = _studio_subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(vault), capture_output=True, text=True, timeout=5,
+        )
+        return (sha.stdout or "").strip() or None
+    except (OSError, _studio_subprocess.SubprocessError):
+        return None
+
+
+def _studio_share(payload: dict) -> dict:
+    if not isinstance(payload, dict):
+        raise ValueError("bad payload")
+    source = str(payload.get("source") or "manual").strip().lower() or "manual"
+    if source not in _STUDIO_SOURCE_VALUES:
+        raise ValueError("unknown source")
+    selection = str(payload.get("selection") or "")
+    note = str(payload.get("note") or "")
+    if not selection.strip() and not note.strip():
+        raise ValueError("missing selection or note")
+    if len(selection) + len(note) > _STUDIO_MAX_TEXT:
+        raise ValueError("payload too large")
+    target = str(payload.get("target_file") or "").strip()
+    if not target:
+        target = _studio_default_target(source, bool(str(payload.get("url") or "").strip()))
+    if not target.lower().endswith(".md"):
+        raise ValueError("target_file must end with .md")
+    abs_path = _studio_normalize_rel(target)
+    rel = abs_path.relative_to(_studio_vault_dir()).as_posix()
+    abs_path.parent.mkdir(parents=True, exist_ok=True)
+    is_archive = rel.startswith("shelf/")
+    if is_archive:
+        if abs_path.exists():
+            raise ValueError("shelf target already exists")
+        body = _studio_format_archive(payload)
+        abs_path.write_text(body, encoding="utf-8")
+    else:
+        block = _studio_format_block(payload)
+        with abs_path.open("a", encoding="utf-8") as fh:
+            if abs_path.stat().st_size > 0:
+                fh.write("\n")
+            fh.write(block)
+    agent = str(payload.get("agent") or "system").strip().lower() or "system"
+    msg = f"studio: {source}/{agent} -> {rel}"
+    sha = _studio_git_commit(_studio_vault_dir(), rel, msg)
+    return {
+        "ok": True,
+        "rel_path": rel,
+        "abs_path": str(abs_path),
+        "commit_sha": sha,
+        "archive": is_archive,
+    }
+
+
+def _studio_quicknote(payload: dict) -> dict:
+    if not isinstance(payload, dict):
+        raise ValueError("bad payload")
+    text = str(payload.get("text") or "").strip()
+    if not text:
+        raise ValueError("missing text")
+    return _studio_share({
+        "source": "quicknote",
+        "selection": text,
+        "agent": payload.get("agent") or "zephyr",
+        "tags": payload.get("tags"),
+    })
+
+
+def _studio_list(dir_filter: str = "", limit: int = 50) -> dict:
+    vault = _studio_ensure_vault()
+    try:
+        limit = max(1, min(int(limit or 50), _STUDIO_LIST_LIMIT))
+    except (TypeError, ValueError):
+        limit = 50
+    if dir_filter:
+        try:
+            scope = _studio_normalize_rel(dir_filter)
+        except ValueError:
+            scope = vault
+    else:
+        scope = vault
+    files = []
+    for fp in scope.rglob("*.md"):
+        if ".git" in fp.parts:
+            continue
+        try:
+            stat = fp.stat()
+        except OSError:
+            continue
+        rel = fp.resolve().relative_to(vault).as_posix()
+        files.append({
+            "path": rel,
+            "mtime": int(stat.st_mtime),
+            "size": stat.st_size,
+        })
+    files.sort(key=lambda f: f["mtime"], reverse=True)
+    files = files[:limit]
+    log = []
+    try:
+        log_proc = _studio_subprocess.run(
+            ["git", "log", f"--max-count={limit}", "--name-only", "--pretty=format:%H%x1f%ct%x1f%s"],
+            cwd=str(vault), capture_output=True, text=True, timeout=10,
+        )
+        if log_proc.returncode == 0:
+            current = None
+            for raw_line in (log_proc.stdout or "").splitlines():
+                if "\x1f" in raw_line:
+                    if current:
+                        log.append(current)
+                    sha, ts, msg = (raw_line.split("\x1f", 2) + ["", ""])[:3]
+                    current = {"sha": sha, "ts": int(ts) if ts.isdigit() else 0, "msg": msg, "files": []}
+                elif raw_line.strip() and current is not None:
+                    current["files"].append(raw_line.strip())
+            if current:
+                log.append(current)
+    except (OSError, _studio_subprocess.SubprocessError):
+        pass
+    return {"ok": True, "files": files, "log": log[:limit], "vault": str(vault)}
+
+
+def _studio_file(rel: str) -> tuple[str, dict]:
+    abs_path = _studio_normalize_rel(rel)
+    if not abs_path.exists() or not abs_path.is_file():
+        raise FileNotFoundError(rel)
+    text = abs_path.read_text(encoding="utf-8", errors="replace")
+    meta = {
+        "path": abs_path.relative_to(_studio_vault_dir()).as_posix(),
+        "size": len(text.encode("utf-8")),
+    }
+    return text, meta
+
+
 def _viewer_token_ok(handler) -> bool:
     """Auth for dashboard viewing. Accepts FIAM_VIEW_TOKEN via:
     0. Header  X-Forwarded-User   (trusted local Caddy basic-auth proxy)
@@ -3917,6 +4214,51 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             except Exception as e:
                 logger.exception("Favilla Studio load error")
                 self._serve_json({"error": str(e)}, status=500)
+            return
+
+        if path in ("/studio/list", "/studio/file"):
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            from urllib.parse import parse_qs, urlparse
+
+            qs = parse_qs(urlparse(raw).query)
+            if path == "/studio/list":
+                try:
+                    result = _studio_list(
+                        dir_filter=(qs.get("dir", [""])[0] or ""),
+                        limit=int(qs.get("limit", ["50"])[0] or 50),
+                    )
+                except ValueError as e:
+                    self._serve_json({"error": str(e)}, status=400)
+                    return
+                except Exception as e:
+                    logger.exception("Studio list error")
+                    self._serve_json({"error": str(e)}, status=500)
+                    return
+                self._serve_json(result)
+                return
+            # /studio/file
+            rel = qs.get("path", [""])[0] or ""
+            try:
+                text, meta = _studio_file(rel)
+            except FileNotFoundError:
+                self._serve_json({"error": "not found"}, status=404)
+                return
+            except ValueError as e:
+                self._serve_json({"error": str(e)}, status=400)
+                return
+            except Exception as e:
+                logger.exception("Studio file error")
+                self._serve_json({"error": str(e)}, status=500)
+                return
+            body = text.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/markdown; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("X-Studio-Path", meta["path"])
+            self.end_headers()
+            self.wfile.write(body)
             return
 
         if path in ("/favilla/chat/transcript", "/favilla/stroll/transcript"):
@@ -4339,6 +4681,37 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return
             except Exception as e:
                 logger.exception("Favilla Studio save error")
+                self._serve_json({"error": str(e)}, status=500)
+                return
+            self._serve_json(result)
+            return
+
+        if path in ("/studio/share", "/studio/quicknote"):
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = 0
+            if length <= 0 or length > 4 * 1024 * 1024:
+                self._serve_json({"error": "bad length"}, status=400)
+                return
+            try:
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                self._serve_json({"error": f"bad json: {e}"}, status=400)
+                return
+            try:
+                if path == "/studio/share":
+                    result = _studio_share(payload)
+                else:
+                    result = _studio_quicknote(payload)
+            except ValueError as e:
+                self._serve_json({"error": str(e)}, status=400)
+                return
+            except Exception as e:
+                logger.exception("Studio %s error", path)
                 self._serve_json({"error": str(e)}, status=500)
                 return
             self._serve_json(result)

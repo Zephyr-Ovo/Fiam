@@ -951,6 +951,20 @@ ext.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     });
     return true;
   }
+  if (message && message.type === "FIAM_GET_SELECTION") {
+    try {
+      const sel = window.getSelection ? String(window.getSelection() || "") : "";
+      sendResponse({
+        ok: true,
+        selection: sel,
+        url: location.href,
+        title: document.title || "",
+      });
+    } catch (error) {
+      sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) });
+    }
+    return true;
+  }
   return false;
 });
 
