@@ -273,9 +273,9 @@ export default function Shell() {
   // Desktop preview frame.
   return (
     <div
-      className="flex min-h-dvh items-center justify-center bg-cover bg-center bg-fixed"
+      className="flex min-h-dvh items-center justify-center"
       style={{
-        backgroundImage: `url(${appConfig.bg})`,
+        background: "#1a1612",
         padding: "clamp(0px, 4vw, 32px)",
       }}
     >

@@ -3,6 +3,12 @@
  *
  * Defaults can be overridden at runtime by writing to `localStorage["favilla:config"]`
  * as a JSON object with any subset of these keys. A future settings page will UI this.
+ *
+ * Chat background swap:
+ * - Bundled default lives at `src/assets/brand/bg.jpg` (imported below).
+ * - Runtime override: drop any image at `public/bg.jpg` and set
+ *   `localStorage["favilla:config"] = '{"bg":"/bg.jpg"}'` (no rebuild required).
+ * - Or override with any remote URL via the same `bg` key.
  */
 
 import bgDefault from "./assets/brand/bg.jpg"

@@ -1,9 +1,9 @@
-<svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path d="M7 2.5C6.17 2.5 5.5 3.17 5.5 4C4.67 4 4 4.67 4 5.5C3.17 5.5 2.5 6.17 2.5 7C2.5 7.55 2.79 8.04 3.23 8.31C2.79 8.58 2.5 9.07 2.5 9.62C2.5 10.45 3.17 11.12 4 11.12C4 11.95 4.67 12.62 5.5 12.62C6.05 12.62 6.54 12.33 6.81 11.89C6.87 11.92 6.93 11.94 7 11.94" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M7 2.5C7.83 2.5 8.5 3.17 8.5 4C9.33 4 10 4.67 10 5.5C10.83 5.5 11.5 6.17 11.5 7C11.5 7.55 11.21 8.04 10.77 8.31C11.21 8.58 11.5 9.07 11.5 9.62C11.5 10.45 10.83 11.12 10 11.12C10 11.95 9.33 12.62 8.5 12.62C7.95 12.62 7.46 12.33 7.19 11.89C7.13 11.92 7.07 11.94 7 11.94" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M7 2.5V11.94" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M5.5 6.5C5.5 6.5 6 7 6.5 7" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M8.5 6.5C8.5 6.5 8 7 7.5 7" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M5.5 9C5.5 9 6 8.5 6.5 8.5" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M8.5 9C8.5 9 8 8.5 7.5 8.5" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/>
+<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
+  <path d="M6.5 2.4 C5.6 2.4 5 3 5 3.8 C4.2 3.8 3.6 4.4 3.6 5.2 C2.9 5.2 2.4 5.7 2.4 6.4 C2.4 6.9 2.7 7.3 3.1 7.5 C2.7 7.8 2.4 8.2 2.4 8.7 C2.4 9.5 3 10.1 3.8 10.1 C3.9 10.7 4.5 11.2 5.2 11.2 C5.7 11.2 6.1 11 6.4 10.6 L6.5 10.6"/>
+  <path d="M7.5 2.4 C8.4 2.4 9 3 9 3.8 C9.8 3.8 10.4 4.4 10.4 5.2 C11.1 5.2 11.6 5.7 11.6 6.4 C11.6 6.9 11.3 7.3 10.9 7.5 C11.3 7.8 11.6 8.2 11.6 8.7 C11.6 9.5 11 10.1 10.2 10.1 C10.1 10.7 9.5 11.2 8.8 11.2 C8.3 11.2 7.9 11 7.6 10.6 L7.5 10.6"/>
+  <path d="M7 2.6 V10.8"/>
+  <path d="M5 6 L6 6.6"/>
+  <path d="M9 6 L8 6.6"/>
+  <path d="M5 8.6 L6 8"/>
+  <path d="M9 8.6 L8 8"/>
 </svg>

@@ -736,8 +736,8 @@ function ThinkingChain({ steps, locked, peerName }: { steps: ThinkStep[]; locked
 
 // ---------- Bubble ----------
 
-const USER_BUBBLE_BG = "rgba(208,188,190,0.72)"
-const AGENT_BUBBLE_BG = "rgba(235,235,235,0.62)"
+const USER_BUBBLE_BG = "rgba(208,188,190,0.92)"
+const AGENT_BUBBLE_BG = "rgba(245,245,245,0.88)"
 
 function NameTag({ children }: { children: React.ReactNode }) {
   return (
@@ -799,9 +799,9 @@ function truncatePreview(value: unknown, max = 90): string {
 }
 
 // Server emits tool_use then tool_result segments side-by-side. The chat UI
-// renders them as ThinkSteps in a single chain, so fold consecutive tool
-// segments (matched by tool_use_id) into one combined step. Keeps Claude-like
-// "tool name + short input → short result" rendering compact.
+// renders each tool action as its own ThinkingChain with a single step, so
+// users see actions one-by-one in the order they happened. Within a tool,
+// tool_use + tool_result (matched by tool_use_id) fold into one step.
 type RenderItem =
   | { kind: "text"; index: number; text: string }
   | { kind: "thought"; index: number; step: ThinkStep; locked?: boolean }
@@ -810,10 +810,10 @@ type RenderItem =
 function buildRenderItems(segments: ChatSegment[] | undefined): RenderItem[] {
   if (!segments || segments.length === 0) return []
   const out: RenderItem[] = []
-  // Stage tool segments first so use+result fold even if interleaved with text.
-  const toolMap = new Map<string, ThinkStep>()
-  const toolOrder: string[] = []
-  let firstToolIndex = -1
+  // Track tool steps by id so tool_use + tool_result fold together.
+  // Each unique tool_use_id becomes its own RenderItem at the position
+  // of its first segment, so consecutive tools render as separate chains.
+  const toolMap = new Map<string, { step: ThinkStep; index: number }>()
   segments.forEach((seg, idx) => {
     if (seg.type === "text") {
       if (seg.text) out.push({ kind: "text", index: idx, text: seg.text })
@@ -822,40 +822,47 @@ function buildRenderItems(segments: ChatSegment[] | undefined): RenderItem[] {
         out.push({ kind: "thought", index: idx, step: stepFromSegment(seg), locked: seg.locked })
       }
     } else if (seg.type === "tool_use") {
-      if (firstToolIndex < 0) firstToolIndex = idx
       const id = seg.tool_use_id || `anon-${idx}`
-      if (!toolMap.has(id)) {
+      const existing = toolMap.get(id)
+      if (!existing) {
         toolMap.set(id, {
-          kind: "native",
-          source: "native",
-          icon: seg.tool_name,
-          text: truncatePreview(seg.input_summary),
+          index: idx,
+          step: {
+            kind: "native",
+            source: "native",
+            icon: seg.tool_name,
+            text: truncatePreview(seg.input_summary),
+          },
         })
-        toolOrder.push(id)
       } else {
-        const existing = toolMap.get(id)!
-        if (seg.tool_name) existing.icon = seg.tool_name
-        if (seg.input_summary) existing.text = truncatePreview(seg.input_summary)
+        if (seg.tool_name) existing.step.icon = seg.tool_name
+        if (seg.input_summary) existing.step.text = truncatePreview(seg.input_summary)
       }
     } else if (seg.type === "tool_result") {
-      if (firstToolIndex < 0) firstToolIndex = idx
       const id = seg.tool_use_id || `anon-${idx}`
-      const existing = toolMap.get(id) || { kind: "native" as const, source: "native" as const, icon: seg.tool_name, text: "" }
-      if (seg.tool_name && !existing.icon) existing.icon = seg.tool_name
-      existing.result = truncatePreview(seg.result_summary, 140)
-      if (!toolMap.has(id)) {
-        toolMap.set(id, existing)
-        toolOrder.push(id)
+      const existing = toolMap.get(id)
+      if (existing) {
+        if (seg.tool_name && !existing.step.icon) existing.step.icon = seg.tool_name
+        existing.step.result = truncatePreview(seg.result_summary, 140)
+      } else {
+        toolMap.set(id, {
+          index: idx,
+          step: {
+            kind: "native",
+            source: "native",
+            icon: seg.tool_name,
+            text: "",
+            result: truncatePreview(seg.result_summary, 140),
+          },
+        })
       }
     }
   })
-  if (toolOrder.length > 0) {
-    out.push({
-      kind: "tools",
-      index: firstToolIndex,
-      steps: toolOrder.map((id) => toolMap.get(id)!).filter((s) => s.text || s.result),
-    })
-  }
+  toolMap.forEach((entry) => {
+    if (entry.step.text || entry.step.result) {
+      out.push({ kind: "tools", index: entry.index, steps: [entry.step] })
+    }
+  })
   out.sort((a, b) => a.index - b.index)
   return out
 }
@@ -1409,7 +1416,17 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
       fetchChatTranscript("chat")
         .then((res) => {
           if (cancelled || !res.ok || !res.messages || res.messages.length === 0) return
-          setMessages(res.messages.map((msg) => ({
+          // Server fallback ids use ms timestamp, so collisions happen.
+          // Dedupe by id, keep last occurrence (latest server state).
+          const seen = new Set<string>()
+          const deduped: typeof res.messages = []
+          for (let i = res.messages.length - 1; i >= 0; i -= 1) {
+            const m = res.messages[i]
+            if (!m || !m.id || seen.has(m.id)) continue
+            seen.add(m.id)
+            deduped.unshift(m)
+          }
+          setMessages(deduped.map((msg) => ({
             ...msg,
             attachments: (msg.attachments || []).map((att) => {
               if (att.kind === "voice") return { kind: "voice", seconds: Number(att.size || 0) || 0 }
