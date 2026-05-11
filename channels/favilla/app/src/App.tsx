@@ -652,7 +652,10 @@ function ThinkingChain({ steps, locked, peerName }: { steps: ThinkStep[]; locked
   const summary = steps.find((step) => step.summary || step.text)?.summary || steps.find((step) => step.text)?.text
   const summaryStep = steps[0]
   // Detect if this chain is purely thinking vs contains tool actions.
-  const isPureThinking = steps.every((s) => s.kind === "think" && !s.source)
+  // Both native reasoning ("think" no source) and <cot> markers
+  // (source="marker") count as thinking — they show 'thinking' labels,
+  // not 'Used <icon>'.
+  const isPureThinking = steps.every((s) => s.kind === "think")
   const toolLabel = (() => {
     if (isPureThinking) return null
     const named = steps.find((s) => s.icon || s.source)
