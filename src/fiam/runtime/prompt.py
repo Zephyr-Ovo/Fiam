@@ -67,7 +67,7 @@ def build_api_messages(
 
     # system 3 — recall + extras (churn-prone, no cache)
     # Channel context: tells the model which surface this message came from,
-    # without polluting the persisted user text in flow.jsonl. Emitted as a
+    # without polluting the persisted user text in events. Emitted as a
     # standalone system block so the recall-routing in build_plain_prompt_parts
     # still sees pure "[recall]\n..." prefix.
     from fiam.runtime.turns import normalize_channel
@@ -83,7 +83,7 @@ def build_api_messages(
     carryover = load_carryover_context(config, consume=consume_co)
     if carryover:
         dynamic_parts.append(f"[carryover]\n{carryover}")
-    # [recent_conversation] — last few transcript turns for THIS channel,
+    # [recent_conversation] — last few event-store beats for THIS channel,
     # so api-side picks up cc-side tool work that isn't in carryover.
     recent = load_recent_conversation_context(config, channel)
     if recent:
@@ -222,46 +222,26 @@ def _read_text(path: Path) -> str:
         return ""
 
 
-def _transcript_channel_slug(channel: str) -> str:
-    slug = re.sub(r"[^A-Za-z0-9_-]+", "_", (channel or "chat").strip().lower()).strip("_")
-    return slug or "chat"
+def _format_recent_beat(beat: Any, *, tool_result_chars: int = 800) -> str:
+    """Render one event-store beat as markdown for [recent_conversation].
 
-
-def _format_recent_turn(rec: dict, *, tool_result_chars: int = 800) -> str:
-    """Render one transcript record as markdown for [recent_conversation].
-
-    AI turns include their tool calls inline so the next runtime can see what
-    cc actually read/did. Result text is truncated per-tool to keep the block
-    bounded.
+    Tool-result beats are truncated to keep the block bounded.
     """
-    role = str(rec.get("role") or "ai")
-    runtime = str(rec.get("runtime") or "")
-    text = str(rec.get("raw_text") or rec.get("text") or "").strip()
+    role = str(getattr(beat, "actor", "") or "ai")
+    runtime = str(getattr(beat, "runtime", "") or "")
+    kind = str(getattr(beat, "kind", "") or "message")
+    text = str(getattr(beat, "content", "") or "").strip()
     header_runtime = f" runtime={runtime}" if runtime else ""
-    header = f"## {role}{header_runtime}"
+    header_kind = f" kind={kind}" if kind != "message" else ""
+    header = f"## {role}{header_runtime}{header_kind}"
     body_parts: list[str] = []
-    tools = rec.get("tool_calls_summary") or []
-    if isinstance(tools, list):
-        for t in tools:
-            if not isinstance(t, dict):
-                continue
-            name = str(t.get("tool_name") or "tool")
-            inp = str(t.get("input_summary") or "").strip().replace("\n", " ")
-            full = str(t.get("result_full") or "").strip()
-            summary = str(t.get("result_summary") or "").strip()
-            output = full or summary
-            if len(output) > tool_result_chars:
-                output = output[:tool_result_chars] + f"… [truncated, {len(output) - tool_result_chars} more chars]"
-            is_err = bool(t.get("is_error"))
-            tag = "tool!" if is_err else "tool"
-            line = f"- {tag} {name}"
-            if inp:
-                line += f" ← {inp[:200]}"
-            if output:
-                # indent multi-line output for readability
-                indented = output.replace("\n", "\n    ")
-                line += f"\n    {indented}"
-            body_parts.append(line)
+    meta = getattr(beat, "meta", None) if isinstance(getattr(beat, "meta", None), dict) else {}
+    if kind in {"action", "tool_result"}:
+        tool = str(meta.get("tool") or meta.get("tool_name") or "").strip()
+        prefix = f"{kind}: {tool}" if tool else kind
+        text = f"{prefix}\n{text}" if text else prefix
+    if kind == "tool_result" and len(text) > tool_result_chars:
+        text = text[:tool_result_chars] + f"... [truncated, {len(text) - tool_result_chars} more chars]"
     if text:
         body_parts.append(text)
     if not body_parts:
@@ -276,37 +256,24 @@ def load_recent_conversation_context(
     max_turns: int = 8,
     max_chars: int = 6000,
 ) -> str:
-    """Read transcript tail for ``channel`` and format as markdown context.
+    """Read event-store tail for ``channel`` and format as markdown context.
 
     Used by build_api_messages so api-side sees cc-side tool work (which
     isn't captured in carryover.md). Truncates oldest first if the total
     exceeds ``max_chars``.
     """
-    import json as _json
+    from fiam.store.events import EventStore
 
-    slug = _transcript_channel_slug(channel)
-    path = config.home_path / "transcript" / f"{slug}.jsonl"
-    if not path.exists():
+    event_path = getattr(config, "event_db_path", config.store_dir / "events.sqlite3")
+    object_dir = getattr(config, "object_dir", config.store_dir / "objects")
+    beats = EventStore(event_path, object_dir=object_dir).read_beats(
+        channel=channel,
+        limit=max_turns,
+        ascending=False,
+    )
+    if not beats:
         return ""
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return ""
-    records: list[dict] = []
-    for line in lines[-max_turns * 2:]:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rec = _json.loads(line)
-        except (ValueError, _json.JSONDecodeError):
-            continue
-        if isinstance(rec, dict):
-            records.append(rec)
-    records = records[-max_turns:]
-    if not records:
-        return ""
-    rendered = [seg for seg in (_format_recent_turn(r) for r in records) if seg]
+    rendered = [seg for seg in (_format_recent_beat(b) for b in beats) if seg]
     if not rendered:
         return ""
     blob = "\n\n".join(rendered)

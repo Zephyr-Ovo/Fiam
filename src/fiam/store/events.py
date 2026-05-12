@@ -1,0 +1,247 @@
+"""SQLite event store for beat-level source of truth."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import sqlite3
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Iterable
+
+from fiam.store.beat import Beat
+from fiam.store.objects import ObjectStore
+
+
+LARGE_CONTENT_BYTES = 8192
+
+
+def db_path_for_flow(flow_path: Path) -> Path:
+    return flow_path.parent / "events.sqlite3"
+
+
+def object_dir_for_flow(flow_path: Path) -> Path:
+    return flow_path.parent / "objects"
+
+
+def event_id_for_beat(beat: Beat) -> str:
+    meta = beat.meta if isinstance(beat.meta, dict) else {}
+    raw = str(meta.get("event_id") or meta.get("id") or "").strip()
+    if raw:
+        return raw
+    return "ev_" + message_id_for_beat(beat)[:24]
+
+
+def message_id_for_beat(beat: Beat) -> str:
+    meta = beat.meta if isinstance(beat.meta, dict) else {}
+    raw = str(meta.get("message_id") or "").strip()
+    if raw:
+        return raw
+    blob = json.dumps(beat.to_dict(), ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def name_for_beat(beat: Beat) -> str:
+    meta = beat.meta if isinstance(beat.meta, dict) else {}
+    raw = str(meta.get("name") or "").strip()
+    if raw:
+        return raw
+    if beat.kind == "action":
+        return str(meta.get("tool") or meta.get("tool_name") or "").strip()
+    if beat.kind == "tool_result":
+        return str(meta.get("tool") or meta.get("tool_name") or "").strip()
+    if beat.kind == "think":
+        source = str(meta.get("source") or "").strip()
+        return source
+    return ""
+
+
+class EventStore:
+    """Append-only event store with idempotent inserts."""
+
+    def __init__(self, db_path: Path, *, object_dir: Path | None = None) -> None:
+        self.db_path = db_path
+        self.object_store = ObjectStore(object_dir or db_path.parent / "objects")
+
+    def append_beat(self, beat: Beat) -> str | None:
+        """Insert one beat and return its event id, or None when duplicate."""
+        self.ensure_schema()
+        event_id = event_id_for_beat(beat)
+        message_id = message_id_for_beat(beat)
+        meta = beat.meta if isinstance(beat.meta, dict) else {}
+        session_id = str(meta.get("session_id") or "").strip()
+        name = name_for_beat(beat)
+        content = beat.content
+        object_hash = ""
+        inline_content = content
+        if len(content.encode("utf-8")) > LARGE_CONTENT_BYTES:
+            object_hash = self.object_store.put_text(content, suffix=".txt")
+            inline_content = ""
+        meta_json = json.dumps(beat.meta or {}, ensure_ascii=False, sort_keys=True)
+        conn = self._connect()
+        try:
+            cur = conn.execute(
+                """
+                INSERT OR IGNORE INTO events (
+                    id, message_id, session_id, t, actor, channel, kind, name,
+                    content, runtime, meta_json, object_hash, content_size
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event_id,
+                    message_id,
+                    session_id,
+                    beat.t.isoformat(),
+                    beat.actor,
+                    beat.channel,
+                    beat.kind,
+                    name,
+                    inline_content,
+                    beat.runtime,
+                    meta_json,
+                    object_hash,
+                    len(content.encode("utf-8")),
+                ),
+            )
+            conn.commit()
+            if cur.rowcount == 0:
+                return None
+        finally:
+            conn.close()
+        return event_id
+
+    def append_beats(self, beats: Iterable[Beat]) -> list[str]:
+        ids: list[str] = []
+        for beat in beats:
+            event_id = self.append_beat(beat)
+            if event_id:
+                ids.append(event_id)
+        return ids
+
+    def read_beats(
+        self,
+        *,
+        after: datetime | None = None,
+        channel: str | None = None,
+        limit: int | None = None,
+        ascending: bool = True,
+    ) -> list[Beat]:
+        if not self.db_path.exists():
+            return []
+        where: list[str] = []
+        params: list[Any] = []
+        if after is not None:
+            where.append("t > ?")
+            params.append(after.isoformat())
+        if channel:
+            where.append("channel = ?")
+            params.append(channel)
+        sql = "SELECT * FROM events"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY t " + ("ASC" if ascending else "DESC")
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(int(limit))
+        conn = self._connect()
+        try:
+            rows = conn.execute(sql, params).fetchall()
+        finally:
+            conn.close()
+        beats = [self._beat_from_row(row) for row in rows]
+        if not ascending:
+            beats.reverse()
+        return beats
+
+    def ensure_schema(self) -> None:
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS events (
+                    id TEXT PRIMARY KEY,
+                    message_id TEXT NOT NULL UNIQUE,
+                    session_id TEXT NOT NULL DEFAULT '',
+                    t TEXT NOT NULL,
+                    actor TEXT NOT NULL,
+                    channel TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    name TEXT NOT NULL DEFAULT '',
+                    content TEXT NOT NULL DEFAULT '',
+                    runtime TEXT,
+                    meta_json TEXT NOT NULL DEFAULT '{}',
+                    object_hash TEXT NOT NULL DEFAULT '',
+                    content_size INTEGER NOT NULL DEFAULT 0,
+                    embed_model TEXT NOT NULL DEFAULT '',
+                    embedded_at TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            self._ensure_column(conn, "session_id", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "name", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "embed_model", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "embedded_at", "TEXT NOT NULL DEFAULT ''")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_events_channel_t ON events(channel, t)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_events_t ON events(t)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id, t)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_events_name ON events(name)")
+            conn.commit()
+        finally:
+            conn.close()
+
+    def mark_embedded(self, event_id: str, *, model_id: str, embedded_at: datetime) -> None:
+        self.ensure_schema()
+        conn = self._connect()
+        try:
+            conn.execute(
+                "UPDATE events SET embed_model = ?, embedded_at = ? WHERE id = ?",
+                (model_id, embedded_at.isoformat(), event_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _ensure_column(conn: sqlite3.Connection, name: str, definition: str) -> None:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(events)").fetchall()}
+        if name not in columns:
+            conn.execute(f"ALTER TABLE events ADD COLUMN {name} {definition}")
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(str(self.db_path))
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _beat_from_row(self, row: sqlite3.Row) -> Beat:
+        try:
+            meta = json.loads(str(row["meta_json"] or "{}"))
+            if not isinstance(meta, dict):
+                meta = {}
+        except json.JSONDecodeError:
+            meta = {}
+        meta.setdefault("event_id", row["id"])
+        if row["session_id"]:
+            meta.setdefault("session_id", row["session_id"])
+        if row["name"]:
+            meta.setdefault("name", row["name"])
+        if row["embed_model"]:
+            meta.setdefault("embed_model", row["embed_model"])
+        if row["embedded_at"]:
+            meta.setdefault("embedded_at", row["embedded_at"])
+        object_hash = str(row["object_hash"] or "")
+        if object_hash:
+            meta.setdefault("object_hash", object_hash)
+        content = str(row["content"] or "")
+        if not content and object_hash:
+            content = self.object_store.get_text(object_hash, suffix=".txt")
+        return Beat(
+            t=datetime.fromisoformat(str(row["t"]).replace("Z", "+00:00")),
+            actor=row["actor"],
+            channel=row["channel"],
+            kind=row["kind"],
+            content=content,
+            runtime=row["runtime"],
+            meta=meta or None,
+        )

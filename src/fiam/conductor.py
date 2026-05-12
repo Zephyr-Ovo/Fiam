@@ -1,7 +1,7 @@
 """Conductor — stateless information hub.
 
 Every message enters through ``receive()`` / ``receive_cc()``, gets
-written to flow.jsonl, embedded, segmented by Gorge, and stored in Pool.
+written to SQLite events, embedded, segmented by Gorge, and stored in Pool.
 Outbound messages leave via ``dispatch()``.
 
 Conductor has **no heartbeat and no scheduling**.  It is driven entirely
@@ -15,6 +15,7 @@ can run retrieval and write recall.md independently.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
@@ -117,15 +118,20 @@ class Conductor:
     # ==================================================================
 
     def _ingest_beat(self, beat: Beat) -> str | None:
-        """Process one beat: write to flow.jsonl, embed, feed gorge.
+        """Process one beat: write to events, embed, feed gorge.
 
         Returns event_id if gorge cuts a segment, else None.
         """
-        # 1. Append to flow.jsonl (skip when flow_path is None, e.g. reprocess)
+        # 1. Persist event row (skip when flow_path is None, e.g. reprocess)
+        event_id = None
         if self.flow_path is not None:
-            append_beat(self.flow_path, beat)
+            event_id = append_beat(self.flow_path, beat)
+            if event_id:
+                meta = dict(beat.meta or {})
+                meta.setdefault("event_id", event_id)
+                beat = replace(beat, meta=meta)
 
-        # 2. Embed (may fail — beat is persisted in flow.jsonl regardless)
+        # 2. Embed (may fail — beat is persisted regardless)
         try:
             vec = self.embedder.embed(beat.content)
         except Exception:
@@ -140,6 +146,16 @@ class Conductor:
                     vec,
                     model_id=getattr(self.config, "embedding_model", ""),
                 )
+                if event_id:
+                    from fiam.store.events import EventStore, db_path_for_flow, object_dir_for_flow
+                    EventStore(
+                        db_path_for_flow(self.flow_path),
+                        object_dir=object_dir_for_flow(self.flow_path),
+                    ).mark_embedded(
+                        event_id,
+                        model_id=getattr(self.config, "embedding_model", ""),
+                        embedded_at=datetime.now(timezone.utc),
+                    )
             except Exception:
                 logger.error("feature_store append failed", exc_info=True)
 

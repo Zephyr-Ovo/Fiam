@@ -331,8 +331,18 @@ class FiamConfig:
 
     @property
     def flow_path(self) -> Path:
-        """flow.jsonl — append-only beat stream."""
+        """Legacy path used only to derive the SQLite event store location."""
         return self.store_dir / "flow.jsonl"
+
+    @property
+    def event_db_path(self) -> Path:
+        """SQLite source of truth for beat/event rows."""
+        return self.store_dir / "events.sqlite3"
+
+    @property
+    def object_dir(self) -> Path:
+        """Content-addressed large object store."""
+        return self.store_dir / "objects"
 
     @property
     def feature_dir(self) -> Path:
@@ -471,6 +481,7 @@ class FiamConfig:
             # Pool (v2)
             self.pool_dir / "events",
             self.feature_dir,
+            self.object_dir,
             # Home side
             self.self_dir,
             self.journal_dir,

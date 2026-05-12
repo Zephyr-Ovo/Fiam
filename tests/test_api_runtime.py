@@ -147,11 +147,12 @@ class ApiRuntimeTest(unittest.TestCase):
             self.assertIn("昨天聊过 API runtime", prompt_text)
             self.assertIn("帮我记一下 API 入口", prompt_text)
 
-            lines = [json.loads(line) for line in config.flow_path.read_text(encoding="utf-8").splitlines()]
+            from fiam.store.beat import read_beats
+            lines = [beat.to_dict() for beat in read_beats(config.flow_path)]
             self.assertEqual([(line["actor"], line["channel"]) for line in lines], [("user", "favilla"), ("ai", "favilla"), ("ai", "favilla")])
             self.assertEqual(lines[1]["runtime"], "cheap")
             self.assertEqual(lines[2]["runtime"], "cheap")
-            self.assertNotIn("meta", lines[0])
+            self.assertEqual(lines[0]["meta"]["event_id"][:3], "ev_")
             self.assertEqual(lines[2]["content"], "收到。")
 
     def test_api_config_loads_from_toml(self) -> None:

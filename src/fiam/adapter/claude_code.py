@@ -2,7 +2,7 @@
 Claude Code JSONL adapter.
 
 Parses Claude Code's JSONL session files into fiam's generic turn format,
-and (v2) into Beat objects for the flow.jsonl narrative stream.
+and (v2) into Beat objects for the SQLite event stream.
 
 JSONL format:
   {"type":"user",      "message":{"role":"user","content":"..."}, ...}
@@ -38,9 +38,7 @@ from fiam.runtime.turns import (
 )
 
 if TYPE_CHECKING:
-if TYPE_CHECKING:
     from fiam.store.beat import Beat
-    from fiam.markers import OutboundMarker
 
 # XML tags injected by Claude Code infrastructure (Agent Teams, hooks, etc.)
 # These look like user messages but are system-generated — must be filtered.
@@ -221,7 +219,7 @@ class ClaudeCodeAdapter:
         return [turn for _, turn in all_turns], safe_offset
 
     # ==================================================================
-    # v2: parse CC JSONL → Beat sequence for flow.jsonl
+    # v2: parse CC JSONL → Beat sequence for the event store
     # ==================================================================
 
     def parse_beats(
@@ -237,7 +235,7 @@ class ClaudeCodeAdapter:
         - Includes tool_use blocks as action beats
         - Splits routing markers [→target:Name] into separate beats
         - Skips recall/inbox attachments (recall doesn't enter flow; inbox replaced by direct flow)
-        - Produces Beat objects ready for flow.jsonl
+        - Produces Beat objects ready for the event store
 
         Returns (beats, new_byte_offset).
         """
@@ -377,7 +375,7 @@ class ClaudeCodeAdapter:
                     kind="think",
                     content=thinking,
                     runtime="cc",
-                    meta={"source": "native"},
+                    meta={"source": "official", "name": "official"},
                 )))
 
             # Routed messages → dispatch beats keyed by target channel.

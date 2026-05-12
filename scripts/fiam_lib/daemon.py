@@ -910,7 +910,7 @@ def cmd_start(args: argparse.Namespace) -> None:
             except _queue.Empty:
                 break
         if all_msgs:
-            # Sort by msg timestamp so flow.jsonl reflects real-world order
+            # Sort by msg timestamp so events reflect real-world order
             all_msgs.sort(key=lambda m: m.get("t") or datetime.min.replace(tzinfo=timezone.utc))
             source_counts: dict[str, int] = {}
             for msg in all_msgs:
@@ -932,7 +932,7 @@ def cmd_start(args: argparse.Namespace) -> None:
                 if beat_ai_state in _AI_STATES:
                     _conductor.set_status(ai=beat_ai_state)
 
-                # All messages → Conductor → flow.jsonl + frozen vectors.
+                # All messages → Conductor → events + frozen vectors.
                 # In auto mode it also runs drift/gorge; in manual mode it stops there.
                 for msg in all_msgs:
                     try:
@@ -946,7 +946,7 @@ def cmd_start(args: argparse.Namespace) -> None:
                         _plog.error("conductor.receive failed: %s", e)
 
                 # ── Split by plugin delivery: lazy channels (email/ring/xiao)
-                # only land in flow.jsonl + notifications/inbox/ and wait for AI
+                # only land in events + notifications/inbox/ and wait for AI
                 # to peek; instant channels follow the wake path. ──
                 from fiam.plugins import delivery_for_channel
                 immediate_msgs: list[dict] = []

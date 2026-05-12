@@ -44,16 +44,16 @@ void resetTouchSequence(unsigned long now) {
     }
 }
 
-void touchLoop() {
+bool touchLoop() {
     unsigned long now = millis();
     resetTouchSequence(now);
-    if (!touchPressed()) return;
+    if (!touchPressed()) return false;
 
     if (!displayIsAwake()) {
         displayWake();
         displayStatus("awake", WiFi.localIP().toString().c_str());
         gResetTapCount = 0;
-        return;
+        return true;
     }
 
     if (gResetTapCount == 0) {
@@ -64,11 +64,12 @@ void touchLoop() {
     if (gResetTapCount < TOUCH_RESET_TAPS) {
         displayStatus("reset?", "tap 3 times", String(TOUCH_RESET_TAPS - gResetTapCount).c_str());
         Serial.printf("[touch] reset tap %d/%d\n", gResetTapCount, TOUCH_RESET_TAPS);
-        return;
+        return true;
     }
 
     displayStatus("resetting");
     Serial.println("[touch] reset confirmed");
     delay(250);
     ESP.restart();
+    return true;
 }

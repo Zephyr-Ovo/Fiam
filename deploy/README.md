@@ -12,7 +12,7 @@
               │ cloudflared → localhost:80
               ▼
      ┌──────────────────┐
-     │  Caddy (HTTP)    │  basic auth: iris / ai / live
+     │  Caddy (HTTP)    │  basic auth: Zephyr / ai / live
      │  /api/* ─────┐   │  static dashboard
      └──────────────┼───┘
                     │ localhost:8766
@@ -66,8 +66,9 @@ sudo systemctl enable --now fiam-dashboard
 
 ## MQTT bus (Mosquitto) — replaces channel polling
 
-The daemon, dashboard, and channel bridges talk over a local Mosquitto
-broker bound to `127.0.0.1:1883`. No external exposure, no auth.
+The daemon, dashboard, channel bridges, and local browser clients talk over a
+local Mosquitto broker. TCP MQTT is bound to `127.0.0.1:1883`; MQTT over
+WebSocket is bound to `127.0.0.1:9001`. No external exposure, no auth.
 
 ```bash
 # Install Mosquitto
@@ -98,6 +99,10 @@ sudo systemctl enable --now fiam-daemon
 |-----------------------------|-----------|----------------------------------------------------|
 | `fiam/receive/<source>`     | inbound   | `{text, source, from_name, t, ...meta}`           |
 | `fiam/dispatch/<target>`    | outbound  | `{text, recipient}`                               |
+| `limen/display`             | wearable  | plain display text                                |
+| `limen/cmd`                 | wearable  | `status`, `reset`, or `restart`                   |
+| `limen/touch`               | wearable  | `{device_id, event, t}`                           |
+| `limen/status`              | wearable  | `{device_id, status, ip, rssi}`                   |
 
 Sources currently in use: `email`, `favilla`.
 Targets currently in use: `email`.

@@ -92,7 +92,7 @@ def parse_app_cot(reply: str, config: FiamConfig | None = None) -> AppCotResult:
             if cleaned:
                 segments.append({"type": "text", "text": cleaned})
         else:
-            step = {"kind": "think", "text": body, "source": "marker"}
+            step = {"kind": "think", "text": body, "source": "fiam"}
             thoughts_raw.append(step)
             segments.append({"type": "thought", **step})
 

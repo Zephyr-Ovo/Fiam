@@ -19,7 +19,14 @@ from fiam.store.beat import Beat
 
 
 def beat_key(beat: Beat) -> str:
-    """Stable hash for one beat's persisted content."""
+    """Stable key for one persisted event/beat."""
+    if isinstance(beat.meta, dict):
+        event_id = str(beat.meta.get("event_id") or "").strip()
+        if event_id:
+            return f"event:{event_id}"
+        message_id = str(beat.meta.get("message_id") or "").strip()
+        if message_id:
+            return f"message:{message_id}"
     blob = json.dumps(beat.to_dict(), ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 

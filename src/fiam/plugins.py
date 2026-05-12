@@ -123,7 +123,7 @@ def is_receive_enabled(config_or_path: Any, channel: str, *, default: bool = Tru
 def delivery_for_channel(config_or_path: Any, channel: str, *, default: str = "instant") -> str:
     """Return delivery mode for `channel`: "instant" (wakes AI) or "lazy" (inbox-only).
 
-    Lazy channels only land in flow.jsonl + notifications/inbox/ and wait for
+    Lazy channels only land in events + notifications/inbox/ and wait for
     AI to look on its own time. Channels without a matching plugin manifest
     fall back to `default`.
     """

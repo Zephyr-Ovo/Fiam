@@ -1,10 +1,10 @@
 """
-Beat — the atomic entry of fiam's narrative stream (flow.jsonl).
+Beat — the atomic entry of fiam's event stream.
 
 A beat represents one unit of information entering fiam's awareness,
 regardless of source (CC dialogue, tool action, email, etc.).
 
-flow.jsonl is append-only, one JSON object per line.
+SQLite events are the source of truth.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ class Beat:
     kind: Kind               # what kind of beat (message/action/think/...)
     content: str             # natural-language content
     runtime: str | None = None  # model family: cc / claude / gemini / ... (None for non-AI)
-    meta: dict[str, Any] | None = None  # extra info (tool name, source=marker/native, ...)
+    meta: dict[str, Any] | None = None  # extra info (tool name, session/source tags, ...)
 
     # ------------------------------------------------------------------
     # Serialisation
@@ -68,7 +68,7 @@ class Beat:
         return data
 
     def to_json(self) -> str:
-        """Single-line JSON suitable for appending to flow.jsonl."""
+        """Single-line JSON for migrations and diagnostics."""
         return json.dumps(self.to_dict(), ensure_ascii=False)
 
     @staticmethod
@@ -88,47 +88,37 @@ class Beat:
 
 
 # ------------------------------------------------------------------
-# flow.jsonl I/O
+# Event store I/O
 # ------------------------------------------------------------------
 
 
-def append_beat(path: Path, beat: Beat) -> None:
-    """Append a single beat to flow.jsonl (atomic line-write)."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    line = beat.to_json() + "\n"
-    with open(path, "ab") as f:
-        f.write(line.encode("utf-8"))
+def append_beat(path: Path, beat: Beat) -> str | None:
+    """Persist a single beat to SQLite."""
+    from fiam.store.events import EventStore, db_path_for_flow, object_dir_for_flow
+
+    return EventStore(
+        db_path_for_flow(path),
+        object_dir=object_dir_for_flow(path),
+    ).append_beat(beat)
 
 
-def append_beats(path: Path, beats: list[Beat]) -> None:
-    """Append multiple beats in one write."""
+def append_beats(path: Path, beats: list[Beat]) -> list[str]:
+    """Persist multiple beats to SQLite."""
     if not beats:
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    blob = "".join(b.to_json() + "\n" for b in beats)
-    with open(path, "ab") as f:
-        f.write(blob.encode("utf-8"))
+        return []
+    from fiam.store.events import EventStore, db_path_for_flow, object_dir_for_flow
+
+    return EventStore(
+        db_path_for_flow(path),
+        object_dir=object_dir_for_flow(path),
+    ).append_beats(beats)
 
 
 def read_beats(path: Path, *, after: datetime | None = None) -> list[Beat]:
-    """Read all beats from flow.jsonl, optionally filtering by time."""
-    if not path.exists():
-        return []
-    beats: list[Beat] = []
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                d = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            beat = Beat.from_dict(d)
-            if after is not None and beat.t <= after:
-                continue
-            beats.append(beat)
-    return beats
+    """Read beats from SQLite."""
+    from fiam.store.events import EventStore, db_path_for_flow, object_dir_for_flow
+
+    return EventStore(db_path_for_flow(path), object_dir=object_dir_for_flow(path)).read_beats(after=after)
 
 
 def iter_beats(path: Path, byte_offset: int = 0) -> tuple[list[Beat], int]:

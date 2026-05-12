@@ -109,7 +109,7 @@ def assistant_text_beats(
             kind="think",
             content=cot_text,
             runtime=runtime,
-            meta={"source": "marker"},
+            meta={"source": "fiam", "name": "fiam"},
         ))
 
     routed, remaining = split_routed_text(strip_xml_markers(text, _CONTROL_MARKERS))

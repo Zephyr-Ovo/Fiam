@@ -113,32 +113,26 @@ def parse_beat_time(raw: str):
 
 
 def annotate_request(payload: dict) -> dict:
-	"""Load unprocessed flow beats for manual annotation."""
+	"""Load unprocessed event-store beats for manual annotation."""
 	global _ANNOTATION_PROPOSAL
 	if not _CONFIG:
 		raise RuntimeError("config not loaded")
 
-	flow_path = _CONFIG.flow_path
-	if not flow_path.exists():
-		raise ValueError("flow.jsonl not found")
+	from fiam.store.beat import read_beats
 
-	lines = flow_path.read_text(encoding="utf-8").splitlines()
-	total = len(lines)
+	all_beats = []
+	for beat in read_beats(_CONFIG.flow_path):
+		item = beat.to_dict()
+		item["text"] = item.get("content", "")
+		all_beats.append(item)
+	total = len(all_beats)
 	state = annotation_state()
 	limit = max(1, int(payload.get("limit", 100)))
 	requested_offset = int(payload.get("offset", state["processed_until"]))
 	offset = max(requested_offset, state["processed_until"])
 	end = min(offset + limit, total)
 
-	beats: list[dict] = []
-	for line in lines[offset:end]:
-		line = line.strip()
-		if not line:
-			continue
-		try:
-			beats.append(json.loads(line))
-		except json.JSONDecodeError:
-			continue
+	beats = all_beats[offset:end]
 
 	if not beats:
 		raise ValueError("no beats to annotate")
