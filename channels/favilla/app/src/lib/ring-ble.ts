@@ -14,8 +14,6 @@ const CMD_START_REAL_TIME = 105 // 0x69
 const CMD_STOP_REAL_TIME = 106  // 0x6A
 const CMD_GET_STEP_SOMEDAY = 67 // 0x43
 
-const RING_NAME_PREFIX = 'R11C'
-
 // ── Packet helpers ────────────────────────────────────────────────────────────
 function checksum(bytes: number[]): number {
   return bytes.reduce((s, b) => (s + b) & 255, 0)
