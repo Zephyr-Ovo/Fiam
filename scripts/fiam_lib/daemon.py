@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -932,29 +933,56 @@ def cmd_start(args: argparse.Namespace) -> None:
                 if beat_ai_state in _AI_STATES:
                     _conductor.set_status(ai=beat_ai_state)
 
-                # All messages → Conductor → events + frozen vectors.
+                # All messages -> Conductor turn owner -> events + frozen vectors.
                 # In auto mode it also runs drift/gorge; in manual mode it stops there.
+                from fiam.channels import actor_for_channel, normalize_channel
+                from fiam.turn import TurnRequest
+
                 for msg in all_msgs:
                     try:
-                        _conductor.receive(
-                            msg["text"],
-                            msg["channel"],
-                            t=msg.get("t"),
-                            meta=msg.get("meta") or {},
+                        msg_meta = dict(msg.get("meta") or {})
+                        turn_id = str(msg_meta.get("turn_id") or f"turn_{uuid.uuid4().hex}")
+                        request_id = str(msg_meta.get("request_id") or msg_meta.get("message_id") or turn_id)
+                        session_id = str(msg_meta.get("session_id") or "")
+                        t = msg.get("t") or config.now_utc()
+                        if hasattr(t, "isoformat"):
+                            msg_meta.setdefault("t", t.isoformat())
+                        else:
+                            msg_meta.setdefault("t", str(t))
+                        channel = normalize_channel(str(msg.get("channel") or "unknown"))
+                        _conductor.receive_turn(
+                            TurnRequest(
+                                channel=channel,
+                                actor=actor_for_channel(channel),
+                                text=str(msg.get("text") or ""),
+                                request_id=request_id,
+                                turn_id=turn_id,
+                                session_id=session_id,
+                                source_meta=msg_meta,
+                                delivery_policy="record_only",
+                            )
                         )
                     except Exception as e:
-                        _plog.error("conductor.receive failed: %s", e)
+                        _plog.error("conductor.receive_turn failed: %s", e)
 
                 # ── Split by channel registry + plugin delivery. responds=false
                 # channels only land in events/notifications; instant channels
                 # follow the wake path. ──
                 from fiam.channels import channel_responds
                 from fiam.plugins import delivery_for_channel
+                from fiam.turn import TriggerPolicy
                 immediate_msgs: list[dict] = []
                 lazy_msgs: list[dict] = []
+                trigger_policy = TriggerPolicy()
                 for msg in all_msgs:
                     ch = str(msg.get("channel") or "unknown")
-                    if channel_responds(ch) and delivery_for_channel(config, ch, default="instant") == "instant":
+                    plugin_delivery = delivery_for_channel(config, ch, default="instant")
+                    decision = trigger_policy.decide(
+                        ch,
+                        ai_state=ai_state_name,
+                        delivery="instant" if plugin_delivery == "instant" else "lazy",
+                    )
+                    if channel_responds(ch) and decision == "instant":
                         immediate_msgs.append(msg)
                     else:
                         lazy_msgs.append(msg)

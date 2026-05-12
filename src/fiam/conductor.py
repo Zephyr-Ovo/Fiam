@@ -27,6 +27,7 @@ from fiam.gorge import StreamGorge, detect_drift
 from fiam.store.beat import Beat, append_beat
 from fiam.store.features import FeatureStore
 from fiam.store.pool import Pool
+from fiam.turn import DispatchRequest, DispatchService, TurnCommit, TurnRequest
 
 if TYPE_CHECKING:
     from fiam.retriever.embedder import Embedder
@@ -199,23 +200,54 @@ class Conductor:
         t: datetime | None = None,
         meta: dict | None = None,
     ) -> str | None:
-        """Receive an external message: create beat, process, return event_id or None.
-
-        ``meta`` is an ad-hoc hint dict used only to derive the speaker label
-        when formatting ``text``; it is NOT persisted on the beat.
-        """
+        """Thin compatibility wrapper over receive_turn()."""
         if t is None:
             t = datetime.now(timezone.utc)
         meta = meta or {}
-        actor = self._actor_for_channel(channel)
+        commit = self.receive_turn(TurnRequest(
+            channel=channel,
+            actor=self._actor_for_channel(channel),
+            text=text,
+            source_meta={**meta, "t": t.isoformat()},
+            received_at=t,
+        ))
+        first = commit.events[0].meta.get("event_id") if commit.events and commit.events[0].meta else None
+        return str(first) if first else None
+
+    def receive_turn(self, request: TurnRequest) -> TurnCommit:
+        """Receive one normalized turn request and persist its fact event."""
+        req = request.canonical()
+        t_raw = req.source_meta.get("t") if isinstance(req.source_meta, dict) else ""
+        if t_raw:
+            try:
+                t = datetime.fromisoformat(str(t_raw).replace("Z", "+00:00"))
+            except ValueError:
+                t = req.received_at
+        else:
+            t = req.received_at
         beat = Beat(
             t=t,
-            actor=actor,
-            channel=channel,
+            actor=req.actor,
+            channel=req.channel,
             kind="message",
-            content=self._format_external_text(text, channel, meta),
+            content=self._format_external_text(req.text, req.channel, req.source_meta),
+            meta={
+                **(req.source_meta or {}),
+                "turn_id": req.turn_id,
+                "request_id": req.request_id,
+                "session_id": req.session_id,
+            },
         )
-        return self._ingest_beat(beat)
+        event_id = self._ingest_beat(beat)
+        if event_id:
+            beat = replace(beat, meta={**(beat.meta or {}), "event_id": event_id})
+        return TurnCommit(
+            turn_id=req.turn_id,
+            request_id=req.request_id,
+            session_id=req.session_id,
+            events=(beat,),
+            trace={"received": req.received_at.isoformat(), "commit_done": datetime.now(timezone.utc).isoformat()},
+        )
 
     @staticmethod
     def _actor_for_channel(channel: str) -> str:
@@ -358,6 +390,11 @@ class Conductor:
             "text": text,
             "recipient": recipient,
         }
+        dispatch_request = DispatchRequest(channel=target, recipient=recipient, body=text)
+        try:
+            self._ingest_beat(DispatchService().event_for(dispatch_request))
+        except Exception:
+            logger.error("dispatch event persist failed", exc_info=True)
         if self.bus is None:
             logger.error("dispatch: no bus configured (channel=%s)", target)
             return False

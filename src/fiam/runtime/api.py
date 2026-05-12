@@ -15,7 +15,7 @@ from typing import Any, Callable, Protocol
 
 import numpy as np
 
-from fiam.runtime.prompt import build_api_messages
+from fiam.runtime.prompt import PromptAssembler
 from fiam.runtime.tools import TOOL_SCHEMAS, execute_tool_call
 from fiam.runtime.turns import assistant_text_beats, user_beat
 from fiam.store.beat import Beat
@@ -645,8 +645,7 @@ class ApiRuntime:
             recall_fragments = self._record_user(clean, channel=channel)
 
         prompt_started_at = time.perf_counter()
-        messages = build_api_messages(
-            self.config,
+        messages = PromptAssembler(self.config).build_messages(
             clean,
             channel=channel,
             include_recall=include_recall,
@@ -766,6 +765,25 @@ class ApiRuntime:
                 "provider_ms": provider_ms_total,
                 "total_ms": int((time.perf_counter() - started_at) * 1000),
             },
+        )
+
+    def ask_pure(
+        self,
+        text: str,
+        *,
+        channel: str = "api",
+        include_recall: bool = True,
+        extra_context: str = "",
+        image_attachments: list[dict[str, Any]] | None = None,
+    ) -> ApiRuntimeResult:
+        """Run the provider call without recording events or transcript rows."""
+        return self.ask(
+            text,
+            channel=channel,
+            record=False,
+            include_recall=include_recall,
+            extra_context=extra_context,
+            image_attachments=image_attachments,
         )
 
     def _describe_images(self, user_text: str, image_blocks: list[dict[str, Any]], usage_total: dict[str, Any]) -> str:

@@ -42,6 +42,49 @@ def _content_text(content: Any) -> str:
     return str(content or "").strip()
 
 
+class PromptAssembler:
+    """Single prompt boundary for official transcript-shaped model input."""
+
+    def __init__(self, config: "FiamConfig") -> None:
+        self.config = config
+
+    def build_messages(
+        self,
+        user_text: str,
+        *,
+        channel: str = "api",
+        include_recall: bool = True,
+        consume_recall_dirty: bool = True,
+        extra_context: str = "",
+    ) -> list[dict[str, Any]]:
+        return build_api_messages(
+            self.config,
+            user_text,
+            channel=channel,
+            include_recall=include_recall,
+            consume_recall_dirty=consume_recall_dirty,
+            extra_context=extra_context,
+        )
+
+    def build_plain(
+        self,
+        user_text: str,
+        *,
+        channel: str = "app",
+        include_recall: bool = True,
+        consume_recall_dirty: bool = True,
+        extra_context: str = "",
+    ) -> str:
+        return build_plain_prompt(
+            self.config,
+            user_text,
+            channel=channel,
+            include_recall=include_recall,
+            consume_recall_dirty=consume_recall_dirty,
+            extra_context=extra_context,
+        )
+
+
 def build_api_messages(
     config: "FiamConfig",
     user_text: str,
@@ -229,7 +272,44 @@ def _valid_transcript_message(message: Any) -> dict[str, Any] | None:
     if "content" not in out and "tool_calls" not in out:
         return None
     out["role"] = role
+    if role == "assistant":
+        out = _clean_assistant_transcript_message(out)
     return out
+
+
+def _clean_assistant_transcript_message(message: dict[str, Any]) -> dict[str, Any] | None:
+    """Keep only model-visible assistant history; strip private/control markers."""
+    from fiam.turn import MarkerInterpreter
+
+    content = message.get("content")
+    if isinstance(content, str):
+        interpretation = MarkerInterpreter().interpret(content)
+        if not interpretation.visible_reply and not message.get("tool_calls"):
+            return None
+        out = dict(message)
+        out["content"] = interpretation.visible_reply
+        return out
+    if isinstance(content, list):
+        cleaned_blocks: list[dict[str, Any]] = []
+        interpreter = MarkerInterpreter()
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "text":
+                text = str(block.get("text") or "")
+                visible = interpreter.interpret(text).visible_reply
+                if visible:
+                    item = dict(block)
+                    item["text"] = visible
+                    cleaned_blocks.append(item)
+            elif block.get("type") in {"tool_use", "tool_result"}:
+                cleaned_blocks.append(dict(block))
+        if not cleaned_blocks and not message.get("tool_calls"):
+            return None
+        out = dict(message)
+        out["content"] = cleaned_blocks
+        return out
+    return message
 
 
 def load_transcript_messages(
