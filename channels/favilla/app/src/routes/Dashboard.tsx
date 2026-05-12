@@ -1,5 +1,5 @@
-import { Activity, Bell, Calendar as CalendarIcon, FileText, Moon, Watch, MapPin, Sparkles } from 'lucide-react';
-import { PieChart, Pie, Cell, Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { Activity, Bell, Calendar as CalendarIcon, FileText, Moon, Watch, MapPin, Sparkles, Heart, Inbox } from 'lucide-react';
+import { PieChart, Pie, Cell, ResponsiveContainer } from 'recharts';
 import { useEffect, useMemo, useState, useCallback, type ReactNode } from 'react';
 import { fetchDashboardSummary, type DashboardHistoryDigest, type DashboardSummary } from '../lib/api';
 import { syncRingToServer } from '../lib/ring-ble';
@@ -12,19 +12,6 @@ function greeting(): string {
   if (h >= 18 && h < 22) return 'Evening';
   return 'Good night';
 }
-
-const sleepData = [
-  { time: '23:00', stage: 3, name: 'Awake' },
-  { time: '23:30', stage: 1, name: 'Light' },
-  { time: '01:00', stage: 0, name: 'Deep' },
-  { time: '02:30', stage: 1, name: 'Light' },
-  { time: '04:00', stage: 2, name: 'REM' },
-  { time: '04:30', stage: 1, name: 'Light' },
-  { time: '05:30', stage: 0, name: 'Deep' },
-  { time: '06:30', stage: 1, name: 'Light' },
-  { time: '07:00', stage: 2, name: 'REM' },
-  { time: '07:30', stage: 3, name: 'Awake' },
-];
 
 const favillaUsage = [
   { day: 'Mon', h: 1.2 }, { day: 'Tue', h: 3.5 }, { day: 'Wed', h: 2.1 },
@@ -231,8 +218,8 @@ export function Dashboard({ onBack }: { onBack: () => void }) {
   const retryTodos = summary?.health?.retry_todos || 0;
 
   return (
-    <div className="min-h-screen bg-neutral-100 text-neutral-900 p-8 font-sans selection:bg-neutral-200 overflow-y-auto">
-      <header className="max-w-6xl mx-auto flex items-center justify-between mb-8">
+    <div className="min-h-screen bg-neutral-100 text-neutral-900 p-4 pt-6 sm:p-8 font-sans selection:bg-neutral-200 overflow-y-auto">
+      <header className="max-w-6xl mx-auto flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-medium tracking-tight">{greeting()}, {appConfig.userName || 'Zephyr'}</h1>
           <p className="text-sm text-neutral-500 mt-1">{formatStatusLine(summary)}</p>
@@ -263,87 +250,59 @@ export function Dashboard({ onBack }: { onBack: () => void }) {
 
       <main className="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-12 gap-6 pb-[env(safe-area-inset-bottom)]">
         <section className="md:col-span-8 flex flex-col gap-6">
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 sm:gap-6">
+          <div className="grid grid-cols-3 gap-3">
             <Card>
               <div className="flex items-center gap-2 text-neutral-500 mb-3">
-                <Watch size={16} strokeWidth={1.5} />
+                <Heart size={16} strokeWidth={1.5} />
                 <span className="text-xs font-medium uppercase tracking-wider">Heart</span>
               </div>
-              <div className="flex items-end gap-2 mb-1">
-                <span className="text-3xl sm:text-4xl font-light tracking-tighter">{currentHr ?? '--'}</span>
-                {currentHr != null && <span className="text-xs sm:text-sm text-neutral-400 mb-1">bpm</span>}
+              <div className="flex items-end gap-1 mb-1">
+                <span className="text-2xl sm:text-3xl font-light tracking-tighter">{currentHr ?? '--'}</span>
+                {currentHr != null && <span className="text-[10px] sm:text-xs text-neutral-400 mb-0.5">bpm</span>}
               </div>
-              <p className="text-[10px] sm:text-xs text-neutral-400">{restingHr != null ? `Resting ${restingHr} bpm` : currentHr != null ? '' : 'Sync ring to measure'}</p>
+              <p className="text-[10px] text-neutral-400">{restingHr != null ? `Rest ${restingHr}` : currentHr != null ? '' : 'Sync ring'}</p>
             </Card>
 
             <Card>
               <div className="flex items-center gap-2 text-neutral-500 mb-3">
                 <Activity size={16} strokeWidth={1.5} />
-                <span className="text-xs font-medium uppercase tracking-wider">Activity</span>
+                <span className="text-xs font-medium uppercase tracking-wider">Steps</span>
               </div>
-              <div className="flex items-end gap-1 sm:gap-2 mb-1">
-                <span className="text-3xl sm:text-4xl font-light tracking-tighter">{activityValue ?? '--'}</span>
-                {activityValue != null && <span className="text-[10px] sm:text-sm text-neutral-400 mb-1">{summary?.ring?.steps != null ? 'steps' : 'beats'}</span>}
+              <div className="flex items-end gap-1 mb-1">
+                <span className="text-2xl sm:text-3xl font-light tracking-tighter">{activityValue ?? '--'}</span>
               </div>
-              <p className="text-[10px] sm:text-xs text-neutral-400">{summary?.ring?.steps != null ? `${((summary.ring.distance_m || 0) / 1609).toFixed(1)} mi` : summary?.ring ? '' : ''}</p>
+              <p className="text-[10px] text-neutral-400">{summary?.ring?.steps != null ? `${((summary.ring.distance_m || 0) / 1609).toFixed(1)} mi` : ''}</p>
             </Card>
 
-            <Card className="col-span-2 sm:col-span-1">
+            <Card>
               <div className="flex items-center gap-2 text-neutral-500 mb-3">
-                <Activity size={16} strokeWidth={1.5} />
-                <span className="text-xs font-medium uppercase tracking-wider">Stress</span>
+                <Inbox size={16} strokeWidth={1.5} />
+                <span className="text-xs font-medium uppercase tracking-wider">Queue</span>
               </div>
-              <div className="flex items-end gap-2 mb-1">
-                <span className="text-3xl sm:text-4xl font-light tracking-tighter">{queueLabel}</span>
+              <div className="flex items-end gap-1 mb-1">
+                <span className="text-2xl sm:text-3xl font-light tracking-tighter">{queueLabel}</span>
               </div>
-              <p className="text-[10px] sm:text-xs text-neutral-400">{summary ? `${retryTodos} retry • todo queue` : 'Avg 24'}</p>
+              <p className="text-[10px] text-neutral-400">{summary ? `${retryTodos} retry` : ''}</p>
             </Card>
           </div>
 
-          <Card className="min-h-[300px] flex flex-col">
-            <div className="flex items-center justify-between mb-6">
+          <Card className="flex flex-col">
+            <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
                 <Moon size={16} className="text-neutral-500" strokeWidth={1.5} />
-                <h2 className="text-sm font-medium">Sleep Architecture</h2>
+                <h2 className="text-sm font-medium">Sleep</h2>
               </div>
-              <div className="flex gap-4 text-xs text-neutral-400">
-                <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-neutral-200"></div>Deep</div>
-                <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-neutral-300"></div>Light</div>
-                <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-neutral-400"></div>REM</div>
-              </div>
+              <span className="text-xs text-neutral-300">No data</span>
             </div>
-            <div className="flex-1 w-full -ml-4 mt-2 min-h-[180px]">
-              <ResponsiveContainer width="100%" height="100%" minHeight={180}>
-                <AreaChart data={sleepData}>
-                  <defs>
-                    <linearGradient id="sleepColor" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#a3a3a3" stopOpacity={0.4}/>
-                      <stop offset="95%" stopColor="#a3a3a3" stopOpacity={0}/>
-                    </linearGradient>
-                  </defs>
-                  <XAxis dataKey="time" axisLine={false} tickLine={false} tick={{fontSize: 11, fill: '#a3a3a3'}} dy={10} />
-                  <YAxis hide domain={[-0.5, 3.5]} />
-                  <Tooltip
-                    contentStyle={{ borderRadius: '8px', border: '1px solid #e5e5e5', boxShadow: 'none' }}
-                    itemStyle={{ color: '#171717' }}
-                    formatter={(val) => {
-                      const stage = typeof val === 'number' ? val : Number(val);
-                      const stages = ['Deep', 'Light', 'REM', 'Awake'];
-                      return [stages[stage] || 'Unknown', 'Stage'];
-                    }}
-                  />
-                  <Area type="stepAfter" dataKey="stage" stroke="#737373" strokeWidth={2} fillOpacity={1} fill="url(#sleepColor)" />
-                </AreaChart>
-              </ResponsiveContainer>
+            <div className="flex items-end gap-2 mb-1">
+              <span className="text-3xl font-light tracking-tighter text-neutral-300">--</span>
+              <span className="text-sm text-neutral-300 mb-1">h total</span>
             </div>
-            <div className="mt-4 pt-4 border-t border-neutral-100 flex items-center justify-between">
-              <div className="flex items-end gap-2">
-                <span className="text-3xl font-light tracking-tighter">7</span>
-                <span className="text-sm text-neutral-400 mb-1">h</span>
-                <span className="text-3xl font-light tracking-tighter ml-1">12</span>
-                <span className="text-sm text-neutral-400 mb-1">m</span>
-              </div>
-              <p className="text-xs text-neutral-400">Score 88 • Last night</p>
+            <p className="text-xs text-neutral-400 mt-1">Wear ring overnight to track sleep</p>
+            <div className="mt-4 flex items-end gap-0.5" style={{height:'40px'}}>
+              {[2,3,1,4,3,2,5,4,3,2,1,3,4,5,4,3,2,3,4,2].map((v,i) => (
+                <div key={i} className="flex-1 rounded-sm bg-neutral-200" style={{height: `${v * 18}%`}} />
+              ))}
             </div>
           </Card>
 
