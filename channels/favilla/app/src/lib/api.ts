@@ -73,6 +73,8 @@ export type StoredChatMessage = {
   role: "user" | "ai"
   t: number
   text?: string
+  raw_text?: string
+  runtime?: "cc" | "api" | string
   attachments?: Array<{ kind: "voice" | "file" | "image"; name: string; size?: string | number; path?: string; mime?: string }>
   thinking?: ChatThought[]
   thinkingLocked?: boolean
@@ -94,6 +96,8 @@ export type ChatResponse = {
   session_id?: string
   cost_usd?: number
   model?: string
+  transcript_id?: string
+  trace?: Record<string, unknown>
   recall?: unknown
   stroll_context?: StrollSpatialContext
   stroll_records?: StrollSpatialRecord[]
@@ -297,7 +301,14 @@ export async function sendChatStream(
   runtime: "auto" | "cc" | "api",
   onEvent: (ev: StreamChatEvent) => void,
 ): Promise<void> {
-  const body: Record<string, unknown> = { text, source, runtime, attachments }
+  const body: Record<string, unknown> = {
+    text,
+    source,
+    runtime,
+    attachments,
+    request_id: `favilla-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    client_sent_at: Date.now() / 1000,
+  }
   const headers = { ...authHeaders(), Accept: "text/event-stream" }
   // Two-phase abort:
   //  1) Initial fetch must complete within INITIAL_TIMEOUT_MS or we bail.

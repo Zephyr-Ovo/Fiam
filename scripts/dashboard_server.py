@@ -1953,6 +1953,29 @@ def _append_transcript(channel: str, message: dict) -> dict:
     return record
 
 
+def _persist_favilla_ai_transcript(channel: str, result: dict, runtime: str) -> dict:
+    """Persist the final AI chat turn before trying to deliver it to a client.
+
+    SSE delivery is best-effort; transcript is the source of truth. Keeping
+    this as a small helper prevents stream and non-stream paths from drifting.
+    """
+    return _append_transcript(channel, {
+        "role": "ai",
+        "text": result.get("reply", ""),
+        "raw_text": result.get("raw_reply", result.get("reply", "")),
+        "runtime": result.get("runtime") or runtime,
+        "thinking": result.get("thoughts") or [],
+        "thinkingLocked": bool(result.get("thoughts_locked")),
+        "segments": result.get("segments") or [],
+        "hold": result.get("hold"),
+        "tool_calls_summary": result.get("tool_calls_summary") or [],
+        "actions": result.get("actions_list") or [],
+        "metrics": result.get("metrics") or {},
+        "meta": {"trace": result.get("trace")} if result.get("trace") else {},
+        "presence": _current_presence(actor="ai", channel=channel),
+    })
+
+
 def _normalize_metrics(
     *,
     runtime: str,
@@ -2481,14 +2504,22 @@ def _favilla_chat_send_stream(payload: dict):
     """Streaming version of _favilla_chat_send. Yields {event, data} dicts.
 
     For runtime != cc, falls back to single-shot _favilla_chat_send and emits
-    start + done. For runtime == cc, drives _iter_cc_favilla_chat_events and
-    persists transcript after done. Carry-over fallback is not streamed; if a
-    carry_over is requested, a follow-up done event is emitted with the
-    second-runtime result.
+    start + done. For runtime == cc, drives _iter_cc_favilla_chat_events,
+    persists the final transcript, then emits done. Carry-over fallback is not
+    streamed; if a carry_over is requested, only the final target result emits
+    done.
     """
     if not _CONFIG:
         yield {"event": "error", "data": {"message": "config not loaded"}}
         return
+    request_id = str(payload.get("request_id") or f"chat-{int(time.time() * 1000)}")
+    trace: dict = {
+        "request_id": request_id,
+        "server_received_at": time.time(),
+    }
+    client_sent_at = payload.get("client_sent_at")
+    if isinstance(client_sent_at, (int, float)):
+        trace["client_sent_at"] = float(client_sent_at)
     text = str(payload.get("text") or "").strip()
     attachments = payload.get("attachments") or []
     if not isinstance(attachments, list):
@@ -2528,6 +2559,11 @@ def _favilla_chat_send_stream(payload: dict):
             if family:
                 routed_payload["family"] = family
             result = _favilla_chat_send(routed_payload)
+            result["trace"] = {
+                **trace,
+                "completed_at": time.time(),
+                "already_persisted": True,
+            }
         except Exception as e:
             yield {"event": "error", "data": {"message": str(e)[:500]}}
             return
@@ -2548,6 +2584,7 @@ def _favilla_chat_send_stream(payload: dict):
     for ev in _iter_cc_favilla_chat_events(text=runtime_text, channel=channel, attachments=safe_attachments):
         if ev.get("event") == "done":
             final_result = ev.get("data") or {}
+            continue
         yield ev
 
     if final_result is None:
@@ -2574,29 +2611,27 @@ def _favilla_chat_send_stream(payload: dict):
             final_result["carry_over_from"] = runtime
             final_result["runtime"] = target
             _apply_route_from_result(final_result)
-            yield {"event": "done", "data": final_result}
+            runtime = target
         except Exception:
             logger.exception("carry_over chain failed")
 
-    # Persist AI transcript entry from the final result.
-    _append_transcript(channel, {
-        "role": "ai",
-        "text": final_result.get("reply", ""),
-        "raw_text": final_result.get("raw_reply", final_result.get("reply", "")),
-        "runtime": final_result.get("runtime") or runtime,
-        "thinking": final_result.get("thoughts") or [],
-        "thinkingLocked": bool(final_result.get("thoughts_locked")),
-        "segments": final_result.get("segments") or [],
-        "hold": final_result.get("hold"),
-        "tool_calls_summary": final_result.get("tool_calls_summary") or [],
-        "actions": final_result.get("actions_list") or [],
-        "metrics": final_result.get("metrics") or {},
-        "presence": _current_presence(actor="ai", channel=channel),
-    })
+    # Transcript is the durable source of truth. Persist before yielding done,
+    # because the client may disconnect exactly as the final frame is sent.
+    final_result["runtime"] = final_result.get("runtime") or runtime
+    final_result["trace"] = {
+        **trace,
+        "model_done_at": time.time(),
+    }
+    final_result["trace"]["persisted_at"] = time.time()
+    record = _persist_favilla_ai_transcript(channel, final_result, runtime)
+    final_result["transcript_id"] = record.get("id")
     try:
-        _check_and_run_session_rollover(channel)
+        rollover = _check_and_run_session_rollover(channel)
+        if rollover:
+            final_result["session_rollover"] = rollover
     except Exception:
         logger.exception("session rollover check failed (stream)")
+    yield {"event": "done", "data": final_result}
 
 
 def _build_carry_over_text(*, from_runtime: str, to_runtime: str, user_text: str, private_notes: str, reason: str) -> str:
@@ -5392,11 +5427,20 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                         except (BrokenPipeError, ConnectionResetError):
                             return
                         sse_id = 0
+                        client_gone = False
                         for ev in _favilla_chat_send_stream(payload):
                             sse_id += 1
+                            if client_gone:
+                                continue
                             frame = _format_sse({"id": sse_id, "event": ev.get("event") or "message", "data": ev.get("data") or {}})
-                            self.wfile.write(frame)
-                            self.wfile.flush()
+                            try:
+                                self.wfile.write(frame)
+                                self.wfile.flush()
+                            except (BrokenPipeError, ConnectionResetError):
+                                # Keep consuming the generator so the runtime
+                                # can finish and persist the transcript. SSE is
+                                # a delivery channel, not the source of truth.
+                                client_gone = True
                     except (BrokenPipeError, ConnectionResetError):
                         return
                     except Exception:

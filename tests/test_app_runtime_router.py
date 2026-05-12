@@ -136,6 +136,52 @@ class AppRuntimeRouterTest(unittest.TestCase):
         self.assertIn("make it conversational", captured["text"])
         self.assertIn("private CC notes", captured["text"])
 
+    def test_stream_persists_transcript_before_done(self) -> None:
+        original_config = dashboard_server._CONFIG
+        original_iter = dashboard_server._iter_cc_favilla_chat_events
+        original_persist = dashboard_server._persist_favilla_ai_transcript
+        original_rollover = dashboard_server._check_and_run_session_rollover
+        order: list[str] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dashboard_server._CONFIG = FiamConfig(home_path=root / "home", code_path=root / "code")
+
+            def fake_iter(**_kwargs):
+                yield {"event": "start", "data": {"runtime": "cc"}}
+                yield {"event": "text", "data": {"index": 0, "text": "hello"}}
+                yield {"event": "done", "data": {"ok": True, "runtime": "cc", "reply": "hello", "metrics": {"runtime": "cc"}}}
+
+            def fake_persist(*args, **kwargs):
+                order.append("persist")
+                return original_persist(*args, **kwargs)
+
+            dashboard_server._iter_cc_favilla_chat_events = fake_iter
+            dashboard_server._persist_favilla_ai_transcript = fake_persist
+            dashboard_server._check_and_run_session_rollover = lambda _channel: None
+
+            events = []
+            for ev in dashboard_server._favilla_chat_send_stream({
+                "text": "hi",
+                "runtime": "cc",
+                "request_id": "test-stream",
+                "client_sent_at": 1.0,
+            }):
+                if ev.get("event") == "done":
+                    order.append("done")
+                events.append(ev)
+            history = dashboard_server._favilla_transcript_load("chat")["messages"]
+
+        dashboard_server._CONFIG = original_config
+        dashboard_server._iter_cc_favilla_chat_events = original_iter
+        dashboard_server._persist_favilla_ai_transcript = original_persist
+        dashboard_server._check_and_run_session_rollover = original_rollover
+
+        self.assertEqual(order, ["persist", "done"])
+        self.assertEqual(history[-1]["role"], "ai")
+        self.assertEqual(history[-1]["text"], "hello")
+        self.assertEqual(events[-1]["data"]["transcript_id"], history[-1]["id"])
+        self.assertEqual(history[-1]["meta"]["trace"]["request_id"], "test-stream")
+
     def test_stroll_send_injects_context_and_keeps_source_history_separate(self) -> None:
         original_config = dashboard_server._CONFIG
         original_api = dashboard_server._run_api_favilla_chat

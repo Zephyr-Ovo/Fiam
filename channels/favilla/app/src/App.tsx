@@ -26,7 +26,7 @@ import { HourglassIcon } from "./components/HourglassIcon"
 import { ConfirmModal } from "./components/ConfirmModal"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
-import { fetchChatTranscript, recordChatMessage, sendChatStream, uploadFiles, recallNow, cutFlow, processFlow, type ChatAttachment, type ChatSegment } from "./lib/api"
+import { fetchChatTranscript, recordChatMessage, sendChatStream, uploadFiles, recallNow, cutFlow, processFlow, type ChatAttachment, type ChatSegment, type StoredChatMessage } from "./lib/api"
 import { useComputerStatus, describeEvent } from "./lib/computerStatus"
 import { appConfig } from "./config"
 
@@ -1361,6 +1361,67 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
   const sendingRef = useRef(false)
   useEffect(() => { sendingRef.current = sending }, [sending])
 
+  function serverMessagesToMsgs(serverMessages: StoredChatMessage[]): Msg[] {
+    const seen = new Set<string>()
+    const deduped: StoredChatMessage[] = []
+    for (let i = serverMessages.length - 1; i >= 0; i -= 1) {
+      const m = serverMessages[i]
+      if (!m || !m.id || seen.has(m.id)) continue
+      seen.add(m.id)
+      deduped.unshift(m)
+    }
+    return deduped.map((msg) => ({
+      ...msg,
+      attachments: (msg.attachments || []).map((att) => {
+        if (att.kind === "voice") return { kind: "voice", seconds: Number(att.size || 0) || 0 }
+        if (att.kind === "image") return { kind: "image", name: att.name }
+        return { kind: "file", name: att.name, size: att.size }
+      }),
+    }))
+  }
+
+  function mergeServerMessages(serverMessages: StoredChatMessage[], opts: { dropLocalId?: string; dropLocalUserText?: string } = {}) {
+    const fromServer = serverMessagesToMsgs(serverMessages)
+    setMessages((local) => {
+      const serverIds = new Set(fromServer.map((m) => m.id))
+      const dropUserText = (opts.dropLocalUserText || "").trim()
+      const localOnly = local.filter((m) => (
+        m.id !== opts.dropLocalId &&
+        !serverIds.has(m.id) &&
+        !(dropUserText && m.role === "user" && String(m.text || "").trim() === dropUserText)
+      ))
+      return [...fromServer, ...localOnly]
+    })
+    return fromServer
+  }
+
+  async function recoverTranscriptAfterStreamError(localAiId: string, sinceMinute: number, expectedUserText: string) {
+    const res = await fetchChatTranscript("chat")
+    if (!res.ok || !res.messages || res.messages.length === 0) return false
+    const expected = expectedUserText.trim()
+    let userIdx = -1
+    if (expected) {
+      for (let i = res.messages.length - 1; i >= 0; i -= 1) {
+        const m = res.messages[i]
+        const body = String(m.raw_text || m.text || "").trim()
+        if (m.role === "user" && body === expected) {
+          userIdx = i
+          break
+        }
+      }
+    }
+    const recovered = res.messages.some((m, i) => (
+      m.role === "ai" &&
+      !m.error &&
+      (userIdx >= 0 ? i > userIdx : (typeof m.t === "number" && m.t >= sinceMinute - 1))
+    ))
+    mergeServerMessages(res.messages, {
+      ...(recovered ? { dropLocalId: localAiId } : {}),
+      ...(userIdx >= 0 ? { dropLocalUserText: expected } : {}),
+    })
+    return recovered
+  }
+
   function blurActiveInput() {
     const active = document.activeElement
     if (active instanceof HTMLElement && active !== document.body) active.blur()
@@ -1480,34 +1541,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
       fetchChatTranscript("chat")
         .then((res) => {
           if (cancelled || !res.ok || !res.messages || res.messages.length === 0) return
-          // Server fallback ids use ms timestamp, so collisions happen.
-          // Dedupe by id, keep last occurrence (latest server state).
-          const seen = new Set<string>()
-          const deduped: typeof res.messages = []
-          for (let i = res.messages.length - 1; i >= 0; i -= 1) {
-            const m = res.messages[i]
-            if (!m || !m.id || seen.has(m.id)) continue
-            seen.add(m.id)
-            deduped.unshift(m)
-          }
-          const fromServer: Msg[] = deduped.map((msg) => ({
-            ...msg,
-            attachments: (msg.attachments || []).map((att) => {
-              if (att.kind === "voice") return { kind: "voice", seconds: Number(att.size || 0) || 0 }
-              if (att.kind === "image") return { kind: "image", name: att.name }
-              return { kind: "file", name: att.name, size: att.size }
-            }),
-          }))
-          // Merge instead of replace: keep any local-only messages whose id
-          // isn't on the server yet (in-flight sends, optimistic chips).
-          // Server always wins for shared ids.
-          setMessages((local) => {
-            const serverIds = new Set(fromServer.map((m) => m.id))
-            const localOnly = local.filter((m) => !serverIds.has(m.id))
-            // Preserve relative order: server history first, then any
-            // local-only tail that happened during the refetch window.
-            return [...fromServer, ...localOnly]
-          })
+          mergeServerMessages(res.messages)
         })
         .catch(() => {})
     }
@@ -1648,7 +1682,9 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
 
     setSending(true)
     stickToBottomRef.current = true
+    const sendStartedMinute = currentT()
     const aiId = `a-${Date.now()}`
+    let expectedStreamText = ""
     setMessages((m) => [...m, { id: aiId, role: "ai", t: currentT(), text: "" }])
 
     try {
@@ -1674,6 +1710,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
       }
 
       const combinedText = items.map((x) => x.text).filter(Boolean).join("\n\n")
+      expectedStreamText = combinedText || "(see attached file)"
       const segs: ChatSegment[] = []
       const thoughts: ThinkStep[] = []
       const thoughtSegIdx = new Map<number, number>()
@@ -1696,7 +1733,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
         )
       }
 
-      await sendChatStream(combinedText || "(see attached file)", "chat", attachments, "auto", (ev) => {
+      await sendChatStream(expectedStreamText, "chat", attachments, "auto", (ev) => {
         if (ev.event === "tool_use") {
           segs.push({
             type: "tool_use",
@@ -1779,6 +1816,8 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
       })
 
       if (lastError) {
+        const recovered = await recoverTranscriptAfterStreamError(aiId, sendStartedMinute, expectedStreamText).catch(() => false)
+        if (recovered) return
         setMessages((m) =>
           m.map((x) =>
             x.id === aiId
@@ -1790,6 +1829,8 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
       }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e)
+      const recovered = await recoverTranscriptAfterStreamError(aiId, sendStartedMinute, expectedStreamText).catch(() => false)
+      if (recovered) return
       setMessages((m) =>
         m.map((x) =>
           x.id === aiId
