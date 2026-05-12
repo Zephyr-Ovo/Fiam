@@ -58,17 +58,17 @@ async function readCurrentHr(deviceId: string): Promise<number | undefined> {
       resolve(value)
     }
 
-    const timer = setTimeout(() => done(valid.length ? valid[valid.length - 1] : undefined), 15_000)
+    const timer = setTimeout(() => done(valid.length ? valid[valid.length - 1] : undefined), 8_000)
 
     _handlers.set(CMD_START_REAL_TIME, (bytes) => {
       const errorCode = bytes[2]
       const value = bytes[3]
       if (errorCode === 0 && value > 0) {
         valid.push(value)
-        if (valid.length >= 3) done(valid[valid.length - 1])
+        if (valid.length >= 1) done(valid[valid.length - 1])
       } else {
         tries++
-        if (tries > 20) done(valid.length ? valid[valid.length - 1] : undefined)
+        if (tries > 8) done(valid.length ? valid[valid.length - 1] : undefined)
       }
     })
 
