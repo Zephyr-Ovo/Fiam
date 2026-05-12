@@ -1,7 +1,7 @@
 import { Activity, Bell, Calendar as CalendarIcon, FileText, Moon, Watch, MapPin, Sparkles } from 'lucide-react';
 import { PieChart, Pie, Cell, Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { useEffect, useMemo, useState, useCallback, type ReactNode } from 'react';
-import { fetchDashboardSummary, type DashboardHistoryDigest, type DashboardSummary, type RingTodayData } from '../lib/api';
+import { fetchDashboardSummary, type DashboardHistoryDigest, type DashboardSummary } from '../lib/api';
 import { syncRingToServer } from '../lib/ring-ble';
 
 const sleepData = [
