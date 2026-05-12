@@ -184,11 +184,14 @@ export function Dashboard({ onBack }: { onBack: () => void }) {
 
   useEffect(() => {
     let cancelled = false;
-    fetchDashboardSummary().then((result) => {
+    const load = () => fetchDashboardSummary().then((result) => {
       if (!cancelled && result.ok) setSummary(result);
     });
+    load();
+    const interval = setInterval(load, 60_000);
     return () => {
       cancelled = true;
+      clearInterval(interval);
     };
   }, []);
 
@@ -201,6 +204,7 @@ export function Dashboard({ onBack }: { onBack: () => void }) {
       refreshSummary();
       setTimeout(() => setRingSyncState('idle'), 3000);
     } else {
+      console.error('[ring-sync] failed:', result.error);
       setRingSyncState('error');
       setTimeout(() => setRingSyncState('idle'), 4000);
     }
@@ -219,9 +223,9 @@ export function Dashboard({ onBack }: { onBack: () => void }) {
   const flowBeats = summary?.status?.flow_beats || 0;
   const activityValue = summary?.ring?.steps != null
     ? String(summary.ring.steps)
-    : summary ? String(flowBeats) : '8400';
-  const currentHr = summary?.ring?.current_hr;
-  const restingHr = summary?.ring?.resting_hr;
+    : summary ? (flowBeats ? String(flowBeats) : null) : null;
+  const currentHr = summary?.ring?.current_hr ?? null;
+  const restingHr = summary?.ring?.resting_hr ?? null;
   const pendingTodos = summary?.todos?.length || 0;
   const queueLabel = summary ? (pendingTodos ? String(pendingTodos) : 'Clear') : 'Low';
   const retryTodos = summary?.health?.retry_todos || 0;
@@ -266,10 +270,10 @@ export function Dashboard({ onBack }: { onBack: () => void }) {
                 <span className="text-xs font-medium uppercase tracking-wider">Heart</span>
               </div>
               <div className="flex items-end gap-2 mb-1">
-                <span className="text-3xl sm:text-4xl font-light tracking-tighter">{currentHr ?? 72}</span>
-                <span className="text-xs sm:text-sm text-neutral-400 mb-1">bpm</span>
+                <span className="text-3xl sm:text-4xl font-light tracking-tighter">{currentHr ?? '--'}</span>
+                {currentHr != null && <span className="text-xs sm:text-sm text-neutral-400 mb-1">bpm</span>}
               </div>
-              <p className="text-[10px] sm:text-xs text-neutral-400">{restingHr != null ? `Resting ${restingHr} bpm` : 'Avg 65 bpm'}</p>
+              <p className="text-[10px] sm:text-xs text-neutral-400">{restingHr != null ? `Resting ${restingHr} bpm` : currentHr != null ? '' : 'Sync ring to measure'}</p>
             </Card>
 
             <Card>
@@ -278,10 +282,10 @@ export function Dashboard({ onBack }: { onBack: () => void }) {
                 <span className="text-xs font-medium uppercase tracking-wider">Activity</span>
               </div>
               <div className="flex items-end gap-1 sm:gap-2 mb-1">
-                <span className="text-3xl sm:text-4xl font-light tracking-tighter">{activityValue}</span>
-                <span className="text-[10px] sm:text-sm text-neutral-400 mb-1">{summary?.ring?.steps != null ? 'steps' : 'beats'}</span>
+                <span className="text-3xl sm:text-4xl font-light tracking-tighter">{activityValue ?? '--'}</span>
+                {activityValue != null && <span className="text-[10px] sm:text-sm text-neutral-400 mb-1">{summary?.ring?.steps != null ? 'steps' : 'beats'}</span>}
               </div>
-              <p className="text-[10px] sm:text-xs text-neutral-400">{summary?.ring?.steps != null ? `Steps • ${((summary.ring.distance_m || 0) / 1609).toFixed(1)} mi` : summary ? 'Flow beats' : 'Steps • 3.2 mi'}</p>
+              <p className="text-[10px] sm:text-xs text-neutral-400">{summary?.ring?.steps != null ? `${((summary.ring.distance_m || 0) / 1609).toFixed(1)} mi` : summary?.ring ? '' : ''}</p>
             </Card>
 
             <Card className="col-span-2 sm:col-span-1">
