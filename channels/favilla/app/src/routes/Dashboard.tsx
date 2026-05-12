@@ -1,7 +1,8 @@
 import { Activity, Bell, Calendar as CalendarIcon, FileText, Moon, Watch, MapPin, Sparkles } from 'lucide-react';
 import { PieChart, Pie, Cell, Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { fetchDashboardSummary, type DashboardHistoryDigest, type DashboardSummary } from '../lib/api';
+import { useEffect, useMemo, useState, useCallback, type ReactNode } from 'react';
+import { fetchDashboardSummary, type DashboardHistoryDigest, type DashboardSummary, type RingTodayData } from '../lib/api';
+import { syncRingToServer } from '../lib/ring-ble';
 
 const sleepData = [
   { time: '23:00', stage: 3, name: 'Awake' },
@@ -164,6 +165,13 @@ function Card({ children, className = "" }: { children: ReactNode, className?: s
 
 export function Dashboard({ onBack }: { onBack: () => void }) {
   const [summary, setSummary] = useState<DashboardSummary>();
+  const [ringSyncState, setRingSyncState] = useState<'idle' | 'syncing' | 'ok' | 'error'>('idle');
+
+  const refreshSummary = useCallback(() => {
+    fetchDashboardSummary().then((result) => {
+      if (result.ok) setSummary(result);
+    });
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -174,6 +182,20 @@ export function Dashboard({ onBack }: { onBack: () => void }) {
       cancelled = true;
     };
   }, []);
+
+  const handleSyncRing = useCallback(async () => {
+    if (ringSyncState === 'syncing') return;
+    setRingSyncState('syncing');
+    const result = await syncRingToServer();
+    if (result.ok) {
+      setRingSyncState('ok');
+      refreshSummary();
+      setTimeout(() => setRingSyncState('idle'), 3000);
+    } else {
+      setRingSyncState('error');
+      setTimeout(() => setRingSyncState('idle'), 4000);
+    }
+  }, [ringSyncState, refreshSummary]);
 
   const digest = useMemo(() => totalDigest(summary), [summary]);
   const usage = useMemo(() => usageFromSummary(summary), [summary]);
@@ -186,7 +208,11 @@ export function Dashboard({ onBack }: { onBack: () => void }) {
     { name: 'AI Refined', value: aiPercent, color: '#d4d4d4' }
   ];
   const flowBeats = summary?.status?.flow_beats || 0;
-  const activityValue = summary ? (flowBeats / 1000).toFixed(1) : '8.4';
+  const activityValue = summary?.ring?.steps != null
+    ? (summary.ring.steps / 1000).toFixed(1)
+    : summary ? (flowBeats / 1000).toFixed(1) : '8.4';
+  const currentHr = summary?.ring?.current_hr;
+  const restingHr = summary?.ring?.resting_hr;
   const pendingTodos = summary?.todos?.length || 0;
   const queueLabel = summary ? (pendingTodos ? String(pendingTodos) : 'Clear') : 'Low';
   const retryTodos = summary?.health?.retry_todos || 0;
@@ -199,6 +225,22 @@ export function Dashboard({ onBack }: { onBack: () => void }) {
           <p className="text-sm text-neutral-500 mt-1">{formatStatusLine(summary)}</p>
         </div>
         <div className="flex items-center gap-3">
+          <button
+            type="button"
+            aria-label="Sync ring"
+            onClick={() => void handleSyncRing()}
+            disabled={ringSyncState === 'syncing'}
+            title={ringSyncState === 'error' ? 'Sync failed' : ringSyncState === 'ok' ? 'Synced!' : 'Sync ring'}
+            className={[
+              'p-2.5 rounded-full border shadow-sm transition-colors',
+              ringSyncState === 'syncing' ? 'bg-neutral-100 border-neutral-200/50 text-neutral-300' :
+              ringSyncState === 'ok' ? 'bg-green-50 border-green-200/50 text-green-600' :
+              ringSyncState === 'error' ? 'bg-red-50 border-red-200/50 text-red-500' :
+              'bg-white border-neutral-200/50 text-neutral-500 hover:text-neutral-900',
+            ].join(' ')}
+          >
+            <Watch size={18} strokeWidth={1.5} className={ringSyncState === 'syncing' ? 'animate-pulse' : ''} />
+          </button>
           <button className="p-2.5 rounded-full bg-white border border-neutral-200/50 shadow-sm text-neutral-500 hover:text-neutral-900 transition-colors" aria-label="Notifications" type="button">
             <Bell size={18} strokeWidth={1.5} />
           </button>
@@ -215,10 +257,10 @@ export function Dashboard({ onBack }: { onBack: () => void }) {
                 <span className="text-xs font-medium uppercase tracking-wider">Heart</span>
               </div>
               <div className="flex items-end gap-2 mb-1">
-                <span className="text-3xl sm:text-4xl font-light tracking-tighter">72</span>
+                <span className="text-3xl sm:text-4xl font-light tracking-tighter">{currentHr ?? 72}</span>
                 <span className="text-xs sm:text-sm text-neutral-400 mb-1">bpm</span>
               </div>
-              <p className="text-[10px] sm:text-xs text-neutral-400">Avg 65 bpm</p>
+              <p className="text-[10px] sm:text-xs text-neutral-400">{restingHr != null ? `Resting ${restingHr} bpm` : 'Avg 65 bpm'}</p>
             </Card>
 
             <Card>
@@ -230,7 +272,7 @@ export function Dashboard({ onBack }: { onBack: () => void }) {
                 <span className="text-3xl sm:text-4xl font-light tracking-tighter">{activityValue}</span>
                 <span className="text-[10px] sm:text-sm text-neutral-400 mb-1">k</span>
               </div>
-              <p className="text-[10px] sm:text-xs text-neutral-400">{summary ? 'Flow beats' : 'Steps • 3.2 mi'}</p>
+              <p className="text-[10px] sm:text-xs text-neutral-400">{summary?.ring?.steps != null ? `Steps • ${((summary.ring.distance_m || 0) / 1609).toFixed(1)} mi` : summary ? 'Flow beats' : 'Steps • 3.2 mi'}</p>
             </Card>
 
             <Card className="col-span-2 sm:col-span-1">

@@ -151,6 +151,18 @@ export type DashboardHistoryDigest = {
   events?: Array<Record<string, unknown>>
 }
 
+export type RingTodayData = {
+  date: string
+  synced_at?: string
+  current_hr?: number
+  resting_hr?: number
+  max_hr?: number
+  steps?: number
+  calories?: number
+  distance_m?: number
+  hr_series?: Array<{ time: string; hr: number }>
+}
+
 export type DashboardLocationBucket = {
   name: string
   words: number
@@ -185,6 +197,7 @@ export type DashboardSummary = {
   stroll?: DashboardHistoryDigest
   studio?: DashboardHistoryDigest
   locations?: DashboardLocationBucket[]
+  ring?: RingTodayData
   error?: string
 }
 

@@ -129,6 +129,53 @@ def _wearable_queue_path() -> Path:
     return base / "xiao_queue.jsonl"
 
 
+def _ring_today_path() -> Path:
+    base = (_CONFIG.store_dir if _CONFIG else (_ROOT / "store")) / "wearable"
+    base.mkdir(parents=True, exist_ok=True)
+    return base / "ring_today.json"
+
+
+def _favilla_ring_today() -> dict:
+    path = _ring_today_path()
+    if not path.exists():
+        return {"ok": False, "error": "no ring data"}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {"ok": False, "error": str(exc)}
+    return {"ok": True, **data}
+
+
+def _favilla_ring_sync(payload: dict) -> dict:
+    """Accept ring data payload from sync_ring.py and write to store."""
+    required = ("date",)
+    for key in required:
+        if not payload.get(key):
+            raise ValueError(f"missing field: {key}")
+    # Sanitize: only keep known numeric/string fields
+    clean: dict = {
+        "date": str(payload["date"])[:12],
+        "synced_at": datetime.now(timezone.utc).isoformat(),
+    }
+    for field in ("current_hr", "resting_hr", "max_hr", "steps", "calories", "distance_m"):
+        value = payload.get(field)
+        if value is not None:
+            try:
+                clean[field] = int(value)
+            except (TypeError, ValueError):
+                pass
+    hr_series = payload.get("hr_series")
+    if isinstance(hr_series, list):
+        clean["hr_series"] = [
+            {"time": str(item.get("time", "")), "hr": int(item.get("hr", 0))}
+            for item in hr_series[:300]
+            if isinstance(item, dict)
+        ]
+    path = _ring_today_path()
+    path.write_text(json.dumps(clean, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"ok": True, "date": clean["date"], "synced_at": clean["synced_at"]}
+
+
 def _splash_line() -> str:
     if not _CONFIG:
         return "今天也一起散步"
@@ -1659,6 +1706,7 @@ def _favilla_location_digest() -> list[dict]:
 
 
 def _favilla_dashboard() -> dict:
+    ring = _favilla_ring_today()
     return {
         "ok": True,
         "status": _favilla_status(),
@@ -1669,6 +1717,7 @@ def _favilla_dashboard() -> dict:
         "stroll": _favilla_transcript_digest("stroll"),
         "studio": _favilla_studio_digest(),
         "locations": _favilla_location_digest(),
+        "ring": ring if ring.get("ok") else None,
     }
 
 
@@ -5054,6 +5103,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._serve_json(_favilla_dashboard())
             return
 
+        if path == "/ring/today":
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            self._serve_json(_favilla_ring_today())
+            return
+
         if path == "/favilla/studio":
             if not _ingest_token_ok(self):
                 self._serve_json({"error": "unauthorized"}, status=401)
@@ -5352,6 +5408,35 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return
             except Exception as e:
                 logger.exception("Browser bridge error")
+                self._serve_json({"error": str(e)}, status=500)
+                return
+            self._serve_json(result)
+            return
+
+        if path == "/ring/sync":
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = 0
+            if length <= 0 or length > 256 * 1024:
+                self._serve_json({"error": "bad length"}, status=400)
+                return
+            try:
+                body = self.rfile.read(length).decode("utf-8")
+                payload = json.loads(body)
+            except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                self._serve_json({"error": f"bad json: {e}"}, status=400)
+                return
+            try:
+                result = _favilla_ring_sync(payload)
+            except ValueError as e:
+                self._serve_json({"error": str(e)}, status=400)
+                return
+            except Exception as e:
+                logger.exception("ring sync error")
                 self._serve_json({"error": str(e)}, status=500)
                 return
             self._serve_json(result)
