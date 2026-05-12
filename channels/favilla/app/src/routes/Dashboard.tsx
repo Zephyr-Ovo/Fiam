@@ -19,12 +19,6 @@ const favillaUsage = [
   { day: 'Sun', h: 0.8 }
 ];
 
-const locationData = [
-  { name: 'Studio', words: 12400, percent: 65 },
-  { name: 'Cafe (Roast)', words: 4200, percent: 22 },
-  { name: 'Transit', words: 2450, percent: 13 }
-];
-
 const monthlyEmojis: Record<number, string> = {
   3: '✍️',
   5: '🎧',
@@ -95,7 +89,7 @@ function usageTurns(summary?: DashboardSummary) {
 }
 
 function footprintFromSummary(summary?: DashboardSummary) {
-  if (!summary) return locationData;
+  if (!summary) return [];
   if (summary.locations?.length) return summary.locations.map((item) => ({ name: item.name, words: item.words, percent: item.percent }));
   const strollWords = summary.stroll?.words || 0;
   const chatWords = summary.chat?.words || 0;
@@ -202,11 +196,11 @@ export function Dashboard({ onBack }: { onBack: () => void }) {
   const usageTotal = useMemo(() => usageTurns(summary), [summary]);
   const footprint = useMemo(() => footprintFromSummary(summary), [summary]);
   const calendar = useMemo(() => calendarFromSummary(summary), [summary]);
-  const aiPercent = digest.words ? Math.round((digest.ai_words / digest.words) * 100) : 32;
-  const coAuthorData = [
+  const aiPercent = digest.words ? Math.round((digest.ai_words / digest.words) * 100) : null;
+  const coAuthorData = aiPercent != null ? [
     { name: 'Human', value: Math.max(0, 100 - aiPercent), color: '#262626' },
     { name: 'AI Refined', value: aiPercent, color: '#d4d4d4' }
-  ];
+  ] : [{ name: 'Empty', value: 1, color: '#e5e5e5' }];
   const flowBeats = summary?.status?.flow_beats || 0;
   const activityValue = summary?.ring?.steps != null
     ? String(summary.ring.steps)
@@ -214,11 +208,11 @@ export function Dashboard({ onBack }: { onBack: () => void }) {
   const currentHr = summary?.ring?.current_hr ?? null;
   const restingHr = summary?.ring?.resting_hr ?? null;
   const pendingTodos = summary?.todos?.length || 0;
-  const queueLabel = summary ? (pendingTodos ? String(pendingTodos) : 'Clear') : 'Low';
+  const queueLabel = summary ? (pendingTodos ? String(pendingTodos) : 'Clear') : '--';
   const retryTodos = summary?.health?.retry_todos || 0;
 
   return (
-    <div className="min-h-screen bg-neutral-100 text-neutral-900 p-4 pt-6 sm:p-8 font-sans selection:bg-neutral-200 overflow-y-auto">
+    <div className="h-full overflow-y-auto bg-neutral-100 text-neutral-900 font-sans selection:bg-neutral-200" style={{paddingTop: 'max(1.5rem, env(safe-area-inset-top))', paddingLeft: '1rem', paddingRight: '1rem', paddingBottom: 'env(safe-area-inset-bottom)'}}>
       <header className="max-w-6xl mx-auto flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-medium tracking-tight">{greeting()}, {appConfig.userName || 'Zephyr'}</h1>
@@ -248,7 +242,7 @@ export function Dashboard({ onBack }: { onBack: () => void }) {
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-12 gap-6 pb-[env(safe-area-inset-bottom)]">
+      <main className="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-12 gap-4 pb-8">
         <section className="md:col-span-8 flex flex-col gap-6">
           <div className="grid grid-cols-3 gap-3">
             <Card>
@@ -299,11 +293,6 @@ export function Dashboard({ onBack }: { onBack: () => void }) {
               <span className="text-sm text-neutral-300 mb-1">h total</span>
             </div>
             <p className="text-xs text-neutral-400 mt-1">Wear ring overnight to track sleep</p>
-            <div className="mt-4 flex items-end gap-0.5" style={{height:'40px'}}>
-              {[2,3,1,4,3,2,5,4,3,2,1,3,4,5,4,3,2,3,4,2].map((v,i) => (
-                <div key={i} className="flex-1 rounded-sm bg-neutral-200" style={{height: `${v * 18}%`}} />
-              ))}
-            </div>
           </Card>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
@@ -358,7 +347,7 @@ export function Dashboard({ onBack }: { onBack: () => void }) {
                   </ResponsiveContainer>
 
                   <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                    <span className="text-3xl font-light tracking-tighter">{aiPercent}<span className="text-base text-neutral-400">%</span></span>
+                    <span className="text-3xl font-light tracking-tighter">{aiPercent != null ? aiPercent : '--'}{aiPercent != null && <span className="text-base text-neutral-400">%</span>}</span>
                   </div>
                 </div>
 
@@ -411,8 +400,8 @@ export function Dashboard({ onBack }: { onBack: () => void }) {
             </div>
 
             <div className="mb-6">
-              <span className="text-3xl font-light tracking-tighter">{summary ? usageTotal : '16.9'}</span>
-              <span className="text-sm text-neutral-400 ml-1">{summary ? 'turns this week' : 'hrs this week'}</span>
+              <span className="text-3xl font-light tracking-tighter">{summary ? usageTotal : '--'}</span>
+              <span className="text-sm text-neutral-400 ml-1">{summary ? 'turns this week' : ''}</span>
             </div>
 
             <div className="h-[120px] w-full flex items-end justify-between gap-1 mt-auto">
