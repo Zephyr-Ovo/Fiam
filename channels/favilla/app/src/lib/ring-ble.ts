@@ -147,7 +147,7 @@ export async function syncRingToServer(): Promise<RingSyncResult> {
 
   try {
     await BleClient.initialize()
-    const device = await BleClient.requestDevice({ namePrefix: RING_NAME_PREFIX })
+    const device = await BleClient.requestDevice({ optionalServices: [UART_SERVICE] })
     const deviceId = device.deviceId
 
     await BleClient.connect(deviceId, () => { _handlers.clear() })
