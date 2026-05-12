@@ -134,6 +134,25 @@ async function readStepsToday(deviceId: string): Promise<StepsSummary | undefine
   })
 }
 
+// ── Device ID cache ───────────────────────────────────────────────────────────
+const RING_DEVICE_KEY = 'favilla:ring_device_id'
+
+async function getDeviceId(): Promise<string> {
+  const stored = localStorage.getItem(RING_DEVICE_KEY)
+  if (stored) {
+    try {
+      await BleClient.connect(stored, () => { _handlers.clear() })
+      return stored
+    } catch {
+      localStorage.removeItem(RING_DEVICE_KEY)
+    }
+  }
+  const device = await BleClient.requestDevice({ optionalServices: [UART_SERVICE] })
+  localStorage.setItem(RING_DEVICE_KEY, device.deviceId)
+  await BleClient.connect(device.deviceId, () => { _handlers.clear() })
+  return device.deviceId
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 export type RingSyncResult =
   | { ok: true; current_hr?: number; steps?: number; calories?: number; distance_m?: number }
@@ -145,10 +164,7 @@ export async function syncRingToServer(): Promise<RingSyncResult> {
 
   try {
     await BleClient.initialize()
-    const device = await BleClient.requestDevice({ optionalServices: [UART_SERVICE] })
-    const deviceId = device.deviceId
-
-    await BleClient.connect(deviceId, () => { _handlers.clear() })
+    const deviceId = await getDeviceId()
     await BleClient.startNotifications(deviceId, UART_SERVICE, UART_TX, _dispatch)
 
     let current_hr: number | undefined

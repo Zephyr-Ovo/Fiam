@@ -3,6 +3,15 @@ import { PieChart, Pie, Cell, Area, AreaChart, ResponsiveContainer, Tooltip, XAx
 import { useEffect, useMemo, useState, useCallback, type ReactNode } from 'react';
 import { fetchDashboardSummary, type DashboardHistoryDigest, type DashboardSummary } from '../lib/api';
 import { syncRingToServer } from '../lib/ring-ble';
+import { appConfig } from '../config';
+
+function greeting(): string {
+  const h = new Date().getHours();
+  if (h >= 5 && h < 12) return 'Morning';
+  if (h >= 12 && h < 18) return 'Afternoon';
+  if (h >= 18 && h < 22) return 'Evening';
+  return 'Good night';
+}
 
 const sleepData = [
   { time: '23:00', stage: 3, name: 'Awake' },
@@ -209,8 +218,8 @@ export function Dashboard({ onBack }: { onBack: () => void }) {
   ];
   const flowBeats = summary?.status?.flow_beats || 0;
   const activityValue = summary?.ring?.steps != null
-    ? (summary.ring.steps / 1000).toFixed(1)
-    : summary ? (flowBeats / 1000).toFixed(1) : '8.4';
+    ? String(summary.ring.steps)
+    : summary ? String(flowBeats) : '8400';
   const currentHr = summary?.ring?.current_hr;
   const restingHr = summary?.ring?.resting_hr;
   const pendingTodos = summary?.todos?.length || 0;
@@ -221,7 +230,7 @@ export function Dashboard({ onBack }: { onBack: () => void }) {
     <div className="min-h-screen bg-neutral-100 text-neutral-900 p-8 font-sans selection:bg-neutral-200 overflow-y-auto">
       <header className="max-w-6xl mx-auto flex items-center justify-between mb-8">
         <div>
-          <h1 className="text-2xl font-medium tracking-tight">Morning, Iris</h1>
+          <h1 className="text-2xl font-medium tracking-tight">{greeting()}, {appConfig.userName || 'Zephyr'}</h1>
           <p className="text-sm text-neutral-500 mt-1">{formatStatusLine(summary)}</p>
         </div>
         <div className="flex items-center gap-3">
@@ -270,7 +279,7 @@ export function Dashboard({ onBack }: { onBack: () => void }) {
               </div>
               <div className="flex items-end gap-1 sm:gap-2 mb-1">
                 <span className="text-3xl sm:text-4xl font-light tracking-tighter">{activityValue}</span>
-                <span className="text-[10px] sm:text-sm text-neutral-400 mb-1">k</span>
+                <span className="text-[10px] sm:text-sm text-neutral-400 mb-1">{summary?.ring?.steps != null ? 'steps' : 'beats'}</span>
               </div>
               <p className="text-[10px] sm:text-xs text-neutral-400">{summary?.ring?.steps != null ? `Steps • ${((summary.ring.distance_m || 0) / 1609).toFixed(1)} mi` : summary ? 'Flow beats' : 'Steps • 3.2 mi'}</p>
             </Card>
