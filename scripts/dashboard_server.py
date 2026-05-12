@@ -4201,10 +4201,10 @@ def _run_api_favilla_chat(*, text: str, channel: str, attachments: list | None =
             lines.append(f"- {a['path']}  (name={a['name']!r}, mime={mime})")
         lines.append("")
         api_text = "\n".join(lines) + text
+    # build_api_messages already injects bounded recent_conversation for this
+    # channel. Keep dashboard-specific context here, but do not duplicate chat
+    # history; the extra copy was inflating API prompts by several KB.
     extras = _app_runtime_context()
-    recent = "" if channel == "browser" else _recent_conversation_for_app(channel)
-    if recent:
-        extras = f"{extras}\n\n{recent}"
     api_started_at = time.time()
     result = runtime.ask(api_text, channel=channel, record=not light_browser_record, extra_context=extras, image_attachments=attachments or [])
     api_latency_ms = int((time.time() - api_started_at) * 1000)
@@ -4234,6 +4234,8 @@ def _run_api_favilla_chat(*, text: str, channel: str, attachments: list | None =
         latency_ms=api_latency_ms,
         cost_usd=api_cost,
     )
+    if isinstance(getattr(result, "timings", None), dict) and result.timings:
+        metrics["timings"] = result.timings
     actions_list: list[dict] = []
     # Surface api tool invocations (Step 6 schema)
     api_tool_calls = list(getattr(result, "tool_calls", None) or [])

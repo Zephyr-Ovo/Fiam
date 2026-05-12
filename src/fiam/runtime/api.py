@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field, replace
@@ -69,6 +70,7 @@ class ApiRuntimeResult:
     raw: dict[str, Any] = field(default_factory=dict)
     tool_loops: int = 0
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    timings: dict[str, int] = field(default_factory=dict)
 
 
 def _merge_usage(total: dict[str, Any], usage: dict[str, Any]) -> None:
@@ -637,10 +639,12 @@ class ApiRuntime:
         if not clean:
             raise ValueError("missing text")
 
+        started_at = time.perf_counter()
         recall_fragments = 0
         if record:
             recall_fragments = self._record_user(clean, channel=channel)
 
+        prompt_started_at = time.perf_counter()
         messages = build_api_messages(
             self.config,
             clean,
@@ -649,6 +653,7 @@ class ApiRuntime:
             consume_recall_dirty=True,
             extra_context=extra_context,
         )
+        prompt_ready_at = time.perf_counter()
         model = self.config.api_model
         usage_total: dict[str, Any] = {}
         image_blocks = _image_attachment_blocks(self.config, image_attachments)
@@ -668,9 +673,11 @@ class ApiRuntime:
 
         executed_calls: list[dict[str, Any]] = []
         loops = 0
+        provider_ms_total = 0
         completion: ApiCompletion | None = None
         while True:
             loops += 1
+            provider_started_at = time.perf_counter()
             completion = self.client.complete(
                 messages=messages,
                 model=model,
@@ -678,6 +685,7 @@ class ApiRuntime:
                 max_tokens=self.config.api_max_tokens,
                 tools=tools,
             )
+            provider_ms_total += int((time.perf_counter() - provider_started_at) * 1000)
             _merge_usage(usage_total, completion.usage)
             if not completion.tool_calls:
                 break
@@ -711,6 +719,7 @@ class ApiRuntime:
                 })
             if loops >= max_loops:
                 # Force one final no-tools call so the model emits a user-facing reply.
+                provider_started_at = time.perf_counter()
                 completion = self.client.complete(
                     messages=messages,
                     model=model,
@@ -718,6 +727,7 @@ class ApiRuntime:
                     max_tokens=self.config.api_max_tokens,
                     tools=None,
                 )
+                provider_ms_total += int((time.perf_counter() - provider_started_at) * 1000)
                 _merge_usage(usage_total, completion.usage)
                 break
 
@@ -738,6 +748,11 @@ class ApiRuntime:
             raw=completion.raw,
             tool_loops=loops,
             tool_calls=executed_calls,
+            timings={
+                "prompt_build_ms": int((prompt_ready_at - prompt_started_at) * 1000),
+                "provider_ms": provider_ms_total,
+                "total_ms": int((time.perf_counter() - started_at) * 1000),
+            },
         )
 
     def _describe_images(self, user_text: str, image_blocks: list[dict[str, Any]], usage_total: dict[str, Any]) -> str:
