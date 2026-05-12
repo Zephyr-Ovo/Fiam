@@ -20,7 +20,7 @@ Handles:
       [recall] sections are EXCLUDED from events (anti-recursion)
       [external] sections are preserved as inbox_context on the parent turn
   - (v2) tool_use blocks → action beats
-    - (v2) routing markers [→target:Name] → routed beats
+    - (v2) routing markers <send to="target:Name">...</send> → routed beats
 """
 
 from __future__ import annotations
@@ -233,7 +233,7 @@ class ClaudeCodeAdapter:
 
         Unlike parse_incremental (which produces turn dicts), this method:
         - Includes tool_use blocks as action beats
-        - Splits routing markers [→target:Name] into separate beats
+        - Splits routing markers <send to="target:Name">...</send> into separate beats
         - Skips recall/inbox attachments (recall doesn't enter flow; inbox replaced by direct flow)
         - Produces Beat objects ready for the event store
 

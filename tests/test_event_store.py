@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from fiam.config import FiamConfig
-from fiam.runtime.prompt import load_recent_conversation_context
+from fiam.runtime.prompt import append_transcript_messages, load_transcript_messages
 from fiam.store.beat import Beat, append_beat, read_beats
 from fiam.store.features import beat_key
 
@@ -51,16 +51,11 @@ class EventStoreTest(unittest.TestCase):
             self.assertTrue((flow.parent / "objects").is_dir())
             self.assertTrue(list((flow.parent / "objects").glob("*/*.txt")))
 
-    def test_recent_context_reads_event_store_not_transcript(self) -> None:
+    def test_transcript_messages_read_store_transcripts(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             config = FiamConfig(home_path=root / "home", code_path=root, embedding_backend="local")
             config.ensure_dirs()
-            (config.home_path / "transcript").mkdir(parents=True)
-            (config.home_path / "transcript" / "chat.jsonl").write_text(
-                '{"role":"user","raw_text":"OLD_TRANSCRIPT"}\n',
-                encoding="utf-8",
-            )
             append_beat(config.flow_path, Beat(
                 t=datetime(2026, 5, 12, tzinfo=timezone.utc),
                 actor="user",
@@ -68,11 +63,11 @@ class EventStoreTest(unittest.TestCase):
                 kind="message",
                 content="NEW_EVENT",
             ))
+            append_transcript_messages(config, "chat", [{"role": "user", "content": "SHARED_TRANSCRIPT"}])
 
-            context = load_recent_conversation_context(config, "chat")
+            messages = load_transcript_messages(config, "chat")
 
-            self.assertIn("NEW_EVENT", context)
-            self.assertNotIn("OLD_TRANSCRIPT", context)
+            self.assertEqual(messages, [{"role": "user", "content": "SHARED_TRANSCRIPT"}])
 
     def test_feature_key_prefers_event_id(self) -> None:
         beat = Beat(

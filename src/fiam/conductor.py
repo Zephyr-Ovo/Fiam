@@ -220,19 +220,16 @@ class Conductor:
     @staticmethod
     def _actor_for_channel(channel: str) -> str:
         """Default actor for inbound beats by channel."""
-        if channel in {"email"}:
-            return "external"
-        if channel in {"schedule", "limen", "xiao", "ring"}:
-            return "system"
-        return "user"
+        from fiam.channels import actor_for_channel
+
+        return actor_for_channel(channel)
 
     def _format_external_text(self, text: str, channel: str, meta: dict) -> str:
         speaker = str(meta.get("speaker") or "").strip()
         if not speaker:
-            if channel in {"favilla", "app", "webapp"}:
+            actor = self._actor_for_channel(channel)
+            if actor == "user":
                 speaker = (self.config.user_name or "zephyr").strip()
-            elif channel in {"schedule", "limen", "xiao", "ring"}:
-                speaker = channel
             else:
                 speaker = str(meta.get("from_name") or channel).strip()
         clean = text.strip()

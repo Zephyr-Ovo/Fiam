@@ -43,14 +43,14 @@ Claude Code session
 
 ### 功能插件协议
 
-功能性入口统一用 `plugins/<id>/plugin.toml` 注册；基础设施（dashboard、网页、git diff、flow、Pool、recall）不作为插件单位。入站统一发布到 `fiam/receive/<source>`，出站统一由 AI marker（如 `[→email:Zephyr] ...`）解析到 `fiam/dispatch/<target>`。禁用某项功能时改 manifest 的 `enabled = false`，daemon、Conductor、bridge 都会按该开关跳过收发。
+功能性入口统一用 `plugins/<id>/plugin.toml` 注册；基础设施（dashboard、网页、git diff、flow、Pool、recall）不作为插件单位。入站统一发布到 `fiam/receive/<source>`，出站统一由 AI marker（如 `<send to="email:Zephyr">...</send>`）解析到 `fiam/dispatch/<target>`。禁用某项功能时改 manifest 的 `enabled = false`，daemon、Conductor、bridge 都会按该开关跳过收发。
 
 当前 manifests：`email`、`favilla`、`limen`、`atrium`、`browser`、`app`、`voice-call`、`device-control`、`ring`、`mcp`、`tlon`、`xiao`。详细协议见 [docs/plugin_protocol.md](docs/plugin_protocol.md)；AI 可见标记与路由前缀见 [docs/markers_protocol.md](docs/markers_protocol.md)。
 
 ### 手机与可穿戴入口
 
 - **Favilla**（`channels/favilla`）是 Android 伴生 app：Chat / Hub / Stats / More、选中文本采集、共读悬浮窗、图像/语音路由入口，以及 token 保护的 `/api/app/*` 调用。
-- **Limen/XIAO**（`channels/limen`）当前是屏幕优先固件：轮询 `/api/wearable/reply`，显示 AI 通过 `[→xiao:screen] ...` 发出的 `message`、`kaomoji`、`emoji`。
+- **Limen/XIAO**（`channels/limen`）当前是屏幕优先固件：订阅 MQTT display topic，显示 AI 通过 `<send to="limen:screen">...</send>` 发出的 `message`、`kaomoji`、`emoji`。
 - 多模态统一折叠为 flow 文本 beat：语音经 STT 后作为普通文本；图片经 Vision API 描述后以 `kind=action` 进入 flow；原始图片不交给主聊天 AI。
 - `stroll` / `散步` 预留为未来环境视觉 + TTS 的实时陪伴模式。
 
@@ -87,7 +87,7 @@ src/fiam/
   config.py                # FiamConfig + fiam.toml 解析
   conductor.py          ★  # Beat 摄入 → flow + 冻结向量；可选 auto gorge/pool/recall
   plugins.py            ★  # plugin.toml manifest 扫描 + enable/disable registry
-  markers.py            ★  # XML marker 解析（hold/wake/todo/sleep/mute/notify/carry_over/lock） + [→target:recipient] 出站路由
+  markers.py            ★  # XML marker 解析（send/hold/wake/todo/sleep/state/route/cot/lock）
   gorge.py              ★  # TextTiling 深度切分（批量 + 流式）
   store/
     beat.py             ★  # Beat 数据类 + flow.jsonl 读写
@@ -172,7 +172,7 @@ plugins/                   # 功能插件 manifest（可接入/禁用）
 
 MCP 是 AI 主动查工具/资源的协议，不是后台 hook。Claude Code 可以通过 hooks/JSONL 深度接入；Claude API 由 Fiam 组装 identity envelope；Claude app 如果不能 hook，就主要通过 MCP/API 主动查询 Fiam。身份意识不放在某个 Claude 客户端里，而放在 `home/self/`、`flow.jsonl`、Pool 和一次性 `recall.md`。
 
-三端路由：Claude app 用 MCP 主动查；自制 app/web 走 Fiam API（入站 `app`、出站 `[→app:Zephyr]`）；代码/仓库/长任务走 Claude Code。自动触发记忆保存在服务器 flow/Pool；AI 主动写的知识放 `home/self/`、`home/world/` 等文字空间并 git 同步。Website/dashboard 只是展示和编辑层，不作为私密记忆源头。
+三端路由：Claude app 用 MCP 主动查；自制 app/web 走 Fiam API（入站 `app`、出站 `<send to="app:Zephyr">...</send>`）；代码/仓库/长任务走 Claude Code。自动触发记忆保存在服务器 flow/Pool；AI 主动写的知识放 `home/self/`、`home/world/` 等文字空间并 git 同步。Website/dashboard 只是展示和编辑层，不作为私密记忆源头。
 
 ## 许可证
 

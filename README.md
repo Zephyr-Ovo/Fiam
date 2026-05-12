@@ -43,12 +43,12 @@ Claude Code session
 
 ### Functional plugins
 
-Optional integrations are registered by `plugins/<id>/plugin.toml`. Infrastructure such as dashboard, git diff, flow, Pool, and recall is not treated as a plugin. Inbound messages go through `fiam/receive/<source>`; outbound AI markers such as `[→email:Zephyr] ...` are resolved through enabled plugin `dispatch_targets` and published to `fiam/dispatch/<target>`. See [docs/plugin_protocol.md](docs/plugin_protocol.md) and the marker reference at [docs/markers_protocol.md](docs/markers_protocol.md).
+Optional integrations are registered by `plugins/<id>/plugin.toml`. Infrastructure such as dashboard, git diff, flow, Pool, and recall is not treated as a plugin. Inbound messages go through `fiam/receive/<source>`; outbound AI markers such as `<send to="email:Zephyr">...</send>` are resolved through enabled plugin `dispatch_targets` and published to `fiam/dispatch/<target>`. See [docs/plugin_protocol.md](docs/plugin_protocol.md) and the marker reference at [docs/markers_protocol.md](docs/markers_protocol.md).
 
 ### Mobile and wearable surfaces
 
 - **Favilla** (`channels/favilla`) is the Android companion app: Chat, Hub, Stats, More, selected-text capture, readalong bubble, image/voice routing entries, and token-protected `/api/app/*` calls.
-- **Limen/XIAO** (`channels/limen`) is the current screen-first wearable firmware. It polls `/api/wearable/reply` and displays `message`, `kaomoji`, or `emoji` commands emitted as `[→xiao:screen] ...` markers.
+- **Limen/XIAO** (`channels/limen`) is the current screen-first wearable firmware. It subscribes to MQTT display topics and displays `message`, `kaomoji`, or `emoji` commands emitted as `<send to="limen:screen">...</send>` markers.
 - Multimodal data collapses into flow text beats. Voice enters as STT text; images enter as vision descriptions with `kind=action`; raw image bytes are routed away from the main chat AI.
 - `stroll` / `散步` is reserved for future ambient vision + TTS mode.
 
@@ -85,7 +85,7 @@ src/fiam/
   config.py                # FiamConfig + fiam.toml parsing
   conductor.py          ★  # Beat ingestion → flow + frozen vectors; optional auto gorge/pool/recall
   plugins.py            ★  # plugin.toml registry + enable/disable helpers
-  markers.py            ★  # XML marker parser (hold/wake/todo/sleep/mute/notify/carry_over/lock) + [→target:recipient] router
+  markers.py            ★  # XML marker parser (send/hold/wake/todo/sleep/state/route/cot/lock)
   gorge.py              ★  # TextTiling depth segmentation (batch + streaming)
   store/
     beat.py             ★  # Beat dataclass + flow.jsonl I/O

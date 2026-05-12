@@ -461,7 +461,7 @@ def _append_transcript(config, source: str, message: dict) -> dict:
 
 
 def _extract_and_dispatch(config, text: str, conductor) -> int:
-    """Extract [→channel:recipient] markers and dispatch via Conductor.
+    """Extract ``<send to="channel:recipient">`` markers and dispatch.
 
     Returns count of dispatched messages.
     """
@@ -945,15 +945,16 @@ def cmd_start(args: argparse.Namespace) -> None:
                     except Exception as e:
                         _plog.error("conductor.receive failed: %s", e)
 
-                # ── Split by plugin delivery: lazy channels (email/ring/xiao)
-                # only land in events + notifications/inbox/ and wait for AI
-                # to peek; instant channels follow the wake path. ──
+                # ── Split by channel registry + plugin delivery. responds=false
+                # channels only land in events/notifications; instant channels
+                # follow the wake path. ──
+                from fiam.channels import channel_responds
                 from fiam.plugins import delivery_for_channel
                 immediate_msgs: list[dict] = []
                 lazy_msgs: list[dict] = []
                 for msg in all_msgs:
                     ch = str(msg.get("channel") or "unknown")
-                    if delivery_for_channel(config, ch, default="instant") == "instant":
+                    if channel_responds(ch) and delivery_for_channel(config, ch, default="instant") == "instant":
                         immediate_msgs.append(msg)
                     else:
                         lazy_msgs.append(msg)

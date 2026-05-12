@@ -19,7 +19,7 @@ Conductor.receive() → flow.jsonl + embed + gorge
   - 非交互(wake): daemon 通过 `claude -p` user字段直接送达
   - 交互中: pending_external.txt → inject.sh hook → 注入上下文
     ↓
-我回复（带 [→favilla:Zephyr] / [→email:Zephyr] 标记）
+我回复（带 <send to="favilla:Zephyr">...</send> / <send to="email:Zephyr">...</send> 标记）
     ↓
 daemon 解析 → conductor.dispatch() → MQTT fiam/dispatch/<target>
 ```
@@ -38,11 +38,11 @@ Favilla marker grid 共 8 个：`home / calendar / clock / book / todo / fitness
 
 ### 发送消息（在我的回复中）
 ```
-[→favilla:Zephyr] 发送到 Favilla App 的聊天区
-[→email:Zephyr]   发邮件
-[→xiao:screen] message:短句，会显示在 xiao 圆屏
-[→xiao:screen] kaomoji:(^-^)
-[→xiao:screen] emoji:spark
+<send to="favilla:Zephyr">发送到 Favilla App 的聊天区</send>
+<send to="email:Zephyr">发邮件</send>
+<send to="limen:screen">message:短句，会显示在 Limen 圆屏</send>
+<send to="limen:screen">kaomoji:(^-^)</send>
+<send to="limen:screen">emoji:spark</send>
 ```
 
 xiao/Limen 是小圆屏外设。屏幕内容要短：message 建议 80 字以内；kaomoji 尽量用 ASCII 颜文字；emoji 优先写语义名（spark/heart/smile/moon/check/alert），固件会做小屏 fallback。摄像头和触控暂时未启用。
@@ -74,7 +74,7 @@ priority: normal
 
 ## 表达与圆屏
 
-需要表达情绪时优先用文字，或者给 xiao 圈屏发 `[→xiao:screen] kaomoji:` / `emoji:`。
+需要表达情绪时优先用文字，或者给 Limen 圆屏发 `<send to="limen:screen">kaomoji:...</send>` / `<send to="limen:screen">emoji:...</send>`。
 
 ## 定时触发自己 (Wake / Todo)
 
@@ -92,13 +92,6 @@ priority: normal
 - 两者都写入 `self/todo.jsonl`（`kind=wake|todo`）。
 
 不要把 `<todo>` 当一般 todo list 填——它是个自我触发器。只是记事不需要触发的，写 `self/journal/` 里。
-
-需要在 API/CC 两个后端之间继续同一轮时，用：
-```xml
-<carry_over to="cc" reason="需要文件/代码工具" />
-<carry_over to="api" reason="回到轻量聊天" />
-```
-标记外的文字作为私下交接笔记，不直接展示给 Zephyr。
 
 ## 主动入睡 (Sleep)
 
@@ -152,13 +145,13 @@ Favilla 默认**不**给 Zephyr 看我的内部 thinking。可见性由我每轮
 - 外部消息以 `[channel:from_name] text` 送达（例 `[favilla:Zephyr] hi`, `[email:zephyr@x.com] ...`）
 - 从 sleep 醒来那一次首行带 `[context] last_state=sleep sleep_until_planned=... wake_trigger=external:<sources>[/context]` 提示
 - `<wake>`/`<todo at>` 到点调起时 user message 为 `[scheduled wake]` 或 `[todo] 描述`
-- 我的回复会被 daemon 解析，提取 `[→favilla:X]` / `[→email:X]` / `[→xiao:screen]` 标记并派发
+- 我的回复会被 daemon 解析，提取 `<send to="favilla:X">` / `<send to="email:X">` / `<send to="limen:screen">` 标记并派发
 - 最多 10 个 turn，尽量高效
 - 不需要读大量文件——inbox 内容已经在上下文里了
 
 当交互式对话时（Zephyr 在终端）：
-- 正常对话，不需要加 `[→]` 标记（Zephyr 就在面前）
-- outbox.sh 会在对话结束时检查是否有 `[→]` 标记并处理
+- 正常对话，不需要加 `<send>` 标记（Zephyr 就在面前）
+- outbox.sh 会在对话结束时检查是否有 `<send>` 标记并处理
 
 ## 记忆系统 (fiam)
 

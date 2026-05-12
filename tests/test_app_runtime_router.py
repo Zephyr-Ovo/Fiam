@@ -51,19 +51,19 @@ class AppRuntimeRouterTest(unittest.TestCase):
         self.assertNotIn("secret plan detail", str(thoughts))
         self.assertNotIn("secret plan detail", str(segments))
 
-    def test_carry_over_marker_is_private_control(self) -> None:
-        reply, queued_todos, hold_kind, carry_over = dashboard_server._apply_app_control_markers(
-            'private bridge notes <carry_over to="cc" reason="needs files" />',
+    def test_route_marker_is_private_control(self) -> None:
+        reply, queued_todos, hold_reason, route = dashboard_server._apply_app_control_markers(
+            'visible <route family="gemini" reason="needs math" />',
             channel="chat",
             runtime="api",
             user_text="check this",
             attachments=[],
         )
 
-        self.assertEqual(reply, "private bridge notes")
+        self.assertEqual(reply, "visible")
         self.assertEqual(queued_todos, 0)
-        self.assertEqual(hold_kind, "")
-        self.assertEqual(carry_over, {"to": "cc", "reason": "needs files"})
+        self.assertEqual(hold_reason, "")
+        self.assertEqual(route, {"family": "gemini", "reason": "needs math"})
 
     def test_cc_action_events_merge_tool_use_and_result(self) -> None:
         actions = dashboard_server._combine_cc_action_events([
@@ -77,64 +77,6 @@ class AppRuntimeRouterTest(unittest.TestCase):
         self.assertEqual(actions[0]["input_summary"], "Show status")
         self.assertEqual(actions[0]["result_summary"], "clean")
         self.assertEqual(actions[0]["status"], "ok")
-
-    def test_api_carry_over_runs_cc_once(self) -> None:
-        original_config = dashboard_server._CONFIG
-        original_api = dashboard_server._run_api_favilla_chat
-        original_cc = dashboard_server._run_cc_favilla_chat
-        captured: dict[str, str] = {}
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            dashboard_server._CONFIG = FiamConfig(home_path=root / "home", code_path=root / "code")
-
-            def fake_api(**_kwargs):
-                return {"ok": True, "runtime": "api", "reply": "private API notes", "carry_over": {"to": "cc", "reason": "needs files"}}
-
-            def fake_cc(**kwargs):
-                captured["text"] = kwargs["text"]
-                return {"ok": True, "runtime": "cc", "reply": "final from cc"}
-
-            dashboard_server._run_api_favilla_chat = fake_api
-            dashboard_server._run_cc_favilla_chat = fake_cc
-            result = dashboard_server._favilla_chat_send({"text": "please inspect files", "runtime": "api"})
-
-        dashboard_server._CONFIG = original_config
-        dashboard_server._run_api_favilla_chat = original_api
-        dashboard_server._run_cc_favilla_chat = original_cc
-        self.assertEqual(result["runtime"], "cc")
-        self.assertEqual(result["reply"], "final from cc")
-        self.assertEqual(result["carry_over_from"], "api")
-        self.assertIn("please inspect files", captured["text"])
-        self.assertIn("private API notes", captured["text"])
-
-    def test_cc_carry_over_runs_api_once(self) -> None:
-        original_config = dashboard_server._CONFIG
-        original_api = dashboard_server._run_api_favilla_chat
-        original_cc = dashboard_server._run_cc_favilla_chat
-        captured: dict[str, str] = {}
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            dashboard_server._CONFIG = FiamConfig(home_path=root / "home", code_path=root / "code")
-
-            def fake_cc(**_kwargs):
-                return {"ok": True, "runtime": "cc", "reply": "private CC notes", "carry_over": {"to": "api", "reason": "finish softly"}}
-
-            def fake_api(**kwargs):
-                captured["text"] = kwargs["text"]
-                return {"ok": True, "runtime": "api", "reply": "final from api"}
-
-            dashboard_server._run_api_favilla_chat = fake_api
-            dashboard_server._run_cc_favilla_chat = fake_cc
-            result = dashboard_server._favilla_chat_send({"text": "make it conversational", "runtime": "cc"})
-
-        dashboard_server._CONFIG = original_config
-        dashboard_server._run_api_favilla_chat = original_api
-        dashboard_server._run_cc_favilla_chat = original_cc
-        self.assertEqual(result["runtime"], "api")
-        self.assertEqual(result["reply"], "final from api")
-        self.assertEqual(result["carry_over_from"], "cc")
-        self.assertIn("make it conversational", captured["text"])
-        self.assertIn("private CC notes", captured["text"])
 
     def test_stream_persists_transcript_before_done(self) -> None:
         original_config = dashboard_server._CONFIG

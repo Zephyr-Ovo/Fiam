@@ -653,6 +653,7 @@ class ApiRuntime:
             consume_recall_dirty=True,
             extra_context=extra_context,
         )
+        transcript_start = max(0, len(messages) - 1)
         prompt_ready_at = time.perf_counter()
         model = self.config.api_model
         usage_total: dict[str, Any] = {}
@@ -735,6 +736,18 @@ class ApiRuntime:
         reply_text = completion.text or "(empty reply)"
         dispatched = self._dispatch(reply_text)
         if record:
+            try:
+                from fiam.runtime.prompt import append_transcript_messages, trim_transcript_messages
+
+                append_transcript_messages(
+                    self.config,
+                    channel,
+                    [*messages[transcript_start:], {"role": "assistant", "content": reply_text}],
+                )
+                trim_transcript_messages(self.config, channel)
+            except Exception:
+                pass
+        if record:
             self._record_assistant(reply_text, channel=channel)
 
         return ApiRuntimeResult(
@@ -802,8 +815,8 @@ class ApiRuntime:
         # Apply XML markers (todo/wake/state) before recording the beat.
         # This mirrors the dashboard's _apply_app_control_markers post-processing
         # so callers that drive ApiRuntime directly (e.g. `fiam api` CLI) also
-        # benefit. The dashboard layer still runs its own pass for hold/cot/
-        # carry_over which require richer context (attachments, runtime label).
+        # benefit. The dashboard layer still runs its own pass for hold/cot
+        # markers which require richer context (attachments, runtime label).
         self._apply_simple_markers(text)
         for beat in assistant_text_beats(
             text,
@@ -843,7 +856,7 @@ class ApiRuntime:
         """Parse <todo>/<wake>/<sleep>/<mute>/<notify> XML markers and persist them.
 
         Mirrors the marker-driven side-effects the CC runtime gets via the
-        dashboard layer. Hold/CoT/carry_over markers are intentionally NOT
+        dashboard layer. Hold/CoT markers are intentionally NOT
         handled here — the dashboard still owns those because they need
         attachments + runtime metadata.
         """

@@ -755,10 +755,10 @@ def _select_favilla_chat_route(text: str, attachments: list[dict] | None = None)
 
 
 def _apply_route_from_result(result: dict) -> None:
-    carry = result.get("carry_over") if isinstance(result.get("carry_over"), dict) else None
-    family = str((carry or {}).get("family") or "").strip().lower()
+    route = result.get("route") if isinstance(result.get("route"), dict) else None
+    family = str((route or {}).get("family") or "").strip().lower()
     if family:
-        _save_route_family(family, reason=str((carry or {}).get("reason") or ""))
+        _save_route_family(family, reason=str((route or {}).get("reason") or ""))
 
 
 def _update_memory_mode(payload: dict) -> dict:
@@ -2019,7 +2019,6 @@ def _append_transcript(channel: str, message: dict) -> dict:
             record[key] = message[key]
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, ensure_ascii=False) + "\n")
-    _append_carryover(channel, record)
     return record
 
 
@@ -2044,6 +2043,22 @@ def _persist_favilla_ai_transcript(channel: str, result: dict, runtime: str) -> 
         "meta": {"trace": result.get("trace")} if result.get("trace") else {},
         "presence": _current_presence(actor="ai", channel=channel),
     })
+
+
+def _append_runtime_transcript_turn(channel: str, user_text: str, assistant_text: str) -> None:
+    """Append the shared API-message transcript for cross-runtime context."""
+    if not _CONFIG:
+        return
+    try:
+        from fiam.runtime.prompt import append_transcript_messages, trim_transcript_messages
+
+        append_transcript_messages(_CONFIG, channel, [
+            {"role": "user", "content": user_text.strip()},
+            {"role": "assistant", "content": assistant_text.strip()},
+        ])
+        trim_transcript_messages(_CONFIG, channel)
+    except Exception:
+        logger.exception("runtime transcript append failed")
 
 
 def _normalize_metrics(
@@ -2116,29 +2131,6 @@ def _current_presence(actor: str = "", channel: str = "") -> dict:
     except (OSError, json.JSONDecodeError):
         pass
     return out
-
-
-def _append_carryover(channel: str, record: dict) -> None:
-    """Append non-cc turns to carryover.md so cc sees what it missed.
-
-    Carryover.md is a markdown side-channel consumed by the inject.sh hook
-    on the next cc UserPromptSubmit. Only turns whose runtime != "cc" are
-    appended; cc's own turns are already in its session resume state.
-    """
-    runtime = str(record.get("runtime") or "").strip().lower()
-    if runtime in {"", "cc"}:
-        return
-    text = str(record.get("raw_text") or record.get("text") or "").strip()
-    if not text:
-        return
-    role = str(record.get("role") or "ai")
-    ts = datetime.now(timezone.utc).isoformat()
-    home = _CONFIG.home_path
-    co_path = home / "carryover.md"
-    section = f"## {ts} {role}@{channel} runtime={runtime}\n{text}\n\n"
-    with co_path.open("a", encoding="utf-8") as fh:
-        fh.write(section)
-    (home / ".carryover_dirty").touch()
 
 
 def _favilla_transcript_load(channel: str = "chat", limit: int = 200) -> dict:
@@ -2350,46 +2342,33 @@ def _apply_app_control_markers(
 ) -> tuple[str, int, str, dict | None]:
     """Apply hold + control markers from an AI reply.
 
-    Returns ``(cleaned_reply, queued_todos, hold_kind, carry_over)`` where
-    ``hold_kind`` is ``""``, ``"text"`` (drop reply text only), or ``"all"``
-    (drop everything: no dispatch, no actions, no state updates). A
+    Returns ``(cleaned_reply, queued_todos, hold_reason, route)``. A
     ``hold_retry`` todo is auto-queued when a hold is detected.
     """
-    from fiam.markers import parse_carry_over_markers, parse_route_markers, strip_xml_markers
+    from fiam.markers import parse_hold_markers, parse_route_markers, strip_xml_markers
     from fiam_lib.app_markers import apply_hold
     from fiam_lib.todo import append_to_todo, extract_scheduled_items, extract_state_tag
 
     if _CONFIG:
-        cleaned, hold_kind, retry_todos = apply_hold(
+        cleaned, hold_reason, retry_todos = apply_hold(
             reply, _CONFIG, channel=channel, runtime=runtime,
         )
         if retry_todos:
             append_to_todo(retry_todos, _CONFIG)
     else:
-        from fiam.markers import parse_hold_kind
         from fiam_lib.app_markers import strip_hold_markers
-        hold_kind = parse_hold_kind(reply or "")
+        hold_markers = parse_hold_markers(reply or "")
+        hold_reason = hold_markers[-1].reason if hold_markers else ""
+        if hold_markers and not hold_reason:
+            hold_reason = "held reply"
         cleaned = strip_hold_markers(reply or "")
         retry_todos = []
 
-    if hold_kind == "all":
-        # Drop everything this round; only the retry todo persists.
-        return "", 0, "all", None
-
-    carry_markers = parse_carry_over_markers(cleaned)
     route_markers = parse_route_markers(cleaned)
-    carry_over = None
-    if carry_markers:
-        marker = carry_markers[-1]
-        carry_over = {"to": marker.target, "reason": marker.reason}
+    route = None
     if route_markers:
         marker = route_markers[-1]
-        if carry_over is None:
-            carry_over = {"family": marker.family, "reason": marker.reason}
-        else:
-            carry_over["family"] = marker.family
-            if marker.reason and not carry_over.get("reason"):
-                carry_over["reason"] = marker.reason
+        route = {"family": marker.family, "reason": marker.reason}
 
     queued_todos = 0
     if _CONFIG:
@@ -2400,17 +2379,17 @@ def _apply_app_control_markers(
         if state_tag:
             _write_app_ai_state(state_tag)
 
-    cleaned = strip_xml_markers(cleaned, {"wake", "todo", "sleep", "mute", "notify", "carry_over", "route", "cot"}).strip()
-    if hold_kind == "text":
+    cleaned = strip_xml_markers(cleaned, {"wake", "todo", "sleep", "state", "route", "cot"}).strip()
+    if hold_reason:
         cleaned = ""
-    return cleaned, queued_todos, hold_kind, carry_over
+    return cleaned, queued_todos, hold_reason, route
 
 
 def _write_app_ai_state(state_tag: dict) -> None:
     if not _CONFIG:
         return
     state = str(state_tag.get("state") or "notify")
-    if state not in {"notify", "mute", "sleep"}:
+    if state not in {"notify", "mute", "sleep", "block", "busy", "together"}:
         return
     data = {
         "state": state,
@@ -2483,24 +2462,7 @@ def _favilla_chat_send(payload: dict) -> dict:
         result = _run_cc_favilla_chat(text=runtime_text, channel=channel, attachments=safe_attachments)
     else:
         raise ValueError("Favilla chat runtime must be auto, cc, or api")
-    carry = result.get("carry_over") if isinstance(result.get("carry_over"), dict) else None
     _apply_route_from_result(result)
-    target = str((carry or {}).get("to") or "").strip().lower()
-    if target in {"api", "cc"} and target != runtime:
-        transfer_text = _build_carry_over_text(
-            from_runtime=runtime,
-            to_runtime=target,
-            user_text=runtime_text,
-            private_notes=str(result.get("reply") or ""),
-            reason=str((carry or {}).get("reason") or ""),
-        )
-        if target == "api":
-            result = _run_api_favilla_chat(text=transfer_text, channel=channel, attachments=safe_attachments, family=str((carry or {}).get("family") or ""))
-        else:
-            result = _run_cc_favilla_chat(text=transfer_text, channel=channel, attachments=safe_attachments)
-        result["carry_over_from"] = runtime
-        runtime = target
-        _apply_route_from_result(result)
     stroll_records: list[dict] = []
     stroll_actions: list[dict] = []
     if channel == "stroll":
@@ -2575,9 +2537,7 @@ def _favilla_chat_send_stream(payload: dict):
 
     For runtime != cc, falls back to single-shot _favilla_chat_send and emits
     start + done. For runtime == cc, drives _iter_cc_favilla_chat_events,
-    persists the final transcript, then emits done. Carry-over fallback is not
-    streamed; if a carry_over is requested, only the final target result emits
-    done.
+    persists the final transcript, then emits done.
     """
     if not _CONFIG:
         yield {"event": "error", "data": {"message": "config not loaded"}}
@@ -2676,30 +2636,7 @@ def _favilla_chat_send_stream(payload: dict):
             logger.exception("stream missing-done flow record failed")
         return
 
-    # Carry-over: if AI marked carry_over, run target runtime synchronously
-    # and emit a follow-up done event with the second result.
-    carry = final_result.get("carry_over") if isinstance(final_result.get("carry_over"), dict) else None
     _apply_route_from_result(final_result)
-    target = str((carry or {}).get("to") or "").strip().lower()
-    if target in {"api", "cc"} and target != runtime:
-        transfer_text = _build_carry_over_text(
-            from_runtime=runtime,
-            to_runtime=target,
-            user_text=runtime_text,
-            private_notes=str(final_result.get("reply") or ""),
-            reason=str((carry or {}).get("reason") or ""),
-        )
-        try:
-            if target == "api":
-                final_result = _run_api_favilla_chat(text=transfer_text, channel=channel, attachments=safe_attachments, family=str((carry or {}).get("family") or ""))
-            else:
-                final_result = _run_cc_favilla_chat(text=transfer_text, channel=channel, attachments=safe_attachments)
-            final_result["carry_over_from"] = runtime
-            final_result["runtime"] = target
-            _apply_route_from_result(final_result)
-            runtime = target
-        except Exception:
-            logger.exception("carry_over chain failed")
 
     # Transcript is the durable source of truth. Persist before yielding done,
     # because the client may disconnect exactly as the final frame is sent.
@@ -2718,27 +2655,6 @@ def _favilla_chat_send_stream(payload: dict):
     except Exception:
         logger.exception("session rollover check failed (stream)")
     yield {"event": "done", "data": final_result}
-
-
-def _build_carry_over_text(*, from_runtime: str, to_runtime: str, user_text: str, private_notes: str, reason: str) -> str:
-    parts = [
-        f"[carry_over from={from_runtime} to={to_runtime}] Continue this same Favilla chat turn on the target runtime.",
-        "Do not mention the transfer mechanics unless the user asks.",
-    ]
-    if reason:
-        parts.append(f"Reason: {reason}")
-    parts.extend([
-        "",
-        "Original user message:",
-        user_text,
-    ])
-    if private_notes.strip():
-        parts.extend([
-            "",
-            "Private notes from the previous surface:",
-            private_notes.strip(),
-        ])
-    return "\n".join(parts)
 
 
 def _favilla_upload(payload: dict) -> dict:
@@ -3005,28 +2921,17 @@ def _favilla_chat_process_status(_payload: dict | None = None) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Session rollover (auto-cut + auto-process + summarize → carryover at threshold)
+# Session rollover (auto-cut + auto-process + transcript trim at threshold)
 # ---------------------------------------------------------------------------
 #
 # Trigger: Favilla user/AI turn count since the last session boundary reaches
 # `events_per_session` (default 10). On rollover:
 #   1. Append a flow cut marker.
 #   2. Run process so pending beats become events.
-#   3. Summarize the recent transcript window via the cot_summary API.
-#   4. Replace carryover.md with the summary + touch .carryover_dirty.
-#   5. Unlink active_session.json so CC opens a fresh session next turn.
-#   6. Reset session_state.json (turns_since_boundary=0, advance boundary
+#   3. Trim shared runtime transcripts to the bounded tail.
+#   4. Unlink active_session.json so CC opens a fresh session next turn.
+#   5. Reset session_state.json (turns_since_boundary=0, advance boundary
 #      flow_offset + ts).
-#
-# The carryover summary is consumed exactly once on the next chat turn:
-#   - CC: inject.sh reads carryover.md → injects → truncates file.
-#   - API: build_api_messages reads carryover.md → injects → unlinks file.
-# Either path leaves carryover.md missing/empty, so the *next* turn will not
-# re-inject the same summary. The summary therefore appears in the AI's
-# prompt exactly once, never enters transcript or the event store, and so
-# does not pollute persisted history.
-
-_SESSION_TRANSCRIPT_TAIL = 30  # how many transcript entries feed the summary
 
 
 def _session_state_path():
@@ -3056,118 +2961,10 @@ def _save_session_state(state: dict) -> None:
     path.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 
-def _carryover_path():
-    return _CONFIG.home_path / "carryover.md"
+def _trim_runtime_transcript(channel: str) -> None:
+    from fiam.runtime.prompt import trim_transcript_messages
 
-
-def _carryover_dirty_path():
-    return _CONFIG.home_path / ".carryover_dirty"
-
-
-def _write_carryover_summary(summary: str) -> None:
-    """Replace carryover.md with the new session summary block.
-
-    Existing carryover content (e.g. accumulated non-cc turns from
-    `_append_carryover`) is preserved BELOW the summary so the CC inject hook
-    sees both. The combined file is consumed (truncated) on next inject.
-    """
-    text = (summary or "").strip()
-    if not text:
-        return
-    co = _carryover_path()
-    co.parent.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(timezone.utc).isoformat()
-    block = f"## {ts} session_summary\n{text}\n\n"
-    existing = ""
-    if co.exists():
-        try:
-            existing = co.read_text(encoding="utf-8")
-        except OSError:
-            existing = ""
-    co.write_text(block + existing, encoding="utf-8")
-    _carryover_dirty_path().touch()
-
-
-def _read_transcript_tail(channel: str, n: int) -> list[dict]:
-    path = _transcript_path(channel)
-    if not path.exists():
-        return []
-    out: list[dict] = []
-    for line in path.read_text(encoding="utf-8").splitlines()[-n:]:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            out.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
-    return out
-
-
-def _summarize_session_window(channel: str) -> str:
-    """Call the cot_summary API to summarize the recent transcript tail.
-
-    Returns "" on any failure (network, no api key, parse) — the rollover
-    proceeds without a carryover summary in that case.
-    """
-    if not _CONFIG:
-        return ""
-    if not getattr(_CONFIG, "app_cot_summary_enabled", True):
-        return ""
-    tail = _read_transcript_tail(channel, _SESSION_TRANSCRIPT_TAIL)
-    if not tail:
-        return ""
-    env_name = getattr(_CONFIG, "app_cot_summary_api_key_env", "") or "FIAM_COT_SUMMARY_API_KEY"
-    api_key = os.environ.get(env_name, "").strip()
-    if not api_key:
-        fallback_env = getattr(_CONFIG, "graph_edge_api_key_env", "") or ""
-        if fallback_env and fallback_env != env_name:
-            api_key = os.environ.get(fallback_env, "").strip()
-    if not api_key:
-        return ""
-    base_url = (getattr(_CONFIG, "app_cot_summary_base_url", "") or "https://api.deepseek.com").rstrip("/")
-    model = getattr(_CONFIG, "app_cot_summary_model", "") or "deepseek-chat"
-    lines: list[str] = []
-    for rec in tail:
-        role = str(rec.get("role") or "")
-        if role not in {"user", "ai"}:
-            continue
-        text = str(rec.get("raw_text") or rec.get("text") or "").strip()
-        if not text:
-            continue
-        lines.append(f"[{role}] {text[:600]}")
-    if not lines:
-        return ""
-    transcript_blob = "\n".join(lines)[-6000:]
-    system = (
-        "你在为 AI 自己写 session 切换时的 carryover 总结。"
-        "下面是上一段对话窗口的 user/ai 轮次。请用第一人称（我=AI，你=用户）"
-        "用 80-160 字写一段 markdown，紧扣事实，覆盖：用户提了什么、我做了什么、"
-        "悬而未决的事 / 承诺 / 下一步。不要列点、不要标题、不要解释你在做什么，"
-        "直接输出那段总结文本。"
-    )
-    body = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": transcript_blob},
-        ],
-        "temperature": 0.3,
-        "max_tokens": 400,
-    }
-    request = urllib.request.Request(
-        f"{base_url}/chat/completions",
-        data=json.dumps(body).encode("utf-8"),
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=20) as response:
-            data = json.loads(response.read().decode("utf-8"))
-        content = str(((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
-    except (OSError, urllib.error.URLError, json.JSONDecodeError, IndexError, KeyError, TypeError, ValueError):
-        return ""
-    return content
+    trim_transcript_messages(_CONFIG, channel)
 
 
 def _flow_offset_now() -> int:
@@ -3179,7 +2976,7 @@ def _flow_offset_now() -> int:
 
 
 def _session_rollover(channel: str) -> dict:
-    """Auto cut + process + summarize + write carryover + clear active_session.
+    """Auto cut + process + trim transcript + clear active_session.
 
     Returns a small dict describing what happened, swallowing exceptions so
     rollover failures cannot break the chat handler that calls it.
@@ -3199,12 +2996,10 @@ def _session_rollover(channel: str) -> dict:
     except Exception as exc:
         info["process_error"] = str(exc)[:200]
     try:
-        summary = _summarize_session_window(channel)
-        if summary:
-            _write_carryover_summary(summary)
-            info["summary_chars"] = len(summary)
+        _trim_runtime_transcript(channel)
+        info["transcript_trimmed"] = True
     except Exception as exc:
-        info["summary_error"] = str(exc)[:200]
+        info["transcript_trim_error"] = str(exc)[:200]
     try:
         _CONFIG.active_session_path.unlink(missing_ok=True)
     except Exception as exc:
@@ -3302,60 +3097,9 @@ def _app_runtime_context() -> str:
         _APP_RUNTIME_CONTEXT_BASE,
         f"[uploads]\nFavilla uploads live at {uploads_dir} with an index at {uploads_dir / 'manifest.jsonl'}. Do not mention old uploaded files just because they exist. Only inspect or discuss uploads when the current user message asks about files/images/uploads or includes current attachments.",
         f"[server_time]\nutc={now_utc.isoformat()}\nlocal={local}",
-        "[tool_mode]\nUse the structured file/shell tools (Read/Write/Edit/Glob/Grep/Bash/git_diff) only when you must wait on a real result. For fire-and-forget side effects use the XML markers documented in self/awareness.md (and constitution.md): <todo at=\"...\">desc</todo> to wake yourself later, <wake>TIME</wake> for bare wake-ups, <sleep until=\"...\" reason=\"...\" /> to sleep, <mute .../> + <notify /> for do-not-disturb. Keep tool details out of the user-facing reply unless the user asks for them.",
-        "[app_markers]\nFor visible thinking summaries, wrap shareable state notes in <cot>...</cot>. To lock the entire turn's thought chain (both <cot> blocks and any native reasoning), include <lock/> anywhere in the reply. The server strips these markers into structured segments; clients may or may not render them visibly. Do not promise a specific button, bubble, or visual affordance unless the current client explicitly supports it. To pull back a reply you no longer want to send, include <hold/> — the visible reply text is dropped (other markers like dispatch/todo still execute) and a hold_retry todo is auto-queued so you can take another pass shortly. Use <hold all/> to drop the entire round (no dispatch, no actions, no state updates); the retry todo is still queued. Your held output remains in your context, so on the retry you can see what you just held.",
+        "[tool_mode]\nUse the structured file/shell tools (Read/Write/Edit/Glob/Grep/Bash/git_diff) only when you must wait on a real result. For fire-and-forget side effects use XML markers: <send to=\"channel:address\">message</send>, <todo at=\"...\">desc</todo>, <wake at=\"...\"/>, <sleep at=\"...\"/>, and <state value=\"mute|notify|block|busy|sleep|together\" reason=\"...\"/>. Keep tool details out of the user-facing reply unless the user asks for them.",
+        "[app_markers]\nFor visible thinking summaries, wrap shareable state notes in <cot>...</cot>. To lock the entire turn's thought chain (both <cot> blocks and any native reasoning), include <lock/> anywhere in the reply. The server strips these markers into structured segments; clients may or may not render them visibly. Do not promise a specific button, bubble, or visual affordance unless the current client explicitly supports it. To pull back a reply you no longer want to send, include <hold/> or <hold>reason</hold>; the visible reply text is dropped and a hold_retry todo is auto-queued so you can take another pass shortly. Your held output remains in your context, so on the retry you can see what you just held.",
     ])
-
-
-def _recent_conversation_for_app(channel: str, *, max_n: int = 12, max_chars: int = 4000) -> str:
-    """Read transcript tail for the given channel as a block for api context.
-
-    Returns formatted lines like:
-        [recent_conversation channel=chat]
-        2026-05-07T14:00 user@chat (api): hello
-        2026-05-07T14:00 ai@chat (api): hi there
-        ...
-
-    Cross-channel merge is intentionally NOT done here: chat ↔ stroll keep
-    separate threads. Returns "" if no transcript.
-    """
-    if not _CONFIG:
-        return ""
-    path = _transcript_path(channel)
-    if not path.exists():
-        return ""
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return ""
-    records = []
-    for line in lines[-(max_n * 2):]:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            records.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
-    if not records:
-        return ""
-    rendered: list[str] = [f"[recent_conversation channel={channel}]"]
-    rendered.append("# This is the recent transcript on this surface (raw, includes XML markers). Use it as conversational context; do not echo XML markers back.")
-    for rec in records[-max_n:]:
-        role = str(rec.get("role") or "ai")
-        rt = str(rec.get("runtime") or "")
-        rt_tag = f" ({rt})" if rt else ""
-        ts = int(rec.get("t") or 0)
-        body = str(rec.get("raw_text") or rec.get("text") or "").strip()
-        if not body:
-            continue
-        rendered.append(f"{ts} {role}@{channel}{rt_tag}: {body}")
-    block = "\n".join(rendered)
-    if len(block) > max_chars:
-        block = block[-max_chars:]
-        # Re-anchor with a header so the model still recognises the block
-        block = f"[recent_conversation channel={channel} truncated]\n...{block}"
-    return block
 
 
 def _parse_cot(reply: str) -> tuple[str, list[dict], bool, list[dict]]:
@@ -3523,7 +3267,6 @@ def _run_cc_favilla_chat(*, text: str, channel: str, attachments: list | None = 
         channel=channel,
         include_recall=True,
         consume_recall_dirty=True,
-        consume_carryover=False,
         extra_context=_app_runtime_context(),
     )
     command = [
@@ -3593,7 +3336,7 @@ def _run_cc_favilla_chat(*, text: str, channel: str, attachments: list | None = 
 
     reply = str(data.get("result") or "").strip()
     raw_reply = reply
-    reply, queued_todos, hold_kind, carry_over = _apply_app_control_markers(
+    reply, queued_todos, hold_reason, route = _apply_app_control_markers(
         reply,
         channel=channel,
         runtime="cc",
@@ -3630,10 +3373,10 @@ def _run_cc_favilla_chat(*, text: str, channel: str, attachments: list | None = 
     if native_thoughts:
         thoughts = native_thoughts + thoughts
         segments = native_segments + list(segments)
-    hold = {"kind": hold_kind} if hold_kind else None
+    hold = {"reason": hold_reason} if hold_reason else None
     if hold and not segments:
         thoughts_locked = True
-        summary = "holding everything" if hold_kind == "all" else "holding this reply"
+        summary = hold_reason or "holding this reply"
         thoughts = [{"kind": "think", "text": summary, "summary": summary, "source": "fiam", "locked": True, "icon": "Clock3"}]
         segments = [{"type": "thought", "summary": summary, "source": "fiam", "locked": True, "icon": "Clock3"}]
     # Step 6: enrich segments with tool_use / tool_result events from cc stream-json.
@@ -3670,8 +3413,9 @@ def _run_cc_favilla_chat(*, text: str, channel: str, attachments: list | None = 
     actions_list: list[dict] = []
     for todo in queued_todos or []:
         actions_list.append({"kind": "queued_todo", **(todo if isinstance(todo, dict) else {"text": str(todo)})})
-    if carry_over:
-        actions_list.append({"kind": "carry_over", **(carry_over if isinstance(carry_over, dict) else {"value": str(carry_over)})})
+    if route:
+        actions_list.append({"kind": "route", **(route if isinstance(route, dict) else {"value": str(route)})})
+    _append_runtime_transcript_turn(channel, prompt_text, raw_reply)
     _record_cc_app_turn(prompt_text, cleaned_reply, channel, action_events=action_events, thinking_events=thinking_events, session_id=session_id)
     try:
         _record_debug_context("cc", metrics=metrics, session_id=session_id, channel=channel)
@@ -3691,7 +3435,7 @@ def _run_cc_favilla_chat(*, text: str, channel: str, attachments: list | None = 
         "segments": enriched_segments,
         "hold": hold,
         "queued_todos": queued_todos,
-        "carry_over": carry_over,
+        "route": route,
         "actions": action_events,
         # Step 6: structured fields for transcript
         "tool_calls_summary": action_events or [],
@@ -3736,7 +3480,6 @@ def _iter_cc_favilla_chat_events(*, text: str, channel: str, attachments: list |
         channel=channel,
         include_recall=True,
         consume_recall_dirty=True,
-        consume_carryover=False,
         extra_context=_app_runtime_context(),
     )
     base_command = [
@@ -4011,7 +3754,7 @@ def _iter_cc_favilla_chat_events(*, text: str, channel: str, attachments: list |
 
     reply = str(data.get("result") or "").strip()
     raw_reply = reply
-    reply, queued_todos, hold_kind, carry_over = _apply_app_control_markers(
+    reply, queued_todos, hold_reason, route = _apply_app_control_markers(
         reply,
         channel=channel,
         runtime="cc",
@@ -4045,10 +3788,10 @@ def _iter_cc_favilla_chat_events(*, text: str, channel: str, attachments: list |
     if native_thoughts:
         thoughts = native_thoughts + thoughts
         segments = native_segments + list(segments)
-    hold = {"kind": hold_kind} if hold_kind else None
+    hold = {"reason": hold_reason} if hold_reason else None
     if hold and not segments:
         thoughts_locked = True
-        summary = "holding everything" if hold_kind == "all" else "holding this reply"
+        summary = hold_reason or "holding this reply"
         thoughts = [{"kind": "think", "text": summary, "summary": summary, "source": "fiam", "locked": True, "icon": "Clock3"}]
         segments = [{"type": "thought", "summary": summary, "source": "fiam", "locked": True, "icon": "Clock3"}]
     action_events = _combine_cc_action_events(state["action_events"])
@@ -4082,8 +3825,9 @@ def _iter_cc_favilla_chat_events(*, text: str, channel: str, attachments: list |
     actions_list: list[dict] = []
     for todo in queued_todos or []:
         actions_list.append({"kind": "queued_todo", **(todo if isinstance(todo, dict) else {"text": str(todo)})})
-    if carry_over:
-        actions_list.append({"kind": "carry_over", **(carry_over if isinstance(carry_over, dict) else {"value": str(carry_over)})})
+    if route:
+        actions_list.append({"kind": "route", **(route if isinstance(route, dict) else {"value": str(route)})})
+    _append_runtime_transcript_turn(channel, prompt_text, raw_reply)
     _record_cc_app_turn(prompt_text, cleaned_reply, channel, action_events=action_events, thinking_events=thinking_events, session_id=session_id, record_user=False)
     try:
         _record_debug_context("cc", metrics=metrics, session_id=session_id, channel=channel)
@@ -4103,7 +3847,7 @@ def _iter_cc_favilla_chat_events(*, text: str, channel: str, attachments: list |
         "segments": enriched_segments,
         "hold": hold,
         "queued_todos": queued_todos,
-        "carry_over": carry_over,
+        "route": route,
         "actions": action_events,
         "tool_calls_summary": action_events or [],
         "actions_list": actions_list,
@@ -4330,15 +4074,14 @@ def _run_api_favilla_chat(*, text: str, channel: str, attachments: list | None =
             lines.append(f"- {a['path']}  (name={a['name']!r}, mime={mime})")
         lines.append("")
         api_text = "\n".join(lines) + text
-    # build_api_messages already injects bounded recent_conversation for this
-    # channel. Keep dashboard-specific context here, but do not duplicate chat
-    # history; the extra copy was inflating API prompts by several KB.
+    # build_api_messages loads the shared API-message transcript for this channel.
+    # Keep dashboard-specific context here, but do not duplicate chat history.
     extras = _app_runtime_context()
     api_started_at = time.time()
     result = runtime.ask(api_text, channel=channel, record=not light_browser_record, extra_context=extras, image_attachments=attachments or [])
     api_latency_ms = int((time.time() - api_started_at) * 1000)
     raw_reply = str(result.reply or "")
-    reply, queued_todos, hold_kind, carry_over = _apply_app_control_markers(
+    reply, queued_todos, hold_reason, route = _apply_app_control_markers(
         result.reply,
         channel=channel,
         runtime="api",
@@ -4346,10 +4089,10 @@ def _run_api_favilla_chat(*, text: str, channel: str, attachments: list | None =
         attachments=attachments or [],
     )
     cleaned_reply, thoughts, thoughts_locked, segments = _parse_cot(reply)
-    hold = {"kind": hold_kind} if hold_kind else None
+    hold = {"reason": hold_reason} if hold_reason else None
     if hold and not segments:
         thoughts_locked = True
-        summary = "holding everything" if hold_kind == "all" else "holding this reply"
+        summary = hold_reason or "holding this reply"
         thoughts = [{"kind": "think", "text": summary, "summary": summary, "source": "fiam", "locked": True, "icon": "Clock3"}]
         segments = [{"type": "thought", "summary": summary, "source": "fiam", "locked": True, "icon": "Clock3"}]
     # OpenRouter conveniently returns usage.cost; other providers may not.
@@ -4393,8 +4136,8 @@ def _run_api_favilla_chat(*, text: str, channel: str, attachments: list | None =
         _record_api_turn_light(api_text, cleaned_reply, channel=channel, tool_calls=api_tool_calls_summary, family=family)
     for todo in queued_todos or []:
         actions_list.append({"kind": "queued_todo", **(todo if isinstance(todo, dict) else {"text": str(todo)})})
-    if carry_over:
-        actions_list.append({"kind": "carry_over", **(carry_over if isinstance(carry_over, dict) else {"value": str(carry_over)})})
+    if route:
+        actions_list.append({"kind": "route", **(route if isinstance(route, dict) else {"value": str(route)})})
     try:
         _record_debug_context("api", metrics=metrics, channel=channel)
     except Exception:
@@ -4417,7 +4160,7 @@ def _run_api_favilla_chat(*, text: str, channel: str, attachments: list | None =
         "segments": segments,
         "hold": hold,
         "queued_todos": queued_todos,
-        "carry_over": carry_over,
+        "route": route,
         # Step 6: structured fields for transcript
         "tool_calls_summary": api_tool_calls_summary,
         "actions_list": actions_list,

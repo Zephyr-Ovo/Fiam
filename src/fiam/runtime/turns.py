@@ -2,40 +2,17 @@
 
 from __future__ import annotations
 
-import re
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from fiam.channels import normalize_channel
 from fiam.store.beat import Beat
 
 if TYPE_CHECKING:
     from fiam.markers import OutboundMarker
 
 
-_ROUTED_BLOCK_RE = re.compile(
-    r"\[→[A-Za-z0-9_-]+:[^\]\n]+\]\s*.*?(?=(?:\n\s*)?\[→[A-Za-z0-9_-]+:[^\]\n]+\]|\Z)",
-    re.DOTALL,
-)
-
-_CONTROL_MARKERS = {"wake", "todo", "sleep", "mute", "notify", "carry_over", "hold", "cot"}
-
-
-# Resolve incoming HTTP channel aliases to canonical channel names.
-_CHANNEL_ALIASES = {
-    "chat": "favilla",
-    "favilla": "favilla",
-    "stroll": "stroll",
-    "studio": "favilla",
-    "app": "favilla",
-    "webapp": "favilla",
-    "browser": "browser",
-    "email": "email",
-}
-
-
-def normalize_channel(channel: str) -> str:
-    s = (channel or "").strip().lower()
-    return _CHANNEL_ALIASES.get(s, s or "favilla")
+_CONTROL_MARKERS = {"wake", "todo", "sleep", "state", "route", "hold", "cot"}
 
 
 def parse_ts(ts_str: str) -> datetime:
@@ -61,12 +38,12 @@ def speaker_text(speaker: str, text: str) -> str:
 
 def split_routed_text(text: str) -> tuple[list["OutboundMarker"], str]:
     """Extract outbound markers and return (markers, remaining_dialogue)."""
-    from fiam.markers import parse_outbound_markers
+    from fiam.markers import parse_outbound_markers, strip_xml_markers
 
     markers = parse_outbound_markers(text)
     if not markers:
         return [], text
-    remaining = _ROUTED_BLOCK_RE.sub("", text).strip()
+    remaining = strip_xml_markers(text, {"send"}).strip()
     return markers, remaining
 
 

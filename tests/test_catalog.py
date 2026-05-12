@@ -96,7 +96,7 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual(markers[0].reason, "math/code fallback")
 
     def test_route_marker_is_private_control_and_sets_family(self) -> None:
-        reply, queued_todos, hold_kind, carry_over = dashboard_server._apply_app_control_markers(
+        reply, queued_todos, hold_reason, route = dashboard_server._apply_app_control_markers(
             'visible <route family="gemini" reason="better fit"/>',
             channel="chat",
             runtime="cc",
@@ -106,8 +106,8 @@ class CatalogTest(unittest.TestCase):
 
         self.assertEqual(reply, "visible")
         self.assertEqual(queued_todos, 0)
-        self.assertEqual(hold_kind, "")
-        self.assertEqual(carry_over, {"family": "gemini", "reason": "better fit"})
+        self.assertEqual(hold_reason, "")
+        self.assertEqual(route, {"family": "gemini", "reason": "better fit"})
 
     def test_catalog_family_overrides_api_runtime_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

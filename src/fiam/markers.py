@@ -1,9 +1,4 @@
-"""Marker parsing for AI-authored route commands.
-
-Outbound markers have the shape ``[→target:recipient] body``. Targets are
-matched against plugin dispatch targets at runtime, so adding a new dispatch
-plugin no longer requires editing daemon regexes.
-"""
+"""Marker parsing for AI-authored XML control commands."""
 
 from __future__ import annotations
 
@@ -43,28 +38,14 @@ class StateMarker:
 
 
 @dataclass(frozen=True)
-class CarryOverMarker:
-    target: str
-    reason: str = ""
-
-
-@dataclass(frozen=True)
 class RouteMarker:
     family: str
     reason: str = ""
 
 
-# Hold kind: "" = no hold, "text" = drop user-facing reply only,
-# "all" = drop everything (no dispatch, no actions, no state updates).
-HoldKind = str
-
-
-_OUTBOUND_RE = re.compile(
-    r"\[→(?P<channel>[A-Za-z0-9_-]+):(?P<recipient>[^\]\n]+)\]\s*"
-    r"(?P<body>.*?)"
-    r"(?=(?:\n\s*)?\[→[A-Za-z0-9_-]+:[^\]\n]+\]|\Z)",
-    re.DOTALL,
-)
+@dataclass(frozen=True)
+class HoldMarker:
+    reason: str = ""
 
 _XML_MARKER_RE = re.compile(
     r"<\s*(?P<name>[A-Za-z_][\w:-]*)\b(?P<attrs>[^<>]*?)\s*"
@@ -90,15 +71,22 @@ def parse_outbound_markers(
     *,
     allowed_channels: Iterable[str] | None = None,
 ) -> list[OutboundMarker]:
-    """Parse outbound route markers from a CC response."""
+    """Parse ``<send to="channel:address">body</send>`` route markers."""
     allowed = {item.lower() for item in allowed_channels} if allowed_channels else None
     markers: list[OutboundMarker] = []
     masked_text = _mask_markdown_code(text)
-    for match in _OUTBOUND_RE.finditer(masked_text):
-        channel = match.group("channel").strip().lower()
+    for match in _XML_MARKER_RE.finditer(masked_text):
+        if match.group("name").lower() != "send":
+            continue
+        attrs = _attrs(match.group("attrs") or "")
+        target = attrs.get("to", "").strip()
+        if ":" not in target:
+            continue
+        channel, recipient = target.split(":", 1)
+        channel = channel.strip().lower()
         if allowed is not None and channel not in allowed:
             continue
-        recipient = text[match.start("recipient"):match.end("recipient")].strip()
+        recipient = recipient.strip()
         body = text[match.start("body"):match.end("body")].strip()
         if channel and recipient and body:
             markers.append(OutboundMarker(channel=channel, recipient=recipient, body=body))
@@ -203,25 +191,16 @@ def _normalize_short_time(raw: str, *, default_tz=None) -> str:
 def parse_state_markers(text: str) -> list[StateMarker]:
     markers: list[StateMarker] = []
     for name, attrs, _body in _xml_markers(text):
-        state = name.lower()
-        if state not in {"mute", "notify"}:
+        if name != "state":
+            continue
+        state = (attrs.get("value") or attrs.get("state") or attrs.get("name") or "").strip().lower()
+        if state not in {"block", "mute", "notify", "sleep", "busy", "together"}:
             continue
         markers.append(StateMarker(
             state=state,
             until=attrs.get("until", "").strip(),
             reason=attrs.get("reason", "").strip(),
         ))
-    return markers
-
-
-def parse_carry_over_markers(text: str) -> list[CarryOverMarker]:
-    markers: list[CarryOverMarker] = []
-    for name, attrs, _body in _xml_markers(text):
-        if name != "carry_over":
-            continue
-        target = attrs.get("to", "").strip().lower()
-        if target:
-            markers.append(CarryOverMarker(target=target, reason=attrs.get("reason", "").strip()))
     return markers
 
 
@@ -252,27 +231,20 @@ def parse_cot_markers(text: str) -> list[str]:
     return out
 
 
-_HOLD_TAG_RE = re.compile(
-    r"<\s*hold\b(?P<attrs>[^<>]*)/?\s*>(?:\s*</\s*hold\s*>)?",
-    re.IGNORECASE,
-)
-_HOLD_ALL_RE = re.compile(r"\ball\b", re.IGNORECASE)
+def parse_hold_markers(text: str) -> list[HoldMarker]:
+    """Parse ``<hold/>`` and ``<hold>reason</hold>`` markers."""
+    out: list[HoldMarker] = []
+    for name, _attrs, body in _xml_markers(text):
+        if name == "hold":
+            out.append(HoldMarker(reason=(body or "").strip()))
+    return out
 
 
-def parse_hold_kind(text: str) -> HoldKind:
-    """Detect ``<hold/>`` (drop reply text) or ``<hold all/>`` (drop everything).
-
-    Returns ``\"all\"`` if any hold-all marker appears, ``\"text\"`` if a bare
-    ``<hold/>`` appears, otherwise ``\"\"``. Hold markers carry no other
-    attributes; the retry is scheduled by the caller.
-    """
-    found_text = False
-    for match in _HOLD_TAG_RE.finditer(text or ""):
-        attrs = match.group("attrs") or ""
-        if _HOLD_ALL_RE.search(attrs):
-            return "all"
-        found_text = True
-    return "text" if found_text else ""
+def parse_hold_reason(text: str) -> str:
+    markers = parse_hold_markers(text)
+    if not markers:
+        return ""
+    return markers[-1].reason
 
 
 def strip_xml_markers(text: str, names: set[str] | Iterable[str]) -> str:

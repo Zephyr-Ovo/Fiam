@@ -158,6 +158,7 @@ def collect_clean_targets(code_path: Path, config=None) -> list[CleanTarget]:
         ("annotation state", store_dir / "annotation_state.json"),
         ("legacy cache", store_dir / "narrative_cache.json"),
         ("legacy graph jsonl", store_dir / "graph.jsonl"),
+        ("runtime transcripts", store_dir / "transcripts"),
     ]:
         add(path, label)
 

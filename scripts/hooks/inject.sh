@@ -1,10 +1,9 @@
 #!/bin/bash
-# fiam hook: UserPromptSubmit -> inject recall + carryover + external as additionalContext
+# fiam hook: UserPromptSubmit -> inject recall + external as additionalContext
 #
 # Injection order (cache-friendly: semi-static -> dynamic):
 #   1. recall.md          -- memory fragments (surfaced by retrieval, changes on drift)
-#   2. carryover.md       -- conversation turns from other runtimes (api) cc missed
-#   3. pending_external.txt -- external messages (changes per-message)
+#   2. pending_external.txt -- external messages (changes per-message)
 #
 # self/*.md (identity / awareness / etc.) is NOT injected here. The dashboard
 # already passes self/*.md to CC via --append-system-prompt (assembled by
@@ -14,8 +13,6 @@
 HOME_DIR="$CLAUDE_PROJECT_DIR"
 RECALL_FILE="$HOME_DIR/recall.md"
 RECALL_DIRTY="$HOME_DIR/.recall_dirty"
-CARRYOVER_FILE="$HOME_DIR/carryover.md"
-CARRYOVER_DIRTY="$HOME_DIR/.carryover_dirty"
 PENDING_FILE="$HOME_DIR/pending_external.txt"
 PENDING_PROCESSING="$HOME_DIR/pending_external.processing"
 
@@ -33,20 +30,7 @@ if [ -f "$RECALL_DIRTY" ] && [ -f "$RECALL_FILE" ] && [ -s "$RECALL_FILE" ]; the
     rm -f "$RECALL_DIRTY"
 fi
 
-# ── 3. Carryover (turns cc missed while api/others answered) ──
-if [ -f "$CARRYOVER_DIRTY" ] && [ -f "$CARRYOVER_FILE" ] && [ -s "$CARRYOVER_FILE" ]; then
-    CARRYOVER=$(cat "$CARRYOVER_FILE")
-    if [ -n "$CARRYOVER" ]; then
-        if [ -n "$PARTS" ]; then
-            PARTS="${PARTS}\n\n"
-        fi
-        PARTS="${PARTS}[carryover]\n${CARRYOVER}"
-    fi
-    : > "$CARRYOVER_FILE"
-    rm -f "$CARRYOVER_DIRTY"
-fi
-
-# ── 4. External messages (Conductor-prepared, pre-formatted) ──
+# ── 2. External messages (Conductor-prepared, pre-formatted) ──
 if [ -f "$PENDING_FILE" ] && [ -s "$PENDING_FILE" ]; then
     mv "$PENDING_FILE" "$PENDING_PROCESSING" 2>/dev/null
     if [ -f "$PENDING_PROCESSING" ]; then

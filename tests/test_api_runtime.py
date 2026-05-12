@@ -115,7 +115,7 @@ class ApiRuntimeTest(unittest.TestCase):
                 flow_path=config.flow_path,
                 memory_mode="manual",
             )
-            client = FakeClient("收到。\n[→favilla:Zephyr] 已记录")
+            client = FakeClient('收到。\n<send to="favilla:Zephyr">已记录</send>')
 
             def refresh_recall(vec: np.ndarray) -> int:
                 config.background_path.write_text("<!-- recall -->\n- 昨天聊过 API runtime", encoding="utf-8")

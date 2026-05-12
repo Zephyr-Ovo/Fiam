@@ -4,9 +4,9 @@ Removes:
 - store/flow.jsonl (event flow)
 - store/pool/* (pool vectors and event metadata)
 - store/features/* (frozen beat embeddings)
+- store/transcripts/* (shared runtime message transcripts)
 - store/annotation_state.json (process progress)
 - transcript/*.jsonl (Favilla chat history)
-- carryover.md + .carryover_dirty (one-shot session summaries)
 - recall.md + .recall_dirty (recall fragments)
 - session_state.json (rollover counter)
 - self/active_session.json (CC session id)
@@ -54,6 +54,7 @@ def _wipe(home: Path, store: Path, *, wipe_identity: bool) -> list[str]:
         store / "flow.jsonl",
         store / "pool",
         store / "features",
+        store / "transcripts",
         store / "annotation_state.json",
         store / "wearable",
     ]
@@ -63,8 +64,6 @@ def _wipe(home: Path, store: Path, *, wipe_identity: bool) -> list[str]:
 
     targets_under_home = [
         home / "transcript",
-        home / "carryover.md",
-        home / ".carryover_dirty",
         home / "recall.md",
         home / ".recall_dirty",
         home / "session_state.json",
@@ -139,10 +138,9 @@ def main() -> int:
             store / "flow.jsonl",
             store / "pool",
             store / "features",
+            store / "transcripts",
             store / "annotation_state.json",
             home / "transcript",
-            home / "carryover.md",
-            home / ".carryover_dirty",
             home / "recall.md",
             home / ".recall_dirty",
             home / "session_state.json",

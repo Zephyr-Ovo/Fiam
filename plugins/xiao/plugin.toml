@@ -16,5 +16,5 @@ env = []
 replaces = []
 notes = [
   "Existing code lives under channels/limen; manifest uses xiao as the user-facing plugin id.",
-  "2026-04-26: screen protocol active. AI can emit [→xiao:screen] message:/kaomoji:/emoji: payloads; dashboard queues them for /api/wearable/reply. Camera/touch are intentionally deferred."
+  "2026-04-26: screen protocol active. AI can emit <send to=\"limen:screen\">message:/kaomoji:/emoji: payloads</send>; dashboard queues them for /api/wearable/reply. Camera/touch are intentionally deferred."
 ]

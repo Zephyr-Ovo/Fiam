@@ -25,7 +25,7 @@ def _ensure_config_timezone(dt: datetime, config: FiamConfig | None) -> datetime
 
 
 def extract_state_tag(text: str, config: FiamConfig | None = None) -> dict | None:
-    """Extract the last XML state marker (mute/notify) from AI text."""
+    """Extract the last ``<state .../>`` marker from AI text."""
     markers = parse_state_markers(text)
     if not markers:
         return None

@@ -14,9 +14,12 @@ it (5-minute ephemeral TTL, byte-identical prefix required).
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from fiam.channels import normalize_channel
 
 if TYPE_CHECKING:
     from fiam.config import FiamConfig
@@ -46,7 +49,6 @@ def build_api_messages(
     channel: str = "api",
     include_recall: bool = True,
     consume_recall_dirty: bool = True,
-    consume_carryover: bool | None = None,
     extra_context: str = "",
 ) -> list[dict[str, Any]]:
     """Build OpenAI-compatible messages with three system segments.
@@ -70,7 +72,6 @@ def build_api_messages(
     # without polluting the persisted user text in events. Emitted as a
     # standalone system block so the recall-routing in build_plain_prompt_parts
     # still sees pure "[recall]\n..." prefix.
-    from fiam.runtime.turns import normalize_channel
     canon = normalize_channel(channel)
     if canon:
         messages.append(_system_block(f"[context]\nuser_channel={canon}", cache=False))
@@ -79,20 +80,12 @@ def build_api_messages(
         recall = load_recall_context(config, consume_dirty=consume_recall_dirty)
         if recall:
             dynamic_parts.append(f"[recall]\n{recall}")
-    consume_co = consume_recall_dirty if consume_carryover is None else bool(consume_carryover)
-    carryover = load_carryover_context(config, consume=consume_co)
-    if carryover:
-        dynamic_parts.append(f"[carryover]\n{carryover}")
-    # [recent_conversation] — last few event-store beats for THIS channel,
-    # so api-side picks up cc-side tool work that isn't in carryover.
-    recent = load_recent_conversation_context(config, channel)
-    if recent:
-        dynamic_parts.append(f"[recent_conversation]\n{recent}")
     if extra_context.strip():
         dynamic_parts.append(extra_context.strip())
     if dynamic_parts:
         messages.append(_system_block("\n\n".join(dynamic_parts), cache=False))
 
+    messages.extend(load_transcript_messages(config, canon))
     messages.append(
         {"role": "user", "content": user_text.strip()}
     )
@@ -138,7 +131,6 @@ def build_plain_prompt_parts(
     channel: str = "app",
     include_recall: bool = True,
     consume_recall_dirty: bool = True,
-    consume_carryover: bool | None = None,
     extra_context: str = "",
 ) -> tuple[str, str]:
     """Return ``(system_context, user_prompt)`` for non-API runtimes.
@@ -154,7 +146,6 @@ def build_plain_prompt_parts(
         channel=channel,
         include_recall=include_recall,
         consume_recall_dirty=consume_recall_dirty,
-        consume_carryover=consume_carryover,
         extra_context=extra_context,
     )
     system_parts: list[str] = []
@@ -222,101 +213,79 @@ def _read_text(path: Path) -> str:
         return ""
 
 
-def _format_recent_beat(beat: Any, *, tool_result_chars: int = 800) -> str:
-    """Render one event-store beat as markdown for [recent_conversation].
-
-    Tool-result beats are truncated to keep the block bounded.
-    """
-    role = str(getattr(beat, "actor", "") or "ai")
-    runtime = str(getattr(beat, "runtime", "") or "")
-    kind = str(getattr(beat, "kind", "") or "message")
-    text = str(getattr(beat, "content", "") or "").strip()
-    header_runtime = f" runtime={runtime}" if runtime else ""
-    header_kind = f" kind={kind}" if kind != "message" else ""
-    header = f"## {role}{header_runtime}{header_kind}"
-    body_parts: list[str] = []
-    meta = getattr(beat, "meta", None) if isinstance(getattr(beat, "meta", None), dict) else {}
-    if kind in {"action", "tool_result"}:
-        tool = str(meta.get("tool") or meta.get("tool_name") or "").strip()
-        prefix = f"{kind}: {tool}" if tool else kind
-        text = f"{prefix}\n{text}" if text else prefix
-    if kind == "tool_result" and len(text) > tool_result_chars:
-        text = text[:tool_result_chars] + f"... [truncated, {len(text) - tool_result_chars} more chars]"
-    if text:
-        body_parts.append(text)
-    if not body_parts:
-        return ""
-    return f"{header}\n" + "\n".join(body_parts)
+def transcript_path(config: "FiamConfig", channel: str) -> Path:
+    canon = normalize_channel(channel)
+    clean = re.sub(r"[^A-Za-z0-9_-]+", "_", canon).strip("_") or "favilla"
+    return config.store_dir / "transcripts" / f"{clean}.jsonl"
 
 
-def load_recent_conversation_context(
+def _valid_transcript_message(message: Any) -> dict[str, Any] | None:
+    if not isinstance(message, dict):
+        return None
+    role = str(message.get("role") or "").strip()
+    if role not in {"user", "assistant", "tool"}:
+        return None
+    out = {k: v for k, v in message.items() if k in {"role", "content", "tool_calls", "tool_call_id", "name"}}
+    if "content" not in out and "tool_calls" not in out:
+        return None
+    out["role"] = role
+    return out
+
+
+def load_transcript_messages(
     config: "FiamConfig",
     channel: str,
     *,
-    max_turns: int = 8,
-    max_chars: int = 6000,
-) -> str:
-    """Read event-store tail for ``channel`` and format as markdown context.
-
-    Used by build_api_messages so api-side sees cc-side tool work (which
-    isn't captured in carryover.md). Truncates oldest first if the total
-    exceeds ``max_chars``.
-    """
-    from fiam.store.events import EventStore
-
-    event_path = getattr(config, "event_db_path", config.store_dir / "events.sqlite3")
-    object_dir = getattr(config, "object_dir", config.store_dir / "objects")
-    beats = EventStore(event_path, object_dir=object_dir).read_beats(
-        channel=channel,
-        limit=max_turns,
-        ascending=False,
-    )
-    if not beats:
-        return ""
-    rendered = [seg for seg in (_format_recent_beat(b) for b in beats) if seg]
-    if not rendered:
-        return ""
-    blob = "\n\n".join(rendered)
-    if len(blob) > max_chars:
-        # drop oldest until within budget; if still over, hard truncate
-        while len(blob) > max_chars and len(rendered) > 1:
-            rendered = rendered[1:]
-            blob = "[…earlier turns omitted…]\n\n" + "\n\n".join(rendered)
-        if len(blob) > max_chars:
-            blob = blob[:max_chars] + "\n[…truncated]"
-    return blob
-
-
-def load_carryover_context(config: "FiamConfig", *, consume: bool = True) -> str:
-    """Load carryover.md (one-shot session-summary + missed-turns context).
-
-    Mirrors the CC inject.sh hook semantics: read, then truncate. The next
-    turn will see an empty file (carryover.md exists but 0-byte) and skip
-    injection. New content is written by the server-side session rollover
-    or by `_append_carryover` for non-cc turns.
-
-    Set ``consume=False`` for diagnostic / dry-run reads.
-    """
-    co_path = config.home_path / "carryover.md"
-    if not co_path.exists():
-        return ""
+    max_messages: int = 80,
+) -> list[dict[str, Any]]:
+    path = transcript_path(config, channel)
+    if not path.exists():
+        return []
+    out: list[dict[str, Any]] = []
     try:
-        text = co_path.read_text(encoding="utf-8").strip()
+        lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
-        return ""
-    if not text:
-        return ""
-    if consume:
+        return []
+    for line in lines[-max_messages:]:
         try:
-            co_path.write_text("", encoding="utf-8")
-        except OSError:
-            pass
-        dirty = config.home_path / ".carryover_dirty"
-        try:
-            dirty.unlink(missing_ok=True)
-        except OSError:
-            pass
-    return text
+            message = _valid_transcript_message(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+        if message:
+            out.append(message)
+    return out
+
+
+def append_transcript_messages(
+    config: "FiamConfig",
+    channel: str,
+    messages: list[dict[str, Any]],
+) -> None:
+    path = transcript_path(config, channel)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        for message in messages:
+            clean = _valid_transcript_message(message)
+            if clean:
+                fh.write(json.dumps(clean, ensure_ascii=False) + "\n")
+
+
+def trim_transcript_messages(
+    config: "FiamConfig",
+    channel: str,
+    *,
+    max_messages: int = 120,
+) -> None:
+    path = transcript_path(config, channel)
+    if not path.exists():
+        return
+    try:
+        lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    except OSError:
+        return
+    if len(lines) <= max_messages:
+        return
+    path.write_text("\n".join(lines[-max_messages:]) + "\n", encoding="utf-8")
 
 
 def _write_debug_assembly(
@@ -344,7 +313,7 @@ def _write_debug_assembly(
                 if isinstance(block, dict) and block.get("cache_control"):
                     cache = True
                     break
-        # Label the system blocks by content for the UI ("constitution"/"self"/"context"/"recall+carryover")
+        # Label the system blocks by content for the UI ("constitution"/"self"/"context"/"recall")
         label = role
         if role == "system":
             if cache and parts and not any(p.get("label") == "constitution" for p in parts if p.get("role") == "system"):
@@ -353,8 +322,8 @@ def _write_debug_assembly(
                 label = "self"
             elif text.startswith("[context]"):
                 label = "context"
-            elif text.startswith("[recall]") or text.startswith("[carryover]") or "[recall]" in text[:40] or "[carryover]" in text[:40]:
-                label = "recall+carryover"
+            elif text.startswith("[recall]") or "[recall]" in text[:40]:
+                label = "recall"
             else:
                 label = "system-extra"
         parts.append({

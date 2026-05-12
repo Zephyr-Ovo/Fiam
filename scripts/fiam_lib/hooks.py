@@ -273,7 +273,7 @@ def write_awareness_md(config: "FiamConfig") -> bool:
     """Write self/awareness.md to home from template. Returns False if already exists.
 
     awareness.md is the API runtime's equivalent of CLAUDE.md: it teaches the AI
-    about XML markers (<wake>/<todo at>/<sleep>/<mute>/<notify>/<hold>/<carry_over>/COT)
+    about XML markers (<send>/<wake>/<todo at>/<sleep>/<state>/<hold>/COT)
     and other runtime conventions. prompt.load_self_context() picks it up automatically
     via the sorted-glob fallback.
     """

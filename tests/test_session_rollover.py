@@ -1,9 +1,8 @@
-"""Tests for the session-rollover infrastructure (auto-cut + carryover).
+"""Tests for the session-rollover infrastructure.
 
 Covers:
 - session_state.json create/read/write helpers
 - _check_and_run_session_rollover bumps counter and triggers rollover at cap
-- carryover.md replacement + load_carryover_context one-shot consumption
 - recall shield_after honors session boundary
 """
 from __future__ import annotations
@@ -48,6 +47,7 @@ def ds_mod(tmp_path, monkeypatch):
 
     class _Cfg:
         home_path = home
+        store_dir = store
         flow_path = store / "flow.jsonl"
         active_session_path = home / "self" / "active_session.json"
         events_per_session = 3
@@ -73,26 +73,20 @@ def test_session_state_roundtrip(ds_mod):
     assert again["boundary_ts"] == "2026-05-11T20:00:00+00:00"
 
 
-def test_carryover_summary_writes_and_marks_dirty(ds_mod):
-    ds_mod._write_carryover_summary("hello world")
-    co = ds_mod._carryover_path()
-    dirty = ds_mod._carryover_dirty_path()
-    assert co.exists()
-    assert dirty.exists()
-    text = co.read_text(encoding="utf-8")
-    assert "hello world" in text
-    assert "session_summary" in text
+def test_runtime_transcript_trim(ds_mod, monkeypatch):
+    monkeypatch.syspath_prepend(str(ROOT / "src"))
+    from fiam.runtime.prompt import append_transcript_messages, load_transcript_messages
 
+    append_transcript_messages(
+        ds_mod._CONFIG,
+        "chat",
+        [{"role": "user", "content": f"m{i}"} for i in range(130)],
+    )
+    ds_mod._trim_runtime_transcript("chat")
 
-def test_carryover_summary_prepends_above_existing(ds_mod):
-    co = ds_mod._carryover_path()
-    co.write_text("## existing block\nold content\n\n", encoding="utf-8")
-    ds_mod._write_carryover_summary("new summary")
-    text = co.read_text(encoding="utf-8")
-    new_pos = text.find("new summary")
-    old_pos = text.find("old content")
-    assert new_pos != -1 and old_pos != -1
-    assert new_pos < old_pos
+    messages = load_transcript_messages(ds_mod._CONFIG, "chat", max_messages=200)
+    assert len(messages) == 120
+    assert messages[0]["content"] == "m10"
 
 
 def test_check_rollover_bumps_until_cap(ds_mod, monkeypatch):
@@ -112,34 +106,6 @@ def test_check_rollover_bumps_until_cap(ds_mod, monkeypatch):
     res = ds_mod._check_and_run_session_rollover("chat")
     assert res == {"ok": True, "fake": True}
     assert triggered == ["chat"]
-
-
-def test_load_carryover_context_consumes_once(ds_mod, monkeypatch):
-    monkeypatch.syspath_prepend(str(ROOT / "src"))
-    from fiam.runtime.prompt import load_carryover_context
-
-    co = ds_mod._carryover_path()
-    co.write_text("hi\n", encoding="utf-8")
-
-    text = load_carryover_context(ds_mod._CONFIG, consume=True)
-    assert text == "hi"
-    # second read sees empty
-    text2 = load_carryover_context(ds_mod._CONFIG, consume=True)
-    assert text2 == ""
-    # file still exists but is empty
-    assert co.exists()
-    assert co.read_text(encoding="utf-8") == ""
-
-
-def test_load_carryover_context_no_consume(ds_mod, monkeypatch):
-    monkeypatch.syspath_prepend(str(ROOT / "src"))
-    from fiam.runtime.prompt import load_carryover_context
-
-    co = ds_mod._carryover_path()
-    co.write_text("persistent\n", encoding="utf-8")
-
-    assert load_carryover_context(ds_mod._CONFIG, consume=False) == "persistent"
-    assert load_carryover_context(ds_mod._CONFIG, consume=False) == "persistent"
 
 
 def test_recall_shield_after_uses_session_boundary():

@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fiam.config import FiamConfig
-from fiam.markers import parse_hold_kind, strip_xml_markers
+from fiam.markers import parse_hold_markers, strip_xml_markers
 
 # COT markers: <cot>...</cot> for shareable thought blocks; <lock/> to lock
 # the entire turn's thought chain (covers marker thoughts + any native
@@ -152,18 +152,16 @@ def apply_hold(
     channel: str,
     runtime: str,
 ) -> tuple[str, str, list[dict[str, Any]]]:
-    """Apply ``<hold/>`` / ``<hold all/>`` filtering and queue a retry todo.
+    """Apply ``<hold/>`` / ``<hold>reason</hold>`` and queue a retry todo.
 
-    Returns ``(cleaned_text, kind, retry_todos)`` where ``kind`` is ``""``,
-    ``"text"``, or ``"all"``. When a hold is detected, a single retry todo is
-    scheduled at ``now + config.hold_retry_seconds`` so the AI can take
-    another pass; the original output stays in transcripts/context so the AI
-    can see what it just held.
+    Returns ``(cleaned_text, reason, retry_todos)``. When a hold is detected,
+    a single retry todo is scheduled at ``now + config.hold_retry_seconds``.
     """
-    kind = parse_hold_kind(text or "")
+    hold_markers = parse_hold_markers(text or "")
     cleaned = strip_hold_markers(text or "")
-    if not kind:
+    if not hold_markers:
         return cleaned, "", []
+    reason = hold_markers[-1].reason or "held reply"
     delay = max(1, int(getattr(config, "hold_retry_seconds", 30) or 30))
     retry_at = config.now_local() + timedelta(seconds=delay)
     todo = {
@@ -172,10 +170,10 @@ def apply_hold(
         "action": "hold_retry",
         "channel": channel,
         "runtime": runtime,
-        "reason": f"hold {kind} retry",
+        "reason": reason,
         "created": datetime.now(timezone.utc).isoformat(),
     }
-    return cleaned, kind, [todo]
+    return cleaned, reason, [todo]
 
 
 def _strip_cot_control(text: str) -> str:

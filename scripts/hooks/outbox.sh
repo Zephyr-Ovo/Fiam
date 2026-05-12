@@ -2,7 +2,7 @@
 # fiam hook: Stop -> extract outbound message markers from assistant response
 #
 # The AI can include markers like:
-#   [->email:Zephyr] message text here
+#   <send to="email:Zephyr">message text here</send>
 #
 # This hook reads the stop_hook_data from stdin, extracts the last
 # assistant message, finds markers, and writes outbox/.md files
@@ -42,18 +42,28 @@ if [ -z "$MSG" ]; then
     exit 0
 fi
 
-# Extract [->channel:recipient] blocks
+# Extract XML send blocks
 echo "$MSG" | python3 -c "
 import sys, re, os
 from datetime import datetime
+import xml.etree.ElementTree as ET
 
 text = sys.stdin.read()
 home = os.environ.get('CLAUDE_PROJECT_DIR', '.')
 outbox = os.path.join(home, 'outbox')
 
-# Pattern: [->channel:recipient] followed by text until next marker or end
-pattern = r'\[→(email):([^\]]+)\]\s*(.+?)(?=\[→(?:email):|$)'
-matches = re.findall(pattern, text, re.DOTALL)
+matches = []
+for raw in re.findall(r'<send\b[^>]*>.*?</send>', text, re.DOTALL | re.IGNORECASE):
+    try:
+        node = ET.fromstring(raw)
+    except ET.ParseError:
+        continue
+    target = (node.attrib.get('to') or '').strip()
+    if ':' not in target:
+        continue
+    channel, recipient = target.split(':', 1)
+    if channel.strip().lower() == 'email':
+        matches.append((channel, recipient, ''.join(node.itertext())))
 
 for i, (channel, recipient, body) in enumerate(matches):
     body = body.strip()
