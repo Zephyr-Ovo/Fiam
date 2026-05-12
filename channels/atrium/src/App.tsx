@@ -1,17 +1,17 @@
 import { useState } from "react";
 import { ChatView } from "./views/ChatView";
-import { EditorView } from "./views/EditorView";
 import {
   MessageSquare,
-  FileText,
+  Inbox,
   Settings,
   Sparkles,
+  ExternalLink,
 } from "lucide-react";
 
-type View = "chat" | "editor" | "settings";
+type View = "chat" | "studio" | "settings";
 
 export default function App() {
-  const [view, setView] = useState<View>("editor");
+  const [view, setView] = useState<View>("studio");
 
   return (
     <div className="h-screen w-screen flex flex-col overflow-hidden bg-paper">
@@ -24,10 +24,10 @@ export default function App() {
 
         <nav className="flex items-center gap-1">
           <NavBtn
-            icon={<FileText size={18} />}
-            label="笔记"
-            active={view === "editor"}
-            onClick={() => setView("editor")}
+            icon={<Inbox size={18} />}
+            label="Studio"
+            active={view === "studio"}
+            onClick={() => setView("studio")}
           />
           <NavBtn
             icon={<MessageSquare size={18} />}
@@ -54,13 +54,48 @@ export default function App() {
       {/* Main content */}
       <main className="flex-1 overflow-hidden">
         {view === "chat" && <ChatView />}
-        {view === "editor" && <EditorView />}
+        {view === "studio" && <StudioStatusView />}
         {view === "settings" && (
           <div className="flex items-center justify-center h-full text-ghost">
             设置页面待实现
           </div>
         )}
       </main>
+    </div>
+  );
+}
+
+function StudioStatusView() {
+  return (
+    <div className="h-full flex items-center justify-center bg-paper-warm px-8">
+      <div className="max-w-[680px] w-full bg-surface border border-thread rounded-xl p-8 shadow-sm">
+        <div className="flex items-center gap-3 text-ink">
+          <Sparkles size={22} className="text-accent" />
+          <div>
+            <h1 className="font-serif text-2xl leading-tight">Fiam Studio lives in Obsidian</h1>
+            <p className="text-sm text-lead mt-1">
+              Atrium keeps browser capture and desktop capabilities. The full Studio surface is the Obsidian plugin inside the vault.
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-6 grid gap-3 text-sm text-ink/80">
+          <div className="rounded-lg border border-thread bg-paper px-4 py-3">
+            Vault: <span className="font-mono">D:\DevTools\lib\studio</span>
+          </div>
+          <div className="rounded-lg border border-thread bg-paper px-4 py-3">
+            Plugin: <span className="font-mono">.obsidian/plugins/fiam-studio</span>
+          </div>
+          <div className="rounded-lg border border-thread bg-paper px-4 py-3">
+            Capture remains available from the Atrium browser extension via <span className="font-mono">/studio/share</span>.
+          </div>
+        </div>
+
+        <div className="mt-6 flex items-center gap-2 text-xs text-lead">
+          <ExternalLink size={14} />
+          <span>Open the Studio vault in Obsidian to use Inbox, Desk, Shelf, Co-create, and Timeline.</span>
+        </div>
+      </div>
     </div>
   );
 }

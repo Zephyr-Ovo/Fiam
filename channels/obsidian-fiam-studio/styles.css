@@ -1,0 +1,79 @@
+.fiam-studio-view {
+  --fiam-studio-border: var(--background-modifier-border);
+  --fiam-studio-muted: var(--text-muted);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+}
+
+.fiam-studio-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.fiam-studio-tab {
+  border: 1px solid var(--fiam-studio-border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.fiam-studio-tab.is-active {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  border-color: var(--interactive-accent);
+}
+
+.fiam-studio-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.fiam-studio-row {
+  border: 1px solid var(--fiam-studio-border);
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--background-primary);
+}
+
+.fiam-studio-row-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.fiam-studio-row-meta {
+  color: var(--fiam-studio-muted);
+  font-size: 12px;
+}
+
+.fiam-studio-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.fiam-studio-input,
+.fiam-studio-textarea {
+  width: 100%;
+}
+
+.fiam-studio-textarea {
+  min-height: 120px;
+  resize: vertical;
+}
+
+.fiam-studio-empty {
+  color: var(--fiam-studio-muted);
+  font-style: italic;
+}
+
+.fiam-studio-status {
+  color: var(--fiam-studio-muted);
+  font-size: 12px;
+  white-space: pre-wrap;
+}

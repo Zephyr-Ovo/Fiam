@@ -55,7 +55,6 @@ to act — that is the daemon's call — but it **does** decide *how to confirm*
 - **Tauri 2** (Rust core + React 19 frontend)
 - **React 19 + TypeScript** — switched from Svelte 5 to match Favilla mobile stack
 - **Tailwind v4** for styling (Favilla warm palette: paper/ink/accent/thread)
-- **TipTap** rich text editor with author annotation extension (AI/human paragraphs)
 - **lucide-react** icons, **framer-motion** animations
 - **Crimson Pro** (serif), **Inter** (sans), **JetBrains Mono** (mono)
 
@@ -63,16 +62,16 @@ to act — that is the daemon's call — but it **does** decide *how to confirm*
 
 | View | Description |
 |------|-------------|
-| Editor | TipTap note editor + Obsidian-style file tree + dual-side timeline |
+| Studio | Status handoff to the Obsidian-based Fiam Studio vault/plugin |
 | Chat | Conversational interface with sidebar, thinking blocks, attachments |
 | Settings | Placeholder for future configuration |
 
-### Tauri bridge (`src/lib/tauri.ts`)
+### Studio direction
 
-Planned Tauri commands for backend integration:
-- `workspace_list_files` / `workspace_read_file` / `workspace_write_file` — local folder mapping
-- `git_file_log` / `git_status` — real edit history for timeline
-- Frontend uses localStorage fallback when not in Tauri shell
+Studio is no longer a TipTap editor inside Atrium. The full Studio surface lives
+in Obsidian through the `fiam-studio` plugin, with the vault at
+`D:\DevTools\lib\studio`. Atrium keeps browser capture and desktop capability
+execution; the browser extension posts captures to `/studio/share`.
 
 ### Legacy tech (pre-2026-05-10)
 
