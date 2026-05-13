@@ -128,6 +128,28 @@ uv run python scripts/fiam.py plugin list
 uv run python scripts/fiam.py api --channel chat "ping"
 ```
 
+## Local Reset
+
+To inspect what a local Favilla/FIAM whiteboard reset would clear:
+
+```bash
+python scripts/reset_favilla_whiteboard.py
+```
+
+Apply it with:
+
+```bash
+python scripts/reset_favilla_whiteboard.py --apply
+```
+
+The reset truncates AI prompt markdown placeholders under the configured home, clears local UI/model transcripts, cuts/session state, derived memory/training stores, ObjectStore blobs, timeline/features/pool data, and leaves source files, README/docs, config, secrets, and git history untouched.
+
+Claude Code can return a generated home file to Favilla as a downloadable object with:
+
+```bash
+python scripts/object_put.py --path relative-file.txt --direction outbound
+```
+
 `fiam api` is a pure runtime smoke call. It does not write events or transcripts.
 
 ## Development

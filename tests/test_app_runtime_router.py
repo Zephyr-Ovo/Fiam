@@ -22,6 +22,7 @@ dashboard_server = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(dashboard_server)
 from fiam.config import FiamConfig  # noqa: E402
 from fiam.store.beat import Beat, append_beat, read_beats  # noqa: E402
+from fiam.store.objects import ObjectStore  # noqa: E402
 from fiam.runtime.prompt import load_transcript_messages  # noqa: E402
 from fiam.turn import TurnTraceRow, TurnTraceStore  # noqa: E402
 from datetime import datetime, timezone  # noqa: E402
@@ -285,6 +286,83 @@ class AppRuntimeRouterTest(unittest.TestCase):
         self.assertIn("text_delta", [event["event"] for event in live_events])
         self.assertNotIn("text", [event["event"] for event in live_events])
         self.assertNotIn("<hold>", json.dumps(live_events, ensure_ascii=False))
+
+    def test_cc_stream_text_delta_preserves_spacing(self) -> None:
+        original_config = dashboard_server._CONFIG
+        original_record_turn = dashboard_server._record_cc_app_turn
+        original_debug_context = dashboard_server._record_debug_context
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = FiamConfig(home_path=root / "home", code_path=root / "code")
+            config.ensure_dirs()
+            dashboard_server._CONFIG = config
+            dashboard_server._record_cc_app_turn = lambda *args, **kwargs: None
+            dashboard_server._record_debug_context = lambda *args, **kwargs: None
+
+            class FakeProc:
+                def __init__(self) -> None:
+                    self.stdout = iter([
+                        json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "hello "}]}}) + "\n",
+                        json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "world"}]}}) + "\n",
+                        json.dumps({"type": "result", "result": "hello world", "session_id": "sess_stream", "is_error": False}) + "\n",
+                    ])
+                    self.stderr = self
+                    self.returncode = 0
+
+                def wait(self, timeout=None):
+                    return 0
+
+                def read(self):
+                    return ""
+
+                def kill(self):
+                    self.returncode = -9
+
+            with patch("subprocess.Popen", return_value=FakeProc()):
+                events = list(dashboard_server._iter_cc_favilla_chat_events(
+                    text="hi",
+                    channel="chat",
+                    surface="favilla.chat",
+                    turn_id="turn_stream_space",
+                    request_id="req_stream_space",
+                ))
+
+        dashboard_server._CONFIG = original_config
+        dashboard_server._record_cc_app_turn = original_record_turn
+        dashboard_server._record_debug_context = original_debug_context
+
+        deltas = [event["data"]["text"] for event in events if event["event"] == "text_delta"]
+        self.assertEqual("".join(deltas), "hello world")
+
+    def test_object_token_extraction_and_download(self) -> None:
+        original_config = dashboard_server._CONFIG
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = FiamConfig(home_path=root / "home", code_path=root / "code")
+            config.ensure_dirs()
+            dashboard_server._CONFIG = config
+            object_hash = ObjectStore(config.object_dir).put_bytes(b"hello file", suffix="")
+            manifest = config.home_path / "uploads" / "manifest.jsonl"
+            manifest.parent.mkdir(parents=True, exist_ok=True)
+            manifest.write_text(json.dumps({
+                "uploaded_at": "2026-05-13T09:00:00+00:00",
+                "object_hash": object_hash,
+                "name": "hello.txt",
+                "mime": "text/plain",
+                "size": 10,
+                "direction": "outbound",
+            }) + "\n", encoding="utf-8")
+
+            attachments = dashboard_server._extract_object_attachments(f"made obj:{object_hash[:12]}")
+            body, name, mime = dashboard_server._favilla_object_download(f"obj:{object_hash[:12]}")
+
+        dashboard_server._CONFIG = original_config
+
+        self.assertEqual(attachments[0]["object_hash"], object_hash)
+        self.assertEqual(attachments[0]["name"], "hello.txt")
+        self.assertEqual(body, b"hello file")
+        self.assertEqual(name, "hello.txt")
+        self.assertEqual(mime, "text/plain")
 
     def test_memory_worker_helper_writes_timeline(self) -> None:
         original_config = dashboard_server._CONFIG

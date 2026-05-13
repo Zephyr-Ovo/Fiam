@@ -67,8 +67,10 @@ export function Settings({ open, onClose }: Props) {
           transform: visible
             ? "translate(-50%, -50%) scale(1)"
             : "translate(-50%, -48%) scale(0.96)",
-          width: "86%",
+          width: "min(360px, calc(100% - 28px))",
           maxWidth: 360,
+          height: "min(640px, calc(100dvh - 44px))",
+          maxHeight: "calc(100dvh - 44px)",
           borderRadius: 22,
           background: "rgba(255, 250, 243, 0.55)",
           backdropFilter: "blur(20px) saturate(150%)",
@@ -83,6 +85,7 @@ export function Settings({ open, onClose }: Props) {
           transition:
             "opacity 120ms ease-out, transform 120ms ease-out",
           willChange: "transform, opacity",
+          overflow: "hidden",
         }}
       >
         <div
@@ -91,6 +94,11 @@ export function Settings({ open, onClose }: Props) {
         >
           Settings
         </div>
+
+        <div
+          className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1"
+          style={{ WebkitOverflowScrolling: "touch" }}
+        >
 
         <Field
           label="Your name"
@@ -218,8 +226,9 @@ export function Settings({ open, onClose }: Props) {
           value={draft.bg}
           onChange={(v) => setDraft({ ...draft, bg: v })}
         />
+        </div>
 
-        <div className="mt-5 flex justify-end gap-2">
+        <div className="mt-4 flex shrink-0 justify-end gap-2">
           <button
             type="button"
             onClick={onClose}

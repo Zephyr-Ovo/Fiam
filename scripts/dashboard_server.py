@@ -37,6 +37,7 @@ _POOL = None        # Pool instance (lazy)
 _EMBEDDER = None    # Embedder instance (lazy)
 _BUS = None         # Bus instance (lazy, for /api/capture publishing)
 _COMPUTE_LOCK = threading.Lock()  # gate concurrent mutations
+_CC_RUNTIME_LOCK = threading.Lock()  # Claude Code uses a single local session lock
 _WEARABLE_LOCK = threading.Lock()
 _RECALL_LOCK = threading.Lock()
 _PENDING_RECALL_CONTEXT = None
@@ -1932,12 +1933,13 @@ def _run_cc_studio_edit(prompt: str) -> dict:
         command.extend(["--append-system-prompt", system_context])
     if _CONFIG.cc_model:
         command.extend(["--model", _CONFIG.cc_model])
-    try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=180, cwd=str(_CONFIG.home_path))
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError("claude studio edit timeout") from exc
-    except FileNotFoundError as exc:
-        raise RuntimeError("claude not found on server PATH") from exc
+    with _CC_RUNTIME_LOCK:
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=180, cwd=str(_CONFIG.home_path))
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("claude studio edit timeout") from exc
+        except FileNotFoundError as exc:
+            raise RuntimeError("claude not found on server PATH") from exc
     try:
         data = json.loads(result.stdout or "{}")
     except json.JSONDecodeError as exc:
@@ -2047,6 +2049,7 @@ def _persist_favilla_ai_transcript(channel: str, result: dict, runtime: str) -> 
         "thinking": result.get("thoughts") or [],
         "thinkingLocked": bool(result.get("thoughts_locked")),
         "segments": result.get("segments") or [],
+        "attachments": result.get("attachments") or [],
         "hold": result.get("hold"),
         "tool_calls_summary": result.get("tool_calls_summary") or [],
         "actions": result.get("actions_list") or [],
@@ -2215,6 +2218,133 @@ def _api_objects(query: dict) -> dict:
         payload["object_hash"] = catalog.resolve_token(token)
         payload["token"] = token
     return payload
+
+
+_OBJECT_TOKEN_RE = re.compile(r"\bobj:([0-9a-fA-F]{8,64})\b")
+
+
+def _object_path_for_hash(object_hash: str) -> Path | None:
+    if not _CONFIG:
+        return None
+    from fiam.store.objects import ObjectStore
+
+    clean = "".join(ch for ch in str(object_hash or "").lower() if ch in "0123456789abcdef")
+    if len(clean) != 64:
+        return None
+    store = ObjectStore(_CONFIG.object_dir)
+    for suffix in ("", ".txt"):
+        try:
+            path = store.path_for_hash(clean, suffix=suffix)
+        except ValueError:
+            continue
+        if path.exists() and path.is_file():
+            return path
+    return None
+
+
+def _resolve_object_hash(token: str) -> str:
+    if not _CONFIG:
+        return ""
+    raw = str(token or "").strip().lower()
+    if raw.startswith("obj:"):
+        raw = raw[4:]
+    raw = "".join(ch for ch in raw if ch in "0123456789abcdef")
+    if len(raw) == 64 and _object_path_for_hash(raw):
+        return raw
+    if len(raw) < 8:
+        return ""
+    try:
+        from fiam.store.object_catalog import ObjectCatalog
+
+        resolved = ObjectCatalog.from_config(_CONFIG).resolve_token(f"obj:{raw}")
+        if resolved and _object_path_for_hash(resolved):
+            return resolved
+    except Exception:
+        pass
+    root = _CONFIG.object_dir
+    if not root.exists():
+        return ""
+    matches: set[str] = set()
+    prefix_dir = root / raw[:2]
+    candidates = prefix_dir.glob(f"{raw}*") if prefix_dir.exists() else root.glob(f"**/{raw}*")
+    for path in candidates:
+        stem = path.name.split(".", 1)[0].lower()
+        if len(stem) == 64 and stem.startswith(raw):
+            matches.add(stem)
+    return next(iter(matches)) if len(matches) == 1 else ""
+
+
+def _object_metadata(object_hash: str) -> dict:
+    if not _CONFIG:
+        return {}
+    try:
+        from fiam.store.object_catalog import ObjectCatalog
+
+        records = ObjectCatalog.from_config(_CONFIG).search(object_hash, limit=20)
+        for record in records:
+            data = record.to_dict()
+            if data.get("object_hash") == object_hash:
+                return data
+    except Exception:
+        pass
+    return {}
+
+
+def _object_attachment_for_hash(object_hash: str) -> dict | None:
+    path = _object_path_for_hash(object_hash)
+    if not path:
+        return None
+    meta = _object_metadata(object_hash)
+    name = str(meta.get("name") or "").strip() or (f"object-{object_hash[:12]}.txt" if path.suffix == ".txt" else f"object-{object_hash[:12]}")
+    mime = str(meta.get("mime") or "").strip() or ("text/plain" if path.suffix == ".txt" else "application/octet-stream")
+    return {
+        "kind": "image" if mime.startswith("image/") else "file",
+        "name": Path(name).name,
+        "object_hash": object_hash,
+        "mime": mime,
+        "size": int(meta.get("size") or path.stat().st_size),
+    }
+
+
+def _extract_object_attachments(text: str) -> list[dict]:
+    seen: set[str] = set()
+    out: list[dict] = []
+    for match in _OBJECT_TOKEN_RE.finditer(str(text or "")):
+        object_hash = _resolve_object_hash(match.group(0))
+        if not object_hash or object_hash in seen:
+            continue
+        attachment = _object_attachment_for_hash(object_hash)
+        if attachment:
+            out.append(attachment)
+            seen.add(object_hash)
+    return out
+
+
+def _merge_result_object_attachments(result: dict) -> None:
+    existing = result.get("attachments") if isinstance(result.get("attachments"), list) else []
+    by_hash: dict[str, dict] = {}
+    for item in existing:
+        if isinstance(item, dict):
+            object_hash = str(item.get("object_hash") or "")
+            if object_hash:
+                by_hash[object_hash] = item
+    for item in _extract_object_attachments(str(result.get("reply") or result.get("raw_reply") or "")):
+        by_hash.setdefault(str(item.get("object_hash") or ""), item)
+    if by_hash:
+        result["attachments"] = list(by_hash.values())
+
+
+def _favilla_object_download(token: str) -> tuple[bytes, str, str]:
+    object_hash = _resolve_object_hash(token)
+    if not object_hash:
+        raise FileNotFoundError("object not found")
+    path = _object_path_for_hash(object_hash)
+    if not path:
+        raise FileNotFoundError("object not found")
+    attachment = _object_attachment_for_hash(object_hash) or {}
+    name = str(attachment.get("name") or path.name)
+    mime = str(attachment.get("mime") or "application/octet-stream")
+    return path.read_bytes(), name, mime
 
 
 def _normalize_metrics(
@@ -2639,6 +2769,7 @@ def _favilla_chat_send(payload: dict) -> dict:
                     continue
             cleaned_segments.append(segment)
         result["segments"] = cleaned_segments
+    _merge_result_object_attachments(result)
     _append_transcript(channel, {
         "role": "user",
         "text": user_text,
@@ -2656,6 +2787,7 @@ def _favilla_chat_send(payload: dict) -> dict:
         "thinking": result.get("thoughts") or [],
         "thinkingLocked": bool(result.get("thoughts_locked")),
         "segments": result.get("segments") or [],
+        "attachments": result.get("attachments") or [],
         "hold": result.get("hold"),
         "tool_calls_summary": result.get("tool_calls_summary") or [],
         "actions": result.get("actions_list") or [],
@@ -2862,6 +2994,7 @@ def _favilla_chat_send_stream(payload: dict):
         return
 
     _apply_route_from_result(final_result)
+    _merge_result_object_attachments(final_result)
 
     # Transcript is the durable source of truth. Persist before yielding done,
     # because the client may disconnect exactly as the final frame is sent.
@@ -3343,9 +3476,12 @@ def _app_runtime_context() -> str:
     local = now_utc.astimezone(_CONFIG.project_tz()).isoformat() if _CONFIG else now_utc.astimezone().isoformat()
     uploads_dir = (_CONFIG.home_path / "uploads") if _CONFIG else Path("uploads")
     objects_dir = (_CONFIG.object_dir) if _CONFIG else Path("store/objects")
+    object_put = (_CONFIG.code_path / "scripts" / "object_put.py") if _CONFIG else Path("scripts/object_put.py")
+    config_path = (_CONFIG.toml_path) if _CONFIG else Path("fiam.toml")
     return "\n\n".join([
         _APP_RUNTIME_CONTEXT_BASE,
         f"[uploads]\nFavilla uploads are canonical object refs in {objects_dir}; the index is {uploads_dir / 'manifest.jsonl'}. Current attachment prompt lines include obj:<sha256> plus a materialized path for inspection. Do not mention old uploaded files just because they exist. Only inspect or discuss uploads when the current user message asks about files/images/uploads or includes current attachments.",
+        f"[object_transfer]\nTo send a generated file back to Favilla, store it in ObjectStore and mention the returned obj token in the visible reply. In Claude Code, create the file under the home directory, then run: python {object_put} --config {config_path} --path <relative-file> --direction outbound",
         f"[server_time]\nutc={now_utc.isoformat()}\nlocal={local}",
         "[tool_mode]\nUse the structured file/shell tools (Read/Write/Edit/Glob/Grep/Bash/git_diff) only when you must wait on a real result. For fire-and-forget side effects use XML markers: <send to=\"channel:address\">message</send>, <todo at=\"...\">desc</todo>, <wake at=\"...\"/>, <sleep at=\"...\"/>, and <state value=\"mute|notify|block|busy|sleep|together\" reason=\"...\"/>. Keep tool details out of the user-facing reply unless the user asks for them.",
         "[app_markers]\nFor visible thinking summaries, wrap shareable state notes in <cot>...</cot>. To lock the entire turn's thought chain (both <cot> blocks and any native reasoning), include <lock/> anywhere in the reply. The server strips these markers into structured segments; clients may or may not render them visibly. Do not promise a specific button, bubble, or visual affordance unless the current client explicitly supports it. To pull back a reply and immediately try again, include <hold/> or <hold>reason</hold>. To end this turn without a visible reply, include <held>reason</held>. Held output is stored privately and is not queued as a user todo.",
@@ -3498,6 +3634,11 @@ def _combine_cc_action_events(action_events: list[dict]) -> list[dict]:
 
 
 def _run_cc_favilla_chat(*, text: str, channel: str, surface: str = "", attachments: list | None = None, turn_id: str = "", request_id: str = "") -> dict:
+    with _CC_RUNTIME_LOCK:
+        return _run_cc_favilla_chat_locked(text=text, channel=channel, surface=surface, attachments=attachments, turn_id=turn_id, request_id=request_id)
+
+
+def _run_cc_favilla_chat_locked(*, text: str, channel: str, surface: str = "", attachments: list | None = None, turn_id: str = "", request_id: str = "") -> dict:
     import subprocess
     from fiam.runtime.prompt import build_plain_prompt_parts
 
@@ -3767,6 +3908,11 @@ def _run_cc_favilla_chat(*, text: str, channel: str, surface: str = "", attachme
 
 
 def _iter_cc_favilla_chat_events(*, text: str, channel: str, surface: str = "", attachments: list | None = None, turn_id: str = "", request_id: str = ""):
+    with _CC_RUNTIME_LOCK:
+        yield from _iter_cc_favilla_chat_events_locked(text=text, channel=channel, surface=surface, attachments=attachments, turn_id=turn_id, request_id=request_id)
+
+
+def _iter_cc_favilla_chat_events_locked(*, text: str, channel: str, surface: str = "", attachments: list | None = None, turn_id: str = "", request_id: str = ""):
     """Stream CC chat as SSE events.
 
     Yields dicts of shape {"event": str, "data": dict}. Events:
@@ -3840,7 +3986,7 @@ def _iter_cc_favilla_chat_events(*, text: str, channel: str, surface: str = "", 
     }
 
     def emit_text_delta(text_part: str) -> None:
-        clean = text_part.strip()
+        clean = str(text_part or "")
         if not clean:
             return
         ev_queue.put({"event": "text_delta", "data": {"index": state["text_idx"], "text": clean}})
@@ -5573,6 +5719,30 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 self._serve_json({"error": "unauthorized"}, status=401)
                 return
             self._serve_json(_favilla_dashboard())
+            return
+
+        if path.startswith("/favilla/object/"):
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            from urllib.parse import quote, unquote
+
+            token = unquote(path[len("/favilla/object/"):])
+            try:
+                body, name, mime = _favilla_object_download(token)
+            except FileNotFoundError:
+                self._serve_json({"error": "object not found"}, status=404)
+                return
+            except Exception as e:
+                logger.exception("Favilla object download error")
+                self._serve_json({"error": str(e)}, status=500)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", mime or "application/octet-stream")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quote(name)}")
+            self.end_headers()
+            self.wfile.write(body)
             return
 
         if path == "/ring/today":

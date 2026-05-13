@@ -141,6 +141,28 @@ plugins/                   # 功能插件 manifest（可接入/禁用）
 | `fiam plugin show <id>` | 查看某个插件的 topic、能力、鉴权、延迟说明 |
 | `fiam plugin enable/disable <id>` | 启用/禁用插件收发 |
 
+### 本地白板重置
+
+先预览会清理哪些本地运行数据：
+
+```bash
+python scripts/reset_favilla_whiteboard.py
+```
+
+确认后执行：
+
+```bash
+python scripts/reset_favilla_whiteboard.py --apply
+```
+
+这个命令会清空配置 home 下给 AI 注入的提示词 md 占位、Favilla/UI/model transcript、cut/session/debug 状态、训练/派生数据（features、pool、timeline、objects、trace 等），不会动源码、README/docs、`fiam.toml`、密钥或 Git 历史。
+
+Claude Code 需要把生成文件回传给 Favilla 下载时，可先把 home 内文件导入 ObjectStore：
+
+```bash
+python scripts/object_put.py --path relative-file.txt --direction outbound
+```
+
 ## 配置
 
 复制 `fiam.toml.example` → `fiam.toml`（或运行 `fiam init`）。

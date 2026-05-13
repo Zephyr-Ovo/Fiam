@@ -26,7 +26,7 @@ import { HourglassIcon } from "./components/HourglassIcon"
 import { ConfirmModal } from "./components/ConfirmModal"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
-import { fetchChatTranscript, recordChatMessage, sendChatStream, uploadFiles, recallNow, cutFlow, processFlow, type ChatAttachment, type ChatSegment, type StoredChatMessage } from "./lib/api"
+import { downloadObject, fetchChatTranscript, recordChatMessage, sendChatStream, uploadFiles, recallNow, cutFlow, processFlow, type ChatAttachment, type ChatSegment, type StoredChatMessage } from "./lib/api"
 import { useComputerStatus, describeEvent } from "./lib/computerStatus"
 import { appConfig } from "./config"
 import { createBrowserSttSession, transcribeAudioOpenAICompatible, speakText } from "./lib/voice"
@@ -37,15 +37,15 @@ const SEEN_BUBBLE_IDS = new Set<string>()
 
 type Attachment =
   | { kind: "voice"; seconds: number }
-  | { kind: "file"; name: string; size?: string | number }
-  | { kind: "image"; name: string }
+  | { kind: "file"; name: string; size?: string | number; object_hash?: string; mime?: string }
+  | { kind: "image"; name: string; object_hash?: string; mime?: string; size?: string | number }
 
 type ThinkStep = {
   kind: "think" | "search" | "check" | "native"
   text: string
   summary?: string
   result?: string
-  source?: "marker" | "native"
+  source?: "marker" | "native" | "official" | "fiam"
   locked?: boolean
   icon?: string
 }
@@ -97,8 +97,8 @@ function serverMessagesToMsgs(serverMessages: StoredChatMessage[]): Msg[] {
     ...msg,
     attachments: (msg.attachments || []).map((att) => {
       if (att.kind === "voice") return { kind: "voice", seconds: Number(att.size || 0) || 0 }
-      if (att.kind === "image") return { kind: "image", name: att.name }
-      return { kind: "file", name: att.name, size: att.size }
+      if (att.kind === "image") return { kind: "image", name: att.name, object_hash: att.object_hash, mime: att.mime, size: att.size }
+      return { kind: "file", name: att.name, size: att.size, object_hash: att.object_hash, mime: att.mime }
     }),
   }))
 }
@@ -350,14 +350,10 @@ function FilePill({ a }: { a: Extract<Attachment, { kind: "file" | "image" }> })
     ? "rgba(199,195,176,0.85)" // sage
     : "rgba(255,232,214,0.92)" // peach
   const iconColor = isImage ? "#5a5840" : "var(--color-cocoa)"
-  return (
-    <div
-      className="inline-flex items-center gap-[3px] rounded-[6px] px-[5px] py-[2px]"
-      style={{
-        background: bgColor,
-        width: 96,
-      }}
-    >
+  const pillStyle = { background: bgColor, width: 96 }
+  const buttonStyle = { ...pillStyle, border: 0, color: "inherit", font: "inherit", cursor: "pointer" }
+  const content = (
+    <>
       <Icon
         className="h-[14px] w-[14px] shrink-0"
         strokeWidth={1.7}
@@ -373,6 +369,28 @@ function FilePill({ a }: { a: Extract<Attachment, { kind: "file" | "image" }> })
       >
         {displayName}
       </span>
+    </>
+  )
+  if (a.object_hash) {
+    return (
+      <button
+        type="button"
+        className="inline-flex items-center gap-[3px] rounded-[6px] px-[5px] py-[2px] text-left"
+        style={buttonStyle}
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={() => downloadObject(`obj:${a.object_hash}`, displayName).catch(() => undefined)}
+        title="Download attachment"
+      >
+        {content}
+      </button>
+    )
+  }
+  return (
+    <div
+      className="inline-flex items-center gap-[3px] rounded-[6px] px-[5px] py-[2px]"
+      style={pillStyle}
+    >
+      {content}
     </div>
   )
 }
@@ -573,7 +591,7 @@ const EXPLICIT_STREAMLINE_ICON: Record<string, string> = {
 const STREAMLINE_KEYWORD_RULES: Array<{ pattern: RegExp; slug: string }> = [
   { pattern: /\b(read|open|file|document|text|markdown|json|csv|log)\b|文件|文档|日志|读取|查看/, slug: "file-text" },
   { pattern: /\b(list|dir|folder|tree|workspace)\b|目录|文件夹|列表/, slug: "folder" },
-  { pattern: /\b(grep|search|find|query|lookup|scan)\b|搜索|检索|查找|寻找/, slug: "file-text" },
+  { pattern: /\b(grep|search|find|query|lookup|scan)\b|搜索|检索|查找|寻找/, slug: "search" },
   { pattern: /\b(write|edit|patch|update|modify|note|draft)\b|写|编辑|修改|记录|笔记|草稿/, slug: "write-paper" },
   { pattern: /\b(todo|task|plan|checklist|queue|verify|test|build|pass|done)\b|待办|任务|计划|清单|验证|测试|构建|完成/, slug: "clipboard-check" },
   { pattern: /\b(time|clock|later|hold|wait|sleep|calendar|date)\b|时间|稍后|等待|日历|提醒/, slug: "clock" },
@@ -601,18 +619,15 @@ function compactIconKey(value?: string) {
 }
 
 function inferStreamlineIcon(step: ThinkStep): string {
-  // 0. pure thinking shows the sparkle (bulingbuling) icon — the brain
-  //    glyph was visually busy and hard to align at 14px.
-  if (step.kind === "think") return "bulingbuling"
-  // 1. explicit icon hint from the step → highest priority
+  // 1. explicit icon hint from the step -> highest priority.
   const explicit = EXPLICIT_STREAMLINE_ICON[compactIconKey(step.icon)]
   if (explicit && STREAMLINE_THINK_ICONS.has(explicit)) return explicit
-  // 2. pure "thinking" steps (CC monologue, no tool call, no icon) MUST fall
-  //    back to the Brain fallback. The keyword rules historically swept words
-  //    like "file" / "text" out of the prose and produced a misleading
-  //    file-text icon, which is what users complained about. Only match
-  //    keywords against the icon hint and the explicit source label, never
-  //    the free-form text/summary.
+  // 1b. pure thinking shows the sparkle icon. Keep this after explicit hints
+  // so native/tool-provided icons are not overwritten.
+  if (step.kind === "think" && !step.icon && !step.source) return "bulingbuling"
+  // 2. Keyword rules use only icon/source labels, never free-form prose;
+  //    otherwise words like "file" in normal thinking text produce misleading
+  //    file-text icons.
   const haystack = [step.icon, step.source].filter(Boolean).join(" ").toLowerCase()
   if (haystack) {
     for (const rule of STREAMLINE_KEYWORD_RULES) {
@@ -624,7 +639,7 @@ function inferStreamlineIcon(step: ThinkStep): string {
   // 4. step.kind hints (search/check) when no explicit icon
   if (step.kind === "search") return "search"
   if (step.kind === "check") return "clipboard-check"
-  // 5. pure thinking with no other signal → brain (streamline)
+  // 5. Unknown non-tool thinking with no other signal -> brain.
   if (!step.icon && !step.source) return "brain"
   return ""
 }
@@ -1088,18 +1103,18 @@ function Bubble({
               peerName={peerName}
             />
           )}
-          {block.kind === "text-group" && block.items.map((item, i) => (
+          {block.kind === "text-group" && (
             <BubbleBody
-              key={`${msg.id}-seg-${block.firstIndex}-${i}`}
-              text={item.text}
+              key={`${msg.id}-seg-${block.firstIndex}`}
+              text={block.items.map((item) => item.text).join("")}
               isUser={isUser}
-              recallUsed={!!msg.recallUsed && blockIdx === 0 && i === 0}
+              recallUsed={!!msg.recallUsed && blockIdx === 0}
               selectionMode={!!selectionMode}
               selected={!!selected}
               onSelect={onSelect}
               onLongSelect={onLongSelect}
             />
-          ))}
+          )}
         </div>
       </motion.div>
     )
@@ -1801,7 +1816,7 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
       const thoughtSegIdx = new Map<number, number>()
       let lastError: string | null = null
 
-      const apply = (next: { segments?: ChatSegment[]; thoughts?: ThinkStep[]; thoughtsLocked?: boolean; text?: string; hold?: Msg["hold"] }) => {
+      const apply = (next: { segments?: ChatSegment[]; thoughts?: ThinkStep[]; thoughtsLocked?: boolean; text?: string; hold?: Msg["hold"]; attachments?: Attachment[] }) => {
         setMessages((m) =>
           m.map((x) =>
             x.id === aiId
@@ -1812,13 +1827,14 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
                   ...(next.thoughts !== undefined ? { thinking: next.thoughts.length > 0 ? next.thoughts : undefined } : {}),
                   ...(next.thoughtsLocked !== undefined ? { thinkingLocked: next.thoughtsLocked } : {}),
                   ...(next.hold !== undefined ? { hold: next.hold } : {}),
+                  ...(next.attachments !== undefined ? { attachments: next.attachments } : {}),
                 }
               : x,
           ),
         )
       }
 
-      await sendChatStream(expectedStreamText, "chat", attachments, "auto", (ev) => {
+      await sendChatStream(expectedStreamText, "chat", attachments, appConfig.defaultRuntime, (ev) => {
         if (ev.event === "tool_use") {
           segs.push({
             type: "tool_use",
@@ -1887,6 +1903,11 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
             thoughts: finalThoughts,
             thoughtsLocked: !!r.thoughts_locked,
             hold: r.hold,
+            attachments: (r.attachments || []).map((att) => {
+              if (att.kind === "voice") return { kind: "voice", seconds: Number(att.size || 0) || 0 }
+              if (att.kind === "image") return { kind: "image", name: att.name, object_hash: att.object_hash, mime: att.mime, size: att.size }
+              return { kind: "file", name: att.name, size: att.size, object_hash: att.object_hash, mime: att.mime }
+            }),
           })
           try {
             window.dispatchEvent(

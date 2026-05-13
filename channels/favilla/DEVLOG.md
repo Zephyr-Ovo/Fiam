@@ -12,6 +12,15 @@
 **Backend Settings**：`AI` = server auto-router（同一个 AI 身份可按任务在 API/CC 能力面间切换）；`API`/`CC` = 用户手动强制本轮请求后端，AI 仍应理解这是 transport/capability surface，不是身份变化。
 **Settings**：背景 `rgba(0,0,0,0.45)` 纯变暗不模糊；卡片 `backdrop-filter: blur(20px)` + `rgba(255,250,243,0.55)` 半透明磨砂；居中固定，CSS-only fade 120ms。
 
+## Session 2026-05-13 — Runtime/settings/object transfer
+
+- Chat now sends `appConfig.defaultRuntime` to the Favilla SSE endpoint, so Settings-forced `API`/`CC` actually overrides auto routing.
+- Settings dialog keeps a fixed viewport-bounded size and scrolls its internal form area instead of growing beyond the screen.
+- Streaming text deltas are joined back into one visible bubble, and backend deltas preserve whitespace from Claude Code output.
+- Thinking/task icon inference now respects explicit/native icon hints first; search steps map to the search icon instead of file-text.
+- AI replies can now return downloadable ObjectStore attachments when the visible reply contains `obj:<hash/prefix>`; file/image pills with `object_hash` call `/favilla/object/<token>`.
+- Verification: Favilla app build passed; focused backend regression tests for stream spacing, object token extraction/download, upload, transcript persistence, and receive trace passed.
+
 ## Session 2026-05-11 — Chat usability / console cleanup
 
 - Removed the old 60s client-side send batching path from Chat. A normal Send/Enter now immediately starts `/favilla/chat/send` SSE; the old second-empty-send flush behavior is gone.

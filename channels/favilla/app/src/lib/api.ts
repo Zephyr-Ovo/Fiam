@@ -28,7 +28,7 @@ export type ChatThought = {
   text: string
   summary?: string
   result?: string
-  source: "marker" | "native"
+  source: "marker" | "native" | "official" | "fiam"
   locked?: boolean
   icon?: string
 }
@@ -41,7 +41,7 @@ export type ChatSegment =
       text?: string
       summary?: string
       result?: string
-      source?: "marker" | "native"
+      source?: "marker" | "native" | "official" | "fiam"
       locked?: boolean
       icon?: string
     }
@@ -98,6 +98,7 @@ export type ChatResponse = {
   cost_usd?: number
   model?: string
   transcript_id?: string
+  attachments?: StoredChatMessage["attachments"]
   trace?: Record<string, unknown>
   recall?: unknown
   stroll_context?: StrollSpatialContext
@@ -300,7 +301,7 @@ export type StreamChatEvent =
   | { event: "start"; data: { runtime?: string } }
   | { event: "tool_use"; data: { tool_use_id?: string; tool_name?: string; input_summary?: string } }
   | { event: "tool_result"; data: { tool_use_id?: string; tool_name?: string; result_summary?: string; is_error?: boolean } }
-  | { event: "thought"; data: { index: number; text: string; source?: "marker" | "native"; locked?: boolean; summary?: string; icon?: string } }
+  | { event: "thought"; data: { index: number; text: string; source?: "marker" | "native" | "official" | "fiam"; locked?: boolean; summary?: string; icon?: string } }
   | { event: "thought_summary"; data: { index: number; summary?: string; icon?: string } }
   | { event: "text_delta"; data: { index: number; text: string } }
   | { event: "done"; data: ChatResponse }
@@ -428,6 +429,35 @@ export async function sendChatStream(
   } finally {
     disarmIdle()
   }
+}
+
+export async function downloadObject(token: string, fallbackName = "attachment") {
+  const clean = token.trim()
+  if (!clean) throw new Error("missing object token")
+  const res = await fetch(`${getBase()}/favilla/object/${encodeURIComponent(clean)}`, {
+    method: "GET",
+    headers: authHeaders(),
+  })
+  if (!res.ok) {
+    let message = `HTTP ${res.status}`
+    try {
+      const data = await res.json()
+      if (data && typeof data.error === "string") message = data.error
+    } catch { /* ignore */ }
+    throw new Error(message)
+  }
+  const blob = await res.blob()
+  const disposition = res.headers.get("Content-Disposition") || ""
+  const match = disposition.match(/filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i)
+  const name = decodeURIComponent((match?.[1] || match?.[2] || fallbackName || "attachment").trim())
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement("a")
+  a.href = url
+  a.download = name
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
 export async function sendStrollMessage(
