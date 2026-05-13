@@ -16,8 +16,10 @@
 
 - Chat now sends `appConfig.defaultRuntime` to the Favilla SSE endpoint, so Settings-forced `API`/`CC` actually overrides auto routing.
 - Settings dialog keeps a fixed viewport-bounded size and scrolls its internal form area instead of growing beyond the screen.
+- Follow-up: Settings was shortened to a 520px viewport-bounded panel; its internal scroll keeps touch sliding but hides visible scrollbars.
 - Streaming text deltas are joined back into one visible bubble, and backend deltas preserve whitespace from Claude Code output.
 - Thinking/task icon inference now respects explicit/native icon hints first; search steps map to the search icon instead of file-text.
+- Official/native Claude Code thinking now goes through the same summary helper as `<cot>`/Fiam thinking; the UI labels collapsed rows as `Native thinking` vs `Shared thought` so both chain types are visible.
 - AI replies can now return downloadable ObjectStore attachments when the visible reply contains `obj:<hash/prefix>`; file/image pills with `object_hash` call `/favilla/object/<token>`.
 - Pure upload transcript writes now preserve `object_hash`, so server-restored upload pills can also download the stored object.
 - ISP `fiam-dashboard.service` now grants write access to `/home/fiet/.claude.json` as well as `/home/fiet/.claude`; forced CC works from systemd after restart instead of returning Claude Code 401 while SSH succeeds.

@@ -585,6 +585,7 @@ const EXPLICIT_STREAMLINE_ICON: Record<string, string> = {
   brain: "brain",
   cpu: "brain",
   thinking: "brain",
+  nativethinking: "brain",
   thought: "brain",
 }
 
@@ -690,6 +691,12 @@ function ThinkingChain({ steps, locked, peerName }: { steps: ThinkStep[]; locked
   // (source="marker") count as thinking — they show 'thinking' labels,
   // not 'Used <icon>'.
   const isPureThinking = steps.every((s) => s.kind === "think")
+  const sourceLabel = (() => {
+    if (!isPureThinking) return ""
+    if (summaryStep?.source === "official") return "Native thinking"
+    if (summaryStep?.source === "fiam" || summaryStep?.source === "marker") return "Shared thought"
+    return ""
+  })()
   const toolLabel = (() => {
     if (isPureThinking) return null
     const named = steps.find((s) => s.icon || s.source)
@@ -731,7 +738,10 @@ function ThinkingChain({ steps, locked, peerName }: { steps: ThinkStep[]; locked
       </div>
     )
   }
-  const collapsedLabel = shortSummary || (isPureThinking ? "Show thinking" : `Used ${toolLabel}`)
+  const labeledSummary = sourceLabel && shortSummary && sourceLabel.toLowerCase() !== shortSummary.toLowerCase()
+    ? `${sourceLabel}: ${shortSummary}`
+    : shortSummary
+  const collapsedLabel = labeledSummary || sourceLabel || (isPureThinking ? "Show thinking" : `Used ${toolLabel}`)
   const hasExpandable = expandedSteps.length > 0
   return (
     <div className="w-full">

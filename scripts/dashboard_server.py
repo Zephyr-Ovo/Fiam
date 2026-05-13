@@ -65,7 +65,7 @@ from fiam_lib.dashboard_annotation import (
     annotate_proposal as _annotate_proposal,
     annotate_request as _annotate_request,
 )
-from fiam_lib.app_markers import parse_app_cot
+from fiam_lib.app_markers import parse_app_cot, summarize_cot_steps
 
 
 def _load_config():
@@ -3503,6 +3503,40 @@ def _parse_cot(reply: str) -> tuple[str, list[dict], bool, list[dict]]:
     return parsed.reply, parsed.thoughts, parsed.locked, parsed.segments
 
 
+def _official_thought_payloads(thinking_events: list[dict] | None) -> tuple[list[dict], list[dict]]:
+    raw_steps: list[dict] = []
+    for ev in thinking_events or []:
+        text = str(ev.get("text") or "").strip()
+        if text:
+            raw_steps.append({"kind": "think", "text": text, "source": "official"})
+    if not raw_steps:
+        return [], []
+    summaries = summarize_cot_steps(raw_steps, locked=False, config=_CONFIG)
+    by_index: dict[int, dict] = {}
+    for item in summaries:
+        if not isinstance(item, dict):
+            continue
+        try:
+            idx = int(item.get("index", -1))
+        except (TypeError, ValueError):
+            continue
+        by_index[idx] = item
+    thoughts: list[dict] = []
+    segments: list[dict] = []
+    for index, raw in enumerate(raw_steps):
+        summary = by_index.get(index, {})
+        item = {
+            **raw,
+            "summary": str(summary.get("summary") or "Native thinking"),
+            "source": "official",
+            "locked": False,
+            "icon": str(summary.get("icon") or "NativeThinking"),
+        }
+        thoughts.append(item)
+        segments.append({"type": "thought", **item})
+    return thoughts, segments
+
+
 def _redact_cc_snippet(value: object, *, limit: int = 500) -> str:
     text = str(value or "")
     text = re.sub(r"(?i)(token|api[_-]?key|secret|password)(\s*[:=]\s*)[^\s'\"]+", r"\1\2<redacted>", text)
@@ -3809,32 +3843,7 @@ def _run_cc_favilla_chat_locked(*, text: str, channel: str, surface: str = "", a
         refs={"todo_count": len(queued_todos), "hold": bool(hold), "route": bool(route)},
     )
     cleaned_reply, thoughts, thoughts_locked, segments = _parse_cot(reply)
-    # Anthropic native extended-thinking blocks (separate from <cot> markers).
-    # These are model-internal raw thought, not echoed back to cc on next turn
-    # by Anthropic policy. Surface them so transcript / api side / /context UI
-    # can see them.
-    native_thoughts: list[dict] = []
-    native_segments: list[dict] = []
-    for ev in thinking_events or []:
-        text_t = str(ev.get("text") or "").strip()
-        if not text_t:
-            continue
-        native_thoughts.append({
-            "kind": "think",
-            "text": text_t,
-            "summary": text_t[:160],
-            "source": "official",
-            "locked": False,
-            "icon": "NativeThinking",
-        })
-        native_segments.append({
-            "type": "thought",
-            "text": text_t,
-            "summary": text_t[:160],
-            "source": "official",
-            "locked": False,
-            "icon": "NativeThinking",
-        })
+    native_thoughts, native_segments = _official_thought_payloads(thinking_events)
     if native_thoughts:
         thoughts = native_thoughts + thoughts
         segments = native_segments + list(segments)
@@ -4228,28 +4237,7 @@ def _iter_cc_favilla_chat_events_locked(*, text: str, channel: str, surface: str
     route = interpretation.route_hint
     cleaned_reply, thoughts, thoughts_locked, segments = _parse_cot(reply)
     thinking_events = state.get("thinking_events") or []
-    native_thoughts: list[dict] = []
-    native_segments: list[dict] = []
-    for ev in thinking_events:
-        text_t = str(ev.get("text") or "").strip()
-        if not text_t:
-            continue
-        native_thoughts.append({
-            "kind": "think",
-            "text": text_t,
-            "summary": text_t[:160],
-            "source": "official",
-            "locked": False,
-            "icon": "NativeThinking",
-        })
-        native_segments.append({
-            "type": "thought",
-            "text": text_t,
-            "summary": text_t[:160],
-            "source": "official",
-            "locked": False,
-            "icon": "NativeThinking",
-        })
+    native_thoughts, native_segments = _official_thought_payloads(thinking_events)
     if native_thoughts:
         thoughts = native_thoughts + thoughts
         segments = native_segments + list(segments)

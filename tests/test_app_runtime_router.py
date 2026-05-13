@@ -364,6 +364,23 @@ class AppRuntimeRouterTest(unittest.TestCase):
         self.assertEqual(name, "hello.txt")
         self.assertEqual(mime, "text/plain")
 
+    def test_official_thoughts_use_summary_helper(self) -> None:
+        original_summary = dashboard_server.summarize_cot_steps
+        try:
+            dashboard_server.summarize_cot_steps = lambda steps, locked, config: [
+                {"index": 0, "summary": "checking tool path", "icon": "Search"}
+            ]
+            thoughts, segments = dashboard_server._official_thought_payloads([
+                {"text": "The user wants me to inspect the runtime path before replying."}
+            ])
+        finally:
+            dashboard_server.summarize_cot_steps = original_summary
+
+        self.assertEqual(thoughts[0]["summary"], "checking tool path")
+        self.assertEqual(thoughts[0]["source"], "official")
+        self.assertEqual(segments[0]["type"], "thought")
+        self.assertEqual(segments[0]["icon"], "Search")
+
     def test_memory_worker_helper_writes_timeline(self) -> None:
         original_config = dashboard_server._CONFIG
         original_get_embedder = dashboard_server._get_embedder
