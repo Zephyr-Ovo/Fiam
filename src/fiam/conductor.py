@@ -375,6 +375,7 @@ class Conductor:
             body=request.body,
             marker_index=request.marker_index,
             status=request.status,
+            dispatch_id=request.dispatch_id,
         )
         accepted = DispatchService().event_for(
             request,
@@ -397,7 +398,7 @@ class Conductor:
             self._ingest_beat(failed)
             return
         ok = DispatchService(self.bus).publish(request)
-        status = "sent" if ok else "failed"
+        status = "published" if ok else "failed"
         followup = DispatchService().event_for(
             request,
             turn_id=commit.turn_id,
@@ -583,7 +584,7 @@ class Conductor:
                 turn_id=turn_id,
                 request_id=request_id,
                 session_id=session_id,
-                status="sent" if ok else "failed",
+                status="published" if ok else "failed",
                 attempts=1,
                 last_error="" if ok else "bus rejected payload",
             ))

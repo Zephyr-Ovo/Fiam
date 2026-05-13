@@ -141,6 +141,7 @@ class EventStoreTest(unittest.TestCase):
                     "request_id": "req_1",
                     "session_id": "sess_1",
                     "dispatch_target": "email",
+                    "dispatch_id": "disp_1",
                     "dispatch_recipient": "Zephyr",
                     "dispatch_status": "accepted",
                     "dispatch_attempts": 1,
@@ -155,13 +156,13 @@ class EventStoreTest(unittest.TestCase):
             conn = sqlite3.connect(db_path_for_flow(flow))
             try:
                 row = conn.execute(
-                    "SELECT turn_id, request_id, dispatch_recipient, object_mime, object_size FROM events WHERE id = ?",
+                    "SELECT turn_id, request_id, dispatch_id, dispatch_recipient, object_mime, object_size FROM events WHERE id = ?",
                     (event_id,),
                 ).fetchone()
             finally:
                 conn.close()
 
-            self.assertEqual(row, ("turn_1", "req_1", "Zephyr", "text/plain", 12))
+            self.assertEqual(row, ("turn_1", "req_1", "disp_1", "Zephyr", "text/plain", 12))
 
 
 if __name__ == "__main__":

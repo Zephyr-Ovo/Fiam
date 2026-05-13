@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import uuid
 import json
+import hashlib
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -125,6 +127,7 @@ class DispatchRequest:
     body: str
     marker_index: int = 0
     status: str = "accepted"
+    dispatch_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,6 +247,12 @@ class DispatchService:
         last_error: str = "",
     ) -> Beat:
         status_value = status or request.status
+        dispatch_id = request.dispatch_id or self.dispatch_id_for(
+            turn_id=turn_id,
+            marker_index=request.marker_index,
+            target=request.channel,
+            recipient=request.recipient,
+        )
         return Beat(
             t=datetime.now(timezone.utc),
             actor="ai",
@@ -255,6 +264,7 @@ class DispatchService:
                 "request_id": request_id,
                 "session_id": session_id,
                 "name": "dispatch",
+                "dispatch_id": dispatch_id,
                 "dispatch_target": request.channel,
                 "dispatch_recipient": request.recipient,
                 "dispatch_status": status_value,
@@ -262,6 +272,11 @@ class DispatchService:
                 "dispatch_last_error": last_error,
             },
         )
+
+    @staticmethod
+    def dispatch_id_for(*, turn_id: str, marker_index: int, target: str, recipient: str) -> str:
+        seed = f"{turn_id}:{marker_index}:{target}:{recipient}"
+        return "disp_" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:24]
 
     def publish(self, request: DispatchRequest) -> bool:
         if self.bus is None:
@@ -405,14 +420,32 @@ class TurnTraceStore:
             fh.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
 
 
+@dataclass(frozen=True, slots=True)
+class SummaryRuntimeConfig:
+    provider: str = ""
+    model: str = ""
+    api_key_env: str = "FIAM_SUMMARY_API_KEY"
+    base_url: str = ""
+
+    @classmethod
+    def from_env(cls) -> "SummaryRuntimeConfig":
+        return cls(
+            provider=os.environ.get("FIAM_SUMMARY_PROVIDER", "mimo").strip(),
+            model=os.environ.get("FIAM_SUMMARY_MODEL", "").strip(),
+            api_key_env="FIAM_SUMMARY_API_KEY",
+            base_url=os.environ.get("FIAM_SUMMARY_BASE_URL", "").strip(),
+        )
+
+
 class MemoryWorker:
     """Idempotent worker boundary for async memory processing."""
 
-    def __init__(self, event_store: object | None = None, *, embedder: object | None = None, feature_store: object | None = None, model_id: str = "") -> None:
+    def __init__(self, event_store: object | None = None, *, embedder: object | None = None, feature_store: object | None = None, model_id: str = "", summary_config: SummaryRuntimeConfig | None = None) -> None:
         self.event_store = event_store
         self.embedder = embedder
         self.feature_store = feature_store
         self.model_id = model_id
+        self.summary_config = summary_config or SummaryRuntimeConfig.from_env()
 
     def pending_query(self) -> str:
         return "SELECT id FROM events WHERE embedded_at = '' ORDER BY t ASC"

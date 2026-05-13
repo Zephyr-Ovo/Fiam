@@ -73,6 +73,7 @@ class EventStore:
         request_id = str(meta.get("request_id") or "").strip()
         session_id = str(meta.get("session_id") or "").strip()
         name = name_for_beat(beat)
+        dispatch_id = str(meta.get("dispatch_id") or "").strip()
         dispatch_target = str(meta.get("dispatch_target") or "").strip()
         dispatch_recipient = str(meta.get("dispatch_recipient") or "").strip()
         dispatch_status = str(meta.get("dispatch_status") or "").strip()
@@ -88,7 +89,7 @@ class EventStore:
         except (TypeError, ValueError):
             object_size = 0
         content = beat.content
-        object_hash = ""
+        object_hash = str(meta.get("object_hash") or "").strip()
         inline_content = content
         if len(content.encode("utf-8")) > LARGE_CONTENT_BYTES:
             object_hash = self.object_store.put_text(content, suffix=".txt")
@@ -101,9 +102,9 @@ class EventStore:
                 INSERT OR IGNORE INTO events (
                     id, message_id, turn_id, request_id, session_id, t, actor, channel, kind, name,
                     content, runtime, meta_json, object_hash, content_size,
-                    dispatch_target, dispatch_recipient, dispatch_status, dispatch_attempts,
+                    dispatch_id, dispatch_target, dispatch_recipient, dispatch_status, dispatch_attempts,
                     dispatch_last_error, object_mime, object_name, object_size
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event_id,
@@ -121,6 +122,7 @@ class EventStore:
                     meta_json,
                     object_hash,
                     len(content.encode("utf-8")),
+                    dispatch_id,
                     dispatch_target,
                     dispatch_recipient,
                     dispatch_status,
@@ -218,6 +220,7 @@ class EventStore:
                     meta_json TEXT NOT NULL DEFAULT '{}',
                     object_hash TEXT NOT NULL DEFAULT '',
                     content_size INTEGER NOT NULL DEFAULT 0,
+                    dispatch_id TEXT NOT NULL DEFAULT '',
                     dispatch_target TEXT NOT NULL DEFAULT '',
                     dispatch_recipient TEXT NOT NULL DEFAULT '',
                     dispatch_status TEXT NOT NULL DEFAULT '',
@@ -236,6 +239,7 @@ class EventStore:
             self._ensure_column(conn, "request_id", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "session_id", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "name", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "dispatch_id", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "dispatch_target", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "dispatch_recipient", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "dispatch_status", "TEXT NOT NULL DEFAULT ''")
@@ -253,6 +257,7 @@ class EventStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id, t)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_events_name ON events(name)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_events_dispatch ON events(dispatch_target, dispatch_status, t)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_events_dispatch_id ON events(dispatch_id, t)")
             conn.commit()
         finally:
             conn.close()
@@ -305,6 +310,7 @@ class EventStore:
             meta.setdefault("object_hash", object_hash)
         for column in (
             "dispatch_target",
+            "dispatch_id",
             "dispatch_recipient",
             "dispatch_status",
             "dispatch_attempts",

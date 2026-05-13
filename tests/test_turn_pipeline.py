@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -10,7 +11,7 @@ from fiam.config import FiamConfig
 from fiam.conductor import Conductor
 from fiam.store.beat import Beat, read_beats
 from fiam.store.pool import Pool
-from fiam.turn import DispatchRequest, InboundQueue, MarkerInterpreter, TriggerPolicy, TurnCommit, TurnRequest
+from fiam.turn import DispatchRequest, InboundQueue, MarkerInterpreter, SummaryRuntimeConfig, TriggerPolicy, TurnCommit, TurnRequest
 
 
 class FakeEmbedder:
@@ -19,6 +20,15 @@ class FakeEmbedder:
 
         vec = np.array([1.0, 0.5, 0.25], dtype=np.float32)
         return vec / np.linalg.norm(vec)
+
+
+class FakeBus:
+    def __init__(self) -> None:
+        self.payloads = []
+
+    def publish_dispatch(self, target: str, payload: dict) -> bool:
+        self.payloads.append((target, payload))
+        return True
 
 
 class TurnPipelineTest(unittest.TestCase):
@@ -113,6 +123,28 @@ class TurnPipelineTest(unittest.TestCase):
             self.assertEqual(state["state"], "mute")
             self.assertTrue((config.store_dir / "turn_traces.jsonl").exists())
 
+    def test_dispatch_status_events_share_dispatch_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = FiamConfig(home_path=root / "home", code_path=root, embedding_backend="local", embedding_dim=3, memory_mode="manual")
+            config.ensure_dirs()
+            bus = FakeBus()
+            conductor = Conductor(pool=Pool(config.pool_dir, dim=3), embedder=FakeEmbedder(), config=config, flow_path=config.flow_path, memory_mode="manual", bus=bus)
+
+            conductor.commit_turn(TurnCommit(
+                turn_id="turn_dispatch",
+                request_id="req_dispatch",
+                dispatch_requests=(DispatchRequest(channel="email", recipient="Zephyr", body="hello", marker_index=2),),
+            ), channel="favilla")
+
+            dispatch_beats = [beat for beat in read_beats(config.flow_path) if beat.kind == "dispatch"]
+            statuses = [(beat.meta or {}).get("dispatch_status") for beat in dispatch_beats]
+            ids = {(beat.meta or {}).get("dispatch_id") for beat in dispatch_beats}
+            self.assertEqual(statuses, ["accepted", "published"])
+            self.assertEqual(len(ids), 1)
+            self.assertTrue(str(next(iter(ids))).startswith("disp_"))
+            self.assertEqual(bus.payloads[0][0], "email")
+
     def test_trigger_policy_separates_record_and_wake(self) -> None:
         policy = TriggerPolicy()
 
@@ -120,6 +152,28 @@ class TurnPipelineTest(unittest.TestCase):
         self.assertEqual(policy.decide("chat", ai_state="mute"), "lazy")
         self.assertEqual(policy.decide("chat", interactive=True), "batch")
         self.assertEqual(policy.decide("chat"), "instant")
+
+    def test_summary_runtime_config_reads_env_names_only(self) -> None:
+        old = {key: os.environ.get(key) for key in ("FIAM_SUMMARY_PROVIDER", "FIAM_SUMMARY_MODEL", "FIAM_SUMMARY_API_KEY", "FIAM_SUMMARY_BASE_URL")}
+        try:
+            os.environ["FIAM_SUMMARY_PROVIDER"] = "mimo"
+            os.environ["FIAM_SUMMARY_MODEL"] = "summary-test"
+            os.environ["FIAM_SUMMARY_API_KEY"] = "secret-value-not-returned"
+            os.environ["FIAM_SUMMARY_BASE_URL"] = "https://summary.example/v1"
+
+            config = SummaryRuntimeConfig.from_env()
+
+            self.assertEqual(config.provider, "mimo")
+            self.assertEqual(config.model, "summary-test")
+            self.assertEqual(config.api_key_env, "FIAM_SUMMARY_API_KEY")
+            self.assertEqual(config.base_url, "https://summary.example/v1")
+            self.assertNotEqual(config.api_key_env, "secret-value-not-returned")
+        finally:
+            for key, value in old.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
 
 if __name__ == "__main__":

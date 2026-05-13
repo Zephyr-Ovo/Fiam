@@ -51,6 +51,7 @@ class ApiRuntimeResult:
     raw: dict[str, Any] = field(default_factory=dict)
     tool_loops: int = 0
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    transcript_messages: list[dict[str, Any]] = field(default_factory=list)
     timings: dict[str, int] = field(default_factory=dict)
 
 
@@ -97,6 +98,22 @@ def _image_attachment_blocks(config, attachments: list[dict[str, Any]] | None) -
             "image_url": {"url": f"data:{mime};base64,{encoded}"},
         })
     return blocks
+
+
+def _bounded_tool_result(config, text: str, *, limit: int = 4000) -> tuple[str, str, int]:
+    raw = str(text or "")
+    size = len(raw.encode("utf-8"))
+    if size <= limit:
+        return raw, "", size
+    from fiam.store.objects import ObjectStore
+
+    object_hash = ObjectStore(config.object_dir).put_text(raw, suffix=".txt")
+    preview = raw[:limit].rstrip()
+    bounded = (
+        f"{preview}\n\n"
+        f"[object_ref hash={object_hash} size={size} mime=text/plain reason=tool_result_truncated]"
+    )
+    return bounded, object_hash, size
 
 
 def _attach_image_blocks_to_last_user_message(messages: list[dict[str, Any]], blocks: list[dict[str, Any]]) -> bool:
@@ -632,6 +649,7 @@ class ApiRuntime:
             consume_recall_dirty=True,
             extra_context=extra_context,
         )
+        transcript_start = max(0, len(messages) - 1)
         prompt_ready_at = time.perf_counter()
         model = self.config.api_model
         usage_total: dict[str, Any] = {}
@@ -681,18 +699,21 @@ class ApiRuntime:
                 name = str(fn.get("name") or "")
                 raw_args = str(fn.get("arguments") or "{}")
                 result = execute_tool_call(self.config, name, raw_args)
+                bounded_result, result_object_hash, result_size = _bounded_tool_result(self.config, result)
                 executed_calls.append({
                     "id": str(call.get("id") or ""),
                     "name": name,
                     "arguments": raw_args,
-                    "result_preview": (result or "")[:300],
+                    "result_preview": bounded_result[:300],
+                    "result_object_hash": result_object_hash,
+                    "result_size": result_size,
                     "loop": loops,
                 })
                 messages.append({
                     "role": "tool",
                     "tool_call_id": str(call.get("id") or ""),
                     "name": name,
-                    "content": result,
+                    "content": bounded_result,
                 })
             if loops >= max_loops:
                 # Force one final no-tools call so the model emits a user-facing reply.
@@ -710,6 +731,7 @@ class ApiRuntime:
 
         assert completion is not None
         reply_text = completion.text or "(empty reply)"
+        transcript_messages = [*messages[transcript_start:], {"role": "assistant", "content": reply_text}]
 
         return ApiRuntimeResult(
             ok=True,
@@ -722,6 +744,7 @@ class ApiRuntime:
             raw=completion.raw,
             tool_loops=loops,
             tool_calls=executed_calls,
+            transcript_messages=transcript_messages,
             timings={
                 "prompt_build_ms": int((prompt_ready_at - prompt_started_at) * 1000),
                 "provider_ms": provider_ms_total,

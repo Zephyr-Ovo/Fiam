@@ -3990,7 +3990,7 @@ def _record_cc_app_turn(user_text: str, assistant_reply: str, channel: str, *, a
     ), channel=channel)
 
 
-def _record_api_turn_light(user_text: str, assistant_reply: str, channel: str, *, tool_calls: list[dict] | None = None, family: str = "", turn_id: str = "", request_id: str = "") -> None:
+def _record_api_turn_light(user_text: str, assistant_reply: str, channel: str, *, tool_calls: list[dict] | None = None, family: str = "", turn_id: str = "", request_id: str = "", transcript_messages: list[dict] | None = None) -> None:
     if not _CONFIG:
         return
     from fiam.runtime.turns import assistant_text_beats, user_beat
@@ -4028,6 +4028,27 @@ def _record_api_turn_light(user_text: str, assistant_reply: str, channel: str, *
             runtime=runtime_tag,
             meta={"tool": tool_name, **trace_meta},
         ))
+        result_summary = str(call.get("result_summary") or "").replace("\n", " ")[:500]
+        if result_summary or call.get("result_object_hash"):
+            meta = {
+                "tool": tool_name,
+                "name": tool_name,
+                **trace_meta,
+            }
+            if call.get("result_object_hash"):
+                meta["object_hash"] = str(call.get("result_object_hash") or "")
+                meta["object_mime"] = "text/plain"
+                meta["object_name"] = f"{tool_name}-result.txt"
+                meta["object_size"] = int(call.get("result_size") or 0)
+            beats.append(Beat(
+                t=datetime.now(timezone.utc),
+                actor="ai",
+                channel=channel,
+                kind="tool_result",
+                content=f"result: {tool_name}" + (f" — {result_summary}" if result_summary else ""),
+                runtime=runtime_tag,
+                meta=meta,
+            ))
     interpretation = MarkerInterpreter().interpret(assistant_reply)
     assistant_beats = assistant_text_beats(
         assistant_reply,
@@ -4042,13 +4063,13 @@ def _record_api_turn_light(user_text: str, assistant_reply: str, channel: str, *
         turn_id=turn_id or f"turn_{uuid.uuid4().hex}",
         request_id=request_id,
         events=tuple(beats),
-        transcript_messages=tuple(
+        transcript_messages=tuple(transcript_messages or (
             msg for msg in (
                 {"role": "user", "content": user_text.strip()},
                 {"role": "assistant", "content": interpretation.visible_reply},
             )
             if msg["role"] != "assistant" or interpretation.visible_reply
-        ),
+        )),
         dispatch_requests=interpretation.dispatch_requests,
         todo_changes=interpretation.todo_changes,
         state_change=interpretation.state_change,
@@ -4121,7 +4142,8 @@ def _run_api_favilla_chat(*, text: str, channel: str, attachments: list | None =
             "tool_id": call.get("id") or "",
             "input_summary": str(call.get("arguments") or "")[:300],
             "result_summary": str(call.get("result_preview") or "")[:500],
-            "result_full": str(call.get("result") or call.get("result_preview") or ""),
+            "result_object_hash": str(call.get("result_object_hash") or ""),
+            "result_size": call.get("result_size") or 0,
             "loop": call.get("loop"),
         })
         actions_list.append({
@@ -4133,7 +4155,7 @@ def _run_api_favilla_chat(*, text: str, channel: str, attachments: list | None =
             "loop": call.get("loop"),
         })
     if record_turn:
-        _record_api_turn_light(api_text, raw_reply, channel=channel, tool_calls=api_tool_calls_summary, family=family, turn_id=turn_id, request_id=request_id)
+        _record_api_turn_light(api_text, raw_reply, channel=channel, tool_calls=api_tool_calls_summary, family=family, turn_id=turn_id, request_id=request_id, transcript_messages=list(getattr(result, "transcript_messages", None) or []))
     for todo in queued_todos or []:
         actions_list.append({"kind": "queued_todo", **(todo if isinstance(todo, dict) else {"text": str(todo)})})
     if route:

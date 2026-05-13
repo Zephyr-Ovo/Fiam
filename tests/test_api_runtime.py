@@ -304,6 +304,8 @@ class ApiRuntimeTest(unittest.TestCase):
             self.assertEqual(result.usage["prompt_tokens_details"]["cached_tokens"], 6)
             self.assertIsNotNone(client.calls[0]["tools"])
             self.assertEqual(client.calls[1]["messages"][-1]["role"], "tool")
+            self.assertEqual([m["role"] for m in result.transcript_messages], ["user", "assistant", "tool", "assistant"])
+            self.assertEqual(result.transcript_messages[1]["tool_calls"][0]["id"], "call_list")
 
     def test_image_attachment_uses_image_model_and_content_block(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
