@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
 	import { api, type EventDetail as Detail } from '$lib/api';
 
 	let { id, onclose }: { id: string; onclose: () => void } = $props();
@@ -23,17 +22,15 @@
 
 <svelte:window onkeydown={onKey} />
 
-<div
-	class="fixed inset-0 z-40 flex items-center justify-center bg-[var(--color-crust)]/70 backdrop-blur-sm p-4"
-	onclick={onclose}
-	onkeydown={(e) => e.key === 'Enter' && onclose()}
-	role="button"
-	tabindex="-1"
->
+<div class="fixed inset-0 z-40 flex items-center justify-center bg-[var(--color-crust)]/70 backdrop-blur-sm p-4">
+	<button
+		type="button"
+		class="absolute inset-0 h-full w-full cursor-default"
+		onclick={onclose}
+		aria-label="close"
+	></button>
 	<div
-		class="relative max-w-3xl w-full max-h-[80vh] overflow-auto rounded border border-[var(--color-surface1)] bg-[var(--color-mantle)] shadow-2xl p-5 font-mono text-sm"
-		onclick={(e) => e.stopPropagation()}
-		onkeydown={(e) => e.stopPropagation()}
+		class="relative z-10 max-w-3xl w-full max-h-[80vh] overflow-auto rounded border border-[var(--color-surface1)] bg-[var(--color-mantle)] shadow-2xl p-5 font-mono text-sm"
 		role="dialog"
 		tabindex="-1"
 	>
@@ -52,12 +49,14 @@
 		{:else}
 			{#if Object.keys(data.frontmatter).length}
 				<table class="text-xs mb-3">
-					{#each Object.entries(data.frontmatter) as [k, v]}
-						<tr>
-							<td class="pr-3 text-[var(--color-subtext0)]">{k}</td>
-							<td class="text-[var(--color-text)] break-all">{v}</td>
-						</tr>
-					{/each}
+					<tbody>
+						{#each Object.entries(data.frontmatter) as [k, v]}
+							<tr>
+								<td class="pr-3 text-[var(--color-subtext0)]">{k}</td>
+								<td class="text-[var(--color-text)] break-all">{v}</td>
+							</tr>
+						{/each}
+					</tbody>
 				</table>
 			{/if}
 			<pre

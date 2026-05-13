@@ -26,11 +26,16 @@
 		onsaved: () => void;
 	} = $props();
 
-	let editKind = $state(kind);
-	let editWeight = $state(weight);
+	let editKind = $state('');
+	let editWeight = $state(0);
 	let saving = $state(false);
 	let err = $state<string | null>(null);
 	let menuEl = $state<HTMLDivElement>();
+
+	$effect(() => {
+		editKind = kind;
+		editWeight = weight;
+	});
 
 	// Close when clicking outside the menu (no backdrop — lets canvas events through)
 	onMount(() => {

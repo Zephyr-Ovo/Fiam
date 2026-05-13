@@ -70,7 +70,7 @@
 	let draggedNode: DisplayNode | null = null;
 	let lastPx = 0;
 	let lastPy = 0;
-	let zoom = 1;
+	let zoom = $state(1);
 	let panX = 0;
 	let panY = 0;
 

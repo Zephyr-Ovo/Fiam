@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
 	import { api, type PoolEventDetail } from '$lib/api';
 
 	let { id, onclose, onsaved }: { id: string; onclose: () => void; onsaved: () => void } =
@@ -66,17 +65,15 @@
 
 <svelte:window onkeydown={onKey} />
 
-<div
-	class="fixed inset-0 z-50 flex items-center justify-center bg-[var(--color-crust)]/70 backdrop-blur-sm p-4"
-	onclick={onclose}
-	role="button"
-	tabindex="-1"
->
-	<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+<div class="fixed inset-0 z-50 flex items-center justify-center bg-[var(--color-crust)]/70 backdrop-blur-sm p-4">
+	<button
+		type="button"
+		class="absolute inset-0 h-full w-full cursor-default"
+		onclick={onclose}
+		aria-label="close"
+	></button>
 	<div
-		class="relative max-w-3xl w-full max-h-[85vh] overflow-auto rounded border border-[var(--color-surface1)] bg-[var(--color-mantle)] shadow-2xl p-5 font-mono text-sm"
-		onclick={(e) => e.stopPropagation()}
-		onkeydown={(e) => e.stopPropagation()}
+		class="relative z-10 max-w-3xl w-full max-h-[85vh] overflow-auto rounded border border-[var(--color-surface1)] bg-[var(--color-mantle)] shadow-2xl p-5 font-mono text-sm"
 		role="dialog"
 		tabindex="-1"
 	>
@@ -112,8 +109,9 @@
 				</tbody>
 			</table>
 
-			<label class="block text-[var(--color-subtext0)] text-xs mb-1">body</label>
+			<label for="node-body" class="block text-[var(--color-subtext0)] text-xs mb-1">body</label>
 			<textarea
+				id="node-body"
 				bind:value={editBody}
 				rows="12"
 				class="w-full bg-[var(--color-base)] text-[var(--color-text)] border border-[var(--color-surface1)] rounded px-3 py-2 font-mono text-sm leading-relaxed resize-y focus:outline-none focus:border-[var(--color-mauve)]"
