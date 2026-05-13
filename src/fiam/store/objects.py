@@ -14,24 +14,42 @@ class ObjectStore:
 
     def put_text(self, text: str, *, suffix: str = ".txt") -> str:
         data = text.encode("utf-8")
-        digest = hashlib.sha256(data).hexdigest()
-        path = self._path_for_hash(digest, suffix=suffix)
+        return self.put_bytes(data, suffix=suffix)
+
+    def put_bytes(self, data: bytes, *, suffix: str = "") -> str:
+        raw = bytes(data or b"")
+        digest = hashlib.sha256(raw).hexdigest()
+        path = self.path_for_hash(digest, suffix=suffix)
         path.parent.mkdir(parents=True, exist_ok=True)
         if not path.exists():
-            path.write_bytes(data)
+            path.write_bytes(raw)
         return digest
 
     def get_text(self, digest: str, *, suffix: str = ".txt") -> str:
         if not digest:
             return ""
-        path = self._path_for_hash(digest, suffix=suffix)
+        data = self.get_bytes(digest, suffix=suffix)
+        if not data:
+            return ""
         try:
-            return path.read_text(encoding="utf-8")
-        except OSError:
+            return data.decode("utf-8")
+        except UnicodeDecodeError:
             return ""
 
-    def _path_for_hash(self, digest: str, *, suffix: str) -> Path:
+    def get_bytes(self, digest: str, *, suffix: str = "") -> bytes:
+        if not digest:
+            return b""
+        path = self.path_for_hash(digest, suffix=suffix)
+        try:
+            return path.read_bytes()
+        except OSError:
+            return b""
+
+    def path_for_hash(self, digest: str, *, suffix: str = "") -> Path:
         clean = "".join(ch for ch in digest.lower() if ch in "0123456789abcdef")
         if len(clean) != 64:
             raise ValueError("object hash must be a SHA-256 hex digest")
         return self.root / clean[:2] / f"{clean}{suffix}"
+
+    def _path_for_hash(self, digest: str, *, suffix: str) -> Path:
+        return self.path_for_hash(digest, suffix=suffix)

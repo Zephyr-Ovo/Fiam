@@ -61,7 +61,9 @@
 
 html, body, #root {
   height: 100%;
+  width: 100%;
   margin: 0;
+  overflow: hidden;
 }
 
 body {
@@ -75,12 +77,33 @@ body {
 /* Markdown content — sans for body, serif italic for emphasis */
 .md {
   font-family: var(--font-sans);
+  max-width: 100%;
+  min-width: 0;
   overflow-wrap: anywhere;
   word-break: break-word;
 }
 .md pre {
+  max-width: 100%;
+  overflow-x: auto;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+.md table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.md img {
+  max-width: 100%;
+  height: auto;
+}
+.chat-scroll {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.chat-scroll::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 .md p {
   margin: 0 0 0.6em 0;

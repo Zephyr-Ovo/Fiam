@@ -19,17 +19,17 @@ Studio = **vault (markdown 仓库) + 收件接口 + 时间线阅读器 + Obsidia
 | 路径                                | 角色                                      |
 |-------------------------------------|-------------------------------------------|
 | `/home/fiet/live/studio/`           | vault 根 (**独立 git repo**, 非 submodule) |
-| `/home/fiet/live/studio/inbox/`     | **邮筒**: 外部 share / 临时批注 / 待整理材料 |
 | `/home/fiet/live/studio/shelf/`     | **书架**: 长文、网页存档、阅读材料、未来 epub/pdf 索引 |
 | `/home/fiet/live/studio/desk/`      | **书桌**: 创作仓库、草稿、项目笔记、Quick Note |
+| `/home/fiet/live/studio_ai_inbox/`  | **AI 私有收件箱**: 外部 share / 临时批注 / 待整理材料；不在用户本地 vault 中 |
 
 【Zephyr 批注】不强求写什么，可以不写日记，一个书架，一个邮筒，一个书桌，书桌就是创作仓库，怎么建立文件夹没有规定。
 
-【Codex 批注】采纳。v0.1 不应规定“日记”作为核心概念，`daily/` 改为 `desk/` 更稳。`inbox/shelf/desk` 是默认隐喻，不是强制分类法；用户可以在 vault 里自由建文件夹。
+【Codex 批注】采纳。v0.1 不应规定“日记”作为核心概念，`daily/` 改为 `desk/` 更稳。`shelf/desk` 是用户本地 vault 的默认隐喻，不是强制分类法；用户可以在 vault 里自由建文件夹。`inbox` 是 AI 私有收件箱，不在用户本地 vault 中。
 
 【Zephyr 问题】关于书架，也就是阅读器，你们有什么想法？
 
-【Codex 回答】书架不该只是一个文件夹，而是 Reader 的数据来源集合。v0.1 先支持 markdown / 网页存档：`shelf/<source>/<slug>.md`，每篇一文件，有 frontmatter。Reader 做三件事即可：只读渲染、选中文本写批注到 inbox/desk、跳 Obsidian。epub/pdf/image archive 等先只登记 metadata，不急着解析全文。
+【Codex 回答】书架不该只是一个文件夹，而是 Reader 的数据来源集合。v0.1 先支持 markdown / 网页存档：`shelf/<source>/<slug>.md`，每篇一文件，有 frontmatter。Reader 做三件事即可：只读渲染、选中文本写批注到 AI 私有 inbox 或用户 desk、跳 Obsidian。epub/pdf/image archive 等先只登记 metadata，不急着解析全文。
 
 - vault 是**独立 git repo**，不进 fiam-code 历史。
 - 远端 = **GitHub 私 repo** (Zephyr 待新建)。Obsidian 桌面/移动用 **Obsidian Git 插件**双向同步。Studio app 服务器侧也走同一 repo。
@@ -38,7 +38,7 @@ Studio = **vault (markdown 仓库) + 收件接口 + 时间线阅读器 + Obsidia
 
 ### 2. 文件内容格式 (Codex 提议, 采纳)
 
-**多条 append 类文件** (`inbox/YYYY-MM-DD.md`, `desk/YYYY-MM-DD.md`) — 每条用 markdown block:
+**多条 append 类文件** (`studio_ai_inbox/YYYY-MM-DD.md`, `desk/YYYY-MM-DD.md`) — 每条用 markdown block:
 
 ```md
 ## 12:34 · atrium · copilot
@@ -72,7 +72,7 @@ tags: [web, ...]
 #### POST `/studio/share`
 ```json
 {
-  "source": "atrium" | "favilla" | "quicknote" | "manual",
+  "source": "atrium" | "favilla" | "quicknote" | "manual" | "obsidian",
   "url": "<可选>",
   "selection": "<选中/正文>",
   "target_file": "<可选, hint>",
@@ -84,11 +84,11 @@ tags: [web, ...]
 后端规则:
 - `target_file` 若缺省，按 source 决定:
   - `quicknote` → `desk/YYYY-MM-DD.md`
-  - `favilla` / `manual` → `inbox/YYYY-MM-DD.md`
-  - `atrium` 有 url → v0.1 先 append 到 `inbox/YYYY-MM-DD.md`；确认格式后再升级为 `shelf/web/<host>/<slug>.md`
-- 若 `target_file` 指向 `inbox/` 或 `desk/` → append 一个上述 markdown block
+  - `atrium` / `favilla` / `manual` / `obsidian` → AI 私有 `studio_ai_inbox/YYYY-MM-DD.md`
+- 若 `target_file` 指向 `desk/` 或其他用户 vault 路径 → append 一个上述 markdown block
 - 若指向 `shelf/...` → 创建新文件，写 YAML frontmatter + 正文
-- **path traversal 防护**: 必须落在 vault 内。
+- 显式 `target_file=inbox/...` 拒绝，避免重新把 AI 私有收件箱写回用户 vault。
+- **path traversal 防护**: 用户 vault 与 AI 私有 inbox 都必须阻止越界。
 - 自动 `mkdir -p` 父目录，UTF-8 写入，git commit。commit 失败 → 返回明确错误，不静默。
 - commit 作者 = 服务器用户；真实来源在 block 内的 `agent` + commit message 体现。
 - 返回 `{ok, commit_sha, abs_path, rel_path}`
@@ -100,7 +100,7 @@ tags: [web, ...]
 等价于 `share` with `source=quicknote, selection=text, target_file=desk/<today>.md`。
 快捷便利封装。
 
-#### GET `/studio/list?dir=inbox&limit=50`
+#### GET `/studio/list?dir=desk&limit=50`
 返回:
 ```json
 {
@@ -110,7 +110,7 @@ tags: [web, ...]
 ```
 **默认按 git commit ts 排序** (mtime 不可靠)。
 
-#### GET `/studio/file?path=inbox/2026-05-11.md`
+#### GET `/studio/file?path=desk/2026-05-11.md`
 返回 raw markdown (text/plain)。前端自渲染。
 路径必须在 vault 内。
 
@@ -118,13 +118,13 @@ tags: [web, ...]
 
 【Zephyr 批注】全功能在桌面端，手机端塞不下，做轻量的，小功能。
 
-【Codex 批注】采纳。手机端只做“收、看、跳、快记”：Inbox、Reader 简版、Quick Note、分享入口。桌面端/Atrium 才承载文件管理、批量整理、长文阅读、git 状态、Obsidian 跳转细节。
+【Codex 批注】采纳。手机端只做“收、看、跳、快记”：Reader 简版、Quick Note、分享入口、跳 Obsidian。桌面端/Atrium 才承载文件管理、批量整理、长文阅读、git 状态、Obsidian 跳转细节。Inbox 是 AI 私有入口，不做用户本地页面。
 
 新增 `/studio` 路由。原 `EditorView` 从路由摘掉，代码留 archive。
 
 ```
 /studio
-  ├─ Inbox     (默认)  — git log 时间线 + 文件列表
+  ├─ Timeline  (默认)  — git log 时间线
   ├─ Reader    /studio/r?path=...  (react-markdown + remark-gfm 只读)
   ├─ Quick     单 textarea, enter → /studio/quicknote
   └─ Settings  vault 路径 / Obsidian URI scheme / git remote 状态
@@ -156,7 +156,7 @@ Reader 右上角按钮即跳。
 2. ISP 上 `mkdir /home/fiet/live/studio && cd ... && git init && git remote add origin <repo>` + 写 `README.md` + 初始 commit + push。
 3. dashboard_server.py 加 4 个 `/studio/*` 接口 + path-traversal 防护。
 4. (脚本) `scripts/studio_init.py` 或 vault init 步骤写进 README。
-5. 跑通后再做前端 ReaderView / Inbox / Quick。
+5. 跑通后再做前端 ReaderView / Timeline / Quick。
 6. 再做 Atrium 扩展 popup 按钮 + Favilla 长按分享。
 7. (可选) Android Obsidian URI 跳转 smoke。
 
@@ -165,22 +165,23 @@ Reader 右上角按钮即跳。
 ### 7.5. 已落地进度 (2026-05-11 copilot, commit 0ca02f7, 本地未推)
 
 - ✅ 后端 4 个 `/studio/*` endpoint (scripts/dashboard_server.py)
-  - POST `/studio/share` — append block 到 inbox/desk，或写 frontmatter 到 shelf
+  - POST `/studio/share` — 默认写 AI 私有 inbox；指定 desk/其他 vault 路径则 append block；指定 shelf 则写 frontmatter
   - POST `/studio/quicknote` — 等价 share + source=quicknote → desk/今天.md
   - GET  `/studio/list?dir=&limit=` — 文件列表 + git log（按 mtime 排）
   - GET  `/studio/file?path=` — 返回 raw markdown
 - ✅ Path-traversal 防护、`.git` 拒绝、`.md` 强制
 - ✅ vault 路径用 env `FIAM_STUDIO_VAULT_DIR` 覆盖（本地/测试），默认 `<home>/studio`
 - ✅ 自动 `git init` + 默认 user.name/email；每次写自动 `git add + commit`（best-effort，失败不抛错）
-- ✅ inbox/desk = 多条 markdown block append；shelf = YAML frontmatter，**拒绝覆盖**
-- ✅ tests/test_studio.py — 11 个用例，全过；主测试套件 77 通过无回归
+- ✅ AI 私有 inbox/desk = 多条 markdown block append；shelf = YAML frontmatter，**拒绝覆盖**
+- ✅ tests/test_studio.py — 12 个用例，全过；主测试套件 77 通过无回归
+- ✅ ISP AI smoke: AI 在 ISP 上以 `/home/fiet/live/studio_ai_inbox/` 作为自己的 inbox；通过 `/studio/share` 默认写该 inbox，通过 `/studio/quicknote` 写用户 vault 的 `desk/`，再用 `/studio/list` + `/studio/file` 读回用户 vault 内容；显式 `target_file=inbox/...` 返回 400，避免把 AI inbox 写回用户 vault。
 - ✅ Atrium 扩展 popup 「送到 Studio」按钮（inbox / desk / shelf 三选一 + note 备注）
   - content.js 新增 `FIAM_GET_SELECTION` 消息，自动抓 url + title + 选中文本
   - popup.js 走 `/studio/share` 带 `source=atrium`
   - xpi 已重新打包到 build/atrium-browser-extension.xpi
 
 待办：
-- [ ] 前端 dashboard 加 `/studio` 路由（Inbox 时间线 + Reader 只读 + Quick）—— 先观察 vault 实际数据形态再做
+- [ ] 前端 dashboard 加 `/studio` 路由（Timeline + Reader 只读 + Quick）—— 先观察 vault 实际数据形态再做
 - [ ] Favilla app 长按消息 → /studio/share —— 需要先确认 Favilla 端 long-press UX
 - [ ] Obsidian Android URI 跳转 smoke
 - [ ] 部署到 ISP（**用户出门期间 CC 可能在改 ISP 上的东西，等用户回来再决定**）
@@ -190,7 +191,7 @@ Reader 右上角按钮即跳。
 - [ ] **新 GitHub repo URL** (vault 用，Zephyr 个人或与 AI 共享的 org 都行)
 - [ ] vault repo 是否需要 LFS？(若以后存图片/PDF；v0.1 可先不启用，先只存 markdown + 外链)
 - [ ] Obsidian vault 名 = `fiam-studio` 行不行？影响 URI scheme 字符串
-- [ ] `inbox/shelf/desk` 作为默认三分法是否确认？是否需要中文 UI 名：邮筒 / 书架 / 书桌？
+- [x] `inbox` 改为 AI 私有，不进入用户本地 vault；用户本地默认只保留 `shelf/desk`，并可自由新增文件夹。
 
 ---
 

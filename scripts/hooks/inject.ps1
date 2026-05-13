@@ -1,10 +1,10 @@
-# fiam hook: UserPromptSubmit -> inject self + recall + external as additionalContext
+# fiam hook: UserPromptSubmit -> inject self + one-shot recall + external as additionalContext
 # Order (cache-optimized): [self] → [recall] → [external]
 
 $homeDir = $env:CLAUDE_PROJECT_DIR
 $selfDir = Join-Path $homeDir "self"
-$recallFile = Join-Path $homeDir "recall.md"
-$recallDirty = Join-Path $homeDir ".recall_dirty"
+$pendingRecall = Join-Path $homeDir "pending_recall.md"
+$pendingRecallProcessing = Join-Path $homeDir "pending_recall.processing"
 $pendingFile = Join-Path $homeDir "pending_external.txt"
 $pendingProcessing = Join-Path $homeDir "pending_external.processing"
 
@@ -25,16 +25,17 @@ if (Test-Path $selfDir) {
     }
 }
 
-# ── 2. Recall (only if .recall_dirty marker exists) ──
-if ((Test-Path $recallDirty) -and (Test-Path $recallFile)) {
-    $content = Get-Content $recallFile -Raw -ErrorAction SilentlyContinue
+# ── 2. Recall (one-shot pending handoff) ──
+if (Test-Path $pendingRecall) {
+    Move-Item $pendingRecall $pendingRecallProcessing -Force -ErrorAction SilentlyContinue
+    $content = Get-Content $pendingRecallProcessing -Raw -ErrorAction SilentlyContinue
     if ($content -and $content.Trim().Length -gt 0) {
         $clean = $content -replace '<!--.*?-->', '' | ForEach-Object { $_.Trim() }
         if ($clean.Length -gt 0) {
             $parts += "[recall]`n$clean"
         }
     }
-    Remove-Item $recallDirty -Force -ErrorAction SilentlyContinue
+    Remove-Item $pendingRecallProcessing -Force -ErrorAction SilentlyContinue
 }
 
 # ── 3. External messages ──

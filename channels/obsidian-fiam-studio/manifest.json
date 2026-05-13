@@ -3,7 +3,7 @@
   "name": "Fiam Studio",
   "version": "0.1.0",
   "minAppVersion": "1.7.0",
-  "description": "Inbox, shelf, desk, co-authoring, and git timeline workflow for Fiam Studio vaults.",
+  "description": "Desk, shelf, private AI inbox sends, co-authoring, and git timeline workflow for Fiam Studio vaults.",
   "author": "Fiam",
   "authorUrl": "https://fiet.cc",
   "isDesktopOnly": true

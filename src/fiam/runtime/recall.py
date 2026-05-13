@@ -1,7 +1,8 @@
-"""Shared recall refresh helper for runtime backends."""
+"""Shared recall context builder for runtime backends."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -14,7 +15,57 @@ if TYPE_CHECKING:
     from fiam.store.pool import Pool
 
 
-def refresh_recall(
+@dataclass(frozen=True)
+class RecallFragment:
+    event_id: str
+    time_hint: str
+    activation: float
+    summary: str
+    reason: str = "spreading_activation"
+    channel: str = ""
+    surface: str = ""
+    kind: str = "event"
+    object_refs: tuple[str, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
+class RecallContext:
+    fragments: tuple[RecallFragment, ...] = field(default_factory=tuple)
+    generated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    source: str = "pool.spreading_activation"
+    shield_after: datetime | None = None
+
+    @property
+    def count(self) -> int:
+        return len(self.fragments)
+
+    def render(self, *, max_chars: int = 4000) -> str:
+        if not self.fragments:
+            return ""
+        lines: list[str] = []
+        for fragment in self.fragments:
+            meta = [fragment.time_hint, f"activation={fragment.activation:.2f}"]
+            if fragment.channel:
+                meta.append(f"channel={fragment.channel}")
+            if fragment.surface:
+                meta.append(f"surface={fragment.surface}")
+            if fragment.kind and fragment.kind != "event":
+                meta.append(f"kind={fragment.kind}")
+            line = f"- [{fragment.event_id}] ({'; '.join(meta)}) {fragment.summary}"
+            if fragment.object_refs:
+                line += " refs=" + ",".join(fragment.object_refs)
+            lines.append(line)
+        text = "\n".join(lines).strip()
+        if max_chars > 0 and len(text) > max_chars:
+            return text[: max_chars - 3].rstrip() + "..."
+        return text
+
+
+def empty_recall_context() -> RecallContext:
+    return RecallContext(fragments=())
+
+
+def build_recall_context(
     config: "FiamConfig",
     pool: "Pool",
     query_vec: np.ndarray,
@@ -22,8 +73,8 @@ def refresh_recall(
     top_k: int | None = None,
     shield_recent: bool = True,
     shield_after: datetime | None = None,
-) -> int:
-    """Refresh recall.md from a query vector and return fragment count.
+) -> RecallContext:
+    """Build bounded per-turn recall context from the Pool graph.
 
     When ``shield_recent`` is True (default), suppress events created today so
     automatic recall does not surface in-flight context. Pass False for manual
@@ -48,12 +99,10 @@ def refresh_recall(
         top_k=top_k or config.recall_top_k,
     )
     if not results:
-        return 0
+        return RecallContext(shield_after=shield_after)
 
     now = datetime.now(timezone.utc)
-    fragments: list[dict[str, str]] = []
-    bullet_lines: list[str] = []
-    count = 0
+    fragments: list[RecallFragment] = []
 
     for event_id, activation in results:
         ev = pool.get_event(event_id)
@@ -74,26 +123,30 @@ def refresh_recall(
         else:
             hint = "刚才"
 
-        fragments.append({"hint": hint, "text": fragment})
-        bullet_lines.append(f"- ({hint}) {fragment}")
+        privacy = str(getattr(ev, "privacy", "") or "public").lower()
+        kind = str(getattr(ev, "kind", "") or "event").lower()
+        if privacy in {"private", "thought"} or kind in {"trace", "control", "dispatch_raw", "hold"}:
+            continue
+        object_refs_raw = getattr(ev, "object_refs", ()) or ()
+        object_refs = tuple(str(item) for item in object_refs_raw if str(item).strip())
+        fragments.append(RecallFragment(
+            event_id=event_id,
+            time_hint=hint,
+            activation=float(activation),
+            summary=fragment,
+            channel=str(getattr(ev, "channel", "") or ""),
+            surface=str(getattr(ev, "surface", "") or ""),
+            kind=kind,
+            object_refs=object_refs,
+        ))
         ev.access_count += 1
-        count += 1
 
-    if count == 0:
-        return 0
+    if not fragments:
+        return RecallContext(shield_after=shield_after)
 
-    # Try ds narration; on failure, fall back to raw bullet dump.
-    narrated: str | None = None
-    try:
-        from fiam_lib.app_markers import narrate_recall_fragments
-        narrated = narrate_recall_fragments(fragments, config)
-    except Exception:
-        narrated = None
-
-    header = f"<!-- recall | {now.strftime('%Y-%m-%dT%H:%M:%SZ')} -->"
-    body_md = narrated if narrated else "\n".join(bullet_lines)
     pool.save_events()
-    config.background_path.parent.mkdir(parents=True, exist_ok=True)
-    config.background_path.write_text(f"{header}\n\n{body_md}\n", encoding="utf-8")
-    (config.background_path.parent / ".recall_dirty").touch()
-    return count
+    return RecallContext(
+        fragments=tuple(fragments),
+        generated_at=now,
+        shield_after=shield_after,
+    )

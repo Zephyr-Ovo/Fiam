@@ -8,6 +8,7 @@
 	let loading = $state(true);
 	let err = $state<string | null>(null);
 	let autoScroll = $state(true);
+	let lastRefreshed = $state('—');
 	let container = $state<HTMLDivElement | undefined>();
 	let pollTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -47,11 +48,14 @@
 	function getChannel(beat: Beat): string {
 		return (beat.channel ?? '').toString();
 	}
+	function getSurface(beat: Beat): string {
+		return (beat.surface ?? '').toString();
+	}
 	function getKind(beat: Beat): string {
 		return ((beat as any).kind ?? '').toString();
 	}
 	function getContent(beat: Beat): string {
-		return ((beat as any).content ?? '').toString();
+		return ((beat as any).content ?? (beat as any).text ?? (beat as any).preview ?? '').toString();
 	}
 	function colorForScene(beat: Beat): string {
 		const k = getKind(beat);
@@ -69,9 +73,11 @@
 	function sceneOf(beat: Beat): string {
 		const a = getActor(beat);
 		const c = getChannel(beat);
+		const surface = getSurface(beat);
 		const k = getKind(beat);
 		const tail = k && k !== 'message' ? `·${k}` : '';
-		if (a && c) return `${a}@${c}${tail}`;
+		if (a && c) return `${a}@${surface ? `${c}/${surface}` : c}${tail}`;
+		if ((beat as any).scene) return String((beat as any).scene) + tail;
 		return (a || c) + tail;
 	}
 
@@ -101,9 +107,11 @@
 
 	async function load() {
 		try {
-			const r = await api.flow(0, 200);
+			const r = await api.flow(0, 300);
 			beats = r.beats;
 			total = r.total;
+			err = null;
+			lastRefreshed = new Date().toLocaleTimeString();
 			loading = false;
 			if (autoScroll && container) {
 				requestAnimationFrame(() => {
@@ -129,7 +137,7 @@
 
 	onMount(async () => {
 		await load();
-		pollTimer = setInterval(load, 10000);
+		pollTimer = setInterval(load, 2000);
 	});
 
 	onDestroy(() => {
@@ -140,7 +148,7 @@
 <div class="flex flex-col h-[calc(100vh-8rem)]">
 	<div class="flex items-center gap-4 mb-2 text-xs font-mono flex-wrap">
 		<span class="text-[var(--color-subtext0)]">beats {total}</span>
-		<span class="text-[var(--color-overlay0)]">flow.jsonl stream</span>
+		<span class="text-[var(--color-overlay0)]">events.sqlite3 · latest 300 · {lastRefreshed}</span>
 		<label class="ml-auto flex items-center gap-1 cursor-pointer">
 			<input type="checkbox" bind:checked={autoScroll} class="accent-[var(--color-mauve)]" />
 			<span class="text-[var(--color-overlay1)]">auto-scroll</span>

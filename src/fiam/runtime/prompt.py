@@ -23,6 +23,7 @@ from fiam.channels import normalize_channel
 
 if TYPE_CHECKING:
     from fiam.config import FiamConfig
+    from fiam.runtime.recall import RecallContext
 
 
 def _system_block(text: str, *, cache: bool) -> dict[str, Any]:
@@ -52,9 +53,9 @@ class PromptAssembler:
         self,
         user_text: str,
         *,
-        channel: str = "api",
+        channel: str = "chat",
         include_recall: bool = True,
-        consume_recall_dirty: bool = True,
+        recall_context: "RecallContext | None" = None,
         extra_context: str = "",
     ) -> list[dict[str, Any]]:
         return build_api_messages(
@@ -62,7 +63,7 @@ class PromptAssembler:
             user_text,
             channel=channel,
             include_recall=include_recall,
-            consume_recall_dirty=consume_recall_dirty,
+            recall_context=recall_context,
             extra_context=extra_context,
         )
 
@@ -70,9 +71,9 @@ class PromptAssembler:
         self,
         user_text: str,
         *,
-        channel: str = "app",
+        channel: str = "chat",
         include_recall: bool = True,
-        consume_recall_dirty: bool = True,
+        recall_context: "RecallContext | None" = None,
         extra_context: str = "",
     ) -> str:
         return build_plain_prompt(
@@ -80,7 +81,7 @@ class PromptAssembler:
             user_text,
             channel=channel,
             include_recall=include_recall,
-            consume_recall_dirty=consume_recall_dirty,
+            recall_context=recall_context,
             extra_context=extra_context,
         )
 
@@ -89,9 +90,9 @@ def build_api_messages(
     config: "FiamConfig",
     user_text: str,
     *,
-    channel: str = "api",
+    channel: str = "chat",
     include_recall: bool = True,
-    consume_recall_dirty: bool = True,
+    recall_context: "RecallContext | None" = None,
     extra_context: str = "",
 ) -> list[dict[str, Any]]:
     """Build OpenAI-compatible messages with three system segments.
@@ -120,9 +121,12 @@ def build_api_messages(
         messages.append(_system_block(f"[context]\nuser_channel={canon}", cache=False))
     dynamic_parts: list[str] = []
     if include_recall:
-        recall = load_recall_context(config, consume_dirty=consume_recall_dirty)
+        recall = render_recall_context(recall_context)
         if recall:
             dynamic_parts.append(f"[recall]\n{recall}")
+    timeline = load_timeline_snippets(config)
+    if timeline:
+        dynamic_parts.append(f"[timeline]\n{timeline}")
     if extra_context.strip():
         dynamic_parts.append(extra_context.strip())
     if dynamic_parts:
@@ -147,9 +151,9 @@ def build_plain_prompt(
     config: "FiamConfig",
     user_text: str,
     *,
-    channel: str = "app",
+    channel: str = "chat",
     include_recall: bool = True,
-    consume_recall_dirty: bool = True,
+    recall_context: "RecallContext | None" = None,
     extra_context: str = "",
 ) -> str:
     """Render the same prompt segments as plain text.
@@ -161,7 +165,7 @@ def build_plain_prompt(
         user_text,
         channel=channel,
         include_recall=include_recall,
-        consume_recall_dirty=consume_recall_dirty,
+        recall_context=recall_context,
         extra_context=extra_context,
     )
     return "\n\n".join(part for part in (system_context, user_prompt) if part)
@@ -171,9 +175,9 @@ def build_plain_prompt_parts(
     config: "FiamConfig",
     user_text: str,
     *,
-    channel: str = "app",
+    channel: str = "chat",
     include_recall: bool = True,
-    consume_recall_dirty: bool = True,
+    recall_context: "RecallContext | None" = None,
     extra_context: str = "",
 ) -> tuple[str, str]:
     """Return ``(system_context, user_prompt)`` for non-API runtimes.
@@ -188,7 +192,7 @@ def build_plain_prompt_parts(
         user_text,
         channel=channel,
         include_recall=include_recall,
-        consume_recall_dirty=consume_recall_dirty,
+        recall_context=recall_context,
         extra_context=extra_context,
     )
     system_parts: list[str] = []
@@ -237,15 +241,22 @@ def load_self_context(config: "FiamConfig") -> str:
     return "\n".join(parts)
 
 
-def load_recall_context(config: "FiamConfig", *, consume_dirty: bool = False) -> str:
-    """Load recall.md only when .recall_dirty exists, matching hook semantics."""
-    dirty = config.background_path.parent / ".recall_dirty"
-    if not dirty.exists() or not config.background_path.exists():
+def render_recall_context(recall_context: "RecallContext | None", *, max_chars: int = 4000) -> str:
+    if recall_context is None:
         return ""
-    text = _read_text(config.background_path).strip()
+    text = recall_context.render(max_chars=max_chars).strip()
+    return re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL).strip()
+
+
+def load_timeline_snippets(config: "FiamConfig", *, max_chars: int = 4000) -> str:
+    """Load only explicitly selected memory timeline snippets."""
+    path = getattr(config, "timeline_dir", config.store_dir / "timeline") / "context.md"
+    if not path.exists():
+        return ""
+    text = _read_text(path).strip()
     text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL).strip()
-    if consume_dirty:
-        dirty.unlink(missing_ok=True)
+    if max_chars > 0 and len(text) > max_chars:
+        return text[-max_chars:].lstrip()
     return text
 
 
@@ -258,7 +269,7 @@ def _read_text(path: Path) -> str:
 
 def transcript_path(config: "FiamConfig", channel: str) -> Path:
     canon = normalize_channel(channel)
-    clean = re.sub(r"[^A-Za-z0-9_-]+", "_", canon).strip("_") or "favilla"
+    clean = re.sub(r"[^A-Za-z0-9_-]+", "_", canon).strip("_") or "chat"
     return config.store_dir / "transcripts" / f"{clean}.jsonl"
 
 
@@ -266,15 +277,43 @@ def _valid_transcript_message(message: Any) -> dict[str, Any] | None:
     if not isinstance(message, dict):
         return None
     role = str(message.get("role") or "").strip()
-    if role not in {"user", "assistant", "tool"}:
+    if role not in {"system", "user", "assistant", "tool"}:
         return None
     out = {k: v for k, v in message.items() if k in {"role", "content", "tool_calls", "tool_call_id", "name"}}
     if "content" not in out and "tool_calls" not in out:
         return None
     out["role"] = role
+    if role == "system":
+        content = out.get("content")
+        if not isinstance(content, str) or not content.startswith("[transcript_compaction]"):
+            return None
+        return out
+    if role == "user":
+        out = _clean_user_transcript_message(out)
+        if out is None:
+            return None
     if role == "assistant":
         out = _clean_assistant_transcript_message(out)
     return out
+
+
+def _clean_user_transcript_message(message: dict[str, Any]) -> dict[str, Any] | None:
+    content = message.get("content")
+    if isinstance(content, str):
+        return message if content.strip() else None
+    if isinstance(content, list):
+        text_parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                text = str(block.get("text") or "").strip()
+                if text:
+                    text_parts.append(text)
+        if not text_parts:
+            return None
+        out = dict(message)
+        out["content"] = "\n".join(text_parts)
+        return out
+    return None
 
 
 def _clean_assistant_transcript_message(message: dict[str, Any]) -> dict[str, Any] | None:
@@ -318,6 +357,8 @@ def load_transcript_messages(
     *,
     max_messages: int = 80,
 ) -> list[dict[str, Any]]:
+    if max_messages <= 0:
+        return []
     path = transcript_path(config, channel)
     if not path.exists():
         return []
@@ -326,7 +367,16 @@ def load_transcript_messages(
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
         return []
-    for line in lines[-max_messages:]:
+    selected = lines[-max_messages:]
+    if lines and max_messages > 0:
+        try:
+            first = _valid_transcript_message(json.loads(lines[0]))
+        except json.JSONDecodeError:
+            first = None
+        if first and first.get("role") == "system" and str(first.get("content") or "").startswith("[transcript_compaction]"):
+            tail = lines[-max(0, max_messages - 1):] if max_messages > 1 else []
+            selected = tail if tail and tail[0] == lines[0] else [lines[0], *tail]
+    for line in selected:
         try:
             message = _valid_transcript_message(json.loads(line))
         except json.JSONDecodeError:

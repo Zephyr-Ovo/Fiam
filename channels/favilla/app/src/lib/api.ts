@@ -62,6 +62,7 @@ export type ChatSegment =
     }
 
 export type ChatAttachment = {
+  object_hash?: string
   path: string
   name: string
   mime?: string
@@ -75,7 +76,7 @@ export type StoredChatMessage = {
   text?: string
   raw_text?: string
   runtime?: "cc" | "api" | string
-  attachments?: Array<{ kind: "voice" | "file" | "image"; name: string; size?: string | number; path?: string; mime?: string }>
+  attachments?: Array<{ kind: "voice" | "file" | "image"; name: string; size?: string | number; path?: string; object_hash?: string; mime?: string }>
   thinking?: ChatThought[]
   thinkingLocked?: boolean
   segments?: ChatSegment[]
@@ -283,8 +284,6 @@ export async function sendChat(
   runtime: "auto" | "cc" | "api" = appConfig.defaultRuntime,
 ): Promise<ChatResponse> {
   const body: Record<string, unknown> = { text, source, runtime, attachments }
-  // eslint-disable-next-line no-console
-  console.log("[api] sendChat ->", `${getBase()}/favilla/chat/send`, { hasToken: !!getToken() })
   const res = await fetch(`${getBase()}/favilla/chat/send`, {
     method: "POST",
     headers: authHeaders(),
@@ -303,7 +302,7 @@ export type StreamChatEvent =
   | { event: "tool_result"; data: { tool_use_id?: string; tool_name?: string; result_summary?: string; is_error?: boolean } }
   | { event: "thought"; data: { index: number; text: string; source?: "marker" | "native"; locked?: boolean; summary?: string; icon?: string } }
   | { event: "thought_summary"; data: { index: number; summary?: string; icon?: string } }
-  | { event: "text"; data: { index: number; text: string } }
+  | { event: "text_delta"; data: { index: number; text: string } }
   | { event: "done"; data: ChatResponse }
   | { event: "error"; data: { message: string } }
 
@@ -391,7 +390,6 @@ export async function sendChatStream(
     curData = ""
   }
   try {
-    // eslint-disable-next-line no-constant-condition
     while (true) {
       let chunk: ReadableStreamReadResult<Uint8Array>
       try {

@@ -109,7 +109,7 @@ def test_check_rollover_bumps_until_cap(ds_mod, monkeypatch):
 
 
 def test_recall_shield_after_uses_session_boundary():
-    """refresh_recall must honor explicit shield_after override."""
+    """Recall seed activation must honor explicit shield_after override."""
     import importlib
 
     fiam_recall = importlib.import_module("fiam.runtime.recall")

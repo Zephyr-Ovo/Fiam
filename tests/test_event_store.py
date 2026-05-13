@@ -10,6 +10,7 @@ from fiam.config import FiamConfig
 from fiam.runtime.prompt import append_transcript_messages, load_transcript_messages
 from fiam.store.beat import Beat, append_beat, read_beats
 from fiam.store.features import beat_key
+from fiam.store.objects import ObjectStore
 
 
 class EventStoreTest(unittest.TestCase):
@@ -23,6 +24,7 @@ class EventStoreTest(unittest.TestCase):
                 kind="message",
                 content="hello",
                 meta={"message_id": "m1"},
+                surface="favilla.chat",
             )
 
             first = append_beat(flow, beat)
@@ -31,6 +33,7 @@ class EventStoreTest(unittest.TestCase):
             self.assertIsNotNone(first)
             self.assertIsNone(second)
             self.assertEqual(len(read_beats(flow)), 1)
+            self.assertEqual(read_beats(flow)[0].surface, "favilla.chat")
             self.assertFalse(flow.exists())
 
     def test_large_content_uses_object_store(self) -> None:
@@ -50,6 +53,15 @@ class EventStoreTest(unittest.TestCase):
             self.assertEqual(beats[0].content, text)
             self.assertTrue((flow.parent / "objects").is_dir())
             self.assertTrue(list((flow.parent / "objects").glob("*/*.txt")))
+
+    def test_object_store_bytes_roundtrip(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = ObjectStore(Path(tmp) / "objects")
+
+            digest = store.put_bytes(b"\x00image-bytes", suffix="")
+
+            self.assertEqual(store.get_bytes(digest, suffix=""), b"\x00image-bytes")
+            self.assertEqual(len(digest), 64)
 
     def test_transcript_messages_read_store_transcripts(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -82,6 +94,25 @@ class EventStoreTest(unittest.TestCase):
             messages = load_transcript_messages(config, "chat")
 
             self.assertEqual(messages, [{"role": "assistant", "content": "shown"}])
+
+    def test_transcript_messages_drop_user_image_blocks(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = FiamConfig(home_path=root / "home", code_path=root, embedding_backend="local")
+            config.ensure_dirs()
+            append_transcript_messages(config, "chat", [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "describe this\nobj:abc"},
+                    {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,SECRET"}},
+                ],
+            }])
+
+            raw = (config.store_dir / "transcripts" / "chat.jsonl").read_text(encoding="utf-8")
+            messages = load_transcript_messages(config, "chat")
+
+            self.assertNotIn("data:image", raw)
+            self.assertEqual(messages, [{"role": "user", "content": "describe this\nobj:abc"}])
 
     def test_feature_key_prefers_event_id(self) -> None:
         beat = Beat(
@@ -149,20 +180,26 @@ class EventStoreTest(unittest.TestCase):
                     "object_mime": "text/plain",
                     "object_name": "note.txt",
                     "object_size": 12,
+                    "surface": "favilla.chat",
                 },
+                surface="favilla.chat",
             ))
 
             from fiam.store.events import db_path_for_flow
             conn = sqlite3.connect(db_path_for_flow(flow))
             try:
                 row = conn.execute(
-                    "SELECT turn_id, request_id, dispatch_id, dispatch_recipient, object_mime, object_size FROM events WHERE id = ?",
+                    "SELECT turn_id, request_id, surface, dispatch_id, dispatch_recipient, object_mime, object_size FROM events WHERE id = ?",
                     (event_id,),
+                ).fetchone()
+                object_index = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_events_object_hash'",
                 ).fetchone()
             finally:
                 conn.close()
 
-            self.assertEqual(row, ("turn_1", "req_1", "disp_1", "Zephyr", "text/plain", 12))
+            self.assertEqual(row, ("turn_1", "req_1", "favilla.chat", "disp_1", "Zephyr", "text/plain", 12))
+            self.assertEqual(object_index, ("idx_events_object_hash",))
 
 
 if __name__ == "__main__":

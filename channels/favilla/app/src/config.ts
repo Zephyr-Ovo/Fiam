@@ -26,7 +26,7 @@ export type AppConfig = {
   agentBubbleBg: string
   /** Brand/theme color (drives --color-cocoa: send button, accents). */
   themeColor: string
-  /** API base for the Favilla server (proxied via vite dev server). */
+  /** API base for the Favilla server. Empty means same-origin/Vite proxy. */
   apiBase: string
   /** Auth token for the Favilla server. */
   ingestToken: string
@@ -34,6 +34,26 @@ export type AppConfig = {
   limenBaseUrl: string
   /** Default runtime used by sendChat: "auto" | "cc" | "api". */
   defaultRuntime: "auto" | "cc" | "api"
+  /** STT provider: browser or OpenAI-compatible endpoint. */
+  sttProvider: "browser" | "openai_compatible"
+  /** STT endpoint base URL. */
+  sttBaseUrl: string
+  /** STT API key (stored locally for now). */
+  sttApiKey: string
+  /** STT model name for compatible endpoints. */
+  sttModel: string
+  /** TTS provider: browser, OpenAI-compatible, or mimo. */
+  ttsProvider: "browser" | "openai_compatible" | "mimo"
+  /** TTS endpoint base URL. */
+  ttsBaseUrl: string
+  /** TTS API key (stored locally for now). */
+  ttsApiKey: string
+  /** TTS model name for remote providers. */
+  ttsModel: string
+  /** TTS voice id/name. */
+  ttsVoice: string
+  /** Auto-speak latest AI reply when available. */
+  ttsAutoPlayAi: boolean
 }
 
 const defaults: AppConfig = {
@@ -43,20 +63,50 @@ const defaults: AppConfig = {
   userBubbleBg: "#d0bcbe",
   agentBubbleBg: "#f5f5f5",
   themeColor: "#664E44",
-  apiBase: (import.meta.env.VITE_API_BASE as string) ?? (import.meta.env.VITE_API_TARGET as string) ?? "",
+  apiBase: (import.meta.env.VITE_API_BASE as string) ?? "",
   ingestToken: (import.meta.env.VITE_INGEST_TOKEN as string) ?? "",
   limenBaseUrl: (import.meta.env.VITE_LIMEN_BASE_URL as string) ?? "",
   defaultRuntime: "auto",
+  sttProvider: "browser",
+  sttBaseUrl: "",
+  sttApiKey: "",
+  sttModel: "whisper-1",
+  ttsProvider: "browser",
+  ttsBaseUrl: "",
+  ttsApiKey: "",
+  ttsModel: "gpt-4o-mini-tts",
+  ttsVoice: "",
+  ttsAutoPlayAi: false,
 }
 
 const STORAGE_KEY = "favilla:config"
+const INVALID_TOKEN_OVERRIDES = new Set(["", "test-token"])
 
 function loadOverrides(): Partial<AppConfig> {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return {}
     const parsed = JSON.parse(raw)
-    return parsed && typeof parsed === "object" ? parsed : {}
+    if (!parsed || typeof parsed !== "object") return {}
+    const overrides = { ...parsed } as Partial<AppConfig>
+    if (typeof overrides.apiBase === "string") {
+      const apiBase = overrides.apiBase.trim()
+      if (!apiBase && defaults.apiBase) delete overrides.apiBase
+      else overrides.apiBase = apiBase
+    }
+    if (typeof overrides.ingestToken === "string") {
+      const ingestToken = overrides.ingestToken.trim()
+      if (INVALID_TOKEN_OVERRIDES.has(ingestToken)) delete overrides.ingestToken
+      else overrides.ingestToken = ingestToken
+    }
+    if (typeof overrides.sttBaseUrl === "string") overrides.sttBaseUrl = overrides.sttBaseUrl.trim()
+    if (typeof overrides.sttApiKey === "string") overrides.sttApiKey = overrides.sttApiKey.trim()
+    if (typeof overrides.sttModel === "string") overrides.sttModel = overrides.sttModel.trim()
+    if (typeof overrides.ttsBaseUrl === "string") overrides.ttsBaseUrl = overrides.ttsBaseUrl.trim()
+    if (typeof overrides.ttsApiKey === "string") overrides.ttsApiKey = overrides.ttsApiKey.trim()
+    if (typeof overrides.ttsModel === "string") overrides.ttsModel = overrides.ttsModel.trim()
+    if (typeof overrides.ttsVoice === "string") overrides.ttsVoice = overrides.ttsVoice.trim()
+    return overrides
   } catch {
     return {}
   }

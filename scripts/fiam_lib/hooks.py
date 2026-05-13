@@ -18,13 +18,13 @@ if TYPE_CHECKING:
 # Inject hook templates (fallback if scripts/hooks/ not available)
 # ------------------------------------------------------------------
 
-_INJECT_PS1_TEMPLATE = r'''# fiam hook: UserPromptSubmit -> inject self + recall + external as additionalContext
+_INJECT_PS1_TEMPLATE = r'''# fiam hook: UserPromptSubmit -> inject self + one-shot recall + external as additionalContext
 # Order (cache-optimized): [self] → [recall] → [external]
 
 $homeDir = $env:CLAUDE_PROJECT_DIR
 $selfDir = Join-Path $homeDir "self"
-$recallFile = Join-Path $homeDir "recall.md"
-$recallDirty = Join-Path $homeDir ".recall_dirty"
+$pendingRecall = Join-Path $homeDir "pending_recall.md"
+$pendingRecallProcessing = Join-Path $homeDir "pending_recall.processing"
 $pendingFile = Join-Path $homeDir "pending_external.txt"
 $pendingProcessing = Join-Path $homeDir "pending_external.processing"
 
@@ -45,16 +45,17 @@ if (Test-Path $selfDir) {
     }
 }
 
-# ── 2. Recall (only if .recall_dirty marker exists) ──
-if ((Test-Path $recallDirty) -and (Test-Path $recallFile)) {
-    $content = Get-Content $recallFile -Raw -ErrorAction SilentlyContinue
+# ── 2. Recall (one-shot pending handoff) ──
+if (Test-Path $pendingRecall) {
+    Move-Item $pendingRecall $pendingRecallProcessing -Force -ErrorAction SilentlyContinue
+    $content = Get-Content $pendingRecallProcessing -Raw -ErrorAction SilentlyContinue
     if ($content -and $content.Trim().Length -gt 0) {
         $clean = $content -replace '<!--.*?-->', '' | ForEach-Object { $_.Trim() }
         if ($clean.Length -gt 0) {
             $parts += "[recall]`n$clean"
         }
     }
-    Remove-Item $recallDirty -Force -ErrorAction SilentlyContinue
+    Remove-Item $pendingRecallProcessing -Force -ErrorAction SilentlyContinue
 }
 
 # ── 3. External messages ──
@@ -86,17 +87,17 @@ exit 0
 '''
 
 _INJECT_SH_TEMPLATE = r'''#!/bin/bash
-# fiam hook: UserPromptSubmit -> inject self + recall + external as additionalContext
+# fiam hook: UserPromptSubmit -> inject self + one-shot recall + external as additionalContext
 #
 # Injection order (cache-optimized: static → semi-static → dynamic):
 #   1. self/*.md          -- AI's identity/personality (AI-maintained, changes rarely)
-#   2. recall.md          -- memory fragments (surfaced by retrieval, changes on drift)
+#   2. pending_recall.md  -- one-turn memory fragments
 #   3. pending_external.txt -- external messages (changes per-message)
 
 HOME_DIR="$CLAUDE_PROJECT_DIR"
 SELF_DIR="$HOME_DIR/self"
-RECALL_FILE="$HOME_DIR/recall.md"
-RECALL_DIRTY="$HOME_DIR/.recall_dirty"
+PENDING_RECALL="$HOME_DIR/pending_recall.md"
+PENDING_RECALL_PROCESSING="$HOME_DIR/pending_recall.processing"
 PENDING_FILE="$HOME_DIR/pending_external.txt"
 PENDING_PROCESSING="$HOME_DIR/pending_external.processing"
 
@@ -122,16 +123,17 @@ if [ -d "$SELF_DIR" ]; then
     fi
 fi
 
-# ── 2. Recall (only if .recall_dirty marker exists) ──
-if [ -f "$RECALL_DIRTY" ] && [ -f "$RECALL_FILE" ] && [ -s "$RECALL_FILE" ]; then
-    RECALL=$(sed 's/<!--.*-->//g' "$RECALL_FILE" | tr -s '\n' | sed '/^$/d')
+# ── 2. Recall (one-shot pending handoff) ──
+if [ -f "$PENDING_RECALL" ] && [ -s "$PENDING_RECALL" ]; then
+    mv "$PENDING_RECALL" "$PENDING_RECALL_PROCESSING" 2>/dev/null
+    RECALL=$(sed 's/<!--.*-->//g' "$PENDING_RECALL_PROCESSING" | tr -s '\n' | sed '/^$/d')
     if [ -n "$RECALL" ]; then
         if [ -n "$PARTS" ]; then
             PARTS="${PARTS}\n\n"
         fi
         PARTS="${PARTS}[recall]\n${RECALL}"
     fi
-    rm -f "$RECALL_DIRTY"
+    rm -f "$PENDING_RECALL_PROCESSING"
 fi
 
 # ── 3. External messages (Conductor-prepared, pre-formatted) ──

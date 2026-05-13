@@ -12,6 +12,15 @@
 **Backend Settings**：`AI` = server auto-router（同一个 AI 身份可按任务在 API/CC 能力面间切换）；`API`/`CC` = 用户手动强制本轮请求后端，AI 仍应理解这是 transport/capability surface，不是身份变化。
 **Settings**：背景 `rgba(0,0,0,0.45)` 纯变暗不模糊；卡片 `backdrop-filter: blur(20px)` + `rgba(255,250,243,0.55)` 半透明磨砂；居中固定，CSS-only fade 120ms。
 
+## Session 2026-05-11 — Chat usability / console cleanup
+
+- Removed the old 60s client-side send batching path from Chat. A normal Send/Enter now immediately starts `/favilla/chat/send` SSE; the old second-empty-send flush behavior is gone.
+- Chat remains pre-mounted for transition smoothness, but network side effects are now gated by visibility: transcript fetch and computer-control EventSource only start when Chat is active.
+- `VITE_API_TARGET` is no longer used as the browser API base. It remains a Vite proxy target; the app uses `VITE_API_BASE` or same-origin relative `/favilla/*` calls.
+- Dashboard, Stroll, and Studio are no longer mounted while hidden behind Home/Chat, preventing Recharts zero-size warnings, Mapbox fit warnings, hidden Limen stream attempts, and BlockNote font noise during normal Chat use.
+- Removed leftover debug console output from Chat/API path and added an accessible name to the Send button.
+- Verification: Favilla app build passed; key chat backend tests passed (`stream_persists_transcript_before_done`, shared transcript routing); browser smoke with mocked `/favilla/*` confirmed Home makes no Favilla requests, Chat loads only after open, Send posts within ~30ms, streamed reply renders, and no app warnings/errors appear in console. Full app lint still has unrelated existing errors in `lib/limen.ts`, `routes/Settings.tsx`, and `routes/Stroll.tsx`; not touched because ring/Stroll work is parallel.
+
 ## Session 2026-05-06 — BTW Dashboard/Studio mainline wiring
 
 - Dashboard and Studio were moved into `channels/favilla/app` from the BTW prototype folders with the original UI/style preserved. Do not redesign these pages while wiring functionality; keep visual changes to compatibility fixes only.
@@ -44,8 +53,8 @@
 ## Session 2026-05-06 — Todo / held reply protocol cleanup
 
 - App-facing hold metadata is now `hold.queued`, matching backend `held_reply` todos. The old queue naming should not reappear in Favilla types or server responses.
-- Backend carry-over is a one-hop API ↔ CC transfer for the same AI identity; app history stores only the final visible reply.
-- Verification: `npm run build` passed in `channels/favilla/app`; Python app-backend tests cover API→CC and CC→API carry-over routing.
+- Backend shared transcript is the API ↔ CC context bridge for the same AI identity; app history stores the visible chat transcript separately.
+- Verification: `npm run build` passed in `channels/favilla/app`; Python app-backend tests cover shared transcript routing.
 
 ## Session 2026-05-06 — Stroll source foundation
 

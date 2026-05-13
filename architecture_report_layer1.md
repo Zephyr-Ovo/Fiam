@@ -43,13 +43,13 @@
 - **图构建 (graph_builder / annotator)**：auto 模式可由 graph_builder 处理新事件候选边；manual 标注期由 annotator 在人工切点确认后批量调用 DeepSeek，返回 event names 与 typed edges。
 - **图激活提取 (Spreading Activation)**：
   - **算法**：接收当前滑动向量窗口（Seed 种子），映射到矩阵中最接近的事件，沿节点边权重传导概率。
-  - 不使用 Top-K 和 MMR。命中概率（大于 0.4）高的事件写入 `recall.md`。
+  - 不使用 Top-K 和 MMR。命中概率（大于 0.4）高的事件形成当前 turn 的 `RecallContext`；外部 CC hook 只消费一次性 `pending_recall.md`。
 
 ### 2.4 主循环与 todo 队列 (Daemon & Todo)
 **路径**：`scripts/fiam_lib/daemon.py`, `todo.py`
 系统的绝对控制中心与生命周期管理者。
 - **Daemon**：
-  - 代码唯一的真实 Event Loop。**订阅** MQTT `fiam/receive/+`（不再轮询），唤醒 CC（通过 `claude -p` 命令系统子进程），决定外部交互时机（交互拦截或记录 `pending_external.txt`）。
+  - 代码唯一的真实 Event Loop。**订阅** MQTT `fiam/receive/#`（不再轮询），唤醒 CC（通过 `claude -p` 命令系统子进程），决定外部交互时机（交互拦截或记录 `pending_external.txt`）。
   - 维护唤醒生命周期，提取 `CC` jsonl 中的 `WAKE/SLEEP` tag，触发唤醒与长期休眠流程。
 - **Todo queue**：
   - 稍后任务维护队列（`todo.jsonl`），带有指数退避（Backoff）、过期归档与最大尝试次数控制。
@@ -67,7 +67,7 @@
 **路径**：`scripts/hooks/*`, `src/fiam/adapter/`
 使用纯外接 Shell/PS1 脚本干扰和接管 CC 系统调用。
 - **交互上下文接管**：
-  - `inject.sh / inject.ps1` 负责劫持 `UserPromptSubmit`，自动拼接刚才产生的 `recall.md`（记忆）与 `pending_external.txt`（通道的新消息），以 `additionalContext` 的 JSON 格式暗中喂给 CC。
+  - `inject.sh / inject.ps1` 负责劫持 `UserPromptSubmit`，自动拼接一次性 `pending_recall.md`（记忆）与 `pending_external.txt`（通道的新消息），以 `additionalContext` 的 JSON 格式暗中喂给 CC；内部 API/app turn 直接传 `RecallContext`，不读全局 dirty 文件。
   - `outbox.sh` 负责监听 `Stop` 生命周期截获消息落盘到 `outbox/` 供 Postman 寄出。
 
 ### 2.7 外部感知 API 与可穿戴端 (Dashboard & Limen/Favilla)

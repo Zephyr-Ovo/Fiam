@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import {
   ChevronLeft,
@@ -29,6 +29,7 @@ import remarkGfm from "remark-gfm"
 import { fetchChatTranscript, recordChatMessage, sendChatStream, uploadFiles, recallNow, cutFlow, processFlow, type ChatAttachment, type ChatSegment, type StoredChatMessage } from "./lib/api"
 import { useComputerStatus, describeEvent } from "./lib/computerStatus"
 import { appConfig } from "./config"
+import { createBrowserSttSession, transcribeAudioOpenAICompatible, speakText } from "./lib/voice"
 
 // Module-level set of bubble ids whose entrance animation has already played.
 // Skipping replay prevents jank on tab switch / re-render of long histories.
@@ -81,7 +82,26 @@ function currentT() {
   return Math.floor(Date.now() / 60_000)
 }
 
-const SEND_MERGE_WINDOW_MS = 60_000
+const MAX_RENDERED_MESSAGES = 32
+
+function serverMessagesToMsgs(serverMessages: StoredChatMessage[]): Msg[] {
+  const seen = new Set<string>()
+  const deduped: StoredChatMessage[] = []
+  for (let i = serverMessages.length - 1; i >= 0; i -= 1) {
+    const msg = serverMessages[i]
+    if (!msg || !msg.id || seen.has(msg.id)) continue
+    seen.add(msg.id)
+    deduped.unshift(msg)
+  }
+  return deduped.map((msg) => ({
+    ...msg,
+    attachments: (msg.attachments || []).map((att) => {
+      if (att.kind === "voice") return { kind: "voice", seconds: Number(att.size || 0) || 0 }
+      if (att.kind === "image") return { kind: "image", name: att.name }
+      return { kind: "file", name: att.name, size: att.size }
+    }),
+  }))
+}
 
 function wrapCanvasText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number) {
   const lines: string[] = []
@@ -609,11 +629,11 @@ function inferStreamlineIcon(step: ThinkStep): string {
   return ""
 }
 
-function fallbackThinkIcon(step: ThinkStep) {
+function FallbackThinkIcon({ step }: { step: ThinkStep }) {
   const haystack = [step.icon, step.summary, step.text, step.result].filter(Boolean).join(" ").toLowerCase()
-  if (step.kind === "search" || /\b(grep|search|find|query|lookup|scan)\b|搜索|检索|查找|寻找/.test(haystack)) return Search
-  if (step.kind === "check" || /\b(check|verify|test|build|pass|done)\b|检查|验证|测试|构建|完成/.test(haystack)) return CheckCircle2
-  return Brain
+  if (step.kind === "search" || /\b(grep|search|find|query|lookup|scan)\b|搜索|检索|查找|寻找/.test(haystack)) return <Search className="h-3.5 w-3.5" strokeWidth={1.6} />
+  if (step.kind === "check" || /\b(check|verify|test|build|pass|done)\b|检查|验证|测试|构建|完成/.test(haystack)) return <CheckCircle2 className="h-3.5 w-3.5" strokeWidth={1.6} />
+  return <Brain className="h-3.5 w-3.5" strokeWidth={1.6} />
 }
 
 function StreamlineThinkIcon({ slug }: { slug: string }) {
@@ -641,8 +661,7 @@ function ThinkIcon({ step }: { step: ThinkStep }) {
   const streamlineSlug = inferStreamlineIcon(step)
   if (streamlineSlug) return <StreamlineThinkIcon slug={streamlineSlug} />
   const dynamicName = dynamicIconName(step.icon)
-  const Fallback = fallbackThinkIcon(step)
-  const fallback = <Fallback className="h-3.5 w-3.5" strokeWidth={1.6} />
+  const fallback = <FallbackThinkIcon step={step} />
   if (!dynamicName) return fallback
   return <DynamicIcon name={dynamicName} className="h-3.5 w-3.5" strokeWidth={1.6} fallback={() => fallback} />
 }
@@ -1042,7 +1061,7 @@ function Bubble({
         className={`flex w-full ${isUser ? "justify-end" : "justify-start"}`}
       >
         <div
-          className={`flex max-w-[82%] flex-col gap-1 ${
+          className={`flex max-w-[82%] min-w-0 flex-col gap-1 ${
             isUser ? "items-end" : "items-start"
           }`}
         >
@@ -1141,7 +1160,7 @@ function BubbleBody({
     }
   }
   return (
-    <div ref={wrapRef} className="relative inline-block" style={{ overflow: "visible" }}>
+    <div ref={wrapRef} className="relative inline-block max-w-full" style={{ overflow: "visible" }}>
       <div
         onPointerDown={() => {
           longPressFiredRef.current = false
@@ -1172,7 +1191,7 @@ function BubbleBody({
           }
           setShowCopy((v) => !v)
         }}
-        className={`md relative px-4 py-3 text-[14.5px] leading-[1.6] ${
+        className={`md relative max-w-full px-4 py-3 text-[14.5px] leading-[1.6] ${
           isUser
             ? "rounded-[18px] rounded-br-[6px]"
             : "rounded-[18px] rounded-bl-[6px]"
@@ -1322,6 +1341,7 @@ function SendButton({
         onSend()
       }}
       disabled={disabled}
+      aria-label="Send message"
       className="grid h-9 w-9 place-items-center rounded-full transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
       style={{ color: "var(--color-cocoa)" }}
     >
@@ -1330,29 +1350,33 @@ function SendButton({
   )
 }
 
-export default function App({ onBack }: { onBack?: () => void } = {}) {
+export default function App({ onBack, active = true }: { onBack?: () => void; active?: boolean } = {}) {
   const peerName = appConfig.aiName || "ai"
-  const computerStatus = useComputerStatus()
+  const computerStatus = useComputerStatus(active)
   const [messages, setMessages] = useState<Msg[]>([])
   const [input, setInput] = useState("")
   const [sending, setSending] = useState(false)
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [sharing, setSharing] = useState(false)
   const [pendingFiles, setPendingFiles] = useState<{ id: string; file: File }[]>([])
-  const sendBatchRef = useRef<{
-    timer: number | null
-    items: {
-      text: string
-      filesToSend: File[]
-      recallUsed: boolean
-    }[]
-  }>({ timer: null, items: [] })
+  type PendingChatTurn = {
+    text: string
+    filesToSend: File[]
+    recallUsed: boolean
+  }
   const scrollRef = useRef<HTMLElement | null>(null)
   const composerRef = useRef<HTMLDivElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const cameraInputRef = useRef<HTMLInputElement | null>(null)
   const [attachOpen, setAttachOpen] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const [voiceRecording, setVoiceRecording] = useState(false)
+  const [voiceBusy, setVoiceBusy] = useState(false)
+  const [voiceError, setVoiceError] = useState<string | null>(null)
+  const browserSttRef = useRef<ReturnType<typeof createBrowserSttSession> | null>(null)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const mediaStreamRef = useRef<MediaStream | null>(null)
+  const mediaChunksRef = useRef<Blob[]>([])
   const confirmTimerRef = useRef<number | null>(null)
   const maxViewportHeightRef = useRef(0)
   const stickToBottomRef = useRef(true)
@@ -1361,26 +1385,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
   const sendingRef = useRef(false)
   useEffect(() => { sendingRef.current = sending }, [sending])
 
-  function serverMessagesToMsgs(serverMessages: StoredChatMessage[]): Msg[] {
-    const seen = new Set<string>()
-    const deduped: StoredChatMessage[] = []
-    for (let i = serverMessages.length - 1; i >= 0; i -= 1) {
-      const m = serverMessages[i]
-      if (!m || !m.id || seen.has(m.id)) continue
-      seen.add(m.id)
-      deduped.unshift(m)
-    }
-    return deduped.map((msg) => ({
-      ...msg,
-      attachments: (msg.attachments || []).map((att) => {
-        if (att.kind === "voice") return { kind: "voice", seconds: Number(att.size || 0) || 0 }
-        if (att.kind === "image") return { kind: "image", name: att.name }
-        return { kind: "file", name: att.name, size: att.size }
-      }),
-    }))
-  }
-
-  function mergeServerMessages(serverMessages: StoredChatMessage[], opts: { dropLocalId?: string; dropLocalUserText?: string } = {}) {
+  const mergeServerMessages = useCallback((serverMessages: StoredChatMessage[], opts: { dropLocalId?: string; dropLocalUserText?: string } = {}) => {
     const fromServer = serverMessagesToMsgs(serverMessages)
     setMessages((local) => {
       const serverIds = new Set(fromServer.map((m) => m.id))
@@ -1393,7 +1398,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
       return [...fromServer, ...localOnly]
     })
     return fromServer
-  }
+  }, [])
 
   async function recoverTranscriptAfterStreamError(localAiId: string, sinceMinute: number, expectedUserText: string) {
     const res = await fetchChatTranscript("chat")
@@ -1493,8 +1498,6 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
       await shareBlob(blob)
     } catch (e) {
       if (e instanceof DOMException && e.name === "AbortError") return
-      // eslint-disable-next-line no-console
-      console.warn("share image failed", e)
     } finally {
       setSharing(false)
     }
@@ -1532,6 +1535,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
   }, [input])
 
   useEffect(() => {
+    if (!active) return
     let cancelled = false
     function loadTranscript() {
       // Skip while a stream is in flight — replacing messages mid-stream
@@ -1560,7 +1564,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
       window.removeEventListener("favilla:config-changed", onConfigChanged)
       document.removeEventListener("visibilitychange", onVisibility)
     }
-  }, [])
+  }, [active, mergeServerMessages])
 
   // ---- manual cut + recall + process handlers ----
   // Scissor (剪刀) = cut. Drops a divider marker server-side (instant).
@@ -1665,19 +1669,100 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
 
   useEffect(() => {
     return () => {
-      const timer = sendBatchRef.current.timer
-      if (timer !== null) window.clearTimeout(timer)
       if (confirmTimerRef.current !== null) window.clearTimeout(confirmTimerRef.current)
+      browserSttRef.current?.stop()
+      mediaRecorderRef.current?.stop()
+      mediaStreamRef.current?.getTracks().forEach((track) => track.stop())
     }
   }, [])
 
-  async function flushSendBatch() {
-    const batch = sendBatchRef.current
-    if (batch.timer !== null) {
-      window.clearTimeout(batch.timer)
-      batch.timer = null
+  function appendVoiceText(text: string) {
+    const clean = text.trim()
+    if (!clean) return
+    setInput((cur) => (cur.trim() ? `${cur.trimEnd()} ${clean}` : clean))
+  }
+
+  async function startApiSttRecording() {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    mediaStreamRef.current = stream
+    mediaChunksRef.current = []
+    const recorder = new MediaRecorder(stream)
+    mediaRecorderRef.current = recorder
+    recorder.ondataavailable = (event) => {
+      if (event.data && event.data.size > 0) mediaChunksRef.current.push(event.data)
     }
-    const items = batch.items.splice(0)
+    recorder.onstop = () => {
+      setVoiceRecording(false)
+      const blob = new Blob(mediaChunksRef.current, { type: mediaChunksRef.current[0]?.type || "audio/webm" })
+      mediaChunksRef.current = []
+      mediaRecorderRef.current = null
+      mediaStreamRef.current?.getTracks().forEach((track) => track.stop())
+      mediaStreamRef.current = null
+
+      void (async () => {
+        if (blob.size <= 0) return
+        try {
+          const text = await transcribeAudioOpenAICompatible(blob)
+          appendVoiceText(text)
+        } catch (error) {
+          setVoiceError(error instanceof Error ? error.message : String(error))
+        } finally {
+          setVoiceBusy(false)
+        }
+      })()
+    }
+    recorder.start()
+    setVoiceError(null)
+    setVoiceRecording(true)
+    setVoiceBusy(true)
+  }
+
+  async function toggleVoiceInput() {
+    if (voiceRecording) {
+      if (appConfig.sttProvider === "browser") {
+        browserSttRef.current?.stop()
+      } else {
+        mediaRecorderRef.current?.stop()
+      }
+      return
+    }
+
+    try {
+      setVoiceError(null)
+      if (appConfig.sttProvider === "openai_compatible") {
+        await startApiSttRecording()
+        return
+      }
+
+      const session = createBrowserSttSession({
+        onFinalText: appendVoiceText,
+        onError: (message) => {
+          setVoiceError(message)
+          setVoiceBusy(false)
+          setVoiceRecording(false)
+        },
+        onEnd: () => {
+          setVoiceBusy(false)
+          setVoiceRecording(false)
+        },
+      })
+      if (!session) {
+        setVoiceError("speech recognition is not available")
+        return
+      }
+
+      browserSttRef.current = session
+      setVoiceBusy(true)
+      setVoiceRecording(true)
+      session.start()
+    } catch (error) {
+      setVoiceBusy(false)
+      setVoiceRecording(false)
+      setVoiceError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  async function sendChatTurns(items: PendingChatTurn[]) {
     if (!items.length) return
 
     setSending(true)
@@ -1781,7 +1866,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
             }
             apply({ segments: [...segs], thoughts: [...thoughts] })
           }
-        } else if (ev.event === "text") {
+        } else if (ev.event === "text_delta") {
           segs.push({ type: "text", text: ev.data.text })
           apply({ segments: [...segs] })
         } else if (ev.event === "done") {
@@ -1810,6 +1895,11 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
               }),
             )
           } catch { /* ignore */ }
+          if (appConfig.ttsAutoPlayAi && String(r.reply || "").trim()) {
+            void speakText(String(r.reply || "")).catch((error) => {
+              setVoiceError(error instanceof Error ? error.message : String(error))
+            })
+          }
         } else if (ev.event === "error") {
           lastError = ev.data.message || "unknown"
         }
@@ -1929,15 +2019,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
     stickToBottomRef.current = true
     setMessages((m) => [...m, userMsg])
 
-    const batch = sendBatchRef.current
-    batch.items.push({ text, filesToSend, recallUsed: wasArmed })
-    if (batch.timer !== null) window.clearTimeout(batch.timer)
-    batch.timer = window.setTimeout(() => { void flushSendBatch() }, SEND_MERGE_WINDOW_MS)
-  }
-
-  function flushSendBatchNow() {
-    if (sending || sendBatchRef.current.items.length === 0) return
-    void flushSendBatch()
+    void sendChatTurns([{ text, filesToSend, recallUsed: wasArmed }])
   }
 
   function onComposerKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -1945,9 +2027,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
     e.preventDefault()
     if (input.trim() || pendingFiles.length > 0) {
       handleSend()
-      return
     }
-    flushSendBatchNow()
   }
 
   return (
@@ -1957,7 +2037,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
         style={{ backgroundImage: `url(${appConfig.bg})` }}
       />
 
-      <div className="relative flex h-full flex-col">
+      <div className="relative flex h-full min-h-0 flex-col">
           {/* nav bar — paddingTop pulls in safe-area inset on iOS/Android
               so the title doesn't sit behind a translucent status bar. */}
           <header
@@ -2057,7 +2137,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
           {/* messages — only the most recent 7 sealed blocks (cut-bounded) + live tail */}
           <main
             ref={scrollRef}
-            className="flex flex-1 flex-col gap-[9px] overflow-y-auto overflow-x-hidden px-4 pt-8 pb-36"
+            className="chat-scroll flex min-h-0 flex-1 flex-col gap-[9px] overflow-y-auto overflow-x-hidden px-4 pt-8 pb-36"
             onScroll={rememberScrollPin}
             onPointerDown={(e) => {
               if (e.target !== e.currentTarget) return
@@ -2071,7 +2151,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
               messages.forEach((m, i) => { if (m.divider?.kind === "scissor") cutIdxs.push(i) })
               const drop = Math.max(0, cutIdxs.length - SHOW_BLOCKS)
               const startIdx = drop > 0 ? cutIdxs[drop - 1] + 1 : 0
-              return messages.slice(startIdx)
+              return messages.slice(startIdx).slice(-MAX_RENDERED_MESSAGES)
             })().map((m, i, arr) => {
               const prev = arr[i - 1]
               const showTime = !prev || m.t - prev.t > 10
@@ -2322,9 +2402,19 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                 <button
                   type="button"
                   onPointerDown={onStableControlPointerDown}
+                  onClick={() => {
+                    void toggleVoiceInput()
+                  }}
+                  disabled={voiceBusy && !voiceRecording}
                   className="grid h-9 w-9 shrink-0 place-items-center rounded-full"
-                  style={{ color: "var(--color-cocoa)" }}
-                  aria-label="Voice"
+                  style={{
+                    color: "var(--color-cocoa)",
+                    background: voiceRecording ? "rgba(176, 76, 76, 0.14)" : "transparent",
+                    opacity: voiceBusy && !voiceRecording ? 0.55 : 1,
+                  }}
+                  aria-label={voiceRecording ? "Stop voice input" : "Voice input"}
+                  aria-busy={voiceBusy && !voiceRecording}
+                  title={voiceRecording ? "Tap to stop recording" : "Tap to start speech-to-text"}
                 >
                   <Mic className="h-5 w-5" strokeWidth={1.6} />
                 </button>
@@ -2332,11 +2422,18 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
                   onStablePointerDown={onStableControlPointerDown}
                   onSend={() => {
                     if (input.trim() || pendingFiles.length > 0) handleSend()
-                    else flushSendBatchNow()
                   }}
-                  disabled={sealBusy || sending || (!input.trim() && pendingFiles.length === 0 && sendBatchRef.current.items.length === 0)}
+                  disabled={sealBusy || sending || (!input.trim() && pendingFiles.length === 0)}
                 />
               </div>
+              {voiceError && (
+                <div
+                  className="px-2 pb-1 text-[11px]"
+                  style={{ color: "#A74A3A", fontFamily: "var(--font-sans)" }}
+                >
+                  voice: {voiceError}
+                </div>
+              )}
             </div>
           </footer>
           <ConfirmModal

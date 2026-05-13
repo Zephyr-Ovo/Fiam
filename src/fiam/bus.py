@@ -4,7 +4,7 @@ Conductor / daemon / bridges all talk through this module.
 The bus replaces per-channel polling with publish/subscribe.
 
 Topic layout (locked 2026-04-24):
-    fiam/receive/<channel>    ← inbound from external (email, favilla, limen, ...)
+    fiam/receive/<channel[/path]> ← inbound canonical domain (chat, email, desktop/result, ...)
     fiam/dispatch/<target>    ← outbound from conductor (email, cc, dashboard, ...)
 
 Reliability: QoS 1 + persistent sessions. The broker (Mosquitto) is
@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------
 RECEIVE_PREFIX = "fiam/receive"
 DISPATCH_PREFIX = "fiam/dispatch"
-RECEIVE_ALL = "fiam/receive/+"
+RECEIVE_ALL = "fiam/receive/#"
 DISPATCH_ALL = "fiam/dispatch/+"
 
 
@@ -59,23 +59,25 @@ class Bus:
 
     Usage:
         bus = Bus(client_id="fiam-daemon")
-        bus.subscribe("fiam/receive/+", on_inbound)
+        bus.subscribe("fiam/receive/#", on_inbound)
         bus.connect("127.0.0.1", 1883)
         bus.loop_start()
-        bus.publish_receive("favilla", {"text": "...", "from_name": "..."})
+        bus.publish_receive("chat", {"text": "...", "surface": "favilla.chat", "from_name": "..."})
         ...
         bus.loop_stop()
     """
 
-    def __init__(self, client_id: str, *, qos: int = 1) -> None:
+    def __init__(self, client_id: str, *, qos: int = 1, manual_ack: bool = True) -> None:
         self.client_id = client_id
         self.qos = qos
+        self.manual_ack = manual_ack
         # clean_session=False enables persistent sessions; broker queues
         # QoS 1 messages while we're disconnected.
         self._client = mqtt.Client(
             client_id=client_id,
             clean_session=False,
             protocol=mqtt.MQTTv311,
+            manual_ack=manual_ack,
         )
         self._client.on_connect = self._on_connect
         self._client.on_message = self._on_message
@@ -169,22 +171,48 @@ class Bus:
             payload = json.loads(msg.payload.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             logger.error("bus[%s] bad payload on %s", self.client_id, msg.topic)
+            self._ack_message(msg)
             return
 
         # Find handler whose pattern matches this topic
         with self._lock:
             handlers = list(self._handlers.items())
-        leaf = msg.topic.rsplit("/", 1)[-1]
         for pattern, handler in handlers:
             if mqtt.topic_matches_sub(pattern, msg.topic):
+                leaf = self._topic_leaf(pattern, msg.topic)
                 try:
                     handler(leaf, payload)
                 except Exception:
                     logger.error("bus[%s] handler %s raised on %s",
                                  self.client_id, pattern, msg.topic,
                                  exc_info=True)
+                    return
+                self._ack_message(msg)
                 # First match wins (one handler per pattern by design)
                 return
+        self._ack_message(msg)
+
+    def _ack_message(self, msg) -> None:
+        if not self.manual_ack:
+            return
+        qos = int(getattr(msg, "qos", 0) or 0)
+        mid = int(getattr(msg, "mid", 0) or 0)
+        if qos <= 0 or mid <= 0:
+            return
+        try:
+            self._client.ack(mid, qos)
+        except Exception:
+            logger.error("bus[%s] ack failed mid=%s qos=%s", self.client_id, mid, qos, exc_info=True)
+
+    @staticmethod
+    def _topic_leaf(pattern: str, topic: str) -> str:
+        if pattern.endswith("/#"):
+            prefix = pattern[:-2]
+            if topic == prefix:
+                return ""
+            if topic.startswith(prefix + "/"):
+                return topic[len(prefix) + 1:]
+        return topic.rsplit("/", 1)[-1]
 
 
 # ---------------------------------------------------------------------

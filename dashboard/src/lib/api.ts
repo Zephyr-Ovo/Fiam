@@ -6,7 +6,7 @@
 const BASE = '/api';
 
 async function j<T>(path: string): Promise<T> {
-	const res = await fetch(`${BASE}${path}`, { credentials: 'same-origin' });
+	const res = await fetch(`${BASE}${path}`, { credentials: 'same-origin', cache: 'no-store' });
 	if (!res.ok) throw new Error(`${path}: ${res.status}`);
 	return res.json();
 }
@@ -86,6 +86,7 @@ export interface FlowPayload {
 		t: string;
 		actor: string;
 		channel: string;
+		surface?: string;
 		kind: string;
 		content: string;
 		runtime?: string | null;
@@ -151,6 +152,87 @@ export interface DebugFlowPayload {
 	rows: Record<string, unknown>[];
 	total: number;
 	returned: number;
+	error?: string;
+}
+
+export interface ObjectRecord {
+	object_hash: string;
+	token: string;
+	name?: string;
+	mime?: string;
+	size?: number;
+	t?: string;
+	channel?: string;
+	surface?: string;
+	kind?: string;
+	actor?: string;
+	event_id?: string;
+	turn_id?: string;
+	dispatch_id?: string;
+	direction?: string;
+	visibility?: string;
+	provenance?: string;
+	summary?: string;
+	tags?: string[];
+	source?: string;
+}
+
+export interface ObjectsPayload {
+	records: ObjectRecord[];
+	returned: number;
+	query: string;
+	token?: string;
+	object_hash?: string;
+	error?: string;
+}
+
+export interface TraceRow {
+	turn_id: string;
+	request_id?: string;
+	session_id?: string;
+	channel?: string;
+	surface?: string;
+	phase: string;
+	status: 'ok' | 'error' | 'skipped' | string;
+	started_at?: string;
+	ended_at?: string;
+	duration_ms?: number;
+	runtime?: string;
+	model?: string;
+	attempt?: number;
+	error?: string;
+	refs?: Record<string, unknown>;
+}
+
+export interface TracePayload {
+	rows: TraceRow[];
+	total: number;
+	returned: number;
+	path?: string;
+	filters?: Record<string, string>;
+	summary?: {
+		by_status?: Record<string, number>;
+		by_phase?: Record<string, number>;
+		failures?: Array<{ phase: string; turn_id: string; request_id?: string; error?: string; refs?: Record<string, unknown> }>;
+		retry_phases?: number;
+		total_duration_ms?: number;
+		slowest?: Array<{ phase: string; duration_ms: number; turn_id: string }>;
+	};
+	error?: string;
+}
+
+export interface TimelineRecord {
+	path: string;
+	heading: string;
+	text: string;
+	refs: string[];
+}
+
+export interface TimelinePayload {
+	records: TimelineRecord[];
+	returned: number;
+	query: string;
+	path: string;
 	error?: string;
 }
 
@@ -226,7 +308,7 @@ export const api = {
 		mutate<{ ok: boolean; id: string; enabled: boolean }>('POST', '/config/plugin', { id, enabled }),
 	graph: () => j<GraphPayload>('/graph'),
 	pipeline: () => j<{ lines: string[] }>('/pipeline'),
-	whoami: () => j<{ role: 'iris' | 'ai' | 'live' | 'anon' }>('/whoami'),
+	whoami: () => j<{ role: 'Zephyr' | 'ai' | 'live' | 'anon' }>('/whoami'),
 
 	// Pool APIs
 	poolGraph: () => j<GraphPayload>('/pool/graph'),
@@ -245,10 +327,39 @@ export const api = {
 
 	// Flow
 	flow: (offset = 0, limit = 50) => j<FlowPayload>(`/flow?offset=${offset}&limit=${limit}`),
+	objects: (params: { query?: string; token?: string; limit?: number } = {}) => {
+		const q = new URLSearchParams();
+		if (params.query) q.set('q', params.query);
+		if (params.token) q.set('token', params.token);
+		q.set('limit', String(params.limit ?? 20));
+		return j<ObjectsPayload>(`/objects?${q.toString()}`);
+	},
+	timeline: (params: { query?: string; limit?: number } = {}) => {
+		const q = new URLSearchParams();
+		if (params.query) q.set('q', params.query);
+		q.set('limit', String(params.limit ?? 20));
+		return j<TimelinePayload>(`/timeline?${q.toString()}`);
+	},
 
 	// Debug — last assembled context per runtime + raw flow tail
-	debugContext: (runtime: 'api' | 'cc') => j<DebugContextPayload>(`/debug/context?runtime=${runtime}`),
+	debugContext: (runtime: 'latest' | 'api' | 'cc' = 'latest') => j<DebugContextPayload>(`/debug/context?runtime=${runtime}`),
 	debugFlow: (limit = 200) => j<DebugFlowPayload>(`/debug/flow?limit=${limit}`),
+	debugTrace: (params: {
+		turn_id?: string;
+		request_id?: string;
+		session_id?: string;
+		phase?: string;
+		status?: string;
+		limit?: number;
+	} = {}) => {
+		const q = new URLSearchParams();
+		for (const key of ['turn_id', 'request_id', 'session_id', 'phase', 'status'] as const) {
+			const value = params[key];
+			if (value) q.set(key, value);
+		}
+		q.set('limit', String(params.limit ?? 200));
+		return j<TracePayload>(`/debug/trace?${q.toString()}`);
+	},
 
 	// Annotation
 	annotateProposal: () => j<AnnotateProposal>('/annotate/proposal'),

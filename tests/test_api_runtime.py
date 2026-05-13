@@ -19,6 +19,11 @@ from fiam.config import FiamConfig
 from fiam.conductor import Conductor
 from fiam.runtime.api import ApiCompletion, ApiRuntime, FallbackApiClient
 from fiam.runtime.prompt import build_plain_prompt_parts
+from fiam.runtime.recall import RecallContext, RecallFragment
+from fiam.runtime.tools import execute_tool_call
+from fiam.store.beat import read_beats
+from fiam.store.object_catalog import ObjectCatalog
+from fiam.store.objects import ObjectStore
 from fiam.store.pool import Pool
 
 
@@ -85,6 +90,28 @@ class ToolLoopClient:
         )
 
 
+class LargeToolResultClient:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def complete(self, *, messages, model, temperature, max_tokens, tools=None) -> ApiCompletion:
+        self.calls.append({"messages": messages, "tools": tools})
+        if len(self.calls) == 1:
+            command = f'"{sys.executable}" -c "print(\'x\'*5000)"'
+            return ApiCompletion(
+                text="",
+                model=model,
+                usage={},
+                raw={"id": "tool-large-1"},
+                tool_calls=[{
+                    "id": "call_large",
+                    "type": "function",
+                    "function": {"name": "Bash", "arguments": json.dumps({"command": command, "timeout": 5})},
+                }],
+            )
+        return ApiCompletion(text="done", model=model, usage={}, raw={"id": "tool-large-2"})
+
+
 class ApiRuntimeTest(unittest.TestCase):
     def make_config(self, root: Path) -> FiamConfig:
         home = root / "home"
@@ -115,20 +142,24 @@ class ApiRuntimeTest(unittest.TestCase):
                 flow_path=config.flow_path,
                 memory_mode="manual",
             )
-            client = FakeClient('收到。\n<send to="favilla:Zephyr">已记录</send>')
-            config.background_path.write_text("<!-- recall -->\n- 昨天聊过 API runtime", encoding="utf-8")
-            (config.background_path.parent / ".recall_dirty").touch()
+            client = FakeClient('收到。\n<send to="chat:Zephyr">已记录</send>')
+            recall_context = RecallContext(fragments=(RecallFragment(
+                event_id="ev_api",
+                time_hint="昨天",
+                activation=0.9,
+                summary="聊过 API runtime",
+            ),))
 
             runtime = ApiRuntime(
                 config,
                 client=client,
                 conductor=conductor,
             )
-            result = runtime.ask("帮我记一下 API 入口", channel="favilla")
+            result = runtime.ask("帮我记一下 API 入口", channel="chat", recall_context=recall_context)
 
             self.assertTrue(result.ok)
             self.assertEqual(result.backend, "api")
-            self.assertEqual(result.recall_fragments, 0)
+            self.assertEqual(result.recall_fragments, 1)
             self.assertEqual(result.dispatched, 0)
             self.assertEqual(client.calls[0]["model"], "cheap/test-model")
 
@@ -141,7 +172,7 @@ class ApiRuntimeTest(unittest.TestCase):
             self.assertIn("你是 ai。", prompt_text)
             self.assertIn("喜欢保持连续身份。", prompt_text)
             self.assertIn("[recall]", prompt_text)
-            self.assertIn("昨天聊过 API runtime", prompt_text)
+            self.assertIn("聊过 API runtime", prompt_text)
             self.assertIn("帮我记一下 API 入口", prompt_text)
 
             from fiam.store.beat import read_beats
@@ -278,16 +309,26 @@ class ApiRuntimeTest(unittest.TestCase):
             config.constitution_md_path.write_text("constitution text", encoding="utf-8")
             (config.self_dir / "identity.md").write_text("identity text", encoding="utf-8")
             (config.self_dir / "impressions.md").write_text("impressions text", encoding="utf-8")
-            config.background_path.write_text("<!-- hidden -->\nrecall text", encoding="utf-8")
-            (config.background_path.parent / ".recall_dirty").touch()
+            recall_context = RecallContext(fragments=(RecallFragment(
+                event_id="ev_prompt",
+                time_hint="昨天",
+                activation=0.8,
+                summary="recall text",
+            ),))
 
-            system_context, user_prompt = build_plain_prompt_parts(config, "hello", channel="favilla")
+            system_context, user_prompt = build_plain_prompt_parts(
+                config,
+                "hello",
+                channel="chat",
+                recall_context=recall_context,
+            )
 
             self.assertLess(system_context.index("constitution text"), system_context.index("# identity"))
             self.assertLess(system_context.index("# identity"), system_context.index("# impressions"))
             self.assertNotIn("[recall]", system_context)
-            self.assertEqual(user_prompt, "[recall]\nrecall text\n\nhello")
-            self.assertFalse((config.background_path.parent / ".recall_dirty").exists())
+            self.assertIn("[recall]", user_prompt)
+            self.assertIn("recall text", user_prompt)
+            self.assertTrue(user_prompt.endswith("\n\nhello"))
 
     def test_api_tool_loop_executes_local_tool_and_sums_usage(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -295,7 +336,7 @@ class ApiRuntimeTest(unittest.TestCase):
             client = ToolLoopClient()
             runtime = ApiRuntime(config, client=client)
 
-            result = runtime.ask("list files", channel="favilla", record=False, include_recall=False)
+            result = runtime.ask("list files", channel="chat", include_recall=False)
 
             self.assertEqual(result.reply, "done")
             self.assertEqual(result.tool_loops, 2)
@@ -307,12 +348,58 @@ class ApiRuntimeTest(unittest.TestCase):
             self.assertEqual([m["role"] for m in result.transcript_messages], ["user", "assistant", "tool", "assistant"])
             self.assertEqual(result.transcript_messages[1]["tool_calls"][0]["id"], "call_list")
 
+    def test_large_tool_result_is_bounded_and_stored(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self.make_config(Path(tmp))
+            client = LargeToolResultClient()
+            runtime = ApiRuntime(config, client=client)
+
+            result = runtime.ask("make a large result", channel="chat", include_recall=False)
+
+            self.assertEqual([m["role"] for m in result.transcript_messages], ["user", "assistant", "tool", "assistant"])
+            tool_content = result.transcript_messages[2]["content"]
+            self.assertIn("object_ref hash=", tool_content)
+            self.assertLess(len(tool_content), 4500)
+            object_hash = result.tool_calls[0]["result_object_hash"]
+            self.assertEqual(len(object_hash), 64)
+            self.assertTrue((config.object_dir / object_hash[:2] / f"{object_hash}.txt").exists())
+
+    def test_object_save_tool_writes_object_fact_and_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self.make_config(Path(tmp))
+
+            raw = execute_tool_call(config, "ObjectSave", json.dumps({
+                "content": "hello object",
+                "name": "note.txt",
+                "summary": "saved note",
+                "tags": ["note", "generated"],
+            }))
+
+            payload = json.loads(raw)
+            self.assertNotIn("path", payload)
+            self.assertEqual(payload["token"], f"obj:{payload['object_hash'][:12]}")
+            self.assertEqual(ObjectStore(config.object_dir).get_bytes(payload["object_hash"], suffix=""), b"hello object")
+            attachment_beats = [beat for beat in read_beats(config.flow_path) if beat.kind == "attachment"]
+            self.assertEqual((attachment_beats[0].meta or {}).get("object_hash"), payload["object_hash"])
+            self.assertEqual(ObjectCatalog.from_config(config).resolve_token(payload["token"]), payload["object_hash"])
+
+    def test_object_import_tool_registers_downloaded_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self.make_config(Path(tmp))
+            (config.home_path / "downloads").mkdir(parents=True)
+            (config.home_path / "downloads" / "data.bin").write_bytes(b"binary-data")
+
+            raw = execute_tool_call(config, "ObjectImport", json.dumps({"path": "downloads/data.bin", "name": "data.bin"}))
+
+            payload = json.loads(raw)
+            self.assertNotIn("path", payload)
+            self.assertEqual(payload["mime"], "application/octet-stream")
+            self.assertEqual(ObjectStore(config.object_dir).get_bytes(payload["object_hash"], suffix=""), b"binary-data")
+
     def test_image_attachment_uses_image_model_and_content_block(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config = self.make_config(Path(tmp))
-            image_path = config.home_path / "uploads" / "test.jpg"
-            image_path.parent.mkdir(parents=True, exist_ok=True)
-            image_path.write_bytes(b"\xff\xd8fake-jpeg\xff\xd9")
+            object_hash = ObjectStore(config.object_dir).put_bytes(b"\xff\xd8fake-jpeg\xff\xd9", suffix="")
             client = FakeClient("看到了")
             runtime = ApiRuntime(config, client=client)
             old = os.environ.get("FIAM_API_IMAGE_MODEL")
@@ -320,10 +407,9 @@ class ApiRuntimeTest(unittest.TestCase):
             try:
                 result = runtime.ask(
                     "描述图片",
-                    channel="favilla",
-                    record=False,
+                    channel="chat",
                     include_recall=False,
-                    image_attachments=[{"path": str(image_path), "mime": "image/jpeg"}],
+                    image_attachments=[{"object_hash": object_hash, "mime": "image/jpeg"}],
                 )
             finally:
                 if old is None:
@@ -339,15 +425,14 @@ class ApiRuntimeTest(unittest.TestCase):
             self.assertEqual(user_content[0]["type"], "text")
             self.assertEqual(user_content[1]["type"], "image_url")
             self.assertTrue(user_content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,"))
+            self.assertNotIn("data:image", json.dumps(result.transcript_messages, ensure_ascii=False))
 
     def test_image_attachment_falls_back_to_vision_description_for_text_model(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config = self.make_config(Path(tmp))
             config.api_model = "text-only/test-model"
             config.vision_model = "google/gemini-2.5-flash"
-            image_path = config.home_path / "uploads" / "map.jpg"
-            image_path.parent.mkdir(parents=True, exist_ok=True)
-            image_path.write_bytes(b"\xff\xd8fake-map\xff\xd9")
+            object_hash = ObjectStore(config.object_dir).put_bytes(b"\xff\xd8fake-map\xff\xd9", suffix="")
             client = FakeClient("主模型看完描述后的回复")
             vision_client = FakeClient("图片显示一个带日期的地图标记。")
             runtime = ApiRuntime(config, client=client, vision_client=vision_client)
@@ -357,10 +442,9 @@ class ApiRuntimeTest(unittest.TestCase):
             try:
                 result = runtime.ask(
                     "这张图在哪里？",
-                    channel="favilla",
-                    record=False,
+                    channel="chat",
                     include_recall=False,
-                    image_attachments=[{"path": str(image_path), "mime": "image/jpeg"}],
+                    image_attachments=[{"object_hash": object_hash, "mime": "image/jpeg"}],
                 )
             finally:
                 if old is not None:
@@ -378,6 +462,7 @@ class ApiRuntimeTest(unittest.TestCase):
             self.assertIn("[image description fallback]", user_content)
             self.assertIn("带日期的地图标记", user_content)
             self.assertEqual(result.usage["prompt_tokens"], 20)
+            self.assertNotIn("data:image", json.dumps(result.transcript_messages, ensure_ascii=False))
 
 
 if __name__ == "__main__":

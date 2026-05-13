@@ -1,10 +1,23 @@
 .fiam-studio-view {
   --fiam-studio-border: var(--background-modifier-border);
   --fiam-studio-muted: var(--text-muted);
+  --fiam-studio-paper: var(--claude-bg, var(--background-primary));
+  --fiam-studio-ink: var(--claude-text, var(--text-normal));
+  --fiam-studio-lead: var(--claude-text-3, var(--text-faint));
+  --fiam-studio-accent: var(--claude-accent, var(--interactive-accent));
+  --fiam-studio-thread: var(--claude-border, var(--background-modifier-border));
   display: flex;
   flex-direction: column;
   gap: 12px;
   padding: 12px;
+  color: var(--fiam-studio-ink);
+}
+
+.fiam-studio-view h3 {
+  font-family: var(--font-interface, inherit);
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0;
 }
 
 .fiam-studio-tabs {
@@ -76,4 +89,115 @@
   color: var(--fiam-studio-muted);
   font-size: 12px;
   white-space: pre-wrap;
+}
+
+.fiam-studio-timeline {
+  position: relative;
+  padding: 24px 20px 4px;
+  min-height: 120px;
+  overflow: hidden;
+}
+
+.fiam-studio-timeline-line {
+  position: absolute;
+  left: 50%;
+  top: 24px;
+  bottom: 24px;
+  width: 2px;
+  background: color-mix(in srgb, var(--fiam-studio-ink) 15%, transparent);
+  transform: translateX(-50%);
+}
+
+.fiam-studio-timeline-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+  z-index: 1;
+}
+
+.fiam-studio-timeline-side {
+  width: calc(50% - 16px);
+  overflow-wrap: anywhere;
+}
+
+.fiam-studio-timeline-side.left {
+  text-align: right;
+  padding-right: 8px;
+}
+
+.fiam-studio-timeline-side.right {
+  text-align: left;
+  padding-left: 8px;
+}
+
+.fiam-studio-timeline-side.is-hidden {
+  visibility: hidden;
+}
+
+.fiam-studio-timeline-label {
+  color: var(--fiam-studio-lead);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+}
+
+.fiam-studio-timeline-side.right .fiam-studio-timeline-label {
+  color: color-mix(in srgb, var(--fiam-studio-accent) 80%, transparent);
+}
+
+.fiam-studio-timeline-title {
+  color: var(--fiam-studio-ink);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.25;
+  margin-bottom: 3px;
+}
+
+.fiam-studio-timeline-side.right .fiam-studio-timeline-title {
+  color: var(--fiam-studio-accent);
+}
+
+.fiam-studio-timeline-time,
+.fiam-studio-timeline-files {
+  color: var(--fiam-studio-lead);
+  font-family: var(--font-monospace, ui-monospace, SFMono-Regular, Consolas, monospace);
+  font-size: 10px;
+  letter-spacing: 0;
+  line-height: 1.35;
+}
+
+.fiam-studio-timeline-side.right .fiam-studio-timeline-time,
+.fiam-studio-timeline-side.right .fiam-studio-timeline-files {
+  color: color-mix(in srgb, var(--fiam-studio-accent) 65%, transparent);
+}
+
+.fiam-studio-timeline-node {
+  position: absolute;
+  left: 50%;
+  top: 6px;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--fiam-studio-paper);
+  color: var(--fiam-studio-ink);
+  padding: 2px;
+  transform: translateX(-50%);
+  z-index: 2;
+}
+
+.fiam-studio-timeline-icon {
+  width: 14px;
+  height: 14px;
+  display: block;
+  background: currentColor;
+}
+
+.fiam-studio-timeline-node.ai {
+  color: var(--fiam-studio-accent);
 }

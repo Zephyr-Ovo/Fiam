@@ -13,6 +13,8 @@ Tool surface (deliberately small, mirrors editor primitives):
 - ``Glob(pattern, path?)``            — list files matching glob, mtime sorted
 - ``Grep(path, query)``               — search text files under a path
 - ``Bash(command, timeout?)``         — run a shell command (full freedom; CC parity)
+- ``ObjectSave(content, name?)``      — store generated text as an ObjectStore object
+- ``ObjectImport(path, name?)``       — import a file from home into ObjectStore
 - ``git_diff(path?, since?)``         — git diff inside home_path
 
 For delayed wakes/todos and AI state changes, the API runtime relies on
@@ -33,6 +35,7 @@ The ``remember`` action is intentionally NOT a separate tool: editing
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
 import subprocess
 import sys
@@ -152,6 +155,66 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "max_results": {"type": "integer", "minimum": 1, "maximum": 50},
                 },
                 "required": ["path", "query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ObjectSearch",
+            "description": (
+                "Search uploaded/attached ObjectStore objects by name, mime, tag, summary, hash, or obj token. "
+                "Use this to resolve short obj:<prefix> references before sending attachments."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search text. Empty returns recent objects."},
+                    "token": {"type": "string", "description": "Optional obj:<prefix> or full object hash to resolve."},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ObjectSave",
+            "description": (
+                "Store generated UTF-8 text in ObjectStore and return an obj:<token> reference. "
+                "Use this before attaching generated text/files in <send attach=...>; do not send paths or raw file bodies."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "content": {"type": "string", "description": "Text content to store."},
+                    "name": {"type": "string", "description": "Suggested filename, e.g. notes.txt."},
+                    "mime": {"type": "string", "description": "MIME type, default text/plain."},
+                    "summary": {"type": "string", "description": "Short searchable summary."},
+                    "tags": {"type": "array", "items": {"type": "string"}, "description": "Search tags."},
+                },
+                "required": ["content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ObjectImport",
+            "description": (
+                "Import a file inside your home directory into ObjectStore and return an obj:<token> reference. "
+                "Use this after Bash downloads or generates a file."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Relative file path inside home."},
+                    "name": {"type": "string", "description": "Optional attachment filename override."},
+                    "mime": {"type": "string", "description": "Optional MIME override."},
+                    "summary": {"type": "string", "description": "Short searchable summary."},
+                    "tags": {"type": "array", "items": {"type": "string"}, "description": "Search tags."},
+                },
+                "required": ["path"],
             },
         },
     },
@@ -335,6 +398,125 @@ def _grep_files(home: Path, args: dict[str, Any]) -> str:
     return json.dumps(results, ensure_ascii=False)
 
 
+def _object_search(config: "FiamConfig", args: dict[str, Any]) -> str:
+    from fiam.store.object_catalog import ObjectCatalog
+
+    catalog = ObjectCatalog.from_config(config)
+    limit = max(1, min(50, int(args.get("limit", 20))))
+    query = str(args.get("query") or "")
+    token = str(args.get("token") or "")
+    payload: dict[str, Any] = {
+        "records": [record.to_dict() for record in catalog.search(query, limit=limit)],
+    }
+    if token:
+        payload["object_hash"] = catalog.resolve_token(token)
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _object_save(config: "FiamConfig", args: dict[str, Any]) -> str:
+    content = args.get("content")
+    if not isinstance(content, str):
+        raise ToolError("content must be a string")
+    return _store_object_tool_result(
+        config,
+        content.encode("utf-8"),
+        name=_clean_object_name(args.get("name"), default="generated.txt"),
+        mime=str(args.get("mime") or "text/plain").strip() or "text/plain",
+        summary=str(args.get("summary") or "").strip(),
+        tags=_clean_tags(args.get("tags")),
+        source="tool:ObjectSave",
+    )
+
+
+def _object_import(config: "FiamConfig", args: dict[str, Any]) -> str:
+    path = _resolve(config.home_path, args["path"])
+    if not path.is_file():
+        raise ToolError(f"not a file: {args['path']}")
+    name = _clean_object_name(args.get("name"), default=path.name)
+    guessed_mime = mimetypes.guess_type(name)[0] or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    return _store_object_tool_result(
+        config,
+        path.read_bytes(),
+        name=name,
+        mime=str(args.get("mime") or guessed_mime).strip() or "application/octet-stream",
+        summary=str(args.get("summary") or "").strip(),
+        tags=_clean_tags(args.get("tags")),
+        source="tool:ObjectImport",
+    )
+
+
+def _store_object_tool_result(
+    config: "FiamConfig",
+    data: bytes,
+    *,
+    name: str,
+    mime: str,
+    summary: str = "",
+    tags: tuple[str, ...] = (),
+    source: str,
+) -> str:
+    from fiam.store.beat import Beat, append_beat
+    from fiam.store.objects import ObjectStore
+
+    raw = bytes(data or b"")
+    object_hash = ObjectStore(config.object_dir).put_bytes(raw, suffix="")
+    meta: dict[str, Any] = {
+        "name": "attachment",
+        "object_hash": object_hash,
+        "object_name": name,
+        "object_mime": mime,
+        "object_size": len(raw),
+        "direction": "generated",
+        "source": source,
+        "visibility": "private",
+    }
+    if summary:
+        meta["object_summary"] = summary
+    if tags:
+        meta["object_tags"] = list(tags)
+    if getattr(config, "flow_path", None) is not None:
+        append_beat(config.flow_path, Beat(
+            t=datetime.now(timezone.utc),
+            actor="ai",
+            channel="tool",
+            kind="attachment",
+            content=f"object: {name}",
+            meta=meta,
+            surface="api",
+        ))
+    payload: dict[str, Any] = {
+        "object_hash": object_hash,
+        "token": f"obj:{object_hash[:12]}",
+        "name": name,
+        "mime": mime,
+        "size": len(raw),
+    }
+    if summary:
+        payload["summary"] = summary
+    if tags:
+        payload["tags"] = list(tags)
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _clean_object_name(value: Any, *, default: str) -> str:
+    name = Path(str(value or default)).name.strip()
+    return name or default
+
+
+def _clean_tags(value: Any) -> tuple[str, ...]:
+    if isinstance(value, str):
+        raw = [item.strip() for item in value.replace(",", " ").split()]
+    elif isinstance(value, list):
+        raw = [str(item or "").strip() for item in value]
+    else:
+        raw = []
+    tags: list[str] = []
+    for item in raw:
+        if item and item not in tags:
+            tags.append(item)
+    return tuple(tags[:20])
+
+
 _BASH_DEFAULT_TIMEOUT = 120
 _BASH_MAX_TIMEOUT = 600
 _BASH_OUTPUT_LIMIT = 30_000
@@ -414,7 +596,7 @@ def execute_tool_call(config: "FiamConfig", name: str, raw_args: str) -> str:
     rather than the whole loop crashing.
     """
     handler = _DISPATCH.get(name)
-    if handler is None:
+    if handler is None and name not in {"ObjectSearch", "ObjectSave", "ObjectImport"}:
         return f"error: unknown tool {name!r}"
     try:
         args = json.loads(raw_args) if raw_args else {}
@@ -429,6 +611,21 @@ def execute_tool_call(config: "FiamConfig", name: str, raw_args: str) -> str:
             pass
     if not isinstance(args, dict):
         return "error: arguments must be a JSON object"
+    if name == "ObjectSearch":
+        try:
+            return _object_search(config, args)
+        except (OSError, ValueError) as exc:
+            return f"error: {exc}"
+    if name == "ObjectSave":
+        try:
+            return _object_save(config, args)
+        except (OSError, ValueError, ToolError, KeyError) as exc:
+            return f"error: {exc}"
+    if name == "ObjectImport":
+        try:
+            return _object_import(config, args)
+        except (OSError, ValueError, ToolError, KeyError) as exc:
+            return f"error: {exc}"
     try:
         return handler(config.home_path, args)
     except ToolError as exc:

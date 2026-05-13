@@ -63,7 +63,7 @@ recall_include_recent = true      # manual Favilla recall sees freshly processed
 cot_summary_enabled = true        # summarize visible/locked COT into short UI state labels
 cot_summary_model = "deepseek-chat"
 cot_summary_base_url = "https://api.deepseek.com"
-cot_summary_api_key_env = "FIAM_COT_SUMMARY_API_KEY"  # falls back to [graph].edge_api_key_env if unset
+cot_summary_api_key_env = "FIAM_COT_SUMMARY_API_KEY"
 
 [debug]
 enabled = false
@@ -96,7 +96,7 @@ llm_enabled = false
 llm_provider = "deepseek"           # "anthropic" | "openai" | "deepseek" (openai-compatible)
 llm_model = "deepseek-chat"
 llm_base_url = "https://api.deepseek.com"
-llm_api_key_env = "FIAM_GRAPH_API_KEY"  # reuse the same key
+llm_api_key_env = "FIAM_NARRATIVE_API_KEY"
 
 [graph]
 # LLM-based edge typing + event naming (optional — leave edge_provider empty to disable)
@@ -123,9 +123,9 @@ api_key_env = "FIAM_STT_API_KEY"
 [voice.tts]
 # Stroll mode may speak aloud through an attached app/device.
 provider = "openai_compatible"
-model = "gpt-4o-mini-tts"
-base_url = ""
-api_key_env = "FIAM_TTS_API_KEY"
+model = "mimo-v2.5-tts"
+base_url = "https://token-plan-cn.xiaomimimo.com/v1"
+api_key_env = "FIAM_MIMO_API_KEY"
 
 [communication]
 email_from = ""                             # AI's email address (e.g. ai@example.com)

@@ -249,8 +249,20 @@ def _wake_session(config, message: str, tag: str = "inbox", conductor=None) -> b
 
     If no active session exists, creates a new session and saves its ID.
     Returns True if the message was sent successfully.
-    Dispatches outbound markers from the response via conductor.dispatch().
+    Commits outbound markers from the response through TurnCommit.
     """
+    def hold_reroll_message(reason: str) -> str:
+        parts = [
+            "[hold_reroll]",
+            "The previous assistant attempt used <hold>, so it was not sent to the user.",
+            "Answer the same user turn again now. Do not repeat the held draft.",
+        ]
+        if reason.strip():
+            parts.append(f"Hold reason: {reason.strip()}")
+        parts.append("[original_user_turn]")
+        parts.append(message.strip() or "(empty user turn)")
+        return "\n".join(parts)
+
     session = _load_active_session(config)
     resuming = session is not None
 
@@ -364,22 +376,74 @@ def _wake_session(config, message: str, tag: str = "inbox", conductor=None) -> b
             if response_text:
                 from fiam.turn import MarkerInterpreter, TurnCommit
 
-                interpretation = MarkerInterpreter().interpret(response_text)
-                if conductor is not None:
+                try:
+                    from fiam.store.object_catalog import ObjectCatalog
+                    object_resolver = ObjectCatalog.from_config(config).resolve_token
+                except Exception:
+                    object_resolver = None
+                interpretation = MarkerInterpreter(object_resolver=object_resolver).interpret(response_text)
+                def commit_interpretation(current_interpretation) -> None:
+                    if conductor is None:
+                        return
                     turn_id = f"turn_{uuid.uuid4().hex}"
                     conductor.commit_turn(TurnCommit(
                         turn_id=turn_id,
-                        dispatch_requests=interpretation.dispatch_requests,
-                        todo_changes=interpretation.todo_changes,
-                        state_change=interpretation.state_change,
+                        dispatch_requests=current_interpretation.dispatch_requests,
+                        todo_changes=current_interpretation.todo_changes,
+                        state_change=current_interpretation.state_change,
+                        hold_request=current_interpretation.hold_request,
                         trace={"model_done": config.now_utc().isoformat()},
                     ), channel="cc")
-                    if interpretation.dispatch_requests:
-                        _console.print(f"  [dim]└ dispatched {len(interpretation.dispatch_requests)}[/dim]")
-                    if interpretation.todo_changes:
-                        _console.print(f"  [dim]└ todo +{len(interpretation.todo_changes)} item(s)[/dim]")
-                    if interpretation.state_change:
-                        _plog.info("AI state  state=%s reason=%s", interpretation.state_change.state, interpretation.state_change.reason)
+                    if current_interpretation.dispatch_requests:
+                        _console.print(f"  [dim]└ dispatched {len(current_interpretation.dispatch_requests)}[/dim]")
+                    if current_interpretation.todo_changes:
+                        _console.print(f"  [dim]└ todo +{len(current_interpretation.todo_changes)} item(s)[/dim]")
+                    if current_interpretation.state_change:
+                        _plog.info("AI state  state=%s reason=%s", current_interpretation.state_change.state, current_interpretation.state_change.reason)
+
+                commit_interpretation(interpretation)
+                if interpretation.hold_status == "reroll":
+                    sid = str(data.get("session_id") or "").strip()
+                    if not sid:
+                        active = _load_active_session(config)
+                        sid = str((active or {}).get("session_id") or "").strip()
+                    reroll_cmd = [
+                        "claude", "-p", hold_reroll_message(interpretation.hold_reason),
+                        "--output-format", "json",
+                        "--max-turns", "10",
+                    ]
+                    if config.cc_model:
+                        reroll_cmd.extend(["--model", config.cc_model])
+                    if config.cc_disallowed_tools:
+                        reroll_cmd.extend(["--disallowedTools"] + [t.strip() for t in config.cc_disallowed_tools.split(",") if t.strip()])
+                    if sid:
+                        reroll_cmd.extend(["--resume", sid])
+                    reroll_result = subprocess.run(
+                        reroll_cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=180,
+                        cwd=str(config.home_path),
+                    )
+                    try:
+                        reroll_data = json.loads(reroll_result.stdout)
+                    except (json.JSONDecodeError, ValueError):
+                        reroll_data = None
+                    if reroll_data:
+                        cost = reroll_data.get("total_cost_usd", 0)
+                        if cost > 0:
+                            log_cost(config, cost, session_id=reroll_data.get("session_id", ""), tag=f"{tag}:hold_reroll", turns=reroll_data.get("num_turns", 0))
+                        reroll_sid = str(reroll_data.get("session_id") or "").strip()
+                        if reroll_sid:
+                            _save_active_session(config, reroll_sid)
+                    reroll_partial = bool(reroll_data and reroll_data.get("subtype") == "error_max_turns")
+                    if reroll_result.returncode != 0 and not reroll_partial:
+                        detail = (reroll_result.stderr or reroll_result.stdout or "hold reroll failed").strip()[:500]
+                        _plog.warning("hold reroll FAILED: %s", detail)
+                        return False
+                    if reroll_data and str(reroll_data.get("result") or "").strip():
+                        reroll_interpretation = MarkerInterpreter(object_resolver=object_resolver).interpret(str(reroll_data.get("result") or ""))
+                        commit_interpretation(reroll_interpretation)
 
         # Bump per-session event counter and rotate if we've hit the cap
         # (skip if sleep already retired the session above)
@@ -441,7 +505,7 @@ def _run_claude_json(config, message: str, *, tag: str) -> tuple[bool, dict | No
 
 
 def _append_transcript(config, source: str, message: dict) -> dict:
-    clean_source = re.sub(r"[^A-Za-z0-9_-]+", "_", (source or "favilla").strip().lower()).strip("_") or "favilla"
+    clean_source = re.sub(r"[^A-Za-z0-9_-]+", "_", (source or "chat").strip().lower()).strip("_") or "chat"
     path = config.home_path / "transcript" / f"{clean_source}.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     record = {
@@ -523,45 +587,142 @@ def cmd_start(args: argparse.Namespace) -> None:
     from fiam.store.pool import Pool
     from fiam.conductor import Conductor
     from fiam.bus import Bus, RECEIVE_ALL
-    import queue as _queue
+    from fiam.channels import actor_for_channel, normalize_channel
+    from fiam.turn import AttachmentRef, InboundQueue, TurnRequest, TurnTraceRow, TurnTraceStore
 
     # ── MQTT bus: replaces all channel polling ──
     _bus = Bus(client_id="fiam-daemon")
-    _inbox_q: _queue.Queue = _queue.Queue()
+    _inbound_queue = InboundQueue(config.inbound_queue_path)
+    _queue_trace = TurnTraceStore(config.store_dir / "turn_traces.jsonl")
 
-    def _on_receive(channel: str, payload: dict) -> None:
-        """Bus thread → main loop queue. Convert MQTT payload to msg dict."""
-        text = (payload.get("text") or "").strip()
-        if not text:
-            return
-        channel_name = str(payload.get("channel") or payload.get("source") or channel)
+    def _append_queue_trace(
+        request: TurnRequest,
+        phase: str,
+        *,
+        status: str = "ok",
+        error: str = "",
+        refs: dict | None = None,
+        started_at: datetime | None = None,
+    ) -> None:
         try:
-            from fiam.plugins import is_receive_enabled
-            if not is_receive_enabled(config, channel_name):
-                _plog.info("receive skipped disabled plugin channel=%s", channel_name)
-                return
+            ended_at = datetime.now(timezone.utc)
+            started = started_at or ended_at
+            duration_ms = max(0, int((ended_at - started).total_seconds() * 1000))
+            queue_id = str((request.source_meta or {}).get("queue_id") or "")
+            row_refs = {"queue_id": queue_id} if queue_id else {}
+            row_refs.update(refs or {})
+            _queue_trace.append(TurnTraceRow(
+                turn_id=request.turn_id,
+                request_id=request.request_id,
+                session_id=request.session_id,
+                channel=request.channel,
+                surface=request.surface,
+                phase=phase,
+                status=status if status in {"ok", "error", "skipped"} else "error",
+                started_at=started.isoformat(),
+                ended_at=ended_at.isoformat(),
+                duration_ms=duration_ms,
+                error=error,
+                refs=row_refs,
+            ))
         except Exception:
-            pass
+            _plog.debug("queue trace append failed", exc_info=True)
+
+    def _attachment_refs_from_payload(payload: dict) -> tuple[AttachmentRef, ...]:
+        raw_items = payload.get("attachments") if isinstance(payload.get("attachments"), list) else []
+        refs: list[AttachmentRef] = []
+        seen: set[str] = set()
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+            object_hash = "".join(ch for ch in str(item.get("object_hash") or "").lower() if ch in "0123456789abcdef")
+            if len(object_hash) != 64 or object_hash in seen:
+                continue
+            seen.add(object_hash)
+            try:
+                size = int(item.get("size") or 0)
+            except (TypeError, ValueError):
+                size = 0
+            refs.append(AttachmentRef(
+                object_hash=object_hash,
+                name=str(item.get("name") or ""),
+                mime=str(item.get("mime") or ""),
+                size=size,
+            ))
+        return tuple(refs)
+
+    def _turn_request_from_bus_payload(channel: str, payload: dict) -> TurnRequest | None:
+        text = str(payload.get("text") or "").strip()
+        attachments = _attachment_refs_from_payload(payload)
+        if not text and not attachments:
+            return None
+        channel_name = str(payload.get("channel") or payload.get("source") or channel)
         t_raw = payload.get("t")
         t_val: datetime | None = None
         if isinstance(t_raw, str):
             try:
-                t_val = datetime.fromisoformat(t_raw)
+                t_val = datetime.fromisoformat(t_raw.replace("Z", "+00:00"))
             except ValueError:
                 t_val = None
         elif isinstance(t_raw, datetime):
             t_val = t_raw
+        received_at = t_val or datetime.now(timezone.utc)
         meta = {
             key: value for key, value in payload.items()
-            if key not in {"text", "channel", "source", "t"} and value not in (None, "", [])
+            if key not in {"text", "channel", "source", "t", "attachments", "structured_payload"} and value not in (None, "", [])
         }
-        _inbox_q.put({
-            "channel": channel_name,
-            "from_name": payload.get("from_name", ""),
-            "text": text,
-            "t": t_val or datetime.now(timezone.utc),
+        meta.setdefault("source", channel_name)
+        meta.setdefault("mqtt_channel", channel)
+        meta.setdefault("t", received_at.isoformat())
+        channel_normalized = normalize_channel(channel_name)
+        surface = str(payload.get("surface") or meta.get("surface") or "").strip().lower()
+        structured_payload = payload.get("structured_payload") if isinstance(payload.get("structured_payload"), dict) else {}
+        delivery_policy = payload.get("delivery_policy") if payload.get("delivery_policy") in {"record_only", "lazy", "instant", "batch", "state_only"} else "instant"
+        turn_id = str(meta.get("turn_id") or f"turn_{uuid.uuid4().hex}")
+        request_id = str(meta.get("request_id") or meta.get("message_id") or turn_id)
+        return TurnRequest(
+            channel=channel_normalized,
+            actor=actor_for_channel(channel_normalized),
+            text=text,
+            surface=surface,
+            request_id=request_id,
+            turn_id=turn_id,
+            session_id=str(meta.get("session_id") or ""),
+            attachments=attachments,
+            structured_payload=structured_payload,
+            source_meta=meta,
+            delivery_policy=delivery_policy,
+            trace={"transport": "mqtt", "mqtt_channel": channel},
+            received_at=received_at,
+        )
+
+    def _msg_from_turn_request(request: TurnRequest) -> dict:
+        meta = dict(request.source_meta or {})
+        return {
+            "channel": request.channel,
+            "source": str(meta.get("source") or request.channel),
+            "from_name": str(meta.get("from_name") or ""),
+            "text": request.text,
+            "t": request.received_at,
+            "surface": request.surface,
             "meta": meta,
-        })
+        }
+
+    def _on_receive(channel: str, payload: dict) -> None:
+        """Bus thread → durable inbound queue."""
+        request = _turn_request_from_bus_payload(channel, payload)
+        if request is None:
+            return
+        try:
+            from fiam.plugins import is_receive_enabled
+            if not is_receive_enabled(config, request.channel):
+                _plog.info("receive skipped disabled plugin channel=%s", request.channel)
+                return
+        except Exception:
+            pass
+        started_at = datetime.now(timezone.utc)
+        queue_id = _inbound_queue.enqueue(request)
+        _append_queue_trace(request, "queue.enqueued", refs={"queue_id": queue_id}, started_at=started_at)
 
     _bus.subscribe(RECEIVE_ALL, _on_receive)
     try:
@@ -578,18 +739,20 @@ def cmd_start(args: argparse.Namespace) -> None:
     _conductor_embedder = Embedder(config)
     event_count = _pool.event_count
 
-    # ── Recall: daemon owns this (recall never enters flow) ──
+    # ── Recall: daemon can hand one turn of context to external CC hooks ──
     _recall_top_k = 3
 
-    def _refresh_recall(query_vec) -> None:
-        """Run spreading activation and write recall.md + .recall_dirty marker."""
-        from fiam.runtime.recall import refresh_recall
+    def _prepare_pending_recall(query_vec) -> None:
+        """Run spreading activation and write a one-shot pending recall handoff."""
+        from fiam.runtime.recall import build_recall_context
 
-        count = refresh_recall(config, _pool, query_vec, top_k=_recall_top_k)
-        if count:
-            _plog.info("recall refreshed (%d fragments)", count)
+        context = build_recall_context(config, _pool, query_vec, top_k=_recall_top_k)
+        if context.count:
+            config.pending_recall_path.parent.mkdir(parents=True, exist_ok=True)
+            config.pending_recall_path.write_text(context.render() + "\n", encoding="utf-8")
+            _plog.info("pending recall prepared (%d fragments)", context.count)
 
-    # ── Conductor: stateless hub, drift → _refresh_recall callback ──
+    # ── Conductor: stateless hub, drift → pending recall callback ──
     _conductor = Conductor(
         pool=_pool,
         embedder=_conductor_embedder,
@@ -599,11 +762,36 @@ def cmd_start(args: argparse.Namespace) -> None:
         gorge_max_beat=config.gorge_max_beat,
         gorge_min_depth=config.gorge_min_depth,
         gorge_stream_confirm=config.gorge_stream_confirm,
-        on_drift=_refresh_recall,
+        on_drift=_prepare_pending_recall,
         bus=_bus,
         memory_mode=config.memory_mode,
-        feature_store=_feature_store,
     )
+
+    def _run_memory_worker_once(*, limit: int = 1000) -> int:
+        from fiam.store.events import EventStore
+        from fiam.turn import MemoryWorker
+
+        event_store = EventStore(config.event_db_path, object_dir=config.object_dir)
+        worker = MemoryWorker(
+            event_store,
+            embedder=_conductor_embedder,
+            feature_store=_feature_store,
+            pool=_pool,
+            config=config,
+            model_id=getattr(config, "embedding_model", ""),
+        )
+        return worker.process_once(limit=limit)
+
+    def _maybe_run_auto_memory_worker(reason: str) -> None:
+        if str(getattr(config, "memory_mode", "manual") or "manual").lower() != "auto":
+            return
+        try:
+            processed = _run_memory_worker_once()
+        except Exception as e:
+            _plog.error("memory worker error after %s: %s", reason, e, exc_info=True)
+            return
+        if processed:
+            _plog.info("memory worker processed %d event(s) after %s", processed, reason)
 
     _console.print()
     _console.print(_flow("  fiam  ✦"))
@@ -647,7 +835,7 @@ def cmd_start(args: argparse.Namespace) -> None:
         if changed:
             _save_cursor(code_path, cursor)
 
-    # Live recall: conductor fires on_drift → _refresh_recall (above)
+    # Live recall: conductor fires on_drift → pending recall callback (above)
 
     def _write_pending_external(config, msgs: list[dict]) -> None:
         """Append pre-formatted external messages for inject.sh hook delivery."""
@@ -811,6 +999,8 @@ def cmd_start(args: argparse.Namespace) -> None:
             _console.print(f"  [red]flush error:[/] {e}")
             _plog.error("conductor flush error: %s", e, exc_info=True)
 
+        _maybe_run_auto_memory_worker("process_pending")
+
         active = False
 
     # ------------------------------------------------------------------
@@ -875,15 +1065,34 @@ def cmd_start(args: argparse.Namespace) -> None:
         # Write daemon state for debug dashboard (every poll cycle)
         _write_daemon_state()
 
-        # ── Inbound channels: drain MQTT queue (no polling here) ──
-        # Bridges (bridge_email, dashboard /api/capture, ...) push
-        # messages onto fiam/receive/+; the bus thread enqueues them.
+        # ── Inbound channels: claim durable MQTT queue ──
+        # Bridges (bridge_email, dashboard /api/capture, ...) publish to
+        # fiam/receive/#; the bus thread persists TurnRequest rows first.
         all_msgs: list[dict] = []
-        while True:
+        claimed_requests = _inbound_queue.claim(
+            limit=100,
+            worker_id="daemon",
+            lease_seconds=max(60, int(poll_interval * 3)),
+        )
+        for request in claimed_requests:
+            queue_id = str((request.source_meta or {}).get("queue_id") or "")
+            _append_queue_trace(request, "queue.claimed")
             try:
-                all_msgs.append(_inbox_q.get_nowait())
-            except _queue.Empty:
-                break
+                commit = _conductor.receive_turn(request)
+            except Exception as e:
+                if queue_id:
+                    _inbound_queue.fail(queue_id, error=str(e), backoff_seconds=max(60, int(poll_interval)))
+                _append_queue_trace(request, "queue.failed", status="error", error=str(e))
+                _plog.error("conductor.receive_turn failed queue_id=%s: %s", queue_id, e, exc_info=True)
+                continue
+            event_ids = [str(event.meta.get("event_id")) for event in commit.events if event.meta and event.meta.get("event_id")]
+            if queue_id:
+                if _inbound_queue.ack(queue_id):
+                    _append_queue_trace(request, "queue.acked", refs={"event_ids": event_ids})
+                else:
+                    _append_queue_trace(request, "queue.acked", status="error", error="queue item missing during ack", refs={"event_ids": event_ids})
+                    _plog.error("queue ack failed queue_id=%s", queue_id)
+            all_msgs.append(_msg_from_turn_request(request))
         if all_msgs:
             # Sort by msg timestamp so events reflect real-world order
             all_msgs.sort(key=lambda m: m.get("t") or datetime.min.replace(tzinfo=timezone.utc))
@@ -906,39 +1115,6 @@ def cmd_start(args: argparse.Namespace) -> None:
                 beat_ai_state = "online" if ai_state_name == "notify" else ai_state_name
                 if beat_ai_state in _AI_STATES:
                     _conductor.set_status(ai=beat_ai_state)
-
-                # All messages -> Conductor turn owner -> events + frozen vectors.
-                # In auto mode it also runs drift/gorge; in manual mode it stops there.
-                from fiam.channels import actor_for_channel, normalize_channel
-                from fiam.turn import TurnRequest
-
-                for msg in all_msgs:
-                    try:
-                        msg_meta = dict(msg.get("meta") or {})
-                        turn_id = str(msg_meta.get("turn_id") or f"turn_{uuid.uuid4().hex}")
-                        request_id = str(msg_meta.get("request_id") or msg_meta.get("message_id") or turn_id)
-                        session_id = str(msg_meta.get("session_id") or "")
-                        t = msg.get("t") or config.now_utc()
-                        if hasattr(t, "isoformat"):
-                            msg_meta.setdefault("t", t.isoformat())
-                        else:
-                            msg_meta.setdefault("t", str(t))
-                        channel = normalize_channel(str(msg.get("channel") or "unknown"))
-                        _conductor.receive_turn(
-                            TurnRequest(
-                                channel=channel,
-                                actor=actor_for_channel(channel),
-                                text=str(msg.get("text") or ""),
-                                request_id=request_id,
-                                turn_id=turn_id,
-                                session_id=session_id,
-                                source_meta=msg_meta,
-                                delivery_policy="record_only",
-                            )
-                        )
-                    except Exception as e:
-                        _plog.error("conductor.receive_turn failed: %s", e)
-
                 # ── Split by channel registry + plugin delivery. responds=false
                 # channels only land in events/notifications; instant channels
                 # follow the wake path. ──
@@ -1050,6 +1226,8 @@ def cmd_start(args: argparse.Namespace) -> None:
                 if config.debug_mode:
                     print(f"  [inbox] Error: {e}", file=sys.stderr)
 
+            _maybe_run_auto_memory_worker("inbox")
+
         # ── Outbox dispatch ──
         try:
             sweep_outbox(config)
@@ -1128,27 +1306,15 @@ def cmd_start(args: argparse.Namespace) -> None:
                         _console.print(f"  [dim]💤 still sleeping — todo skipped[/dim]")
                         mark_done(entry, config, success=True)
                         continue
-                action = str(entry.get("action") or "")
-                if action == "hold_retry":
-                    trigger_label = f"hold_retry:{reason[:40]}" if reason else "hold_retry"
-                    body = f"[hold_retry] {reason or 'reconsider held output'}"
-                    todo_prefix = _build_wake_context(prior_sleep_state, trigger_label)
-                    ok = _wake_session(
-                        config,
-                        f"{todo_prefix}{body}",
-                        tag="hold_retry",
-                        conductor=_conductor,
-                    )
-                else:
-                    trigger_label = "scheduled" if kind == "wake" else f"todo:{reason[:40]}"
-                    body = "[scheduled wake]" if kind == "wake" else f"[todo] {reason}"
-                    todo_prefix = _build_wake_context(prior_sleep_state, trigger_label)
-                    ok = _wake_session(
-                        config,
-                        f"{todo_prefix}{body}",
-                        tag=kind,
-                        conductor=_conductor,
-                    )
+                trigger_label = "scheduled" if kind == "wake" else f"todo:{reason[:40]}"
+                body = "[scheduled wake]" if kind == "wake" else f"[todo] {reason}"
+                todo_prefix = _build_wake_context(prior_sleep_state, trigger_label)
+                ok = _wake_session(
+                    config,
+                    f"{todo_prefix}{body}",
+                    tag="todo",
+                    conductor=_conductor,
+                )
                 mark_done(entry, config, success=ok)
                 if ok:
                     _plog.info("todo item OK")
@@ -1185,6 +1351,8 @@ def cmd_start(args: argparse.Namespace) -> None:
                 _plog.error("ingest error: %s", e, exc_info=True)
                 if config.debug_mode:
                     print(f"  [ingest] Error: {e}", file=sys.stderr)
+
+            _maybe_run_auto_memory_worker("jsonl_ingest")
 
             _write_daemon_state()
             continue

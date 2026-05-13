@@ -8,11 +8,9 @@ import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fiam.config import FiamConfig
-from fiam.markers import parse_hold_markers, strip_xml_markers
 
 # COT markers: <cot>...</cot> for shareable thought blocks; <lock/> to lock
 # the entire turn's thought chain (covers marker thoughts + any native
@@ -141,41 +139,6 @@ def parse_app_cot(reply: str, config: FiamConfig | None = None) -> AppCotResult:
     return AppCotResult(visible_reply, thoughts, locked, segments)
 
 
-def strip_hold_markers(text: str) -> str:
-    return strip_xml_markers(text or "", {"hold"}).strip()
-
-
-def apply_hold(
-    text: str,
-    config: FiamConfig,
-    *,
-    channel: str,
-    runtime: str,
-) -> tuple[str, str, list[dict[str, Any]]]:
-    """Apply ``<hold/>`` / ``<hold>reason</hold>`` and queue a retry todo.
-
-    Returns ``(cleaned_text, reason, retry_todos)``. When a hold is detected,
-    a single retry todo is scheduled at ``now + config.hold_retry_seconds``.
-    """
-    hold_markers = parse_hold_markers(text or "")
-    cleaned = strip_hold_markers(text or "")
-    if not hold_markers:
-        return cleaned, "", []
-    reason = hold_markers[-1].reason or "held reply"
-    delay = max(1, int(getattr(config, "hold_retry_seconds", 30) or 30))
-    retry_at = config.now_local() + timedelta(seconds=delay)
-    todo = {
-        "at": retry_at.isoformat(),
-        "type": "private",
-        "action": "hold_retry",
-        "channel": channel,
-        "runtime": runtime,
-        "reason": reason,
-        "created": datetime.now(timezone.utc).isoformat(),
-    }
-    return cleaned, reason, [todo]
-
-
 def _strip_cot_control(text: str) -> str:
     return _LOCK_RE.sub("", text)
 
@@ -250,11 +213,6 @@ def _summary_api_key(config: FiamConfig) -> tuple[str, str]:
     api_key = os.environ.get(env_name, "").strip()
     if api_key:
         return api_key, env_name
-    fallback_env = getattr(config, "graph_edge_api_key_env", "") or ""
-    if fallback_env and fallback_env != env_name:
-        api_key = os.environ.get(fallback_env, "").strip()
-        if api_key:
-            return api_key, fallback_env
     return "", env_name
 
 

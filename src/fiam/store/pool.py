@@ -38,6 +38,13 @@ class Event:
     t: datetime               # creation time (UTC)
     access_count: int = 0     # how many times recalled
     fingerprint_idx: int = -1 # row index in fingerprints.npy (-1 = not yet embedded)
+    channel: str = ""
+    surface: str = ""
+    source_event_ids: tuple[str, ...] = ()
+    kind: str = "event"
+    privacy: str = "public"
+    object_refs: tuple[str, ...] = ()
+    summary_ref: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -45,6 +52,13 @@ class Event:
             "t": self.t.isoformat(),
             "access_count": self.access_count,
             "fingerprint_idx": self.fingerprint_idx,
+            "channel": self.channel,
+            "surface": self.surface,
+            "source_event_ids": list(self.source_event_ids),
+            "kind": self.kind,
+            "privacy": self.privacy,
+            "object_refs": list(self.object_refs),
+            "summary_ref": self.summary_ref,
         }
 
     def to_json(self) -> str:
@@ -57,11 +71,24 @@ class Event:
             t = datetime.fromisoformat(t.replace("Z", "+00:00"))
         if isinstance(t, datetime) and t.tzinfo is None:
             t = t.replace(tzinfo=timezone.utc)
+        source_event_ids = d.get("source_event_ids") or ()
+        if isinstance(source_event_ids, str):
+            source_event_ids = (source_event_ids,)
+        object_refs = d.get("object_refs") or ()
+        if isinstance(object_refs, str):
+            object_refs = (object_refs,)
         return Event(
             id=d["id"],
             t=t,
             access_count=d.get("access_count", 0),
             fingerprint_idx=d.get("fingerprint_idx", -1),
+            channel=str(d.get("channel") or ""),
+            surface=str(d.get("surface") or ""),
+            source_event_ids=tuple(str(item) for item in source_event_ids),
+            kind=str(d.get("kind") or "event"),
+            privacy=str(d.get("privacy") or "public"),
+            object_refs=tuple(str(item) for item in object_refs),
+            summary_ref=str(d.get("summary_ref") or ""),
         )
 
 
@@ -415,6 +442,14 @@ class Pool:
         t: datetime,
         body: str,
         fingerprint: np.ndarray,
+        *,
+        channel: str = "",
+        surface: str = "",
+        source_event_ids: list[str] | tuple[str, ...] | None = None,
+        kind: str = "event",
+        privacy: str = "public",
+        object_refs: list[str] | tuple[str, ...] | None = None,
+        summary_ref: str = "",
     ) -> Event:
         """Full pipeline: write body → append fingerprint → extend cosine → save meta.
 
@@ -442,7 +477,18 @@ class Pool:
             raise
 
         # Metadata
-        ev = Event(id=event_id, t=t, fingerprint_idx=idx)
+        ev = Event(
+            id=event_id,
+            t=t,
+            fingerprint_idx=idx,
+            channel=channel,
+            surface=surface,
+            source_event_ids=tuple(source_event_ids or ()),
+            kind=kind,
+            privacy=privacy,
+            object_refs=tuple(object_refs or ()),
+            summary_ref=summary_ref,
+        )
         self.append_event(ev)
 
         return ev

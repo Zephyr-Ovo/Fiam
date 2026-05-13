@@ -76,7 +76,7 @@ description = "Open a URL in the user's default browser."
 kind = "actuator"
 trust = 1
 enabled = true
-description = "Open an Atrium-owned browser/co-reader surface that ai can operate without touching Iris's active window."
+description = "Open an Atrium-owned browser/co-reader surface that ai can operate without touching Zephyr's active window."
 
 [capabilities."web.surface.navigate"]
 kind = "actuator"
@@ -100,13 +100,13 @@ description = "Click inside an Atrium-owned browser surface through a DevTools-s
 kind = "actuator"
 trust = 1
 enabled = true
-description = "Type inside an Atrium-owned browser surface through a DevTools-style page action. Does not steal Iris's active focus."
+description = "Type inside an Atrium-owned browser surface through a DevTools-style page action. Does not steal Zephyr's active focus."
 
 [capabilities."web.cdp.scroll"]
 kind = "actuator"
 trust = 1
 enabled = true
-description = "Scroll an Atrium-owned browser surface without affecting Iris's current page."
+description = "Scroll an Atrium-owned browser surface without affecting Zephyr's current page."
 
 [capabilities."web.screenshot"]
 kind = "sensor"

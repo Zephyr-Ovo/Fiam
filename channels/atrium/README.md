@@ -4,7 +4,7 @@
 > Pairs with [`limen`](../limen/) (threshold) on the wearable side.
 
 Atrium is the high-privilege desktop client that gives ai **hands and eyes** on
-Iris's PC. The brain stays on ISP; atrium executes a curated set of sensors and
+Zephyr's PC. The brain stays on ISP; atrium executes a curated set of sensors and
 actuators on the daemon's behalf, gated by [`capabilities.toml`](./capabilities.toml),
 trust levels, and an append-only `audit.jsonl`.
 
@@ -99,7 +99,7 @@ execution; the browser extension posts captures to `/studio/share`.
 
 ## Input Model
 
-The desktop goal is: **ai can do its work while Iris keeps using the PC**.
+The desktop goal is: **ai can do its work while Zephyr keeps using the PC**.
 Visible multi-cursor UI is optional; non-interference matters more than showing
 a second pointer.
 
@@ -108,7 +108,7 @@ without focus" primitive. Atrium therefore uses target-specific operation lanes:
 
 1. **AI-owned surfaces**: Atrium windows, co-reader, chess board, document viewer,
   and any browser/page Atrium opens for ai. ai can freely click, scroll, and
-   type there without affecting Iris's active window.
+   type there without affecting Zephyr's active window.
 2. **Browser/CDP lane**: when Atrium controls a browser surface, it should use
    DevTools-style page actions instead of moving the system cursor.
 3. **UI Automation lane**: for native desktop controls that expose accessibility
@@ -265,7 +265,7 @@ not running.
 
 - `app.spawn` can open an Atrium-owned reader/co-reader window.
 - The reader surface is a separate Tauri webview using `?surface=reader`; it is
-  editable and isolated from Iris's current active application.
+  editable and isolated from Zephyr's current active application.
 - This is the first non-focus-first operation lane: future ai actions should
   target Atrium-owned surfaces before touching arbitrary desktop windows.
 
@@ -279,7 +279,7 @@ not running.
 ### M10 — Non-interfering operation lanes
 
 - `web.surface.open`, `web.surface.navigate`, and `web.surface.reload` manage an
-  Atrium-owned WebView2 browser surface instead of Iris's default browser.
+  Atrium-owned WebView2 browser surface instead of Zephyr's default browser.
 - `web.cdp.click`, `web.cdp.type`, and `web.cdp.scroll` execute page actions
   inside that owned surface without moving the system cursor or using keyboard
   input.

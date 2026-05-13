@@ -126,6 +126,75 @@ export function Settings({ open, onClose }: Props) {
           value={draft.defaultRuntime}
           onChange={(v) => setDraft({ ...draft, defaultRuntime: v })}
         />
+        <VoiceProviderField
+          label="STT provider"
+          value={draft.sttProvider}
+          options={["browser", "openai_compatible"]}
+          onChange={(v) => setDraft({ ...draft, sttProvider: v as AppConfig["sttProvider"] })}
+        />
+        {draft.sttProvider === "openai_compatible" && (
+          <>
+            <Field
+              label="STT base"
+              value={draft.sttBaseUrl}
+              onChange={(v) => setDraft({ ...draft, sttBaseUrl: v })}
+              placeholder="https://.../v1"
+            />
+            <Field
+              label="STT key"
+              value={draft.sttApiKey}
+              onChange={(v) => setDraft({ ...draft, sttApiKey: v })}
+              placeholder="Bearer key"
+              secret
+            />
+            <Field
+              label="STT model"
+              value={draft.sttModel}
+              onChange={(v) => setDraft({ ...draft, sttModel: v })}
+              placeholder="whisper-1"
+            />
+          </>
+        )}
+        <VoiceProviderField
+          label="TTS provider"
+          value={draft.ttsProvider}
+          options={["browser", "openai_compatible", "mimo"]}
+          onChange={(v) => setDraft({ ...draft, ttsProvider: v as AppConfig["ttsProvider"] })}
+        />
+        {draft.ttsProvider !== "browser" && (
+          <>
+            <Field
+              label="TTS base"
+              value={draft.ttsBaseUrl}
+              onChange={(v) => setDraft({ ...draft, ttsBaseUrl: v })}
+              placeholder={draft.ttsProvider === "mimo" ? "https://..." : "https://.../v1"}
+            />
+            <Field
+              label="TTS key"
+              value={draft.ttsApiKey}
+              onChange={(v) => setDraft({ ...draft, ttsApiKey: v })}
+              placeholder="Bearer key"
+              secret
+            />
+            <Field
+              label="TTS model"
+              value={draft.ttsModel}
+              onChange={(v) => setDraft({ ...draft, ttsModel: v })}
+              placeholder={draft.ttsProvider === "mimo" ? "mimo-clone" : "gpt-4o-mini-tts"}
+            />
+          </>
+        )}
+        <Field
+          label="TTS voice"
+          value={draft.ttsVoice}
+          onChange={(v) => setDraft({ ...draft, ttsVoice: v })}
+          placeholder="jarvis / alloy / voice-id"
+        />
+        <BoolField
+          label="Auto speak AI"
+          value={draft.ttsAutoPlayAi}
+          onChange={(v) => setDraft({ ...draft, ttsAutoPlayAi: v })}
+        />
         <ColorRow
           items={[
             {
@@ -476,5 +545,83 @@ function BgField({
         </div>
       )}
     </div>
+  )
+}
+
+function VoiceProviderField({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string
+  value: string
+  options: string[]
+  onChange: (value: string) => void
+}) {
+  return (
+    <label
+      className="block"
+      style={{
+        paddingTop: 8,
+        paddingBottom: 8,
+        borderBottom: "1px solid rgba(63, 47, 41, 0.12)",
+      }}
+    >
+      <div
+        className="text-[10.5px] uppercase tracking-[0.08em]"
+        style={{ color: "rgba(63, 47, 41, 0.55)" }}
+      >
+        {label}
+      </div>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="mt-1 w-full bg-transparent text-[13px]"
+        style={{
+          color: "#3f2f29",
+          border: "none",
+          outline: "none",
+          fontFamily: "var(--font-sans)",
+        }}
+      >
+        {options.map((item) => (
+          <option key={item} value={item}>{item}</option>
+        ))}
+      </select>
+    </label>
+  )
+}
+
+function BoolField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string
+  value: boolean
+  onChange: (value: boolean) => void
+}) {
+  return (
+    <label
+      className="flex items-center justify-between"
+      style={{
+        paddingTop: 8,
+        paddingBottom: 8,
+        borderBottom: "1px solid rgba(63, 47, 41, 0.12)",
+      }}
+    >
+      <span
+        className="text-[10.5px] uppercase tracking-[0.08em]"
+        style={{ color: "rgba(63, 47, 41, 0.55)" }}
+      >
+        {label}
+      </span>
+      <input
+        type="checkbox"
+        checked={value}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+    </label>
   )
 }

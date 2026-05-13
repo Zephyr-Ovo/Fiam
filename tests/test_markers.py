@@ -4,7 +4,6 @@ import sys
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
-from tempfile import TemporaryDirectory
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,10 +22,8 @@ from fiam.markers import (  # noqa: E402
     parse_wake_markers,
     strip_xml_markers,
 )
-from fiam.config import FiamConfig  # noqa: E402
 from fiam.runtime.turns import assistant_text_beats  # noqa: E402
-from fiam_lib.app_markers import apply_hold  # noqa: E402
-from fiam_lib.todo import extract_scheduled_items, extract_state_tag  # noqa: E402
+from fiam.turn import MarkerInterpreter  # noqa: E402
 
 
 class MarkerParsingTest(unittest.TestCase):
@@ -39,6 +36,33 @@ class MarkerParsingTest(unittest.TestCase):
             ("email", "Zephyr", "hello"),
             ("limen", "screen", "emoji:spark"),
         ])
+
+    def test_outbound_markers_parse_object_attachments(self) -> None:
+        first = "a" * 64
+        second = "b" * 64
+        markers = parse_outbound_markers(
+            f'<send to="email:Zephyr" attach="obj:{first} obj:{second},obj:{first}"></send>'
+        )
+
+        self.assertEqual(len(markers), 1)
+        self.assertEqual(markers[0].body, "")
+        self.assertEqual(markers[0].attachments, (first, second))
+
+    def test_marker_interpreter_resolves_short_object_tokens(self) -> None:
+        full = "c" * 64
+        parsed = MarkerInterpreter(object_resolver=lambda token: full if token == "obj:cccccccc" else "").interpret(
+            '<send to="email:Zephyr" attach="obj:cccccccc">short</send>'
+        )
+
+        self.assertEqual(parsed.dispatch_requests[0].attachments[0].object_hash, full)
+
+    def test_marker_interpreter_reports_bad_attachment_tokens(self) -> None:
+        parsed = MarkerInterpreter().interpret(
+            '<send to="email:Zephyr" attach="C:/tmp/photo.jpg obj:cccccccc">short</send>'
+        )
+
+        self.assertEqual(parsed.dispatch_requests[0].attachments, ())
+        self.assertEqual(len(parsed.dispatch_requests[0].attachment_errors), 2)
 
     def test_outbound_markers_ignore_markdown_code_examples(self) -> None:
         text = (
@@ -68,66 +92,42 @@ class MarkerParsingTest(unittest.TestCase):
         self.assertEqual(markers[0].at, "2026-05-05T20:00:00+00:00")
         self.assertEqual(markers[0].text, "写日报")
 
-    def test_extract_scheduled_items_handles_wake_todo_and_sleep(self) -> None:
-        tags = extract_scheduled_items(
-            '<wake at="2026-05-06 09:00"/>\n'
-            '<todo at="2026-05-05 20:00">写日报</todo>\n'
-            '<sleep at="2026-05-05 23:00"/>'
-        )
-
-        self.assertEqual([tag["kind"] for tag in tags], ["wake", "todo", "sleep"])
-        self.assertEqual([tag["reason"] for tag in tags], ["", "写日报", ""])
-
     def test_state_markers_parse_and_last_one_wins(self) -> None:
         text = '<state value="mute" until="2026-05-05T22:00:00+08:00" reason="写代码" /><state value="notify" />'
         markers = parse_state_markers(text)
-        state = extract_state_tag(text)
 
         self.assertEqual([m.state for m in markers], ["mute", "notify"])
-        self.assertEqual(state, {"state": "notify", "reason": ""})
+        self.assertEqual(markers[-1].state, "notify")
 
     def test_sleep_marker_no_longer_in_state_markers(self) -> None:
-        # sleep is now scheduling, not a state marker
-        state = extract_state_tag('<sleep at="2026-05-05 23:00"/>')
-        self.assertIsNone(state)
+        self.assertEqual(parse_state_markers('<sleep at="2026-05-05 23:00"/>'), [])
 
     def test_hold_reason_detects_body(self) -> None:
         self.assertEqual(parse_hold_reason("正文 <hold>重写一下</hold>"), "重写一下")
+        self.assertEqual(parse_hold_reason("正文 <held>先不发</held>"), "先不发")
         self.assertEqual(parse_hold_reason("正文 <hold/>"), "")
         self.assertEqual(parse_hold_reason("没有 hold"), "")
 
-    def test_apply_hold_text_drops_reply_and_queues_retry(self) -> None:
-        with TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            config = FiamConfig(home_path=root / "home", code_path=root / "code", hold_retry_seconds=15)
-            cleaned, reason, todos = apply_hold(
-                "正文 <hold>重写一下</hold> 位置",
-                config,
-                channel="chat",
-                runtime="api",
-            )
+    def test_hold_interpretation_drops_attempt_side_effects(self) -> None:
+        parsed = MarkerInterpreter().interpret(
+            '正文 <todo at="2099-05-05 20:00">later</todo> '
+            '<send to="email:Zephyr">hi</send> <hold>重写一下</hold>'
+        )
 
-            self.assertEqual(reason, "重写一下")
-            # cleaned still has the surrounding prose; caller drops the visible reply.
-            self.assertIn("正文", cleaned)
-            self.assertEqual(len(todos), 1)
-            self.assertEqual(todos[0]["action"], "hold_retry")
-            self.assertEqual(todos[0]["reason"], "重写一下")
+        self.assertEqual(parsed.visible_reply, "")
+        self.assertEqual(parsed.hold_status, "reroll")
+        self.assertEqual(parsed.hold_reason, "重写一下")
+        self.assertIsNotNone(parsed.hold_request)
+        self.assertEqual(parsed.todo_changes, ())
+        self.assertEqual(parsed.dispatch_requests, ())
 
-    def test_apply_hold_no_marker_is_noop(self) -> None:
-        with TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            config = FiamConfig(home_path=root / "home", code_path=root / "code")
-            cleaned, reason, todos = apply_hold(
-                "普通回复",
-                config,
-                channel="chat",
-                runtime="api",
-            )
+    def test_held_interpretation_marks_final_outcome(self) -> None:
+        parsed = MarkerInterpreter().interpret("正文 <held>先不发</held>")
 
-            self.assertEqual(reason, "")
-            self.assertEqual(todos, [])
-            self.assertEqual(cleaned, "普通回复")
+        self.assertEqual(parsed.visible_reply, "")
+        self.assertEqual(parsed.hold_status, "held")
+        self.assertEqual(parsed.hold_reason, "先不发")
+        self.assertIsNotNone(parsed.hold_request)
 
     def test_strip_xml_markers_removes_control_text(self) -> None:
         text = '正文 <todo at="2026-05-05 20:00">写日报</todo> 后文 <state value="mute" reason="专注" />'
@@ -138,7 +138,7 @@ class MarkerParsingTest(unittest.TestCase):
         beats = assistant_text_beats(
             '外层 <hold/> 中间 <hold>重写</hold>',
             t=datetime.now(timezone.utc),
-            channel="api",
+            channel="chat",
         )
 
         self.assertEqual(beats, [])
@@ -152,14 +152,14 @@ class MarkerParsingTest(unittest.TestCase):
         beats = assistant_text_beats(
             "对外正文 <cot>私下推理 A</cot> 继续 <cot>私下推理 B</cot> 收尾",
             t=datetime.now(timezone.utc),
-            channel="favilla",
+            channel="chat",
             runtime="claude",
         )
 
         think_beats = [b for b in beats if b.kind == "think"]
         dialogue = [b for b in beats if b.kind == "message"]
         self.assertEqual([b.content for b in think_beats], ["私下推理 A", "私下推理 B"])
-        self.assertTrue(all(b.channel == "favilla" for b in think_beats))
+        self.assertTrue(all(b.channel == "chat" for b in think_beats))
         self.assertEqual(len(dialogue), 1)
         self.assertNotIn("<cot", dialogue[0].content)
         self.assertIn("对外正文", dialogue[0].content)
@@ -167,6 +167,13 @@ class MarkerParsingTest(unittest.TestCase):
 
     def test_strip_xml_markers_strips_cot(self) -> None:
         self.assertEqual(strip_xml_markers("a <cot>x</cot> b", {"cot"}), "a  b")
+
+    def test_marker_interpreter_handles_wake_sleep_markers(self) -> None:
+        parsed = MarkerInterpreter().interpret(
+            '<wake at="2099-05-12 20:00"/> <sleep at="2099-05-12 23:00"/>'
+        )
+
+        self.assertEqual([item.kind for item in parsed.todo_changes], ["wake", "sleep"])
 
 
 if __name__ == "__main__":

@@ -175,8 +175,8 @@ class FiamConfig:
     stt_base_url: str = ""
     stt_api_key_env: str = "FIAM_STT_API_KEY"
     tts_provider: str = "openai_compatible"
-    tts_model: str = "gpt-4o-mini-tts"
-    tts_base_url: str = ""
+    tts_model: str = "mimo-v2.5-tts"
+    tts_base_url: str = "https://token-plan-cn.xiaomimimo.com/v1"
     tts_api_key_env: str = "FIAM_TTS_API_KEY"
 
     # ------------------------------------------------------------------
@@ -249,7 +249,6 @@ class FiamConfig:
     app_cot_summary_model: str = "deepseek-chat"
     app_cot_summary_base_url: str = "https://api.deepseek.com"
     app_cot_summary_api_key_env: str = "FIAM_COT_SUMMARY_API_KEY"
-    hold_retry_seconds: int = 30              # delay before <hold/> auto-retries
 
     # ------------------------------------------------------------------
     # Features
@@ -345,6 +344,21 @@ class FiamConfig:
         return self.store_dir / "objects"
 
     @property
+    def timeline_dir(self) -> Path:
+        """Derived AI-facing markdown memory timeline."""
+        return self.store_dir / "timeline"
+
+    @property
+    def inbound_queue_path(self) -> Path:
+        """Durable inbound TurnRequest queue."""
+        return self.store_dir / "queue" / "inbound.jsonl"
+
+    @property
+    def held_path(self) -> Path:
+        """Private held-turn read model; facts live in events.sqlite3."""
+        return self.store_dir / "held.jsonl"
+
+    @property
     def feature_dir(self) -> Path:
         """Frozen beat-level embedding features for annotation/training."""
         return self.store_dir / "features"
@@ -368,8 +382,8 @@ class FiamConfig:
     # ------------------------------------------------------------------
 
     @property
-    def background_path(self) -> Path:
-        return self.home_path / "recall.md"
+    def pending_recall_path(self) -> Path:
+        return self.home_path / "pending_recall.md"
 
     @property
     def constitution_md_path(self) -> Path:
@@ -482,6 +496,8 @@ class FiamConfig:
             self.pool_dir / "events",
             self.feature_dir,
             self.object_dir,
+            self.timeline_dir,
+            self.inbound_queue_path.parent,
             # Home side
             self.self_dir,
             self.journal_dir,
@@ -568,7 +584,6 @@ class FiamConfig:
             f'cot_summary_model = "{self.app_cot_summary_model}"',
             f'cot_summary_base_url = "{self.app_cot_summary_base_url}"',
             f'cot_summary_api_key_env = "{self.app_cot_summary_api_key_env}"',
-            f"hold_retry_seconds = {self.hold_retry_seconds}",
             "",
             "[debug]",
             f"enabled = {str(self.debug_mode).lower()}",
@@ -669,7 +684,7 @@ class FiamConfig:
         voice = raw.get("voice", {})
         stt = voice.get("stt", {}) if isinstance(voice, dict) else {}
         tts = voice.get("tts", {}) if isinstance(voice, dict) else {}
-        catalog = cls._parse_catalog(raw.get("catalog", {}), api=api, api_fallback=api_fallback)
+        catalog = cls._parse_catalog(raw.get("catalog", {}))
 
         config = cls(
             home_path=home_path,
@@ -748,7 +763,6 @@ class FiamConfig:
             app_cot_summary_model=app.get("cot_summary_model", cls.app_cot_summary_model),
             app_cot_summary_base_url=app.get("cot_summary_base_url", cls.app_cot_summary_base_url),
             app_cot_summary_api_key_env=app.get("cot_summary_api_key_env", cls.app_cot_summary_api_key_env),
-            hold_retry_seconds=app.get("hold_retry_seconds", cls.hold_retry_seconds),
             # Debug profile
             debug_mode=debug.get("enabled", cls.debug_mode),
             debug_idle_timeout_minutes=debug.get("idle_timeout_minutes", cls.debug_idle_timeout_minutes),
@@ -791,7 +805,7 @@ class FiamConfig:
         return config
 
     @staticmethod
-    def _parse_catalog(raw_catalog: Any, *, api: dict, api_fallback: dict) -> dict[str, Catalog]:
+    def _parse_catalog(raw_catalog: Any) -> dict[str, Catalog]:
         catalog: dict[str, Catalog] = {}
         if isinstance(raw_catalog, dict):
             for raw_family, raw_item in raw_catalog.items():
@@ -814,39 +828,4 @@ class FiamConfig:
                     extended_thinking=bool(raw_item.get("extended_thinking", False)),
                     budget_tokens=int(raw_item.get("budget_tokens") or 0),
                 )
-        if catalog:
-            return catalog
-
-        primary_model = str(api.get("model") or "").strip()
-        primary_provider = str(api.get("provider") or "").strip()
-        if primary_model:
-            family = "gemini" if "gemini" in primary_model.lower() else "claude"
-            catalog[family] = Catalog(
-                provider=_catalog_provider_from_api_provider(primary_provider, model=primary_model),
-                model=primary_model,
-            )
-        fallback_model = str(api_fallback.get("model") or "").strip()
-        fallback_provider = str(api_fallback.get("provider") or "").strip()
-        if fallback_model:
-            family = "gemini" if "gemini" in fallback_model.lower() else "claude"
-            existing = catalog.get(family)
-            if existing and existing.model != fallback_model:
-                existing.fallbacks.append(fallback_model)
-            elif not existing:
-                catalog[family] = Catalog(
-                    provider=_catalog_provider_from_api_provider(fallback_provider, model=fallback_model),
-                    model=fallback_model,
-                )
         return catalog
-
-
-def _catalog_provider_from_api_provider(provider: str, *, model: str = "") -> str:
-    provider_norm = (provider or "").strip().lower()
-    model_norm = (model or "").strip().lower()
-    if provider_norm in {"google", "google_openai", "google_ai", "gemini", "gemini_openai"}:
-        return "aistudio"
-    if provider_norm in {"vertex", "vertex_openai", "google_vertex", "google_vertex_openai"}:
-        return "vertex"
-    if "claude-" in model_norm:
-        return "poe"
-    return provider_norm or ("aistudio" if "gemini" in model_norm else "poe")

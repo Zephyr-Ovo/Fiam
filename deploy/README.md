@@ -87,7 +87,7 @@ sudo cp ~/fiam-code/deploy/fiam-bridge-email.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now fiam-bridge-email
 
-# Start the daemon — it subscribes to fiam/receive/+ instead of channel polling
+# Start the daemon — it subscribes to fiam/receive/# instead of channel polling
 sudo cp ~/fiam-code/deploy/fiam-daemon.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now fiam-daemon

@@ -2,7 +2,7 @@
 Debug dashboard server for fiam daemon.
 
 Serves the dashboard HTML and provides data endpoints by reading
-daemon state, pipeline log, recall.md, events, todo queue, and cost.
+daemon state, pipeline log, events, todo queue, and cost.
 
 Usage:
     python scripts/dashboard_server.py [--port 8766]
@@ -38,6 +38,8 @@ _EMBEDDER = None    # Embedder instance (lazy)
 _BUS = None         # Bus instance (lazy, for /api/capture publishing)
 _COMPUTE_LOCK = threading.Lock()  # gate concurrent mutations
 _WEARABLE_LOCK = threading.Lock()
+_RECALL_LOCK = threading.Lock()
+_PENDING_RECALL_CONTEXT = None
 _ROUTE_STICK_TURNS = 3
 POE_KNOWN_MODELS = [
     "Claude-Opus-4.6",
@@ -992,7 +994,7 @@ def _update_catalog(payload: dict) -> dict:
 def _api_capture(payload: dict) -> dict:
     """Forward a mobile/quick-capture event to the MQTT bus.
 
-    The daemon subscribes to ``fiam/receive/favilla`` and handles
+    The daemon subscribes to ``fiam/receive/<channel>`` and handles
     ingestion (embed + gorge + pool) through the unified Conductor.
     Dashboard no longer touches Pool directly — it's a pure HTTP→MQTT
     bridge for clients that can't speak MQTT (e.g. the Android app).
@@ -1005,9 +1007,14 @@ def _api_capture(payload: dict) -> dict:
     text = (payload.get("text") or "").strip()
     if not text:
         raise ValueError("missing text")
-    channel = (payload.get("channel") or "favilla").strip()
+    raw_channel = str(payload.get("channel") or "chat").strip().lower()
+    channel = raw_channel if raw_channel in {"chat", "studio", "stroll", "browser", "email", "schedule", "limen", "ring"} else "chat"
+    surface = _surface_for_app_channel(channel, str(payload.get("surface") or "favilla.capture"))
     url = (payload.get("url") or "").strip()
     meta = dict(payload.get("meta") or {})
+    if raw_channel and raw_channel != channel:
+        meta.setdefault("source_channel", raw_channel)
+    meta.setdefault("surface", surface)
     tags = payload.get("tags") or []
     for key in ("kind", "interaction", "session_id", "phase"):
         value = payload.get(key)
@@ -1018,7 +1025,7 @@ def _api_capture(payload: dict) -> dict:
         meta["route"] = "vision"
         meta["vision"] = _vision_route()
     from fiam.plugins import is_receive_enabled
-    receive_channel = channel.lower() if channel.lower() in {"xiao", "limen"} else "favilla"
+    receive_channel = channel
     if not is_receive_enabled(_CONFIG, receive_channel):
         raise RuntimeError(f"{receive_channel} plugin disabled")
 
@@ -1027,8 +1034,9 @@ def _api_capture(payload: dict) -> dict:
         raise RuntimeError("MQTT bus unavailable")
     ok = bus.publish_receive(receive_channel, {
         "text": text,
-        "channel": receive_channel,
-        "from_name": channel,
+        "channel": channel,
+        "surface": surface,
+        "from_name": surface,
         "url": url,
         "tags": tags,
         "kind": meta.get("kind"),
@@ -1136,11 +1144,11 @@ def _browser_screenshot_attachments(payload: dict) -> list[dict]:
     out: list[dict] = []
     snapshot_payload = payload.get("snapshot")
     snapshot_url = str(snapshot_payload.get("url") or "") if isinstance(snapshot_payload, dict) else ""
+    from fiam.store.objects import ObjectStore
+
+    object_store = ObjectStore(_CONFIG.object_dir)
     manifest = _CONFIG.home_path / "uploads" / "manifest.jsonl"
     manifest.parent.mkdir(parents=True, exist_ok=True)
-    date_dir = _CONFIG.now_local().strftime("%Y-%m-%d")
-    out_dir = _CONFIG.home_path / "uploads" / "browser" / date_dir
-    out_dir.mkdir(parents=True, exist_ok=True)
     for kind, data_url in items:
         if not data_url.startswith("data:image/") or "," not in data_url:
             continue
@@ -1155,12 +1163,11 @@ def _browser_screenshot_attachments(payload: dict) -> list[dict]:
         if not raw or len(raw) > 6 * 1024 * 1024:
             continue
         ext = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}.get(mime, "jpg")
-        digest = hashlib.sha256(raw).hexdigest()
+        digest = object_store.put_bytes(raw, suffix="")
         slug = "viewport" if kind == "browser_screenshot" else "frame"
         name = f"browser-{slug}-{digest[:12]}.{ext}"
-        target = out_dir / name
-        target.write_bytes(raw)
-        record = {"path": str(target), "name": name, "mime": mime, "size": len(raw)}
+        target = object_store.path_for_hash(digest, suffix="")
+        record = {"object_hash": digest, "path": str(target), "name": name, "mime": mime, "size": len(raw)}
         with manifest.open("a", encoding="utf-8") as mf:
             mf.write(json.dumps({
                 "uploaded_at": datetime.now(timezone.utc).isoformat(),
@@ -1225,6 +1232,7 @@ def _append_browser_flow_text(text: str) -> None:
         t=datetime.now(timezone.utc),
         channel="browser",
         user_name=getattr(_CONFIG, "user_name", "") or "zephyr",
+        surface="atrium.browser",
     ))
 
 
@@ -1250,6 +1258,7 @@ def _append_browser_action_flow(payload: dict) -> dict:
         channel="browser",
         kind="action",
         content=text,
+        surface="atrium.browser",
     ))
     try:
         from fiam_lib.computer_events import get_bus as _ce_bus
@@ -1304,6 +1313,7 @@ def _append_browser_ai_decision_flow(reply: str, actions: list[dict], done: dict
         kind="message",
         content=text,
         runtime=runtime,
+        surface="atrium.browser",
     ))
     try:
         from fiam_lib.computer_events import get_bus as _ce_bus
@@ -1335,6 +1345,7 @@ def _browser_snapshot(payload: dict) -> dict:
         ok = bus.publish_receive("browser", {
             "text": text,
             "channel": "browser",
+            "surface": "atrium.browser",
             "from_name": meta.get("browser") or "browser",
             "url": meta.get("url") or "",
             "tags": ["browser", "snapshot"],
@@ -1361,6 +1372,7 @@ def _browser_ask(payload: dict) -> dict:
     result = _favilla_chat_send({
         "text": runtime_text,
         "channel": "browser",
+        "surface": "atrium.browser",
         "runtime": runtime,
         "record_turn": record_turn,
     })
@@ -1413,6 +1425,7 @@ def _browser_control_tick(payload: dict) -> dict:
         result = _favilla_chat_send({
             "text": send_text,
             "channel": "browser",
+            "surface": "atrium.browser",
             "runtime": runtime,
             "record_turn": False,
             "attachments": attachments,
@@ -1427,6 +1440,7 @@ def _browser_control_tick(payload: dict) -> dict:
         result = _favilla_chat_send({
             "text": send_text,
             "channel": "browser",
+            "surface": "atrium.browser",
             "runtime": runtime,
             "record_turn": False,
             "attachments": [],
@@ -1882,7 +1896,6 @@ def _run_api_studio_edit(prompt: str) -> dict:
         prompt,
         channel="studio",
         include_recall=True,
-        consume_recall_dirty=False,
         extra_context=_app_runtime_context(),
     )
     completion = client.complete(
@@ -1905,7 +1918,6 @@ def _run_cc_studio_edit(prompt: str) -> dict:
         prompt,
         channel="studio",
         include_recall=True,
-        consume_recall_dirty=False,
         extra_context=_app_runtime_context(),
     )
     command = [
@@ -1983,6 +1995,20 @@ def _transcript_source(channel: str) -> str:
     return clean or "chat"
 
 
+def _surface_for_app_channel(channel: str, explicit: str = "") -> str:
+    surface = (explicit or "").strip().lower()
+    if surface:
+        return surface
+    channel = (channel or "chat").strip().lower() or "chat"
+    if channel == "browser":
+        return "atrium.browser"
+    if channel == "studio":
+        return "favilla.studio"
+    if channel == "stroll":
+        return "favilla.stroll"
+    return "favilla.chat"
+
+
 def _transcript_path(channel: str = "chat") -> Path:
     return _CONFIG.home_path / "transcript" / f"{_transcript_source(channel)}.jsonl"
 
@@ -1993,7 +2019,7 @@ def _history_attachments(attachments: list[dict]) -> list[dict]:
         out.append({
             "kind": "image" if mime.startswith("image/") else "file",
             "name": str(att.get("name") or Path(str(att.get("path") or "file")).name),
-            "path": str(att.get("path") or ""),
+            "object_hash": str(att.get("object_hash") or ""),
             "mime": mime,
             "size": att.get("size"),
         })
@@ -2025,9 +2051,170 @@ def _persist_favilla_ai_transcript(channel: str, result: dict, runtime: str) -> 
         "tool_calls_summary": result.get("tool_calls_summary") or [],
         "actions": result.get("actions_list") or [],
         "metrics": result.get("metrics") or {},
-        "meta": {"trace": result.get("trace")} if result.get("trace") else {},
+        "meta": {k: v for k, v in {"trace": result.get("trace"), "surface": result.get("surface")}.items() if v},
         "presence": _current_presence(actor="ai", channel=channel),
     })
+
+
+def _trace_summary(turn_id: str, request_id: str, *, runtime: str = "") -> dict:
+    return {k: v for k, v in {
+        "turn_id": turn_id,
+        "request_id": request_id,
+        "runtime": runtime,
+        "trace_file": "store/turn_traces.jsonl",
+    }.items() if v}
+
+
+def _append_dashboard_trace_phase(
+    *,
+    turn_id: str,
+    request_id: str,
+    channel: str,
+    surface: str,
+    phase: str,
+    started_at: datetime,
+    status: str = "ok",
+    error: str = "",
+    refs: dict | None = None,
+) -> None:
+    if not _CONFIG:
+        return
+    from fiam.turn import TurnTraceRow, TurnTraceStore
+
+    ended_at = datetime.now(timezone.utc)
+    TurnTraceStore(_CONFIG.store_dir / "turn_traces.jsonl").append(TurnTraceRow(
+        turn_id=turn_id,
+        request_id=request_id,
+        channel=channel,
+        surface=surface,
+        phase=phase,
+        status=status if status in {"ok", "error", "skipped"} else "error",
+        started_at=started_at.isoformat(),
+        ended_at=ended_at.isoformat(),
+        duration_ms=max(0, int((ended_at - started_at).total_seconds() * 1000)),
+        error=error,
+        refs=refs or {},
+    ))
+
+
+def _api_debug_trace(query: dict) -> dict:
+    if not _CONFIG:
+        return {"error": "config not loaded"}
+    try:
+        limit = max(1, min(1000, int(query.get("limit", "200") or "200")))
+    except ValueError:
+        limit = 200
+    path = _CONFIG.store_dir / "turn_traces.jsonl"
+    filters = {
+        key: str(query.get(key) or "").strip()
+        for key in ("turn_id", "request_id", "session_id", "phase", "status")
+        if str(query.get(key) or "").strip()
+    }
+    if not path.exists():
+        return {"rows": [], "total": 0, "returned": 0, "path": "store/turn_traces.jsonl"}
+    rows: list[dict] = []
+    total = 0
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines()[-5000:]:
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        total += 1
+        if any(str(row.get(key) or "") != value for key, value in filters.items()):
+            continue
+        rows.append(row)
+    returned_rows = rows[-limit:]
+    return {
+        "rows": returned_rows,
+        "total": total,
+        "returned": min(len(rows), limit),
+        "path": "store/turn_traces.jsonl",
+        "filters": filters,
+        "summary": _debug_trace_aggregate(rows),
+    }
+
+def _debug_trace_aggregate(rows: list[dict]) -> dict:
+    by_status: dict[str, int] = {}
+    by_phase: dict[str, int] = {}
+    failures: list[dict] = []
+    retry_phases = 0
+    total_duration_ms = 0
+    slowest: list[dict] = []
+    for row in rows:
+        status = str(row.get("status") or "")
+        phase = str(row.get("phase") or "")
+        by_status[status] = by_status.get(status, 0) + 1
+        by_phase[phase] = by_phase.get(phase, 0) + 1
+        try:
+            duration = int(row.get("duration_ms") or 0)
+        except (TypeError, ValueError):
+            duration = 0
+        total_duration_ms += max(0, duration)
+        if duration:
+            slowest.append({"phase": phase, "duration_ms": duration, "turn_id": row.get("turn_id") or ""})
+        if status == "error":
+            failures.append({
+                "phase": phase,
+                "turn_id": row.get("turn_id") or "",
+                "request_id": row.get("request_id") or "",
+                "error": str(row.get("error") or "")[:300],
+                "refs": row.get("refs") if isinstance(row.get("refs"), dict) else {},
+            })
+        if phase.endswith(".failed") or phase in {"queue.failed", "memory.failed", "dispatch.failed"}:
+            retry_phases += 1
+    return {
+        "by_status": by_status,
+        "by_phase": by_phase,
+        "failures": failures[-20:],
+        "retry_phases": retry_phases,
+        "total_duration_ms": total_duration_ms,
+        "slowest": sorted(slowest, key=lambda item: int(item.get("duration_ms") or 0), reverse=True)[:10],
+    }
+
+
+def _api_timeline(query: dict) -> dict:
+    if not _CONFIG:
+        return {"error": "config not loaded"}
+    try:
+        limit = max(1, min(100, int(query.get("limit", "20") or "20")))
+    except ValueError:
+        limit = 20
+    q = str(query.get("q") or query.get("query") or "").strip()
+    from fiam.turn import MemoryTimelineStore
+
+    records = MemoryTimelineStore(_CONFIG.timeline_dir).query(q, limit=limit)
+    return {
+        "records": records,
+        "returned": len(records),
+        "query": q,
+        "path": "store/timeline",
+    }
+
+
+def _api_objects(query: dict) -> dict:
+    if not _CONFIG:
+        return {"error": "config not loaded"}
+    from fiam.store.object_catalog import ObjectCatalog
+
+    try:
+        limit = max(1, min(100, int(query.get("limit", "20") or "20")))
+    except ValueError:
+        limit = 20
+    q = str(query.get("q") or query.get("query") or "")
+    token = str(query.get("token") or "")
+    catalog = ObjectCatalog.from_config(_CONFIG)
+    records = [record.to_dict() for record in catalog.search(q, limit=limit)]
+    payload: dict[str, object] = {
+        "records": records,
+        "returned": len(records),
+        "query": q,
+    }
+    if token:
+        payload["object_hash"] = catalog.resolve_token(token)
+        payload["token"] = token
+    return payload
 
 
 def _normalize_metrics(
@@ -2275,24 +2462,23 @@ def _start_stroll_tick_thread() -> None:
 
 def _validate_app_attachments(attachments: list) -> list[dict]:
     safe_attachments = []
-    uploads_root = (_CONFIG.home_path / "uploads").resolve()
+    from fiam.store.objects import ObjectStore
+
+    object_store = ObjectStore(_CONFIG.object_dir)
     for att in attachments:
         if not isinstance(att, dict):
             continue
-        p = str(att.get("path") or "").strip()
-        if not p:
+        object_hash = "".join(ch for ch in str(att.get("object_hash") or "").lower() if ch in "0123456789abcdef")
+        if len(object_hash) != 64:
             continue
         try:
-            resolved = Path(p).resolve()
-        except Exception:
-            continue
-        try:
-            resolved.relative_to(uploads_root)
+            resolved = object_store.path_for_hash(object_hash, suffix="").resolve()
         except ValueError:
             continue
         if not resolved.exists():
             continue
         safe_attachments.append({
+            "object_hash": object_hash,
             "path": str(resolved),
             "name": str(att.get("name") or resolved.name),
             "mime": str(att.get("mime") or ""),
@@ -2314,9 +2500,7 @@ def _apply_app_control_markers(
     Returns ``(cleaned_reply, queued_todos, hold_reason, route)`` without
     committing marker side effects. TurnCommit owns those writes.
     """
-    from fiam.turn import MarkerInterpreter
-
-    interpretation = MarkerInterpreter().interpret(reply or "")
+    interpretation = _interpret_app_control_markers(reply)
     return (
         interpretation.visible_reply,
         len(interpretation.todo_changes),
@@ -2325,26 +2509,42 @@ def _apply_app_control_markers(
     )
 
 
-def _write_app_ai_state(state_tag: dict) -> None:
-    if not _CONFIG:
-        return
-    state = str(state_tag.get("state") or "notify")
-    if state not in {"notify", "mute", "sleep", "block", "busy", "together"}:
-        return
-    data = {
-        "state": state,
-        "since": _CONFIG.now_local().isoformat(),
+def _interpret_app_control_markers(reply: str):
+    from fiam.turn import MarkerInterpreter
+
+    return MarkerInterpreter(object_resolver=_object_token_resolver()).interpret(reply or "")
+
+
+def _app_hold_payload(interpretation) -> dict | None:
+    if interpretation.hold_request is None:
+        return None
+    return {
+        "reason": interpretation.hold_reason,
+        "status": interpretation.hold_status,
     }
-    reason = str(state_tag.get("reason") or "")
-    until = str(state_tag.get("sleeping_until") or state_tag.get("until") or "")
-    if reason:
-        data["reason"] = reason
-    if until:
-        data["until"] = until
-    _CONFIG.ai_state_path.parent.mkdir(parents=True, exist_ok=True)
-    _CONFIG.ai_state_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    if state == "sleep":
-        _CONFIG.active_session_path.unlink(missing_ok=True)
+
+
+def _hold_reroll_prompt(original_text: str, reason: str) -> str:
+    parts = [
+        "[hold_reroll]",
+        "The previous assistant attempt used <hold>, so it was not sent to the user.",
+        "Answer the same user turn again now. Do not repeat the held draft.",
+    ]
+    if reason.strip():
+        parts.append(f"Hold reason: {reason.strip()}")
+    parts.append("[original_user_turn]")
+    parts.append(original_text.strip() or "(empty user turn)")
+    return "\n".join(parts)
+
+
+def _object_token_resolver():
+    if not _CONFIG:
+        return None
+    try:
+        from fiam.store.object_catalog import ObjectCatalog
+        return ObjectCatalog.from_config(_CONFIG).resolve_token
+    except Exception:
+        return None
 
 
 def _recent_uploads_block(limit: int = 12) -> str:
@@ -2370,9 +2570,15 @@ def _recent_uploads_block(limit: int = 12) -> str:
 def _favilla_chat_send(payload: dict) -> dict:
     if not _CONFIG:
         raise RuntimeError("config not loaded")
+    received_started = datetime.now(timezone.utc)
     text = str(payload.get("text") or "").strip()
     turn_id = str(payload.get("turn_id") or f"turn_{uuid.uuid4().hex}")
     request_id = str(payload.get("request_id") or turn_id)
+    client_sent_at = payload.get("client_sent_at")
+    if isinstance(client_sent_at, (int, float)):
+        client_sent_at = str(float(client_sent_at))
+    else:
+        client_sent_at = ""
     attachments = payload.get("attachments") or []
     if not isinstance(attachments, list):
         attachments = []
@@ -2382,6 +2588,7 @@ def _favilla_chat_send(payload: dict) -> dict:
     if not text:
         text = "(see attached file)"
     channel = str(payload.get("channel") or "chat").strip() or "chat"
+    surface = _surface_for_app_channel(channel, str(payload.get("surface") or ""))
     default_runtime = getattr(_CONFIG, "app_default_runtime", "auto") or "auto"
     runtime = str(payload.get("runtime") or default_runtime).strip().lower() or "auto"
     family = str(payload.get("family") or "").strip().lower()
@@ -2389,6 +2596,16 @@ def _favilla_chat_send(payload: dict) -> dict:
         route = _select_favilla_chat_route(text, safe_attachments)
         runtime = str(route.get("runtime") or "cc")
         family = family or str(route.get("family") or "")
+    if payload.get("_receive_trace_recorded") is not True:
+        _append_dashboard_trace_phase(
+            turn_id=turn_id,
+            request_id=request_id,
+            channel=channel,
+            surface=surface,
+            phase="dashboard.receive",
+            started_at=received_started,
+            refs={"runtime": runtime, "attachment_count": len(safe_attachments), "client_sent_at": client_sent_at},
+        )
     user_text = text
     runtime_text = text
     stroll_context: dict | None = None
@@ -2399,9 +2616,9 @@ def _favilla_chat_send(payload: dict) -> dict:
         runtime_text = f"{context_block}\n\n[user_message]\n{user_text}"
     record_turn = payload.get("record_turn", payload.get("record", True)) is not False
     if runtime == "api":
-        result = _run_api_favilla_chat(text=runtime_text, channel=channel, attachments=safe_attachments, record_turn=record_turn, family=family, turn_id=turn_id, request_id=request_id)
+        result = _run_api_favilla_chat(text=runtime_text, channel=channel, surface=surface, attachments=safe_attachments, record_turn=record_turn, family=family, turn_id=turn_id, request_id=request_id)
     elif runtime == "cc":
-        result = _run_cc_favilla_chat(text=runtime_text, channel=channel, attachments=safe_attachments, turn_id=turn_id, request_id=request_id)
+        result = _run_cc_favilla_chat(text=runtime_text, channel=channel, surface=surface, attachments=safe_attachments, turn_id=turn_id, request_id=request_id)
     else:
         raise ValueError("Favilla chat runtime must be auto, cc, or api")
     _apply_route_from_result(result)
@@ -2428,7 +2645,7 @@ def _favilla_chat_send(payload: dict) -> dict:
         "raw_text": user_text,
         "runtime": runtime,
         "attachments": _history_attachments(safe_attachments),
-        "meta": {"turn_id": turn_id, "request_id": request_id},
+        "meta": {"turn_id": turn_id, "request_id": request_id, "surface": surface},
         "presence": _current_presence(actor="user", channel=channel),
     })
     _append_transcript(channel, {
@@ -2443,7 +2660,7 @@ def _favilla_chat_send(payload: dict) -> dict:
         "tool_calls_summary": result.get("tool_calls_summary") or [],
         "actions": result.get("actions_list") or [],
         "metrics": result.get("metrics") or {},
-        "meta": {"turn_id": turn_id, "request_id": request_id},
+        "meta": {"turn_id": turn_id, "request_id": request_id, "surface": surface},
         "presence": _current_presence(actor="ai", channel=channel),
     })
     if stroll_context is not None:
@@ -2490,14 +2707,13 @@ def _favilla_chat_send_stream(payload: dict):
         return
     turn_id = str(payload.get("turn_id") or f"turn_{uuid.uuid4().hex}")
     request_id = str(payload.get("request_id") or turn_id)
-    trace: dict = {
-        "turn_id": turn_id,
-        "request_id": request_id,
-        "server_received_at": time.time(),
-    }
+    received_started = datetime.now(timezone.utc)
+    client_sent_at = ""
     client_sent_at = payload.get("client_sent_at")
     if isinstance(client_sent_at, (int, float)):
-        trace["client_sent_at"] = float(client_sent_at)
+        client_sent_at = str(float(client_sent_at))
+    else:
+        client_sent_at = ""
     text = str(payload.get("text") or "").strip()
     attachments = payload.get("attachments") or []
     if not isinstance(attachments, list):
@@ -2509,6 +2725,7 @@ def _favilla_chat_send_stream(payload: dict):
     if not text:
         text = "(see attached file)"
     channel = str(payload.get("channel") or "chat").strip() or "chat"
+    surface = _surface_for_app_channel(channel, str(payload.get("surface") or ""))
     default_runtime = getattr(_CONFIG, "app_default_runtime", "auto") or "auto"
     runtime = str(payload.get("runtime") or default_runtime).strip().lower() or "auto"
     family = str(payload.get("family") or "").strip().lower()
@@ -2516,6 +2733,15 @@ def _favilla_chat_send_stream(payload: dict):
         route = _select_favilla_chat_route(text, safe_attachments)
         runtime = str(route.get("runtime") or "cc")
         family = family or str(route.get("family") or "")
+    _append_dashboard_trace_phase(
+        turn_id=turn_id,
+        request_id=request_id,
+        channel=channel,
+        surface=surface,
+        phase="dashboard.receive",
+        started_at=received_started,
+        refs={"runtime": runtime, "attachment_count": len(safe_attachments), "client_sent_at": client_sent_at},
+    )
     user_text = text
     runtime_text = text
     stroll_context: dict | None = None
@@ -2531,22 +2757,47 @@ def _favilla_chat_send_stream(payload: dict):
     if runtime != "cc":
         # Non-streaming runtime: do single-shot and emit start + done.
         yield {"event": "start", "data": {"runtime": runtime}}
+        runtime_started = datetime.now(timezone.utc)
         try:
             routed_payload = dict(payload)
             routed_payload["runtime"] = runtime
             routed_payload["turn_id"] = turn_id
             routed_payload["request_id"] = request_id
+            routed_payload["_receive_trace_recorded"] = True
             if family:
                 routed_payload["family"] = family
             result = _favilla_chat_send(routed_payload)
-            result["trace"] = {
-                **trace,
-                "completed_at": time.time(),
-                "already_persisted": True,
-            }
         except Exception as e:
+            _append_dashboard_trace_phase(
+                turn_id=turn_id,
+                request_id=request_id,
+                channel=channel,
+                surface=surface,
+                phase="dashboard.runtime",
+                started_at=runtime_started,
+                status="error",
+                error=str(e)[:1000],
+                refs={"runtime": runtime},
+            )
             yield {"event": "error", "data": {"message": str(e)[:500]}}
             return
+        _append_dashboard_trace_phase(
+            turn_id=turn_id,
+            request_id=request_id,
+            channel=channel,
+            surface=surface,
+            phase="dashboard.runtime",
+            started_at=runtime_started,
+            refs={"runtime": runtime, "already_persisted": True},
+        )
+        result["trace"] = _trace_summary(turn_id, request_id, runtime=runtime)
+        yield {"event": "commit", "data": {
+            "turn_id": turn_id,
+            "request_id": request_id,
+            "surface": _surface_for_app_channel(str(routed_payload.get("channel") or "chat"), str(routed_payload.get("surface") or "")),
+            "transcript_id": result.get("transcript_id") or "",
+            "trace": result.get("trace") or {},
+        }}
         yield {"event": "done", "data": result}
         return
 
@@ -2557,20 +2808,32 @@ def _favilla_chat_send_stream(payload: dict):
         "raw_text": user_text,
         "runtime": runtime,
         "attachments": _history_attachments(safe_attachments),
-        "meta": {"turn_id": turn_id, "request_id": request_id},
+        "meta": {"turn_id": turn_id, "request_id": request_id, "surface": surface},
         "presence": _current_presence(actor="user", channel=channel),
     })
     try:
-        _record_app_user_flow(user_text, channel, turn_id=turn_id, request_id=request_id)
+        _record_app_user_flow(user_text, channel, surface=surface, turn_id=turn_id, request_id=request_id)
     except Exception:
         logger.exception("stream user flow record failed")
 
     final_result: dict | None = None
-    for ev in _iter_cc_favilla_chat_events(text=runtime_text, channel=channel, attachments=safe_attachments, turn_id=turn_id, request_id=request_id):
+    runtime_started = datetime.now(timezone.utc)
+    for ev in _iter_cc_favilla_chat_events(text=runtime_text, channel=channel, surface=surface, attachments=safe_attachments, turn_id=turn_id, request_id=request_id):
         if ev.get("event") == "error":
             message = str((ev.get("data") or {}).get("message") or "stream error")
+            _append_dashboard_trace_phase(
+                turn_id=turn_id,
+                request_id=request_id,
+                channel=channel,
+                surface=surface,
+                phase="dashboard.runtime",
+                started_at=runtime_started,
+                status="error",
+                error=message[:1000],
+                refs={"runtime": runtime},
+            )
             try:
-                _record_app_error_flow(message, channel, runtime=runtime, turn_id=turn_id, request_id=request_id)
+                _record_app_error_flow(message, channel, surface=surface, runtime=runtime, turn_id=turn_id, request_id=request_id)
             except Exception:
                 logger.exception("stream error flow record failed")
             yield ev
@@ -2581,8 +2844,19 @@ def _favilla_chat_send_stream(payload: dict):
         yield ev
 
     if final_result is None:
+        _append_dashboard_trace_phase(
+            turn_id=turn_id,
+            request_id=request_id,
+            channel=channel,
+            surface=surface,
+            phase="dashboard.runtime",
+            started_at=runtime_started,
+            status="error",
+            error="stream ended before done",
+            refs={"runtime": runtime},
+        )
         try:
-            _record_app_error_flow("stream ended before done", channel, runtime=runtime, turn_id=turn_id, request_id=request_id)
+            _record_app_error_flow("stream ended before done", channel, surface=surface, runtime=runtime, turn_id=turn_id, request_id=request_id)
         except Exception:
             logger.exception("stream missing-done flow record failed")
         return
@@ -2592,34 +2866,56 @@ def _favilla_chat_send_stream(payload: dict):
     # Transcript is the durable source of truth. Persist before yielding done,
     # because the client may disconnect exactly as the final frame is sent.
     final_result["runtime"] = final_result.get("runtime") or runtime
-    final_result["trace"] = {
-        **trace,
-        "model_done_at": time.time(),
-    }
-    final_result["trace"]["persisted_at"] = time.time()
+    final_result["surface"] = surface
+    _append_dashboard_trace_phase(
+        turn_id=turn_id,
+        request_id=request_id,
+        channel=channel,
+        surface=surface,
+        phase="dashboard.runtime",
+        started_at=runtime_started,
+        refs={"runtime": runtime},
+    )
+    final_result["trace"] = _trace_summary(turn_id, request_id, runtime=runtime)
+    persist_started = datetime.now(timezone.utc)
     record = _persist_favilla_ai_transcript(channel, final_result, runtime)
     final_result["transcript_id"] = record.get("id")
+    _append_dashboard_trace_phase(
+        turn_id=turn_id,
+        request_id=request_id,
+        channel=channel,
+        surface=surface,
+        phase="dashboard.persist",
+        started_at=persist_started,
+        refs={"transcript_id": final_result.get("transcript_id") or ""},
+    )
     try:
         rollover = _check_and_run_session_rollover(channel)
         if rollover:
             final_result["session_rollover"] = rollover
     except Exception:
         logger.exception("session rollover check failed (stream)")
+    yield {"event": "commit", "data": {
+        "turn_id": turn_id,
+        "request_id": request_id,
+        "surface": surface,
+        "transcript_id": final_result.get("transcript_id") or "",
+        "trace": final_result.get("trace") or {},
+    }}
     yield {"event": "done", "data": final_result}
 
 
 def _favilla_upload(payload: dict) -> dict:
-    """Accept base64-encoded files, save under home_path/uploads/<date>/<hash>-<name>."""
+    """Accept base64-encoded files and store canonical bytes under store/objects."""
     if not _CONFIG:
         raise RuntimeError("config not loaded")
     import base64
-    import hashlib
+    from fiam.store.objects import ObjectStore
+
     files_in = payload.get("files") or []
     if not isinstance(files_in, list) or not files_in:
         raise ValueError("missing files")
-    date_dir = _CONFIG.now_local().strftime("%Y-%m-%d")
-    out_dir = _CONFIG.home_path / "uploads" / date_dir
-    out_dir.mkdir(parents=True, exist_ok=True)
+    object_store = ObjectStore(_CONFIG.object_dir)
     saved = []
     for f in files_in:
         if not isinstance(f, dict):
@@ -2638,10 +2934,10 @@ def _favilla_upload(payload: dict) -> dict:
             raise ValueError(f"bad base64 for {name}: {exc}") from exc
         # Sanitize name: keep ext, strip path components
         safe_name = Path(name).name.replace("/", "_").replace("\\", "_")
-        digest = hashlib.sha256(raw).hexdigest()[:12]
-        target = out_dir / f"{digest}-{safe_name}"
-        target.write_bytes(raw)
+        object_hash = object_store.put_bytes(raw, suffix="")
+        target = object_store.path_for_hash(object_hash, suffix="")
         record = {
+            "object_hash": object_hash,
             "path": str(target),
             "name": safe_name,
             "mime": mime,
@@ -2649,10 +2945,11 @@ def _favilla_upload(payload: dict) -> dict:
         }
         saved.append(record)
         manifest = _CONFIG.home_path / "uploads" / "manifest.jsonl"
+        manifest.parent.mkdir(parents=True, exist_ok=True)
         with manifest.open("a", encoding="utf-8") as mf:
             mf.write(json.dumps({
                 "uploaded_at": datetime.now(timezone.utc).isoformat(),
-                "sha256": hashlib.sha256(raw).hexdigest(),
+                "sha256": object_hash,
                 **record,
             }, ensure_ascii=False) + "\n")
     return {"ok": True, "files": saved}
@@ -2669,9 +2966,8 @@ def _favilla_upload(payload: dict) -> dict:
 # auto-fire retrieval or auto-segment beats.
 #
 # These endpoints are intentionally lightweight stubs right now:
-# - /favilla/chat/recall: writes a small fake recall.md using existing events
-#   (or a placeholder if pool is empty), touches .recall_dirty so the next
-#   chat turn picks it up via _pending_recall_for_app().
+# - /favilla/chat/recall: builds a bounded RecallContext from existing Pool
+#   nodes and keeps it for the next chat turn only.
 # - /favilla/chat/process: simulates DS processing time (sleep 2s) so the UI can
 #   show its hourglass animation, then appends a fake event to the pool
 #   (random-init 1024-d fingerprint). Real seal logic comes after the
@@ -2685,15 +2981,15 @@ _SEAL_BUSY = False
 
 def _favilla_chat_recall(payload: dict) -> dict:
     """Run real spread-activation recall over the pool using the latest
-    beats as the seed query vector, and write the result to recall.md so
-    the next chat turn picks it up via _pending_recall_for_app().
+    beats as the seed query vector, then stage it for the next chat turn.
     """
     if not _CONFIG or not _POOL:
         raise RuntimeError("config/pool not loaded")
     import numpy as _np
-    from fiam.runtime.recall import refresh_recall
+    from fiam.runtime.recall import build_recall_context
     from fiam.store.beat import read_beats
     from fiam.store.features import FeatureStore
+    global _PENDING_RECALL_CONTEXT
 
     # Seed = mean of vectors for the most recent N event-store beats.
     seed_n = max(1, int(payload.get("seed_beats", 8)))
@@ -2716,10 +3012,8 @@ def _favilla_chat_recall(payload: dict) -> dict:
                 seed_vec = arr / n
 
     if seed_vec is None:
-        # No beats yet: write empty recall, mark dirty so chat sees nothing stale
-        _CONFIG.background_path.parent.mkdir(parents=True, exist_ok=True)
-        _CONFIG.background_path.write_text("", encoding="utf-8")
-        (_CONFIG.background_path.parent / ".recall_dirty").touch()
+        with _RECALL_LOCK:
+            _PENDING_RECALL_CONTEXT = None
         return {"ok": True, "count": 0, "note": "no beats"}
 
     include_recent = payload.get(
@@ -2750,14 +3044,16 @@ def _favilla_chat_recall(payload: dict) -> dict:
         shield_after = boundary_dt
     else:
         shield_after = max(today_midnight, boundary_dt) if boundary_dt else today_midnight
-    count = refresh_recall(
+    context = build_recall_context(
         _CONFIG,
         _POOL,
         seed_vec,
         top_k=_CONFIG.recall_top_k,
         shield_after=shield_after,
     )
-    return {"ok": True, "count": count, "path": str(_CONFIG.background_path)}
+    with _RECALL_LOCK:
+        _PENDING_RECALL_CONTEXT = context if context.count else None
+    return {"ok": True, "count": context.count}
 
 
 def _cut_file_path():
@@ -2849,6 +3145,7 @@ def _favilla_chat_process(payload: dict) -> dict:
             _annotate_edges({"cuts": cuts, "drift_cuts": cuts})
             # Phase 3: commit
             result = _annotate_confirm({"cuts": cuts, "drift_cuts": cuts})
+            memory_processed = _run_memory_worker_once(limit=int(payload.get("memory_limit", 1000) or 1000))
             _truncate_cut_file()
             ev_ids = result.get("events_created", [])
             return {
@@ -2856,6 +3153,7 @@ def _favilla_chat_process(payload: dict) -> dict:
                 "event_id": ev_ids[0] if ev_ids else None,
                 "events_created": ev_ids,
                 "edges_created": result.get("edges_created", 0),
+                "memory_processed": memory_processed,
                 "beats": len(beats),
                 "segments": len(ev_ids),
             }
@@ -3037,19 +3335,20 @@ def _record_debug_context(runtime: str, *, metrics: dict | None = None,
 # - Default = unlocked. AI must opt-in to lock.
 
 _APP_RUNTIME_CONTEXT_BASE = """[Direct runtime awareness]
-The scene tag describes where this turn appears in the narrative. User-side scenes look like user@<channel>: user@favilla and user@stroll are the two Favilla app surfaces. AI-side scenes look like ai@<channel>: ai@favilla and ai@stroll are the matching reply surfaces; ai@think is internal reasoning; ai@action is a tool call. The runtime tag describes the capability surface for this turn: api is the OpenAI-compatible API surface, cc is Claude Code with file/shell/tool capability, and auto means the server selected one. Do not infer a fixed personal name from the runtime tag. The web dashboard is view-only and never originates a user turn — there is no console scene. Reply naturally for the active scene while staying precise about the runtime."""
+The scene tag describes where this turn appears in the narrative. User-side scenes use canonical channel plus surface: user@chat/favilla.chat is Favilla chat, user@stroll/favilla.stroll is the Stroll surface, and user@browser/atrium.browser is browser context. AI-side scenes mirror the same channel/surface pair; ai@think is internal reasoning; ai@action is a tool call. The runtime tag describes the capability surface for this turn: api is the OpenAI-compatible API surface, cc is Claude Code with file/shell/tool capability, and auto means the server selected one. Do not infer a fixed personal name from the runtime tag. The web dashboard is view-only and never originates a user turn — there is no console scene. Reply naturally for the active scene while staying precise about the runtime."""
 
 
 def _app_runtime_context() -> str:
     now_utc = _CONFIG.now_utc() if _CONFIG else datetime.now(timezone.utc)
     local = now_utc.astimezone(_CONFIG.project_tz()).isoformat() if _CONFIG else now_utc.astimezone().isoformat()
     uploads_dir = (_CONFIG.home_path / "uploads") if _CONFIG else Path("uploads")
+    objects_dir = (_CONFIG.object_dir) if _CONFIG else Path("store/objects")
     return "\n\n".join([
         _APP_RUNTIME_CONTEXT_BASE,
-        f"[uploads]\nFavilla uploads live at {uploads_dir} with an index at {uploads_dir / 'manifest.jsonl'}. Do not mention old uploaded files just because they exist. Only inspect or discuss uploads when the current user message asks about files/images/uploads or includes current attachments.",
+        f"[uploads]\nFavilla uploads are canonical object refs in {objects_dir}; the index is {uploads_dir / 'manifest.jsonl'}. Current attachment prompt lines include obj:<sha256> plus a materialized path for inspection. Do not mention old uploaded files just because they exist. Only inspect or discuss uploads when the current user message asks about files/images/uploads or includes current attachments.",
         f"[server_time]\nutc={now_utc.isoformat()}\nlocal={local}",
         "[tool_mode]\nUse the structured file/shell tools (Read/Write/Edit/Glob/Grep/Bash/git_diff) only when you must wait on a real result. For fire-and-forget side effects use XML markers: <send to=\"channel:address\">message</send>, <todo at=\"...\">desc</todo>, <wake at=\"...\"/>, <sleep at=\"...\"/>, and <state value=\"mute|notify|block|busy|sleep|together\" reason=\"...\"/>. Keep tool details out of the user-facing reply unless the user asks for them.",
-        "[app_markers]\nFor visible thinking summaries, wrap shareable state notes in <cot>...</cot>. To lock the entire turn's thought chain (both <cot> blocks and any native reasoning), include <lock/> anywhere in the reply. The server strips these markers into structured segments; clients may or may not render them visibly. Do not promise a specific button, bubble, or visual affordance unless the current client explicitly supports it. To pull back a reply you no longer want to send, include <hold/> or <hold>reason</hold>; the visible reply text is dropped and a hold_retry todo is auto-queued so you can take another pass shortly. Your held output remains in your context, so on the retry you can see what you just held.",
+        "[app_markers]\nFor visible thinking summaries, wrap shareable state notes in <cot>...</cot>. To lock the entire turn's thought chain (both <cot> blocks and any native reasoning), include <lock/> anywhere in the reply. The server strips these markers into structured segments; clients may or may not render them visibly. Do not promise a specific button, bubble, or visual affordance unless the current client explicitly supports it. To pull back a reply and immediately try again, include <hold/> or <hold>reason</hold>. To end this turn without a visible reply, include <held>reason</held>. Held output is stored privately and is not queued as a user todo.",
     ])
 
 
@@ -3198,18 +3497,20 @@ def _combine_cc_action_events(action_events: list[dict]) -> list[dict]:
     return combined
 
 
-def _run_cc_favilla_chat(*, text: str, channel: str, attachments: list | None = None, turn_id: str = "", request_id: str = "") -> dict:
+def _run_cc_favilla_chat(*, text: str, channel: str, surface: str = "", attachments: list | None = None, turn_id: str = "", request_id: str = "") -> dict:
     import subprocess
     from fiam.runtime.prompt import build_plain_prompt_parts
 
-    pending_recall = _pending_recall_for_app()
+    prompt_started = datetime.now(timezone.utc)
+    pending_recall_context = _pop_pending_recall_context()
+    pending_recall = _render_recall_for_app(pending_recall_context)
     session = _load_app_active_session()
     prompt_text = text
     if attachments:
         lines = ["[attachments]"]
         for a in attachments:
             mime = a.get("mime") or ""
-            lines.append(f"- {a['path']}  (name={a['name']!r}, mime={mime})")
+            lines.append(f"- obj:{a.get('object_hash', '')}  (name={a['name']!r}, mime={mime}, size={a.get('size')})")
         lines.append("")
         prompt_text = "\n".join(lines) + text
     system_context, user_prompt = build_plain_prompt_parts(
@@ -3217,8 +3518,17 @@ def _run_cc_favilla_chat(*, text: str, channel: str, attachments: list | None = 
         prompt_text,
         channel=channel,
         include_recall=True,
-        consume_recall_dirty=True,
+        recall_context=pending_recall_context,
         extra_context=_app_runtime_context(),
+    )
+    _append_dashboard_trace_phase(
+        turn_id=turn_id,
+        request_id=request_id,
+        channel=channel,
+        surface=surface,
+        phase="dashboard.prompt",
+        started_at=prompt_started,
+        refs={"runtime": "cc", "attachment_count": len(attachments or []), "resume": bool(session)},
     )
     command = [
         "claude", "-p", user_prompt,
@@ -3238,8 +3548,10 @@ def _run_cc_favilla_chat(*, text: str, channel: str, attachments: list | None = 
             *[tool.strip() for tool in _CONFIG.cc_disallowed_tools.split(",") if tool.strip()],
         ])
     cwd_path = _CONFIG.home_path
-    def run_claude(resume_session_id: str | None):
+    def run_claude(resume_session_id: str | None, prompt_override: str | None = None):
         cmd = list(command)
+        if prompt_override is not None:
+            cmd[2] = prompt_override
         if resume_session_id:
             cmd.extend(["--resume", resume_session_id])
         try:
@@ -3266,6 +3578,7 @@ def _run_cc_favilla_chat(*, text: str, channel: str, attachments: list | None = 
         return data, _combine_cc_action_events(action_events), thinking_events, is_partial_success, is_error
 
     resume_id = session["session_id"] if session else None
+    runtime_started = datetime.now(timezone.utc)
     result = run_claude(resume_id)
     data, action_events, thinking_events, is_partial_success, is_error = parse_claude_result(result)
     if is_error and not is_partial_success:
@@ -3281,18 +3594,78 @@ def _run_cc_favilla_chat(*, text: str, channel: str, attachments: list | None = 
         if is_error and not is_partial_success:
             raise RuntimeError(str(detail).strip()[:500])
 
+    _append_dashboard_trace_phase(
+        turn_id=turn_id,
+        request_id=request_id,
+        channel=channel,
+        surface=surface,
+        phase="dashboard.runtime",
+        started_at=runtime_started,
+        refs={
+            "runtime": "cc",
+            "returncode": int(result.returncode or 0),
+            "subtype": str(data.get("subtype") or ""),
+            "model": str(data.get("model") or _CONFIG.cc_model or ""),
+            "duration_ms": int(data.get("duration_ms") or 0),
+            "action_count": len(action_events or []),
+        },
+    )
+
     session_id = str(data.get("session_id") or "").strip()
     if session_id:
         _save_app_active_session(session_id)
 
     reply = str(data.get("result") or "").strip()
     raw_reply = reply
-    reply, queued_todos, hold_reason, route = _apply_app_control_markers(
-        reply,
+    marker_started = datetime.now(timezone.utc)
+    interpretation = _interpret_app_control_markers(reply)
+    if interpretation.hold_status == "reroll":
+        _record_cc_app_turn(prompt_text, raw_reply, channel, surface=surface, action_events=action_events, thinking_events=thinking_events, session_id=session_id, record_user=False, turn_id=turn_id, request_id=request_id)
+        reroll_started = datetime.now(timezone.utc)
+        result = run_claude(session_id or resume_id, prompt_override=_hold_reroll_prompt(prompt_text, interpretation.hold_reason))
+        data, action_events, thinking_events, is_partial_success, is_error = parse_claude_result(result)
+        if is_error and not is_partial_success:
+            detail = (data.get("error") or data.get("result") or result.stderr or result.stdout or "claude reroll failed")
+            raise RuntimeError(str(detail).strip()[:500])
+        _append_dashboard_trace_phase(
+            turn_id=turn_id,
+            request_id=request_id,
+            channel=channel,
+            surface=surface,
+            phase="dashboard.runtime",
+            started_at=reroll_started,
+            refs={
+                "runtime": "cc",
+                "reroll": True,
+                "returncode": int(result.returncode or 0),
+                "subtype": str(data.get("subtype") or ""),
+                "model": str(data.get("model") or _CONFIG.cc_model or ""),
+                "duration_ms": int(data.get("duration_ms") or 0),
+                "action_count": len(action_events or []),
+            },
+        )
+        session_id = str(data.get("session_id") or "").strip()
+        if session_id:
+            _save_app_active_session(session_id)
+        reply = str(data.get("result") or "").strip()
+        raw_reply = reply
+        interpretation = _interpret_app_control_markers(reply)
+    reply = interpretation.visible_reply
+    queued_todos = [
+        {"at": todo.at, "kind": todo.kind, "reason": todo.reason}
+        for todo in interpretation.todo_changes
+    ]
+    hold = _app_hold_payload(interpretation)
+    hold_reason = interpretation.hold_reason
+    route = interpretation.route_hint
+    _append_dashboard_trace_phase(
+        turn_id=turn_id,
+        request_id=request_id,
         channel=channel,
-        runtime="cc",
-        user_text=prompt_text,
-        attachments=attachments or [],
+        surface=surface,
+        phase="dashboard.marker",
+        started_at=marker_started,
+        refs={"todo_count": len(queued_todos), "hold": bool(hold), "route": bool(route)},
     )
     cleaned_reply, thoughts, thoughts_locked, segments = _parse_cot(reply)
     # Anthropic native extended-thinking blocks (separate from <cot> markers).
@@ -3324,7 +3697,6 @@ def _run_cc_favilla_chat(*, text: str, channel: str, attachments: list | None = 
     if native_thoughts:
         thoughts = native_thoughts + thoughts
         segments = native_segments + list(segments)
-    hold = {"reason": hold_reason} if hold_reason else None
     if hold and not segments:
         thoughts_locked = True
         summary = hold_reason or "holding this reply"
@@ -3366,7 +3738,7 @@ def _run_cc_favilla_chat(*, text: str, channel: str, attachments: list | None = 
         actions_list.append({"kind": "queued_todo", **(todo if isinstance(todo, dict) else {"text": str(todo)})})
     if route:
         actions_list.append({"kind": "route", **(route if isinstance(route, dict) else {"value": str(route)})})
-    _record_cc_app_turn(prompt_text, raw_reply, channel, action_events=action_events, thinking_events=thinking_events, session_id=session_id, turn_id=turn_id, request_id=request_id)
+    _record_cc_app_turn(prompt_text, raw_reply, channel, surface=surface, action_events=action_events, thinking_events=thinking_events, session_id=session_id, turn_id=turn_id, request_id=request_id)
     try:
         _record_debug_context("cc", metrics=metrics, session_id=session_id, channel=channel)
     except Exception:
@@ -3394,7 +3766,7 @@ def _run_cc_favilla_chat(*, text: str, channel: str, attachments: list | None = 
     }
 
 
-def _iter_cc_favilla_chat_events(*, text: str, channel: str, attachments: list | None = None, turn_id: str = "", request_id: str = ""):
+def _iter_cc_favilla_chat_events(*, text: str, channel: str, surface: str = "", attachments: list | None = None, turn_id: str = "", request_id: str = ""):
     """Stream CC chat as SSE events.
 
     Yields dicts of shape {"event": str, "data": dict}. Events:
@@ -3402,8 +3774,8 @@ def _iter_cc_favilla_chat_events(*, text: str, channel: str, attachments: list |
       - tool_use: {tool_use_id, tool_name, input_summary}
       - tool_result: {tool_use_id, tool_name, result_summary, is_error}
       - thought: {index, text, source, locked, summary, icon}     (placeholder summary)
-      - thought_summary: {index, summary, icon}                    (async ds patch)
-      - text: {index, text}
+    - thought_summary: {index, summary, icon}                    (async ds patch)
+    - text_delta: {index, text}
       - done: {full result dict, same shape as _run_cc_favilla_chat return}
       - error: {message}
     """
@@ -3412,16 +3784,17 @@ def _iter_cc_favilla_chat_events(*, text: str, channel: str, attachments: list |
     import threading
 
     from fiam.runtime.prompt import build_plain_prompt_parts
-    from fiam_lib.app_markers import _fallback_icon, _fallback_summary, split_cot_segments, summarize_cot_steps
+    from fiam_lib.app_markers import split_cot_segments
 
-    pending_recall = _pending_recall_for_app()
+    pending_recall_context = _pop_pending_recall_context()
+    pending_recall = _render_recall_for_app(pending_recall_context)
     session = _load_app_active_session()
     prompt_text = text
     if attachments:
         lines = ["[attachments]"]
         for a in attachments:
             mime = a.get("mime") or ""
-            lines.append(f"- {a['path']}  (name={a['name']!r}, mime={mime})")
+            lines.append(f"- obj:{a.get('object_hash', '')}  (name={a['name']!r}, mime={mime}, size={a.get('size')})")
         lines.append("")
         prompt_text = "\n".join(lines) + text
     system_context, user_prompt = build_plain_prompt_parts(
@@ -3429,7 +3802,7 @@ def _iter_cc_favilla_chat_events(*, text: str, channel: str, attachments: list |
         prompt_text,
         channel=channel,
         include_recall=True,
-        consume_recall_dirty=True,
+        recall_context=pending_recall_context,
         extra_context=_app_runtime_context(),
     )
     base_command = [
@@ -3455,19 +3828,6 @@ def _iter_cc_favilla_chat_events(*, text: str, channel: str, attachments: list |
 
     ev_queue: "queue.Queue[dict]" = queue.Queue()
 
-    def fire_summary(idx: int, raw_text: str, locked: bool):
-        try:
-            items = summarize_cot_steps([{"text": raw_text}], locked=locked, config=_CONFIG)
-            if items:
-                item = items[0]
-                ev_queue.put({"event": "thought_summary", "data": {
-                    "index": idx,
-                    "summary": item.get("summary") or _fallback_summary(raw_text, locked),
-                    "icon": item.get("icon") or _fallback_icon(raw_text, locked),
-                }})
-        except Exception:
-            logger.exception("cot summary failed")
-
     state = {
         "thought_idx": 0,
         "text_idx": 0,
@@ -3476,32 +3836,44 @@ def _iter_cc_favilla_chat_events(*, text: str, channel: str, attachments: list |
         "result_data": {},
         "action_events": [],
         "thinking_events": [],
-        "summary_threads": [],
+        "stream_text_buffer": "",
     }
 
+    def emit_text_delta(text_part: str) -> None:
+        clean = text_part.strip()
+        if not clean:
+            return
+        ev_queue.put({"event": "text_delta", "data": {"index": state["text_idx"], "text": clean}})
+        state["text_idx"] += 1
+
     def emit_text_and_thoughts(chunk: str):
-        """Scan a fully-formed assistant text block for cot tags; emit segments in order.
-        <cot> inside markdown code spans is skipped (so AI can describe the syntax)."""
-        for kind, body in split_cot_segments(chunk):
-            if kind == "text":
-                ev_queue.put({"event": "text", "data": {"index": state["text_idx"], "text": body.strip()}})
-                state["text_idx"] += 1
-            else:
-                idx = state["thought_idx"]
-                placeholder = _fallback_summary(body, False)
-                icon = _fallback_icon(body, False)
-                ev_queue.put({"event": "thought", "data": {
-                    "index": idx,
-                    "text": body,
-                    "source": "fiam",
-                    "locked": False,
-                    "summary": placeholder,
-                    "icon": icon,
-                }})
-                state["thought_idx"] += 1
-                t = threading.Thread(target=fire_summary, args=(idx, body, False), daemon=True)
-                t.start()
-                state["summary_threads"].append(t)
+        """Emit only marker-safe visible text.
+
+        Once a possible XML marker starts, the remainder is buffered until the
+        final MarkerInterpreter pass. This sacrifices some live text after a
+        marker, but prevents control XML such as <hold>, <todo>, or <send>
+        from leaking into the UI as assistant text.
+        """
+        state["stream_text_buffer"] = str(state.get("stream_text_buffer") or "") + chunk
+        while True:
+            buffered = str(state.get("stream_text_buffer") or "")
+            if not buffered:
+                return
+            marker_start = buffered.find("<")
+            if marker_start < 0:
+                state["stream_text_buffer"] = ""
+                for kind, body in split_cot_segments(buffered):
+                    if kind == "text":
+                        emit_text_delta(body)
+                return
+            if marker_start > 0:
+                prefix = buffered[:marker_start]
+                state["stream_text_buffer"] = buffered[marker_start:]
+                for kind, body in split_cot_segments(prefix):
+                    if kind == "text":
+                        emit_text_delta(body)
+                continue
+            return
 
     def reader_for(proc: "subprocess.Popen[str]"):
         try:
@@ -3635,11 +4007,6 @@ def _iter_cc_favilla_chat_events(*, text: str, channel: str, attachments: list |
             proc.wait(timeout=10)
         except Exception:
             pass
-        # Drain any thought_summary events fired by ds threads (give them a short window).
-        for _ in range(20):
-            if not any(t.is_alive() for t in state["summary_threads"]):
-                break
-            time.sleep(0.1)
         while True:
             try:
                 ev = ev_queue.get_nowait()
@@ -3680,9 +4047,9 @@ def _iter_cc_favilla_chat_events(*, text: str, channel: str, attachments: list |
             state["thinking_events"] = []
             state["tool_names"] = {}
             state["raw_reply_parts"] = []
-            state["summary_threads"] = []
             state["thought_idx"] = 0
             state["text_idx"] = 0
+            state["stream_text_buffer"] = ""
             proc2 = run_claude(None)
             for ev in consume_until_eof(proc2):
                 if ev.get("event") == "error":
@@ -3704,13 +4071,15 @@ def _iter_cc_favilla_chat_events(*, text: str, channel: str, attachments: list |
 
     reply = str(data.get("result") or "").strip()
     raw_reply = reply
-    reply, queued_todos, hold_reason, route = _apply_app_control_markers(
-        reply,
-        channel=channel,
-        runtime="cc",
-        user_text=prompt_text,
-        attachments=attachments or [],
-    )
+    interpretation = _interpret_app_control_markers(reply)
+    reply = interpretation.visible_reply
+    queued_todos = [
+        {"at": todo.at, "kind": todo.kind, "reason": todo.reason}
+        for todo in interpretation.todo_changes
+    ]
+    hold = _app_hold_payload(interpretation)
+    hold_reason = interpretation.hold_reason
+    route = interpretation.route_hint
     cleaned_reply, thoughts, thoughts_locked, segments = _parse_cot(reply)
     thinking_events = state.get("thinking_events") or []
     native_thoughts: list[dict] = []
@@ -3738,7 +4107,6 @@ def _iter_cc_favilla_chat_events(*, text: str, channel: str, attachments: list |
     if native_thoughts:
         thoughts = native_thoughts + thoughts
         segments = native_segments + list(segments)
-    hold = {"reason": hold_reason} if hold_reason else None
     if hold and not segments:
         thoughts_locked = True
         summary = hold_reason or "holding this reply"
@@ -3777,7 +4145,7 @@ def _iter_cc_favilla_chat_events(*, text: str, channel: str, attachments: list |
         actions_list.append({"kind": "queued_todo", **(todo if isinstance(todo, dict) else {"text": str(todo)})})
     if route:
         actions_list.append({"kind": "route", **(route if isinstance(route, dict) else {"value": str(route)})})
-    _record_cc_app_turn(prompt_text, raw_reply, channel, action_events=action_events, thinking_events=thinking_events, session_id=session_id, record_user=False, turn_id=turn_id, request_id=request_id)
+    _record_cc_app_turn(prompt_text, raw_reply, channel, surface=surface, action_events=action_events, thinking_events=thinking_events, session_id=session_id, record_user=False, turn_id=turn_id, request_id=request_id)
     try:
         _record_debug_context("cc", metrics=metrics, session_id=session_id, channel=channel)
     except Exception:
@@ -3809,12 +4177,14 @@ def _app_flow_conductor():
     if not _CONFIG or not _POOL:
         return None
     from fiam.conductor import Conductor
-    from fiam.store.features import FeatureStore
 
-    feature_store = FeatureStore(_CONFIG.feature_dir, dim=_CONFIG.embedding_dim)
+    class DeferredEmbedder:
+        def embed(self, _text: str):
+            raise RuntimeError("embedding deferred to MemoryWorker")
+
     return Conductor(
         pool=_POOL,
-        embedder=_get_embedder(),
+        embedder=DeferredEmbedder() if getattr(_CONFIG, "memory_mode", "manual") == "manual" else _get_embedder(),
         config=_CONFIG,
         flow_path=_CONFIG.flow_path,
         drift_threshold=_CONFIG.drift_threshold,
@@ -3822,11 +4192,30 @@ def _app_flow_conductor():
         gorge_min_depth=_CONFIG.gorge_min_depth,
         gorge_stream_confirm=_CONFIG.gorge_stream_confirm,
         memory_mode=_CONFIG.memory_mode,
-        feature_store=feature_store,
     )
 
 
-def _record_app_user_flow(user_text: str, channel: str, *, turn_id: str = "", request_id: str = "") -> None:
+def _run_memory_worker_once(*, limit: int = 1000) -> int:
+    if not _CONFIG:
+        return 0
+    from fiam.store.events import EventStore
+    from fiam.store.features import FeatureStore
+    from fiam.turn import MemoryWorker
+
+    event_store = EventStore(_CONFIG.event_db_path, object_dir=_CONFIG.object_dir)
+    feature_store = FeatureStore(_CONFIG.feature_dir, dim=_CONFIG.embedding_dim)
+    worker = MemoryWorker(
+        event_store,
+        embedder=_get_embedder(),
+        feature_store=feature_store,
+        pool=_POOL,
+        config=_CONFIG,
+        model_id=getattr(_CONFIG, "embedding_model", ""),
+    )
+    return worker.process_once(limit=limit)
+
+
+def _record_app_user_flow(user_text: str, channel: str, *, surface: str = "", turn_id: str = "", request_id: str = "") -> None:
     conductor = _app_flow_conductor()
     if conductor is None:
         return
@@ -3839,6 +4228,7 @@ def _record_app_user_flow(user_text: str, channel: str, *, turn_id: str = "", re
         t=now,
         channel=channel,
         user_name=getattr(_CONFIG, "user_name", "") or "zephyr",
+        surface=_surface_for_app_channel(channel, surface),
     )
     if turn_id or request_id:
         meta = dict(beat.meta or {})
@@ -3855,7 +4245,7 @@ def _record_app_user_flow(user_text: str, channel: str, *, turn_id: str = "", re
     ), channel=channel)
 
 
-def _record_app_error_flow(message: str, channel: str, *, runtime: str = "", turn_id: str = "", request_id: str = "") -> None:
+def _record_app_error_flow(message: str, channel: str, *, surface: str = "", runtime: str = "", turn_id: str = "", request_id: str = "") -> None:
     conductor = _app_flow_conductor()
     if conductor is None:
         return
@@ -3875,6 +4265,7 @@ def _record_app_error_flow(message: str, channel: str, *, runtime: str = "", tur
         content=f"error: {message}"[:2000],
         runtime=(runtime or None),
         meta=meta,
+        surface=_surface_for_app_channel(channel, surface),
     )
     conductor.commit_turn(TurnCommit(
         turn_id=turn_id or f"turn_{uuid.uuid4().hex}",
@@ -3884,17 +4275,18 @@ def _record_app_error_flow(message: str, channel: str, *, runtime: str = "", tur
     ), channel=channel)
 
 
-def _record_cc_app_turn(user_text: str, assistant_reply: str, channel: str, *, action_events: list[dict] | None = None, thinking_events: list[dict] | None = None, session_id: str = "", record_user: bool = True, turn_id: str = "", request_id: str = "") -> None:
+def _record_cc_app_turn(user_text: str, assistant_reply: str, channel: str, *, surface: str = "", action_events: list[dict] | None = None, thinking_events: list[dict] | None = None, session_id: str = "", record_user: bool = True, turn_id: str = "", request_id: str = "") -> None:
     conductor = _app_flow_conductor()
     if conductor is None:
         return
     from fiam.runtime.turns import assistant_text_beats
     from fiam.store.beat import Beat
-    from fiam.turn import TurnCommit
+    from fiam.turn import MarkerInterpreter, TurnCommit
 
     commit_turn_id = turn_id or f"turn_{uuid.uuid4().hex}"
+    surface = _surface_for_app_channel(channel, surface)
     if record_user:
-        _record_app_user_flow(user_text, channel, turn_id=commit_turn_id, request_id=request_id)
+        _record_app_user_flow(user_text, channel, surface=surface, turn_id=commit_turn_id, request_id=request_id)
     trace_meta = {}
     if turn_id:
         trace_meta["turn_id"] = turn_id
@@ -3916,11 +4308,14 @@ def _record_cc_app_turn(user_text: str, assistant_reply: str, channel: str, *, a
             content=text_t,
             runtime="cc",
             meta={"source": "official", "name": "official", "session_id": session_id, **trace_meta},
+            surface=surface,
         ))
     for action in action_events or []:
         kind = str(action.get("kind") or "tool")
         name = str(action.get("tool_name") or "tool")
         result_summary = str(action.get("result_summary") or "").strip()
+        result_full = str(action.get("result_full") or "")
+        _bounded_result, result_object_hash, result_size = _bounded_cc_tool_result(result_full or result_summary)
         is_error = bool(action.get("is_error"))
         if kind == "tool_action":
             input_summary = str(action.get("input_summary") or "").strip()
@@ -3943,6 +4338,7 @@ def _record_cc_app_turn(user_text: str, assistant_reply: str, channel: str, *, a
             content=text,
             runtime="cc",
             meta={"tool": name, "name": name, "session_id": session_id, **trace_meta},
+            surface=surface,
         ))
         # paired result beat: emit immediately after the action beat so flow
         # readers (and DS summarizer) see both call and outcome in order.
@@ -3956,14 +4352,28 @@ def _record_cc_app_turn(user_text: str, assistant_reply: str, channel: str, *, a
                 kind="tool_result",
                 content=result_text,
                 runtime="cc",
-                meta={"tool": name, "name": name, "is_error": is_error, "session_id": session_id, **trace_meta},
+                meta={
+                    "tool": name,
+                    "name": name,
+                    "is_error": is_error,
+                    "session_id": session_id,
+                    **({
+                        "object_hash": result_object_hash,
+                        "object_mime": "text/plain",
+                        "object_name": f"{name}-result.txt",
+                        "object_size": result_size,
+                    } if result_object_hash else {}),
+                    **trace_meta,
+                },
+                surface=surface,
             ))
-    interpretation = MarkerInterpreter().interpret(assistant_reply)
+    interpretation = MarkerInterpreter(object_resolver=_object_token_resolver()).interpret(assistant_reply)
     for beat in assistant_text_beats(
         assistant_reply,
         t=datetime.now(timezone.utc),
         channel=channel,
         runtime="cc",
+        surface=surface,
     ):
         if session_id or trace_meta:
             meta = dict(beat.meta or {})
@@ -3972,7 +4382,7 @@ def _record_cc_app_turn(user_text: str, assistant_reply: str, channel: str, *, a
             meta.update(trace_meta)
             beat = replace(beat, meta=meta)
         beats.append(beat)
-    transcript_messages = [{"role": "assistant", "content": interpretation.visible_reply}]
+    transcript_messages = [*_cc_tool_transcript_messages(action_events or []), {"role": "assistant", "content": interpretation.visible_reply}]
     if record_user:
         transcript_messages.insert(0, {"role": "user", "content": user_text.strip()})
     if not interpretation.visible_reply:
@@ -3981,16 +4391,70 @@ def _record_cc_app_turn(user_text: str, assistant_reply: str, channel: str, *, a
         turn_id=commit_turn_id,
         request_id=request_id,
         session_id=session_id,
+        surface=surface,
         events=tuple(beats),
         transcript_messages=tuple(transcript_messages),
         dispatch_requests=interpretation.dispatch_requests,
         todo_changes=interpretation.todo_changes,
         state_change=interpretation.state_change,
+        hold_request=interpretation.hold_request,
         trace={"model_done": datetime.now(timezone.utc).isoformat()},
     ), channel=channel)
 
 
-def _record_api_turn_light(user_text: str, assistant_reply: str, channel: str, *, tool_calls: list[dict] | None = None, family: str = "", turn_id: str = "", request_id: str = "", transcript_messages: list[dict] | None = None) -> None:
+def _cc_tool_transcript_messages(action_events: list[dict]) -> list[dict]:
+    messages: list[dict] = []
+    for index, action in enumerate(action_events or []):
+        if str(action.get("kind") or "") != "tool_action":
+            continue
+        tool_name = _clean_tool_name(str(action.get("tool_name") or "tool"))
+        tool_id = str(action.get("tool_use_id") or f"cc_tool_{index}")
+        input_summary = str(action.get("input_summary") or "")[:2000]
+        result_text = str(action.get("result_full") or action.get("result_summary") or "")
+        bounded_result, _object_hash, _size = _bounded_cc_tool_result(result_text)
+        messages.append({
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": tool_id,
+                "type": "function",
+                "function": {
+                    "name": tool_name,
+                    "arguments": json.dumps({"summary": input_summary}, ensure_ascii=False),
+                },
+            }],
+        })
+        messages.append({
+            "role": "tool",
+            "tool_call_id": tool_id,
+            "name": tool_name,
+            "content": bounded_result,
+        })
+    return messages
+
+
+def _bounded_cc_tool_result(text: str, *, limit: int = 4000) -> tuple[str, str, int]:
+    raw = str(text or "")
+    size = len(raw.encode("utf-8"))
+    if size <= limit or not _CONFIG:
+        return raw, "", size
+    from fiam.store.objects import ObjectStore
+
+    object_hash = ObjectStore(_CONFIG.object_dir).put_text(raw, suffix=".txt")
+    preview = raw[:limit].rstrip()
+    bounded = (
+        f"{preview}\n\n"
+        f"[object_ref hash={object_hash} size={size} mime=text/plain reason=cc_tool_result_truncated]"
+    )
+    return bounded, object_hash, size
+
+
+def _clean_tool_name(name: str) -> str:
+    clean = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in str(name or "tool"))
+    return clean.strip("_") or "tool"
+
+
+def _record_api_turn_light(user_text: str, assistant_reply: str, channel: str, *, surface: str = "", tool_calls: list[dict] | None = None, family: str = "", turn_id: str = "", request_id: str = "", transcript_messages: list[dict] | None = None, record_user: bool = True) -> None:
     if not _CONFIG:
         return
     from fiam.runtime.turns import assistant_text_beats, user_beat
@@ -4001,21 +4465,25 @@ def _record_api_turn_light(user_text: str, assistant_reply: str, channel: str, *
     if conductor is None:
         return
     runtime_tag = (family or "").strip().lower() or None
+    surface = _surface_for_app_channel(channel, surface)
     trace_meta = {}
     if turn_id:
         trace_meta["turn_id"] = turn_id
     if request_id:
         trace_meta["request_id"] = request_id
     now = datetime.now(timezone.utc)
-    user = user_beat(
-        user_text,
-        t=now,
-        channel=channel,
-        user_name=getattr(_CONFIG, "user_name", "") or "zephyr",
-    )
-    if trace_meta:
-        user = replace(user, meta={**(user.meta or {}), **trace_meta})
-    beats = [user]
+    beats = []
+    if record_user:
+        user = user_beat(
+            user_text,
+            t=now,
+            channel=channel,
+            user_name=getattr(_CONFIG, "user_name", "") or "zephyr",
+            surface=surface,
+        )
+        if trace_meta:
+            user = replace(user, meta={**(user.meta or {}), **trace_meta})
+        beats.append(user)
     for call in tool_calls or []:
         tool_name = str(call.get("tool_name") or "tool")
         input_summary = str(call.get("input_summary") or "").replace("\n", " ")[:300]
@@ -4027,6 +4495,7 @@ def _record_api_turn_light(user_text: str, assistant_reply: str, channel: str, *
             content=f"action: {tool_name}" + (f" — {input_summary}" if input_summary else ""),
             runtime=runtime_tag,
             meta={"tool": tool_name, **trace_meta},
+            surface=surface,
         ))
         result_summary = str(call.get("result_summary") or "").replace("\n", " ")[:500]
         if result_summary or call.get("result_object_hash"):
@@ -4048,39 +4517,44 @@ def _record_api_turn_light(user_text: str, assistant_reply: str, channel: str, *
                 content=f"result: {tool_name}" + (f" — {result_summary}" if result_summary else ""),
                 runtime=runtime_tag,
                 meta=meta,
+                surface=surface,
             ))
-    interpretation = MarkerInterpreter().interpret(assistant_reply)
+    interpretation = MarkerInterpreter(object_resolver=_object_token_resolver()).interpret(assistant_reply)
     assistant_beats = assistant_text_beats(
         assistant_reply,
         t=datetime.now(timezone.utc),
         channel=channel,
         runtime=runtime_tag,
+        surface=surface,
     )
     if trace_meta:
         assistant_beats = [replace(beat, meta={**(beat.meta or {}), **trace_meta}) for beat in assistant_beats]
     beats.extend(assistant_beats)
     conductor.commit_turn(TurnCommit(
         turn_id=turn_id or f"turn_{uuid.uuid4().hex}",
+        surface=surface,
         request_id=request_id,
         events=tuple(beats),
         transcript_messages=tuple(transcript_messages or (
             msg for msg in (
-                {"role": "user", "content": user_text.strip()},
+                {"role": "user", "content": user_text.strip()} if record_user else None,
                 {"role": "assistant", "content": interpretation.visible_reply},
             )
-            if msg["role"] != "assistant" or interpretation.visible_reply
+            if msg is not None and (msg["role"] != "assistant" or interpretation.visible_reply)
         )),
         dispatch_requests=interpretation.dispatch_requests,
         todo_changes=interpretation.todo_changes,
         state_change=interpretation.state_change,
+        hold_request=interpretation.hold_request,
         trace={"model_done": datetime.now(timezone.utc).isoformat()},
     ), channel=channel)
 
 
-def _run_api_favilla_chat(*, text: str, channel: str, attachments: list | None = None, record_turn: bool = True, family: str = "", turn_id: str = "", request_id: str = "") -> dict:
+def _run_api_favilla_chat(*, text: str, channel: str, surface: str = "", attachments: list | None = None, record_turn: bool = True, family: str = "", turn_id: str = "", request_id: str = "") -> dict:
     if not _CONFIG or not _POOL:
         raise RuntimeError("config not loaded")
     config = _config_for_catalog_family(_CONFIG, family)
+    surface = _surface_for_app_channel(channel, surface)
 
     from fiam.runtime.api import ApiRuntime
 
@@ -4092,25 +4566,118 @@ def _run_api_favilla_chat(*, text: str, channel: str, attachments: list | None =
         lines = ["[attachments]"]
         for a in attachments:
             mime = a.get("mime") or ""
-            lines.append(f"- {a['path']}  (name={a['name']!r}, mime={mime})")
+            lines.append(f"- obj:{a.get('object_hash', '')}  (name={a['name']!r}, mime={mime}, size={a.get('size')})")
         lines.append("")
         api_text = "\n".join(lines) + text
     # build_api_messages loads the shared API-message transcript for this channel.
     # Keep dashboard-specific context here, but do not duplicate chat history.
+    prompt_started = datetime.now(timezone.utc)
+    pending_recall_context = _pop_pending_recall_context()
+    pending_recall = _render_recall_for_app(pending_recall_context)
     extras = _app_runtime_context()
-    api_started_at = time.time()
-    result = runtime.ask_pure(api_text, channel=channel, extra_context=extras, image_attachments=attachments or [])
-    api_latency_ms = int((time.time() - api_started_at) * 1000)
-    raw_reply = str(result.reply or "")
-    reply, queued_todos, hold_reason, route = _apply_app_control_markers(
-        result.reply,
+    _append_dashboard_trace_phase(
+        turn_id=turn_id,
+        request_id=request_id,
         channel=channel,
-        runtime="api",
-        user_text=api_text,
-        attachments=attachments or [],
+        surface=surface,
+        phase="dashboard.prompt",
+        started_at=prompt_started,
+        refs={"runtime": "api", "family": family, "attachment_count": len(attachments or []), "extra_context": bool(extras)},
+    )
+    runtime_started = datetime.now(timezone.utc)
+    api_started_at = time.time()
+    try:
+        result = runtime.ask(
+            api_text,
+            channel=channel,
+            recall_context=pending_recall_context,
+            extra_context=extras,
+            image_attachments=attachments or [],
+        )
+    except Exception as exc:
+        _append_dashboard_trace_phase(
+            turn_id=turn_id,
+            request_id=request_id,
+            channel=channel,
+            surface=surface,
+            phase="dashboard.runtime",
+            started_at=runtime_started,
+            status="error",
+            error=str(exc)[:1000],
+            refs={"runtime": "api", "family": family},
+        )
+        raise
+    api_latency_ms = int((time.time() - api_started_at) * 1000)
+    _append_dashboard_trace_phase(
+        turn_id=turn_id,
+        request_id=request_id,
+        channel=channel,
+        surface=surface,
+        phase="dashboard.runtime",
+        started_at=runtime_started,
+        refs={"runtime": "api", "family": family, "model": getattr(result, "model", ""), "latency_ms": api_latency_ms},
+    )
+    raw_reply = str(result.reply or "")
+    marker_started = datetime.now(timezone.utc)
+    interpretation = _interpret_app_control_markers(result.reply)
+    used_reroll = False
+    if interpretation.hold_status == "reroll":
+        used_reroll = True
+        if record_turn:
+            _record_api_turn_light(api_text, raw_reply, channel=channel, surface=surface, family=family, turn_id=turn_id, request_id=request_id, transcript_messages=[], record_user=False)
+        reroll_started = datetime.now(timezone.utc)
+        reroll_api_started_at = time.time()
+        try:
+            result = runtime.ask(
+                _hold_reroll_prompt(api_text, interpretation.hold_reason),
+                channel=channel,
+                recall_context=pending_recall_context,
+                extra_context=extras,
+                image_attachments=attachments or [],
+            )
+        except Exception as exc:
+            _append_dashboard_trace_phase(
+                turn_id=turn_id,
+                request_id=request_id,
+                channel=channel,
+                surface=surface,
+                phase="dashboard.runtime",
+                started_at=reroll_started,
+                status="error",
+                error=str(exc)[:1000],
+                refs={"runtime": "api", "family": family, "reroll": True},
+            )
+            raise
+        api_latency_ms += int((time.time() - reroll_api_started_at) * 1000)
+        _append_dashboard_trace_phase(
+            turn_id=turn_id,
+            request_id=request_id,
+            channel=channel,
+            surface=surface,
+            phase="dashboard.runtime",
+            started_at=reroll_started,
+            refs={"runtime": "api", "family": family, "model": getattr(result, "model", ""), "latency_ms": api_latency_ms, "reroll": True},
+        )
+        raw_reply = str(result.reply or "")
+        interpretation = _interpret_app_control_markers(result.reply)
+    reply = interpretation.visible_reply
+    queued_todos = [
+        {"at": todo.at, "kind": todo.kind, "reason": todo.reason}
+        for todo in interpretation.todo_changes
+    ]
+    hold = _app_hold_payload(interpretation)
+    hold_reason = interpretation.hold_reason
+    route = interpretation.route_hint
+    _append_dashboard_trace_phase(
+        turn_id=turn_id,
+        request_id=request_id,
+        channel=channel,
+        surface=surface,
+        phase="dashboard.marker",
+        started_at=marker_started,
+        refs={"todo_count": len(queued_todos), "hold": bool(hold), "route": bool(route)},
     )
     cleaned_reply, thoughts, thoughts_locked, segments = _parse_cot(reply)
-    hold = {"reason": hold_reason} if hold_reason else None
     if hold and not segments:
         thoughts_locked = True
         summary = hold_reason or "holding this reply"
@@ -4155,7 +4722,8 @@ def _run_api_favilla_chat(*, text: str, channel: str, attachments: list | None =
             "loop": call.get("loop"),
         })
     if record_turn:
-        _record_api_turn_light(api_text, raw_reply, channel=channel, tool_calls=api_tool_calls_summary, family=family, turn_id=turn_id, request_id=request_id, transcript_messages=list(getattr(result, "transcript_messages", None) or []))
+        transcript_messages = None if used_reroll else list(getattr(result, "transcript_messages", None) or [])
+        _record_api_turn_light(api_text, raw_reply, channel=channel, surface=surface, tool_calls=api_tool_calls_summary, family=family, turn_id=turn_id, request_id=request_id, transcript_messages=transcript_messages)
     for todo in queued_todos or []:
         actions_list.append({"kind": "queued_todo", **(todo if isinstance(todo, dict) else {"text": str(todo)})})
     if route:
@@ -4169,7 +4737,7 @@ def _run_api_favilla_chat(*, text: str, channel: str, attachments: list | None =
         "runtime": "api",
         "reply": cleaned_reply,
         "raw_reply": raw_reply,
-        "recall": _pending_recall_for_app(),
+        "recall": pending_recall,
         "session_id": "",
         "subtype": None,
         "cost_usd": 0,
@@ -4212,20 +4780,21 @@ def _save_app_active_session(session_id: str) -> None:
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
-def _pending_recall_for_app(max_chars: int = 1400) -> str:
-    if not _CONFIG:
-        return ""
-    dirty = _CONFIG.home_path / ".recall_dirty"
-    recall_path = _CONFIG.background_path
-    if not dirty.exists() or not recall_path.exists():
+def _render_recall_for_app(context, max_chars: int = 1400) -> str:
+    if context is None:
         return ""
     try:
-        text = recall_path.read_text(encoding="utf-8", errors="replace").strip()
-    except OSError:
+        return context.render(max_chars=max_chars)
+    except Exception:
         return ""
-    if len(text) > max_chars:
-        return text[: max_chars - 1] + "…"
-    return text
+
+
+def _pop_pending_recall_context():
+    global _PENDING_RECALL_CONTEXT
+    with _RECALL_LOCK:
+        context = _PENDING_RECALL_CONTEXT
+        _PENDING_RECALL_CONTEXT = None
+    return context
 
 
 # ------------------------------------------------------------------
@@ -4895,6 +5464,16 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 self._serve_json(_api_config())
             elif path == "/api/catalog/list":
                 self._serve_json(_api_catalog_list())
+            elif path == "/api/objects":
+                if not _CONFIG:
+                    self._serve_json({"error": "config not loaded"}, status=503)
+                    return
+                self._serve_json(_api_objects(query))
+            elif path == "/api/timeline":
+                if not _CONFIG:
+                    self._serve_json({"error": "config not loaded"}, status=503)
+                    return
+                self._serve_json(_api_timeline(query))
             elif path == "/api/plugins":
                 self._serve_json(_api_plugins())
             elif path == "/api/pool/edge-types":
@@ -4936,6 +5515,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     self._serve_json({"error": f"read failed: {e}"}, status=500)
                     return
                 self._serve_json(payload)
+            elif path == "/api/debug/trace":
+                if not _CONFIG:
+                    self._serve_json({"error": "config not loaded"}, status=503)
+                    return
+                self._serve_json(_api_debug_trace(query))
             elif path == "/api/debug/flow":
                 try:
                     limit = max(1, min(2000, int(query.get("limit", "200") or "200")))

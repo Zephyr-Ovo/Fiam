@@ -1,161 +1,167 @@
-# fiam — Fluid Injected Affective Memory
+# fiam
 
-Long-term memory system for AI agents. Runs alongside Claude Code, records every information beat into an append-only flow, freezes bge-m3 vectors for training, and builds a typed memory graph through manual or automatic segmentation.
+FIAM is a local-first memory and routing framework for AI agents. It records user, model, tool, browser, email, device, and app activity as structured events, keeps model-visible transcript history bounded, and moves slow memory work into durable background jobs.
 
-## Architecture (v2 — manual-first data collection)
+The project is built around one rule: runtime adapters call models; they do not own persistence or side effects. Facts are committed through the turn pipeline, then read models and memory indexes are derived from those facts.
 
+## Current Architecture
+
+```text
+Transport adapters
+  HTTP / MQTT / Browser / Email / Device
+        |
+        v
+TurnRequest / InboundQueue
+        |
+        v
+Conductor.receive_turn()
+        |
+        v
+PromptAssembler -> RuntimeAdapter -> MarkerInterpreter
+        |
+        v
+TurnCommit
+        |
+        v
+events.sqlite3 / ObjectStore / transcripts / UI history / state / todo / dispatch / trace
+        |
+        v
+MemoryWorker / Dispatch bridges / dashboard read models
 ```
-Claude Code session
-       │
-  ├── JSONL log ──► Conductor ──► flow.jsonl + frozen beat vectors
-  │                     │
-  │                     ├── manual mode: dashboard cuts + DeepSeek edges
-  │                     └── auto mode: drift + Gorge + Pool + recall
-       │
-       └── Hooks ◄──── inject recall as additionalContext
-                 ├──── dispatch outbound messages (email/app)
-                 └──── boot summary on session start
+
+## Core Stores
+
+- `events.sqlite3` is the source of truth for event facts.
+- `store/objects/` is the content-addressed blob store for attachments, generated files, screenshots, and large tool results.
+- `store/transcripts/{channel}.jsonl` is clean, bounded model-visible history.
+- `home/transcript/{channel}.jsonl` is a UI read model.
+- `store/turn_traces.jsonl` is observability only; it is not prompt or recall input.
+- `store/timeline/*.md` is a MemoryWorker-derived timeline read model.
+- `store/pool/*` is a derived memory index for graph recall and spreading activation.
+
+Runtime data is ignored by git. Do not commit `store/`, `self/`, logs, local config, voice samples, or generated media.
+
+## Main Concepts
+
+- `TurnRequest` captures a normalized incoming turn with channel, surface, actor, text, attachments, ids, delivery policy, and trace metadata.
+- `Conductor` owns the public turn boundary. Transport adapters should call `Conductor.receive_turn()` or commit a `TurnCommit`, not write facts directly.
+- `PromptAssembler` builds API/plain prompts from self context, explicit recall context, selected timeline snippets, and clean transcript history.
+- Runtime adapters are pure model callers. `ApiRuntime.ask()` returns structured results and transcript messages, but does not write events, state, todo, dispatch, or UI history.
+- `MarkerInterpreter` is the single high-level XML marker parser for `<send>`, `<cot>`, `<hold>`, `<held>`, `<todo>`, `<wake>`, `<sleep>`, `<state>`, and `<route>`.
+- `TurnCommit` is the single commit point for events, clean transcript messages, UI rows, state/todo read models, dispatch facts, and trace rows.
+- `MemoryWorker` processes durable `memory_jobs`: event embedding/timeline, Pool graph edges, summary/object tags, transcript compaction, and recall warmup.
+
+## Optional Surfaces
+
+- `dashboard/` provides local web views for status, recent events, objects, trace, context, logs, and runtime controls.
+- `channels/favilla/` is the companion app surface.
+- `channels/atrium/` is the desktop/browser capture surface.
+- `channels/obsidian-fiam-studio/` is an Obsidian Studio integration.
+- `plugins/` contains optional receive/dispatch capability manifests.
+- `scripts/bridges/` contains bridge implementations such as email dispatch.
+
+These surfaces should stay optional. The core system should run without private device state, app build output, or local credentials.
+
+## Markers And Plugins
+
+AI-authored non-natural-language signals use XML markers inside model output. Examples:
+
+```xml
+<send to="email:zephyr@example.com" attach="obj:0123...abcd">Report attached.</send>
+<todo at="2026-05-13 20:00">review traces</todo>
+<state value="mute" reason="focus" />
+<route family="gemini" reason="math fallback" />
 ```
 
-### Core concepts
-
-- **Beat** — atomic information unit in `flow.jsonl`. `{t, text, scene, user, ai, runtime?}`; `scene` is `"<actor>@<channel>"` (e.g. `user@favilla`, `ai@think`, `external@email`, `system@schedule`). Embeddings and cuts use `text` only.
-- **Conductor** — info flow hub: beat ingestion → flow persistence → frozen vector persistence → optional auto memory pipeline
-- **FeatureStore** — frozen beat-level bge-m3 vectors in chunked `store/features/`, keyed by beat hash for annotation/training
-- **Gorge** — TextTiling depth segmentation with peak-valley confirmation. Used only in `memory_mode = "auto"`
-- **Pool** — unified 5-layer storage (replaces old scattered store/)
-- **Spreading activation** — graph-based recall: seed → edge propagation → probabilistic selection (not top-k)
-- **Annotator** — dashboard workflow: human marks event/drift cuts, then DeepSeek proposes event names and graph edges for confirmation
-
-### Pool storage layers
-
-| Layer | Format | Content |
-|-------|--------|---------|
-| Content | `pool/events/<id>.md` | Event body text |
-| Metadata | `events.jsonl` | `{id, t, access_count, fingerprint_idx}` |
-| Fingerprints | `fingerprints.npy` | N × 1024 matrix (bge-m3) |
-| Cosine | `cosine.npy` | N × N pairwise similarity |
-| Edges | PyG `edge_index.npy` + `edge_attr.npy` | Typed directed edges (temporal/semantic/causal/remind/elaboration/contrast) |
-
-### Beat scenes
-
-`user@favilla` (chat) · `user@browser` / `user@stroll` / `user@email` / `user@studio` · `ai@favilla` / `ai@think` / `ai@action` / `ai@email` / `ai@browser` / `ai@stroll` · `external@email` · `system@schedule`
-
-### Functional plugins
-
-Optional integrations are registered by `plugins/<id>/plugin.toml`. Infrastructure such as dashboard, git diff, flow, Pool, and recall is not treated as a plugin. Inbound messages go through `fiam/receive/<source>`; outbound AI markers such as `<send to="email:Zephyr">...</send>` are resolved through enabled plugin `dispatch_targets` and published to `fiam/dispatch/<target>`. See [docs/plugin_protocol.md](docs/plugin_protocol.md) and the marker reference at [docs/markers_protocol.md](docs/markers_protocol.md).
-
-### Mobile and wearable surfaces
-
-- **Favilla** (`channels/favilla`) is the Android companion app: Chat, Hub, Stats, More, selected-text capture, readalong bubble, image/voice routing entries, and token-protected `/api/app/*` calls.
-- **Limen/XIAO** (`channels/limen`) is the current screen-first wearable firmware. It subscribes to MQTT display topics and displays `message`, `kaomoji`, or `emoji` commands emitted as `<send to="limen:screen">...</send>` markers.
-- Multimodal data collapses into flow text beats. Voice enters as STT text; images enter as vision descriptions with `kind=action`; raw image bytes are routed away from the main chat AI.
-- `stroll` / `散步` is reserved for future ambient vision + TTS mode.
-
-## Features
-
-- **Manual-first annotation** — console marks event and drift cuts; processed flow ranges are locked in `store/annotation_state.json`
-- **Frozen feature capture** — every ingested beat can be saved once into chunked files under `store/features/`
-- **Real-time segmentation** — optional auto mode where Gorge watches beat embeddings and fires event cuts
-- **Drift detection** — auto mode only: adjacent beat cosine below threshold → recall hook fires
-- **Graph spreading activation** — seed from sliding vector, propagate along edges, weight multiplication, probabilistic fire
-- **Multi-channel** — email, Favilla (Android share intent), ActivityWatch
-- **Web console** — SvelteKit 5 dashboard (Catppuccin dark), 3D force-directed graph with edge editing, event CRUD, flow viewer
-- **Hook-mediated injection** — 4 CC hooks (UserPromptSubmit, Stop, SessionStart, PostCompact)
-- **Lightweight deploy** — ML deps optional (`pip install -e ".[ml]"`); ISP runs without torch, embedding via remote API
+See `docs/markers_protocol.md` for marker semantics and `docs/plugin_protocol.md` for plugin manifests.
 
 ## Install
 
+Requirements:
+
+- Python 3.11+
+- `uv`
+- Optional: Node.js for dashboard/app work
+- Optional: MQTT broker for async device/plugin transport
+- Optional: Claude Code for the Claude Code runtime adapter
+
 ```bash
-git clone https://github.com/Zephyr-Ovo/Fiam.git && cd Fiam
-uv sync                              # base deps (no torch)
-uv sync --extra ml                   # with torch/transformers (for local embedding)
-uv run python scripts/fiam.py init   # interactive setup wizard
-uv run python scripts/fiam.py start  # start daemon
+git clone https://github.com/Zephyr-Ovo/Fiam.git
+cd Fiam
+uv sync
+uv run python scripts/fiam.py init
+uv run python scripts/fiam.py start
 ```
 
-Requires [uv](https://astral.sh/uv) and [Claude Code](https://claude.ai/code).
-
-For remote embedding (recommended): deploy `serve_embeddings.py` on a GPU server, set `embedding_backend = "remote"` in `fiam.toml`.
-
-## Structure
-
-```
-src/fiam/
-  config.py                # FiamConfig + fiam.toml parsing
-  conductor.py          ★  # Beat ingestion → flow + frozen vectors; optional auto gorge/pool/recall
-  plugins.py            ★  # plugin.toml registry + enable/disable helpers
-  markers.py            ★  # XML marker parser (send/hold/wake/todo/sleep/state/route/cot/lock)
-  gorge.py              ★  # TextTiling depth segmentation (batch + streaming)
-  store/
-    beat.py             ★  # Beat dataclass + flow.jsonl I/O
-    pool.py             ★  # Pool 5-layer storage (content/meta/fingerprints/cosine/edges)
-  retriever/
-    spread.py           ★  # Graph spreading activation (seed→spread→select)
-    embedder.py            # Multi-profile embedder (local/remote)
-  adapter/
-    claude_code.py         # CC JSONL → Turn/Beat parsing
-
-scripts/
-  fiam.py                  # CLI: init, start, stop, status, clean, find-sessions
-  dashboard_server.py      # Web console backend (Pool + annotation API)
-  fiam_lib/
-    daemon.py              # Main event loop + CC session management
-    maintenance.py         # clean + find-sessions
-    postman.py             # Email protocol helper
-    todo.py                # Delayed todo queue
-
-dashboard/                 # SvelteKit 5 + Svelte runes + Tailwind 4
-  src/routes/graph/        # 3D force-directed graph (Canvas 2D)
-  src/routes/events/       # Event list + detail
-  src/routes/flow/         # Beat stream viewer
-  src/lib/                 # API client, NodeEditor, EdgeMenu
-
-scripts/hooks/             # CC hook scripts
-  inject.sh                # recall injection (UserPromptSubmit)
-  outbox.sh                # outbound message extraction (Stop)
-  boot.sh                  # daily summary (SessionStart)
-  compact.sh               # archive summaries (PostCompact)
-
-channels/
-  favilla/                 # Android text capture app
-  limen/                   # ESP32 wearable device
-
-plugins/                   # optional functional integration manifests
-  email/ favilla/ limen/ atrium/ browser/ app/ voice-call/ device-control/ ring/ mcp/ tlon/ xiao/
-```
-
-## Commands
-
-| Command | Description |
-|---------|-------------|
-| `fiam init` | Interactive setup — creates `fiam.toml` |
-| `fiam start` | Start daemon (monitors sessions, subscribes MQTT ingress) |
-| `fiam stop` | Graceful shutdown |
-| `fiam status` | Show store counts + daemon state |
-| `fiam debug` | Show backend debug profile overrides |
-| `fiam debug on --restart` | Enable debug profile and restart live Linux services |
-| `fiam debug off --restart` | Disable debug profile and restart live Linux services |
-| `fiam clean` / `fiam clear` | Reset generated runtime state to a blank testing whiteboard while preserving config, code, and instruction files |
-| `fiam find-sessions` | Debug Claude Code JSONL session paths |
-| `fiam plugin list` | List functional plugin manifests |
-| `fiam plugin show <id>` | Show one plugin's topics, capabilities, auth, and latency notes |
-| `fiam plugin enable/disable <id>` | Toggle plugin receive/dispatch routing |
+For local ML embeddings, install the optional ML dependencies if configured by your environment. Remote/OpenAI-compatible embeddings and model providers are configured through environment variable names, not committed secrets.
 
 ## Configuration
 
-Copy `fiam.toml.example` → `fiam.toml` (or run `fiam init`).
+Copy `fiam.toml.example` to `fiam.toml`, or run:
 
-Key settings:
-- `timezone`: project-local IANA timezone for AI-visible local time, upload date folders, daily limits, and naive todo times; stored event timestamps remain UTC
-- `embedding_backend`: `local` / `remote` — local HuggingFace or remote API
-- `embedding_dim`: 1024 (bge-m3 default)
-- `idle_timeout_minutes`: inactivity before post-session processing
-- `email_*`: email channel settings (SMTP/IMAP)
-- `[conductor]` section: `memory_mode` (`manual` / `auto`), gorge window, confirm count, drift threshold
-- `[app]` section: Favilla chat backend default, manual recall freshness, and DeepSeek-compatible CoT summary settings
-- `[debug]` section: temporary backend test-loop overrides for idle/poll intervals, memory mode, tool loop cap, and app defaults
-- `[graph]` section: DeepSeek-compatible edge model and API key env (`FIAM_GRAPH_API_KEY` by default)
+```bash
+uv run python scripts/fiam.py init
+```
+
+Important sections:
+
+- `[api]`: default OpenAI-compatible provider/model for API runtime.
+- `[catalog.<family>]`: explicit route/model family configuration.
+- `[app]`: app runtime defaults and COT summary config.
+- `[conductor]`: memory mode, gorge/drift/recall settings.
+- `[mqtt]`: MQTT transport settings.
+- `[graph]`: optional edge typing/event naming model.
+- `[vision]`: optional image description model.
+- `[voice.stt]` / `[voice.tts]`: optional voice providers.
+
+Secrets must live in environment variables named by config, for example `POE_API_KEY`, `GEMINI_API_KEY`, `FIAM_GRAPH_API_KEY`, `FIAM_SUMMARY_API_KEY`, or deployment-specific equivalents. Do not commit real keys or local config.
+
+## CLI
+
+```bash
+uv run python scripts/fiam.py init
+uv run python scripts/fiam.py start
+uv run python scripts/fiam.py stop
+uv run python scripts/fiam.py status
+uv run python scripts/fiam.py clean
+uv run python scripts/fiam.py plugin list
+uv run python scripts/fiam.py api --channel chat "ping"
+```
+
+`fiam api` is a pure runtime smoke call. It does not write events or transcripts.
+
+## Development
+
+Run focused Python tests:
+
+```bash
+python -m unittest tests.test_turn_pipeline tests.test_api_runtime
+```
+
+Run broad discovery while excluding known environment-specific tests only when needed:
+
+```bash
+python -m unittest discover tests
+```
+
+Frontend checks depend on the surface:
+
+```bash
+npm --prefix dashboard run check
+npm --prefix channels/favilla/app run build
+```
+
+## Open Source Hygiene
+
+The repository intentionally ignores:
+
+- `fiam.toml`, `.env*`, `*.secret`, key files, and local device secrets
+- `store/`, `self/`, logs, trace dumps, generated SQLite/JSONL runtime state
+- `.venv/`, `node_modules/`, build output, app bundles, generated browser extensions
+- local voice/STT experiments and generated media under `stt/`, `tts/`, `mimo_api_assets/`
+- `btw/`, `archive/`, `pic/`, and other personal scratch or asset folders
+
+Before publishing, review `git status --ignored` and keep only source, tests, protocol docs, templates, and safe examples.
 
 ## License
 

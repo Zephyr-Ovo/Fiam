@@ -7,13 +7,14 @@ Removes:
 - store/transcripts/* (shared runtime message transcripts)
 - store/annotation_state.json (process progress)
 - transcript/*.jsonl (Favilla chat history)
-- recall.md + .recall_dirty (recall fragments)
+- pending_recall.md (one-turn recall handoff)
 - session_state.json (rollover counter)
 - self/active_session.json (CC session id)
 - self/state.md, self/personality.md, self/journal/* (persona files)
 - ai_state.json (current state)
 - app_studio/state.json (legacy Studio editor state)
 - pending_external.txt and lock files
+- store/held.jsonl (private held-turn read model)
 
 Preserves:
 - fiam.toml + fiam.toml.example
@@ -55,6 +56,7 @@ def _wipe(home: Path, store: Path, *, wipe_identity: bool) -> list[str]:
         store / "pool",
         store / "features",
         store / "transcripts",
+        store / "held.jsonl",
         store / "annotation_state.json",
         store / "wearable",
     ]
@@ -64,8 +66,8 @@ def _wipe(home: Path, store: Path, *, wipe_identity: bool) -> list[str]:
 
     targets_under_home = [
         home / "transcript",
-        home / "recall.md",
-        home / ".recall_dirty",
+        home / "pending_recall.md",
+        home / "pending_recall.processing",
         home / "session_state.json",
         home / "pending_external.txt",
         home / "pending_external.processing",
@@ -139,10 +141,11 @@ def main() -> int:
             store / "pool",
             store / "features",
             store / "transcripts",
+            store / "held.jsonl",
             store / "annotation_state.json",
             home / "transcript",
-            home / "recall.md",
-            home / ".recall_dirty",
+            home / "pending_recall.md",
+            home / "pending_recall.processing",
             home / "session_state.json",
             home / "self" / "active_session.json",
             home / "ai_state.json",

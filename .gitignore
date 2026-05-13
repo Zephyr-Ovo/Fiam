@@ -41,6 +41,7 @@ ENV/
 node_modules/
 .svelte-kit/
 .vite/
+*.tsbuildinfo
 
 # HuggingFace models (local cache — keep out of git)
 .cache/
@@ -53,6 +54,9 @@ node_modules/
 self/
 *.toml.bak
 *.log
+*.sqlite3
+*.jsonl
+!tests/**/*.jsonl
 
 # Old setup scripts
 setup.ps1
@@ -66,6 +70,8 @@ favilla-v04/
 /check.md
 /case/
 texput.log
+/archive/
+/pic/
 
 # Deployment-specific scripts (contain instance IPs/configs)
 /scripts/diag_*.ps1
@@ -82,17 +88,35 @@ test_vault/
 # Secrets
 .env
 .env.*
+*.secret
+*.pem
+*.key
+*secrets.local*
 
 # OS
 .DS_Store
 Thumbs.db
 
-# dashboard build bundles
+# Build bundles / generated app artifacts
 dashboard/build.tgz
 dashboard/payload_test.json
+dashboard/build/
+dashboard/.svelte-kit/
+channels/*/dist/
+channels/*/build/
+channels/*/node_modules/
+channels/atrium/browser-extension.xpi
+channels/atrium/src-tauri/target/
+channels/atrium/src-tauri/gen/
+channels/favilla/app/dist/
+channels/favilla/app/android/app/build/
+channels/favilla/app/android/app/src/main/assets/
+channels/favilla/app/android/capacitor-cordova-android-plugins/
+channels/obsidian-fiam-studio/main.js
 
 # Local API/CC probe samples
 .tmp_*.json
+.tmp/
 
 # scratch / external clones
 btw/
@@ -105,5 +129,15 @@ btw/
 _msg.txt
 
 atrium.png
-channels/atrium/browser-extension.xpi
+
+# Local voice/STT experiments and generated media are private by default.
+/stt/
+/tts/
+/mimo_api_assets/
+*.wav
+*.mp3
+*.mp4
+*.m4a
+*.flac
+*.webm
 

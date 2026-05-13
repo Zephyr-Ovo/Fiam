@@ -12,7 +12,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
-from fiam.runtime.prompt import PromptAssembler
+from fiam.runtime.prompt import PromptAssembler, _valid_transcript_message
 from fiam.runtime.tools import TOOL_SCHEMAS, execute_tool_call
 
 
@@ -68,27 +68,21 @@ def _merge_usage(total: dict[str, Any], usage: dict[str, Any]) -> None:
 def _image_attachment_blocks(config, attachments: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
     if not attachments:
         return []
-    home = Path(config.home_path).resolve()
     blocks: list[dict[str, Any]] = []
+    from fiam.store.objects import ObjectStore
+
+    object_store = ObjectStore(config.object_dir)
     for att in attachments:
         if not isinstance(att, dict):
             continue
         mime = str(att.get("mime") or "").strip().lower()
         if not mime.startswith("image/"):
             continue
-        raw_path = str(att.get("path") or "").strip()
-        if not raw_path:
+        object_hash = "".join(ch for ch in str(att.get("object_hash") or "").lower() if ch in "0123456789abcdef")
+        if len(object_hash) != 64:
             continue
-        try:
-            path = Path(raw_path).resolve()
-            path.relative_to(home)
-        except (OSError, ValueError):
-            continue
-        if not path.is_file():
-            continue
-        try:
-            data = path.read_bytes()
-        except OSError:
+        data = object_store.get_bytes(object_hash, suffix="")
+        if not data:
             continue
         if len(data) > 8 * 1024 * 1024:
             continue
@@ -623,30 +617,25 @@ class ApiRuntime:
         text: str,
         *,
         channel: str = "api",
-        record: bool = True,
         include_recall: bool = True,
+        recall_context: "RecallContext | None" = None,
         extra_context: str = "",
         image_attachments: list[dict[str, Any]] | None = None,
     ) -> ApiRuntimeResult:
-        """Run an API model call and return structured result only.
-
-        ``record`` is accepted for old call sites but no longer causes this
-        runtime adapter to write events, transcripts, state/todo, or dispatch
-        side effects. Turn owners commit those facts from the returned result.
-        """
+        """Run an API model call and return structured result only."""
         clean = text.strip()
         if not clean:
             raise ValueError("missing text")
 
         started_at = time.perf_counter()
-        recall_fragments = 0
+        recall_fragments = recall_context.count if recall_context is not None else 0
 
         prompt_started_at = time.perf_counter()
         messages = PromptAssembler(self.config).build_messages(
             clean,
             channel=channel,
             include_recall=include_recall,
-            consume_recall_dirty=True,
+            recall_context=recall_context,
             extra_context=extra_context,
         )
         transcript_start = max(0, len(messages) - 1)
@@ -731,7 +720,11 @@ class ApiRuntime:
 
         assert completion is not None
         reply_text = completion.text or "(empty reply)"
-        transcript_messages = [*messages[transcript_start:], {"role": "assistant", "content": reply_text}]
+        transcript_messages = [
+            clean_message
+            for message in [*messages[transcript_start:], {"role": "assistant", "content": reply_text}]
+            if (clean_message := _valid_transcript_message(message)) is not None
+        ]
 
         return ApiRuntimeResult(
             ok=True,
@@ -750,25 +743,6 @@ class ApiRuntime:
                 "provider_ms": provider_ms_total,
                 "total_ms": int((time.perf_counter() - started_at) * 1000),
             },
-        )
-
-    def ask_pure(
-        self,
-        text: str,
-        *,
-        channel: str = "api",
-        include_recall: bool = True,
-        extra_context: str = "",
-        image_attachments: list[dict[str, Any]] | None = None,
-    ) -> ApiRuntimeResult:
-        """Run the provider call without recording events or transcript rows."""
-        return self.ask(
-            text,
-            channel=channel,
-            record=False,
-            include_recall=include_recall,
-            extra_context=extra_context,
-            image_attachments=image_attachments,
         )
 
     def _describe_images(self, user_text: str, image_blocks: list[dict[str, Any]], usage_total: dict[str, Any]) -> str:

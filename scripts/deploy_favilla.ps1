@@ -2,7 +2,7 @@
 # One-shot: push -> wait CI -> download APK artifact -> adb install
 #
 # Requires:
-#   - C:\Users\Iris\.fiam\github_pat.dpapi  (DPAPI-encrypted GitHub PAT, scope: repo + workflow + actions:read)
+#   - C:\Users\Zephyr\.fiam\github_pat.dpapi  (DPAPI-encrypted GitHub PAT, scope: repo + workflow + actions:read)
 #   - D:\scrcpy-win64-v3.3.4\adb.exe
 #   - Repo origin is GitHub (owner/repo parsed from `git remote get-url origin`)
 #

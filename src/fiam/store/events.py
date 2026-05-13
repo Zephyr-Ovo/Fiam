@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -72,6 +72,7 @@ class EventStore:
         turn_id = str(meta.get("turn_id") or "").strip()
         request_id = str(meta.get("request_id") or "").strip()
         session_id = str(meta.get("session_id") or "").strip()
+        surface = str(beat.surface or meta.get("surface") or "").strip().lower()
         name = name_for_beat(beat)
         dispatch_id = str(meta.get("dispatch_id") or "").strip()
         dispatch_target = str(meta.get("dispatch_target") or "").strip()
@@ -100,11 +101,11 @@ class EventStore:
             cur = conn.execute(
                 """
                 INSERT OR IGNORE INTO events (
-                    id, message_id, turn_id, request_id, session_id, t, actor, channel, kind, name,
+                    id, message_id, turn_id, request_id, session_id, surface, t, actor, channel, kind, name,
                     content, runtime, meta_json, object_hash, content_size,
                     dispatch_id, dispatch_target, dispatch_recipient, dispatch_status, dispatch_attempts,
                     dispatch_last_error, object_mime, object_name, object_size
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event_id,
@@ -112,6 +113,7 @@ class EventStore:
                     turn_id,
                     request_id,
                     session_id,
+                    surface,
                     beat.t.isoformat(),
                     beat.actor,
                     beat.channel,
@@ -153,6 +155,7 @@ class EventStore:
         *,
         after: datetime | None = None,
         channel: str | None = None,
+        surface: str | None = None,
         limit: int | None = None,
         ascending: bool = True,
     ) -> list[Beat]:
@@ -166,6 +169,9 @@ class EventStore:
         if channel:
             where.append("channel = ?")
             params.append(channel)
+        if surface:
+            where.append("surface = ?")
+            params.append(surface)
         sql = "SELECT * FROM events"
         if where:
             sql += " WHERE " + " AND ".join(where)
@@ -198,6 +204,205 @@ class EventStore:
             conn.close()
         return [self._beat_from_row(row) for row in rows]
 
+    def read_event(self, event_id: str) -> Beat | None:
+        """Return one event beat by id."""
+        if not self.db_path.exists():
+            return None
+        self.ensure_schema()
+        conn = self._connect()
+        try:
+            row = conn.execute("SELECT * FROM events WHERE id = ?", (str(event_id),)).fetchone()
+        finally:
+            conn.close()
+        return self._beat_from_row(row) if row is not None else None
+
+    def update_event_meta(self, event_id: str, updates: dict[str, Any]) -> bool:
+        """Merge derived metadata into one event row."""
+        event_id = str(event_id or "").strip()
+        if not event_id or not updates:
+            return False
+        self.ensure_schema()
+        conn = self._connect()
+        try:
+            row = conn.execute("SELECT meta_json FROM events WHERE id = ?", (event_id,)).fetchone()
+            if row is None:
+                return False
+            try:
+                meta = json.loads(str(row["meta_json"] or "{}"))
+            except json.JSONDecodeError:
+                meta = {}
+            if not isinstance(meta, dict):
+                meta = {}
+            meta.update({str(key): value for key, value in updates.items() if value not in (None, "")})
+            cur = conn.execute(
+                "UPDATE events SET meta_json = ? WHERE id = ?",
+                (json.dumps(meta, ensure_ascii=False, sort_keys=True), event_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            conn.close()
+
+    def enqueue_unembedded_memory_jobs(self, *, limit: int = 100, kind: str = "event") -> int:
+        """Create idempotent memory jobs for unembedded events."""
+        beats = self.read_unembedded(limit=limit)
+        if not beats:
+            return 0
+        self.ensure_schema()
+        now = datetime.now(timezone.utc).isoformat()
+        changed = 0
+        conn = self._connect()
+        try:
+            for beat in beats:
+                event_id = str((beat.meta or {}).get("event_id") or "")
+                if not event_id:
+                    continue
+                job_id = self.memory_job_id(event_id, kind=kind)
+                before = conn.total_changes
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO memory_jobs (
+                        job_id, event_id, kind, status, attempts, next_visible_at,
+                        lease_until, leased_by, last_error, dead_lettered_at, created_at, updated_at
+                    ) VALUES (?, ?, ?, 'pending', 0, '', '', '', '', '', ?, ?)
+                    """,
+                    (job_id, event_id, kind, now, now),
+                )
+                if conn.total_changes > before:
+                    changed += 1
+            conn.commit()
+        finally:
+            conn.close()
+        return changed
+
+    def enqueue_memory_job(self, event_id: str, *, kind: str = "event") -> bool:
+        """Create one idempotent memory job for an event or derived object id."""
+        event_id = str(event_id or "").strip()
+        kind = str(kind or "event").strip() or "event"
+        if not event_id:
+            return False
+        self.ensure_schema()
+        now = datetime.now(timezone.utc).isoformat()
+        job_id = self.memory_job_id(event_id, kind=kind)
+        conn = self._connect()
+        try:
+            before = conn.total_changes
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO memory_jobs (
+                    job_id, event_id, kind, status, attempts, next_visible_at,
+                    lease_until, leased_by, last_error, dead_lettered_at, created_at, updated_at
+                ) VALUES (?, ?, ?, 'pending', 0, '', '', '', '', '', ?, ?)
+                """,
+                (job_id, event_id, kind, now, now),
+            )
+            conn.commit()
+            return conn.total_changes > before
+        finally:
+            conn.close()
+
+    def claim_memory_jobs(self, *, limit: int = 100, worker_id: str = "", lease_seconds: int = 300) -> list[dict[str, Any]]:
+        """Claim visible memory jobs without deleting them."""
+        self.ensure_schema()
+        now = datetime.now(timezone.utc)
+        now_s = now.isoformat()
+        lease_until = datetime.fromtimestamp(now.timestamp() + max(0, int(lease_seconds)), timezone.utc).isoformat()
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT * FROM memory_jobs
+                WHERE status = 'pending'
+                  AND dead_lettered_at = ''
+                  AND (next_visible_at = '' OR next_visible_at <= ?)
+                  AND (lease_until = '' OR lease_until <= ?)
+                ORDER BY created_at ASC, job_id ASC
+                LIMIT ?
+                """,
+                (now_s, now_s, int(limit)),
+            ).fetchall()
+            jobs = [dict(row) for row in rows]
+            for job in jobs:
+                conn.execute(
+                    """
+                    UPDATE memory_jobs
+                    SET status = 'claimed', leased_by = ?, lease_until = ?, updated_at = ?
+                    WHERE job_id = ?
+                    """,
+                    (worker_id or "memory-worker", lease_until, now_s, job["job_id"]),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+        return jobs
+
+    def ack_memory_job(self, job_id: str) -> bool:
+        """Mark a memory job as done after all derived writes succeed."""
+        self.ensure_schema()
+        now = datetime.now(timezone.utc).isoformat()
+        conn = self._connect()
+        try:
+            cur = conn.execute(
+                """
+                UPDATE memory_jobs
+                SET status = 'done', leased_by = '', lease_until = '', next_visible_at = '', updated_at = ?
+                WHERE job_id = ?
+                """,
+                (now, str(job_id)),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            conn.close()
+
+    def fail_memory_job(self, job_id: str, *, error: str = "", max_attempts: int = 3, backoff_seconds: int = 60) -> bool:
+        """Retry a memory job later or dead-letter it after max attempts."""
+        self.ensure_schema()
+        now = datetime.now(timezone.utc)
+        conn = self._connect()
+        try:
+            row = conn.execute("SELECT * FROM memory_jobs WHERE job_id = ?", (str(job_id),)).fetchone()
+            if row is None:
+                return False
+            attempts = int(row["attempts"] or 0) + 1
+            status = "dead_letter" if attempts >= max(1, int(max_attempts)) else "pending"
+            dead_lettered_at = now.isoformat() if status == "dead_letter" else ""
+            delay = max(0, int(backoff_seconds)) * attempts
+            next_visible_at = "" if status == "dead_letter" else datetime.fromtimestamp(now.timestamp() + delay, timezone.utc).isoformat()
+            conn.execute(
+                """
+                UPDATE memory_jobs
+                SET status = ?, attempts = ?, next_visible_at = ?, leased_by = '', lease_until = '',
+                    last_error = ?, dead_lettered_at = ?, updated_at = ?
+                WHERE job_id = ?
+                """,
+                (status, attempts, next_visible_at, str(error or "")[:1000], dead_lettered_at, now.isoformat(), str(job_id)),
+            )
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+
+    def read_memory_jobs(self, *, status: str = "") -> list[dict[str, Any]]:
+        """Return memory jobs for tests and diagnostics."""
+        if not self.db_path.exists():
+            return []
+        self.ensure_schema()
+        conn = self._connect()
+        try:
+            if status:
+                rows = conn.execute("SELECT * FROM memory_jobs WHERE status = ? ORDER BY created_at ASC, job_id ASC", (status,)).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM memory_jobs ORDER BY created_at ASC, job_id ASC").fetchall()
+        finally:
+            conn.close()
+        return [dict(row) for row in rows]
+
+    @staticmethod
+    def memory_job_id(event_id: str, *, kind: str = "event") -> str:
+        seed = f"{kind}:{event_id}"
+        return "mem_" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:24]
+
     def ensure_schema(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = self._connect()
@@ -210,6 +415,7 @@ class EventStore:
                     turn_id TEXT NOT NULL DEFAULT '',
                     request_id TEXT NOT NULL DEFAULT '',
                     session_id TEXT NOT NULL DEFAULT '',
+                    surface TEXT NOT NULL DEFAULT '',
                     t TEXT NOT NULL,
                     actor TEXT NOT NULL,
                     channel TEXT NOT NULL,
@@ -238,6 +444,7 @@ class EventStore:
             self._ensure_column(conn, "turn_id", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "request_id", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "session_id", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "surface", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "name", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "dispatch_id", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "dispatch_target", "TEXT NOT NULL DEFAULT ''")
@@ -251,13 +458,36 @@ class EventStore:
             self._ensure_column(conn, "embed_model", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "embedded_at", "TEXT NOT NULL DEFAULT ''")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_events_channel_t ON events(channel, t)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_events_surface_t ON events(surface, t)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_events_t ON events(t)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_events_turn ON events(turn_id, t)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_events_request ON events(request_id, t)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id, t)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_events_object_hash ON events(object_hash, t)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_events_name ON events(name)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_events_dispatch ON events(dispatch_target, dispatch_status, t)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_events_dispatch_id ON events(dispatch_id, t)")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS memory_jobs (
+                    job_id TEXT PRIMARY KEY,
+                    event_id TEXT NOT NULL,
+                    kind TEXT NOT NULL DEFAULT 'event',
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    next_visible_at TEXT NOT NULL DEFAULT '',
+                    lease_until TEXT NOT NULL DEFAULT '',
+                    leased_by TEXT NOT NULL DEFAULT '',
+                    last_error TEXT NOT NULL DEFAULT '',
+                    dead_lettered_at TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(event_id, kind)
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_jobs_status_visible ON memory_jobs(status, next_visible_at, lease_until)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_jobs_event ON memory_jobs(event_id, kind)")
             conn.commit()
         finally:
             conn.close()
@@ -299,6 +529,8 @@ class EventStore:
             meta.setdefault("request_id", row["request_id"])
         if row["session_id"]:
             meta.setdefault("session_id", row["session_id"])
+        if "surface" in row.keys() and row["surface"]:
+            meta.setdefault("surface", row["surface"])
         if row["name"]:
             meta.setdefault("name", row["name"])
         if row["embed_model"]:
@@ -332,4 +564,5 @@ class EventStore:
             content=content,
             runtime=row["runtime"],
             meta=meta or None,
+            surface=row["surface"] if "surface" in row.keys() else "",
         )

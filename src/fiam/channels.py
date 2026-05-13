@@ -8,33 +8,28 @@ from dataclasses import dataclass
 @dataclass(frozen=True, slots=True)
 class ChannelSpec:
     channel_id: str
-    aliases: tuple[str, ...] = ()
     actor: str = "user"
     responds: bool = True
 
 
 CHANNELS: tuple[ChannelSpec, ...] = (
-    ChannelSpec("favilla", aliases=("chat", "app", "webapp", "studio"), actor="user", responds=True),
+    ChannelSpec("chat", actor="user", responds=True),
+    ChannelSpec("studio", actor="user", responds=True),
     ChannelSpec("stroll", actor="user", responds=True),
     ChannelSpec("browser", actor="user", responds=True),
     ChannelSpec("email", actor="external", responds=True),
     ChannelSpec("schedule", actor="system", responds=True),
-    ChannelSpec("limen", aliases=("xiao",), actor="system", responds=False),
+    ChannelSpec("limen", actor="system", responds=False),
     ChannelSpec("ring", actor="system", responds=False),
 )
 
 
 _BY_ID = {item.channel_id: item for item in CHANNELS}
-_ALIASES = {
-    alias: item.channel_id
-    for item in CHANNELS
-    for alias in (item.channel_id, *item.aliases)
-}
 
 
 def normalize_channel(channel: str) -> str:
     value = (channel or "").strip().lower()
-    return _ALIASES.get(value, value or "favilla")
+    return value or "chat"
 
 
 def channel_spec(channel: str) -> ChannelSpec:

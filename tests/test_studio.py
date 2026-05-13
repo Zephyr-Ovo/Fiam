@@ -24,36 +24,41 @@ spec.loader.exec_module(dashboard_server)
 class StudioVaultTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.mkdtemp(prefix="studio_test_")
+        self.ai_inbox = tempfile.mkdtemp(prefix="studio_ai_inbox_test_")
         os.environ["FIAM_STUDIO_VAULT_DIR"] = self.tmp
+        os.environ["FIAM_STUDIO_AI_INBOX_DIR"] = self.ai_inbox
 
     def tearDown(self) -> None:
         os.environ.pop("FIAM_STUDIO_VAULT_DIR", None)
+        os.environ.pop("FIAM_STUDIO_AI_INBOX_DIR", None)
         shutil.rmtree(self.tmp, ignore_errors=True)
+        shutil.rmtree(self.ai_inbox, ignore_errors=True)
 
-    def test_share_appends_block_and_commits(self) -> None:
+    def test_share_defaults_to_private_ai_inbox_and_commits(self) -> None:
         res = dashboard_server._studio_share({
-            "source": "atrium",
+            "source": "obsidian",
             "url": "https://example.com/x",
             "selection": "hello world",
             "agent": "copilot",
             "tags": ["web", "test"],
         })
         self.assertTrue(res["ok"])
-        self.assertTrue(res["rel_path"].startswith("inbox/"))
+        self.assertTrue(res["private"])
+        self.assertTrue(res["rel_path"].startswith("ai-inbox/"))
         self.assertFalse(res["archive"])
-        body = (Path(self.tmp) / res["rel_path"]).read_text(encoding="utf-8")
-        self.assertIn("atrium", body)
+        private_rel = res["rel_path"].removeprefix("ai-inbox/")
+        body = (Path(self.ai_inbox) / private_rel).read_text(encoding="utf-8")
+        self.assertIn("obsidian", body)
         self.assertIn("> hello world", body)
         self.assertIn("source: https://example.com/x", body)
         self.assertIn("#web", body)
-        # second share appends, doesn't replace
         res2 = dashboard_server._studio_share({
             "source": "manual",
             "selection": "second",
             "agent": "zephyr",
         })
         self.assertEqual(res["rel_path"], res2["rel_path"])
-        body2 = (Path(self.tmp) / res2["rel_path"]).read_text(encoding="utf-8")
+        body2 = (Path(self.ai_inbox) / private_rel).read_text(encoding="utf-8")
         self.assertIn("hello world", body2)
         self.assertIn("second", body2)
 
@@ -101,6 +106,15 @@ class StudioVaultTests(unittest.TestCase):
                     "agent": "zephyr",
                 })
 
+    def test_explicit_inbox_target_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            dashboard_server._studio_share({
+                "source": "manual",
+                "target_file": "inbox/today.md",
+                "selection": "x",
+                "agent": "zephyr",
+            })
+
     def test_target_file_must_be_md(self) -> None:
         with self.assertRaises(ValueError):
             dashboard_server._studio_share({
@@ -110,7 +124,7 @@ class StudioVaultTests(unittest.TestCase):
 
     def test_list_returns_files_and_log(self) -> None:
         dashboard_server._studio_share({
-            "source": "manual", "selection": "a", "agent": "zephyr",
+            "source": "manual", "selection": "a", "target_file": "desk/a.md", "agent": "zephyr",
         })
         dashboard_server._studio_share({
             "source": "manual", "target_file": "desk/note.md",
@@ -118,7 +132,8 @@ class StudioVaultTests(unittest.TestCase):
         })
         listing = dashboard_server._studio_list()
         paths = [f["path"] for f in listing["files"]]
-        self.assertTrue(any(p.startswith("inbox/") for p in paths))
+        self.assertTrue(all(not p.startswith("inbox/") for p in paths))
+        self.assertIn("desk/a.md", paths)
         self.assertIn("desk/note.md", paths)
         # git log entries (if git is available)
         if shutil.which("git"):
@@ -131,7 +146,7 @@ class StudioVaultTests(unittest.TestCase):
             "selection": "deskonly", "agent": "zephyr",
         })
         dashboard_server._studio_share({
-            "source": "manual", "selection": "inboxonly", "agent": "zephyr",
+            "source": "manual", "selection": "privateonly", "agent": "zephyr",
         })
         listing = dashboard_server._studio_list(dir_filter="desk")
         paths = [f["path"] for f in listing["files"]]
@@ -139,7 +154,8 @@ class StudioVaultTests(unittest.TestCase):
 
     def test_file_read_roundtrip(self) -> None:
         res = dashboard_server._studio_share({
-            "source": "manual", "selection": "hello roundtrip", "agent": "zephyr",
+            "source": "manual", "target_file": "desk/roundtrip.md",
+            "selection": "hello roundtrip", "agent": "zephyr",
         })
         text, meta = dashboard_server._studio_file(res["rel_path"])
         self.assertIn("hello roundtrip", text)

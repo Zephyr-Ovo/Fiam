@@ -174,14 +174,15 @@ def collect_clean_targets(code_path: Path, config=None) -> list[CleanTarget]:
             add(path, label, recreate_dir=label in {"inbox queue", "outbox queue"})
 
         for label, path in [
-            ("recall", config.background_path),
-            ("recall dirty marker", home / ".recall_dirty"),
+            ("pending recall", config.pending_recall_path),
+            ("pending recall processing", home / "pending_recall.processing"),
             ("app cut markers", home / "app_cuts.jsonl"),
             ("active CC session", config.active_session_path),
             ("todo", config.todo_path),
             ("AI state", config.ai_state_path),
             ("generated state", config.state_path),
             ("daily summary", config.daily_summary_path),
+            ("held backlog", config.held_path),
             ("pending external", config.pending_external_path),
             ("pending external processing", home / "pending_external.processing"),
             ("interactive lock", config.interactive_lock_path),

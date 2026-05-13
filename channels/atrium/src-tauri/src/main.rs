@@ -1196,7 +1196,7 @@ fn resolve_spawn_alias(alias: &str) -> Option<PathBuf> {
         ],
         "code" | "vscode" => &[
             "C:\\Program Files\\Microsoft VS Code\\Code.exe",
-            "C:\\Users\\Iris\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe",
+            "C:\\Users\\Zephyr\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe",
         ],
         "explorer" => &["C:\\Windows\\explorer.exe"],
         _ => &[],

@@ -93,11 +93,6 @@ export default function Shell() {
       window.removeEventListener("favilla:newAiReply", onReply as EventListener)
   }, [page])
 
-  // Clear unread when user enters chat.
-  useEffect(() => {
-    if (page === "chat") setUnread(false)
-  }, [page])
-
   // Request notification permission once on native, and route notification
   // taps directly to the chat view.
   useEffect(() => {
@@ -160,6 +155,7 @@ export default function Shell() {
     }
     if (t === "chat") {
       leaveNativeFullscreen()
+      setUnread(false)
       setPage("chat")
       return
     }
@@ -178,8 +174,6 @@ export default function Shell() {
       setPage("studio")
       return
     }
-    // eslint-disable-next-line no-console
-    console.info("[home] target not yet wired:", t)
   }
 
   // Render Home + App together; toggle visibility instead of unmount so
@@ -224,7 +218,7 @@ export default function Shell() {
           willChange: "transform",
         }}
       >
-        <App onBack={() => { blurActiveInput(); leaveNativeFullscreen(); setPage("home") }} />
+        <App active={isChat} onBack={() => { blurActiveInput(); leaveNativeFullscreen(); setPage("home") }} />
       </div>
       <div
         className="absolute inset-0 h-full w-full"
@@ -235,7 +229,7 @@ export default function Shell() {
           willChange: "transform",
         }}
       >
-        <Stroll active={isStroll} onBack={() => { blurActiveInput(); leaveNativeFullscreen(); setPage("home") }} />
+        {isStroll && <Stroll active={isStroll} onBack={() => { blurActiveInput(); leaveNativeFullscreen(); setPage("home") }} />}
       </div>
       <div
         className="absolute inset-0 h-full w-full"
@@ -246,7 +240,7 @@ export default function Shell() {
           willChange: "transform",
         }}
       >
-        <Dashboard onBack={() => { blurActiveInput(); leaveNativeFullscreen(); setPage("home") }} />
+        {isDashboard && <Dashboard onBack={() => { blurActiveInput(); leaveNativeFullscreen(); setPage("home") }} />}
       </div>
       <div
         className="absolute inset-0 h-full w-full"
@@ -257,7 +251,7 @@ export default function Shell() {
           willChange: "transform",
         }}
       >
-        <Studio onBack={() => { blurActiveInput(); leaveNativeFullscreen(); setPage("home") }} />
+        {isStudio && <Studio onBack={() => { blurActiveInput(); leaveNativeFullscreen(); setPage("home") }} />}
       </div>
       <Settings open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </>
@@ -273,17 +267,18 @@ export default function Shell() {
   // Desktop preview frame.
   return (
     <div
-      className="flex min-h-dvh items-center justify-center"
+      className="flex h-dvh w-screen items-center justify-center overflow-hidden"
       style={{
         background: "#1a1612",
+        boxSizing: "border-box",
         padding: "clamp(0px, 4vw, 32px)",
       }}
     >
       <div
         className="relative overflow-hidden"
         style={{
-          width: "min(100%, 412px)",
-          height: "min(100dvh, 915px)",
+          width: "min(calc(100vw - clamp(0px, 8vw, 64px)), 412px)",
+          height: "min(calc(100dvh - clamp(0px, 8vw, 64px)), 915px)",
           borderRadius: 28,
           boxShadow:
             "0 0 0 1px rgba(255,255,255,0.18), 0 30px 80px -20px rgba(0,0,0,0.45), 0 10px 30px -10px rgba(0,0,0,0.3)",

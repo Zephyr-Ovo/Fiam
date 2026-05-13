@@ -31,20 +31,28 @@ function getToken(): string {
 
 const MAX_EVENTS = 20
 
-export function useComputerStatus(): {
+export function useComputerStatus(enabled = true): {
   events: ComputerEvent[]
   connected: boolean
   latest: ComputerEvent | null
 } {
   const [events, setEvents] = useState<ComputerEvent[]>([])
   const [connected, setConnected] = useState(false)
+  const [configVersion, setConfigVersion] = useState(0)
   const esRef = useRef<EventSource | null>(null)
+
+  useEffect(() => {
+    const onConfigChanged = () => setConfigVersion((v) => v + 1)
+    window.addEventListener("favilla:config-changed", onConfigChanged)
+    return () => window.removeEventListener("favilla:config-changed", onConfigChanged)
+  }, [])
 
   useEffect(() => {
     const base = getBase()
     const token = getToken()
-    if (!base) return
-    const url = `${base}/favilla/computer/events${token ? `?token=${encodeURIComponent(token)}` : ""}`
+    if (!enabled) return
+    if (!token) return
+    const url = `${base}/favilla/computer/events?token=${encodeURIComponent(token)}`
     const es = new EventSource(url)
     esRef.current = es
     es.onopen = () => setConnected(true)
@@ -71,8 +79,9 @@ export function useComputerStatus(): {
     return () => {
       es.close()
       esRef.current = null
+      setConnected(false)
     }
-  }, [])
+  }, [configVersion, enabled])
 
   const latest = events.length > 0 ? events[events.length - 1] : null
   return { events, connected, latest }

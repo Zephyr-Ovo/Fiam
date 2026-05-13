@@ -15,6 +15,7 @@ import os
 import signal
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 # src/ must stay before scripts/ because scripts/fiam.py shadows the fiam package.
@@ -24,6 +25,9 @@ sys.path.insert(0, str(_ROOT / "src"))
 
 from fiam.bus import Bus, DISPATCH_PREFIX  # noqa: E402
 from fiam.plugins import is_dispatch_enabled, is_receive_enabled  # noqa: E402
+from fiam.store.beat import append_beat  # noqa: E402
+from fiam.store.objects import ObjectStore  # noqa: E402
+from fiam.turn import AttachmentRef, DispatchRequest, DispatchService, TurnTraceRow, TurnTraceStore  # noqa: E402
 from fiam_lib.core import _build_config, _project_root  # noqa: E402
 from fiam_lib.postman import fetch_inbox, _email_send, _resolve_contact  # noqa: E402
 
@@ -53,11 +57,19 @@ def _on_dispatch(_leaf: str, payload: dict) -> None:
     """Handle outbound email message published by daemon."""
     text = (payload.get("text") or "").strip()
     recipient = (payload.get("recipient") or "").strip()
-    if not text:
-        return
     config = _on_dispatch.config  # type: ignore[attr-defined]
+    try:
+        attachments = _dispatch_attachments(payload, config)
+    except ValueError as exc:
+        logger.warning("email dispatch attachment failure: %s", exc)
+        _record_dispatch_status(config, payload, status="failed", last_error=str(exc))
+        return
+    if not text and not attachments:
+        _record_dispatch_status(config, payload, status="failed", last_error="empty dispatch payload")
+        return
     if not is_dispatch_enabled(config, "email"):
         logger.info("email dispatch skipped — plugin disabled")
+        _record_dispatch_status(config, payload, status="failed", last_error="email plugin disabled")
         return
     from_addr = config.email_from
     to_addr = (
@@ -67,14 +79,114 @@ def _on_dispatch(_leaf: str, payload: dict) -> None:
     password = os.environ.get("FIAM_EMAIL_PASSWORD", "")
     if not from_addr or not to_addr or not config.email_smtp_host:
         logger.warning("email not configured — skipping dispatch")
+        _record_dispatch_status(config, payload, status="failed", last_error="email not configured")
         return
-    subject = text.split("\n", 1)[0][:80] or "From ai"
+    body = text or "(see attached file)"
+    subject = body.split("\n", 1)[0][:80] or "From ai"
     ok = _email_send(
         config.email_smtp_host, config.email_smtp_port,
-        from_addr, to_addr, subject, text,
+        from_addr, to_addr, subject, body,
         password=password,
+        attachments=attachments,
     )
+    _record_dispatch_status(config, payload, status="delivered" if ok else "failed", last_error="" if ok else "SMTP send failed")
     logger.info("dispatched email to %s (ok=%s)", to_addr, ok)
+
+
+def _dispatch_attachments(payload: dict, config) -> list[dict]:
+    raw_attachments = payload.get("attachments") if isinstance(payload.get("attachments"), list) else []
+    if not raw_attachments:
+        return []
+    object_store = ObjectStore(config.object_dir)
+    out: list[dict] = []
+    seen: set[str] = set()
+    for att in raw_attachments:
+        if not isinstance(att, dict):
+            raise ValueError("attachment payload must be an object")
+        object_hash = "".join(ch for ch in str(att.get("object_hash") or "").lower() if ch in "0123456789abcdef")
+        if len(object_hash) != 64:
+            raise ValueError("attachment missing object_hash")
+        if object_hash in seen:
+            continue
+        seen.add(object_hash)
+        try:
+            path = object_store.path_for_hash(object_hash, suffix="")
+        except ValueError as exc:
+            raise ValueError(f"invalid attachment object_hash: {object_hash[:12]}") from exc
+        if not path.is_file():
+            raise ValueError(f"attachment object not found: {object_hash[:12]}")
+        out.append({
+            "object_hash": object_hash,
+            "path": str(path),
+            "name": Path(str(att.get("name") or path.name)).name,
+            "mime": str(att.get("mime") or "application/octet-stream"),
+            "size": int(att.get("size") or path.stat().st_size),
+        })
+    return out
+
+
+def _record_dispatch_status(config, payload: dict, *, status: str, last_error: str = "") -> None:
+    raw_attachments = payload.get("attachments") if isinstance(payload.get("attachments"), list) else []
+    attachments: list[AttachmentRef] = []
+    for att in raw_attachments:
+        if not isinstance(att, dict):
+            continue
+        object_hash = "".join(ch for ch in str(att.get("object_hash") or "").lower() if ch in "0123456789abcdef")
+        if len(object_hash) != 64:
+            continue
+        attachments.append(AttachmentRef(
+            object_hash=object_hash,
+            name=Path(str(att.get("name") or object_hash[:12])).name,
+            mime=str(att.get("mime") or ""),
+            size=int(att.get("size") or 0),
+        ))
+    request = DispatchRequest(
+        channel="email",
+        recipient=str(payload.get("recipient") or ""),
+        body=str(payload.get("text") or ""),
+        dispatch_id=str(payload.get("dispatch_id") or ""),
+        attachments=tuple(attachments),
+    )
+    try:
+        event = DispatchService().event_for(
+            request,
+            turn_id=str(payload.get("turn_id") or ""),
+            request_id=str(payload.get("request_id") or ""),
+            session_id=str(payload.get("session_id") or ""),
+            status=status,
+            attempts=1,
+            last_error=last_error,
+        )
+        append_beat(config.flow_path, event)
+        _record_dispatch_trace(config, payload, status=status, last_error=last_error, attachments=attachments)
+    except Exception:
+        logger.exception("email dispatch status record failed")
+
+
+def _record_dispatch_trace(config, payload: dict, *, status: str, last_error: str = "", attachments: list[AttachmentRef] | None = None) -> None:
+    turn_id = str(payload.get("turn_id") or payload.get("dispatch_id") or "email_dispatch")
+    dispatch_id = str(payload.get("dispatch_id") or "")
+    now = datetime.now(timezone.utc)
+    try:
+        TurnTraceStore(config.store_dir / "turn_traces.jsonl").append(TurnTraceRow(
+            turn_id=turn_id,
+            request_id=str(payload.get("request_id") or ""),
+            session_id=str(payload.get("session_id") or ""),
+            channel="email",
+            surface="email.bridge",
+            phase="dispatch.delivered" if status == "delivered" else "dispatch.failed",
+            status="ok" if status == "delivered" else "error",
+            started_at=now.isoformat(),
+            ended_at=now.isoformat(),
+            error=last_error,
+            refs={
+                "dispatch_id": dispatch_id,
+                "recipient": str(payload.get("recipient") or ""),
+                "attachment_hashes": [attachment.object_hash for attachment in (attachments or [])],
+            },
+        ))
+    except Exception:
+        logger.debug("email dispatch trace append failed", exc_info=True)
 
 
 def main() -> None:

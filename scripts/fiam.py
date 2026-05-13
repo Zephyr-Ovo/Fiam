@@ -111,9 +111,7 @@ def main() -> None:
     sub_api = subparsers.add_parser("api", help="Call configured API runtime once")
     add_common(sub_api)
     sub_api.add_argument("text", type=str, help="User text to send to the API runtime")
-    sub_api.add_argument("--source", type=str, default="cli", help="Source label for prompt/flow metadata")
-    sub_api.add_argument("--no-record", action="store_true", default=False,
-                         help="Do not write the call into flow.jsonl")
+    sub_api.add_argument("--channel", type=str, default="api", help="Transcript channel for prompt context")
     sub_api.set_defaults(func=_cmd_api)
 
     args = parser.parse_args()

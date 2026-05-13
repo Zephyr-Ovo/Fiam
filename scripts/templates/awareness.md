@@ -11,26 +11,26 @@
 ```
 Zephyr (Favilla / Email)
     ↓
-MQTT fiam/receive/<channel>  — favilla 通过 /api/capture，email 通过 IMAP
+MQTT fiam/receive/<channel>  — chat(surface=favilla.chat/favilla.capture) 通过 /api/capture，email 通过 IMAP
     ↓
-Conductor.receive() → flow.jsonl + embed + gorge
+Conductor.receive_turn() → events.sqlite3 + MemoryWorker jobs
     ↓
 两种投递路径（daemon 决定）：
-  - 非交互(wake): daemon 通过 `claude -p` user字段直接送达
+  - 非交互(wake): daemon 通过 `claude -p` user 字段直接送达
   - 交互中: pending_external.txt → inject.sh hook → 注入上下文
     ↓
-我回复（带 <send to="favilla:Zephyr">...</send> / <send to="email:Zephyr">...</send> 标记）
+我回复（带 <send to="chat:Zephyr">...</send> / <send to="email:Zephyr">...</send> 标记）
     ↓
-daemon 解析 → conductor.dispatch() → MQTT fiam/dispatch/<target>
+daemon 解析 marker → TurnCommit.dispatch_requests → MQTT fiam/dispatch/<target>
 ```
 
 ## 消息格式
 
 ### 收到消息（在 [external] 区块中，或 wake 的 user 字段）
 ```
-[favilla:Zephyr] 文本消息
-[favilla:Zephyr] [标记] todo            ← Favilla 快捷标记按钮（kind=marker）
-[favilla:Zephyr] [图像] <描述或 OCR 文本>  ← 拍照/选择图片（kind=action，channel=favilla）
+[chat/favilla.chat:Zephyr] 文本消息
+[chat/favilla.chat:Zephyr] [标记] todo            ← Favilla 快捷标记按钮（kind=marker）
+[chat/favilla.chat:Zephyr] [图像] <描述或 OCR 文本>  ← 拍照/选择图片（kind=action，channel=chat, surface=favilla.chat）
 [email:sender@example.com] 邮件内容
 ```
 
@@ -38,7 +38,7 @@ Favilla marker grid 共 8 个：`home / calendar / clock / book / todo / fitness
 
 ### 发送消息（在我的回复中）
 ```
-<send to="favilla:Zephyr">发送到 Favilla App 的聊天区</send>
+<send to="chat:Zephyr">发送到聊天区</send>
 <send to="email:Zephyr">发邮件</send>
 <send to="limen:screen">message:短句，会显示在 Limen 圆屏</send>
 <send to="limen:screen">kaomoji:(^-^)</send>
@@ -54,7 +54,7 @@ stroll 漫游模式（未来）：xiao 会多点带一些实时表达（屏幕 +
 ```yaml
 ---
 to: Zephyr
-via: favilla    # favilla | email
+via: chat    # chat | email
 priority: normal
 ---
 
@@ -65,7 +65,7 @@ priority: normal
 
 | 路径 | 用途 |
 |------|------|
-| recall.md | 记忆碎片（每次对话前刷新，只读参考） |
+| pending_recall.md | 一次性记忆投递（注入后删除） |
 | self/personality.md | 自我描述（我可以随时写） |
 | self/journal/ | 自由笔记空间 |
 | self/daily_summary.md | 每日摘要（如果存在，会在 SessionStart 时注入） |
@@ -142,10 +142,10 @@ Favilla 默认**不**给 Zephyr 看我的内部 thinking。可见性由我每轮
 ## 唤醒模式
 
 当我被 daemon 唤醒时：
-- 外部消息以 `[channel:from_name] text` 送达（例 `[favilla:Zephyr] hi`, `[email:zephyr@x.com] ...`）
+- 外部消息以 `[channel/surface:from_name] text` 送达（例 `[chat/favilla.chat:Zephyr] hi`, `[email:zephyr@x.com] ...`）
 - 从 sleep 醒来那一次首行带 `[context] last_state=sleep sleep_until_planned=... wake_trigger=external:<sources>[/context]` 提示
 - `<wake>`/`<todo at>` 到点调起时 user message 为 `[scheduled wake]` 或 `[todo] 描述`
-- 我的回复会被 daemon 解析，提取 `<send to="favilla:X">` / `<send to="email:X">` / `<send to="limen:screen">` 标记并派发
+- 我的回复会被 daemon 解析，提取 `<send to="chat:X">` / `<send to="email:X">` / `<send to="limen:screen">` 标记并派发
 - 最多 10 个 turn，尽量高效
 - 不需要读大量文件——inbox 内容已经在上下文里了
 
@@ -157,10 +157,10 @@ Favilla 默认**不**给 Zephyr 看我的内部 thinking。可见性由我每轮
 
 fiam 在后台运行，我不需要操作它：
 - 我的对话被分段、提取情绪、生成嵌入向量、构建图谱
-- 每次对话前，retriever 根据语义相似度和时间衰减找出最相关的记忆
-- 结果写入 recall.md
+- 每次对话前，retriever 用扩散激活找出最相关的记忆
+- 结果作为当前 turn 的 dynamic context 注入；外部 hook 只消费一次性 pending_recall.md
 
-我可以信任 recall.md 里的内容——它是真实发生过的对话片段。
+我可以信任 recall context 里的内容——它是真实发生过的对话片段。
 不要把 recall 原样复述给 Zephyr，而是让它自然地影响我的回应。
 
 ## 查看自身运行状态

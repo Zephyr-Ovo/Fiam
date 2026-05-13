@@ -21,6 +21,12 @@ spec.loader.exec_module(dashboard_server)
 
 from fiam.config import FiamConfig  # noqa: E402
 from fiam.markers import parse_route_markers  # noqa: E402
+from fiam.store.beat import Beat, append_beat  # noqa: E402
+from fiam.store.object_catalog import ObjectCatalog  # noqa: E402
+from fiam.store.objects import ObjectStore  # noqa: E402
+from fiam.runtime.tools import execute_tool_call  # noqa: E402
+from datetime import datetime, timezone  # noqa: E402
+import json  # noqa: E402
 
 
 class CatalogTest(unittest.TestCase):
@@ -61,7 +67,7 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual(config.catalog["claude"].budget_tokens, 32000)
         self.assertEqual(config.catalog["gemini"].model, "gemini-2.5-flash-lite")
 
-    def test_config_seeds_catalog_from_legacy_api_when_missing(self) -> None:
+    def test_config_requires_explicit_catalog_sections(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             toml = root / "fiam.toml"
@@ -85,8 +91,7 @@ class CatalogTest(unittest.TestCase):
 
             config = FiamConfig.from_toml(toml, root)
 
-        self.assertEqual(config.catalog["claude"].provider, "poe")
-        self.assertEqual(config.catalog["gemini"].provider, "aistudio")
+        self.assertEqual(config.catalog, {})
 
     def test_route_marker_parses_family_and_reason(self) -> None:
         markers = parse_route_markers('<route family="gemini" reason="math/code fallback"/>')
@@ -158,6 +163,63 @@ class CatalogTest(unittest.TestCase):
         self.assertIn("[api]\nmodel = \"old\"", updated)
         self.assertIn("[catalog.claude]", updated)
         self.assertIn('fallbacks = ["Claude-Sonnet-4.6"]', updated)
+
+    def test_object_catalog_searches_event_object_facts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = FiamConfig(home_path=root / "home", code_path=root / "code")
+            config.ensure_dirs()
+            digest = ObjectStore(config.object_dir).put_bytes(b"object bytes", suffix="")
+            append_beat(config.flow_path, Beat(
+                t=datetime(2026, 5, 13, 10, 0, tzinfo=timezone.utc),
+                actor="ai",
+                channel="email",
+                kind="attachment",
+                content="attachment: note.txt",
+                meta={
+                    "object_hash": digest,
+                    "object_name": "note.txt",
+                    "object_mime": "text/plain",
+                    "object_size": 12,
+                    "object_summary": "short note attachment",
+                    "object_tags": ["note", "dispatch"],
+                    "dispatch_id": "disp_1",
+                    "turn_id": "turn_1",
+                },
+            ))
+
+            catalog = ObjectCatalog.from_config(config)
+            records = catalog.search("note")
+
+            self.assertEqual(records[0].object_hash, digest)
+            self.assertEqual(records[0].token, f"obj:{digest[:12]}")
+            self.assertEqual(records[0].summary, "short note attachment")
+            self.assertEqual(records[0].tags, ("note", "dispatch"))
+            self.assertEqual(catalog.resolve_token(f"obj:{digest[:12]}"), digest)
+
+            tool_result = json.loads(execute_tool_call(config, "ObjectSearch", json.dumps({"query": "dispatch", "token": f"obj:{digest[:12]}"})))
+            self.assertEqual(tool_result["object_hash"], digest)
+            self.assertEqual(tool_result["records"][0]["object_hash"], digest)
+
+    def test_object_catalog_reads_upload_manifest_and_rejects_ambiguous_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = FiamConfig(home_path=root / "home", code_path=root / "code")
+            config.ensure_dirs()
+            first = "a" * 64
+            second = "a" * 12 + "b" * 52
+            manifest = config.home_path / "uploads" / "manifest.jsonl"
+            manifest.parent.mkdir(parents=True, exist_ok=True)
+            manifest.write_text("\n".join([
+                json.dumps({"uploaded_at": "2026-05-13T09:00:00+00:00", "object_hash": first, "name": "alpha.png", "mime": "image/png", "size": 5}),
+                json.dumps({"uploaded_at": "2026-05-13T09:01:00+00:00", "object_hash": second, "name": "beta.png", "mime": "image/png", "size": 6}),
+            ]) + "\n", encoding="utf-8")
+
+            catalog = ObjectCatalog.from_config(config)
+
+            self.assertEqual(catalog.search("beta")[0].object_hash, second)
+            self.assertEqual(catalog.resolve_token(f"obj:{first[:12]}"), "")
+            self.assertEqual(catalog.resolve_token(f"obj:{first[:16]}"), first)
 
 
 if __name__ == "__main__":

@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from fiam.markers import OutboundMarker
 
 
-_CONTROL_MARKERS = {"wake", "todo", "sleep", "state", "route", "hold", "cot"}
+_CONTROL_MARKERS = {"wake", "todo", "sleep", "state", "route", "hold", "held", "lock", "cot"}
 
 
 def parse_ts(ts_str: str) -> datetime:
@@ -53,6 +53,7 @@ def user_beat(
     t: datetime,
     channel: str,
     user_name: str,
+    surface: str = "",
 ) -> Beat:
     """Build a user dialogue beat for a channel."""
     return Beat(
@@ -61,6 +62,7 @@ def user_beat(
         channel=normalize_channel(channel),
         kind="message",
         content=text.strip(),
+        surface=surface,
     )
 
 
@@ -70,6 +72,7 @@ def assistant_text_beats(
     t: datetime,
     channel: str,
     runtime: str | None = None,
+    surface: str = "",
 ) -> list[Beat]:
     """Build assistant dialogue and dispatch beats from a text response."""
     beats: list[Beat] = []
@@ -88,6 +91,7 @@ def assistant_text_beats(
             content=cot_text,
             runtime=runtime,
             meta={"source": "fiam", "name": "fiam"},
+            surface=surface,
         ))
 
     for marker in interpretation.dispatch_requests:
@@ -104,6 +108,7 @@ def assistant_text_beats(
                 "dispatch_recipient": marker.recipient,
                 "dispatch_status": marker.status,
                 "dispatch_attempts": 0,
+                **({"attachments": [item.to_payload() for item in marker.attachments], "attachment_hashes": [item.object_hash for item in marker.attachments]} if marker.attachments else {}),
             },
         ))
 
@@ -115,6 +120,7 @@ def assistant_text_beats(
             kind="message",
             content=interpretation.visible_reply.strip(),
             runtime=runtime,
+            surface=surface,
         ))
 
     return beats

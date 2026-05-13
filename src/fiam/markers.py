@@ -12,6 +12,8 @@ class OutboundMarker:
     channel: str
     recipient: str
     body: str
+    attachments: tuple[str, ...] = ()
+    attachment_errors: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -46,6 +48,7 @@ class RouteMarker:
 @dataclass(frozen=True)
 class HoldMarker:
     reason: str = ""
+    status: str = "reroll"
 
 _XML_MARKER_RE = re.compile(
     r"<\s*(?P<name>[A-Za-z_][\w:-]*)\b(?P<attrs>[^<>]*?)\s*"
@@ -87,10 +90,35 @@ def parse_outbound_markers(
         if allowed is not None and channel not in allowed:
             continue
         recipient = recipient.strip()
-        body = text[match.start("body"):match.end("body")].strip()
-        if channel and recipient and body:
-            markers.append(OutboundMarker(channel=channel, recipient=recipient, body=body))
+        body = ""
+        if match.start("body") >= 0 and match.end("body") >= 0:
+            body = text[match.start("body"):match.end("body")].strip()
+        attachments, attachment_errors = _parse_attach_refs(attrs.get("attach", ""))
+        if channel and recipient and (body or attachments or attachment_errors):
+            markers.append(OutboundMarker(channel=channel, recipient=recipient, body=body, attachments=attachments, attachment_errors=attachment_errors))
     return markers
+
+
+def _parse_attach_refs(raw: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    hashes: list[str] = []
+    errors: list[str] = []
+    seen: set[str] = set()
+    for token in re.split(r"[\s,]+", raw or ""):
+        token = token.strip()
+        if not token:
+            continue
+        if not token.lower().startswith("obj:"):
+            errors.append(f"invalid attachment token: {token[:80]}")
+            continue
+        digest = token[4:].strip().lower()
+        if len(digest) < 8 or len(digest) > 64 or any(ch not in "0123456789abcdef" for ch in digest):
+            errors.append(f"invalid object token: obj:{digest[:80]}")
+            continue
+        if digest in seen:
+            continue
+        seen.add(digest)
+        hashes.append(digest)
+    return tuple(hashes), tuple(errors)
 
 
 def _attrs(raw: str) -> dict[str, str]:
@@ -232,11 +260,13 @@ def parse_cot_markers(text: str) -> list[str]:
 
 
 def parse_hold_markers(text: str) -> list[HoldMarker]:
-    """Parse ``<hold/>`` and ``<hold>reason</hold>`` markers."""
+    """Parse ``<hold/>`` reroll and ``<held>reason</held>`` outcome markers."""
     out: list[HoldMarker] = []
     for name, _attrs, body in _xml_markers(text):
         if name == "hold":
-            out.append(HoldMarker(reason=(body or "").strip()))
+            out.append(HoldMarker(reason=(body or "").strip(), status="reroll"))
+        elif name == "held":
+            out.append(HoldMarker(reason=(body or "").strip(), status="held"))
     return out
 
 

@@ -1,23 +1,19 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
 	import {
 		api,
-		type DebugContextPayload,
-		type DebugContextPart,
-		type DebugFlowPayload
+		type DebugContextPayload
 	} from '$lib/api';
 
-	type Tab = 'api' | 'cc' | 'flow';
-	let tab = $state<Tab>('api');
+	type Tab = 'latest' | 'api' | 'cc';
+	let tab = $state<Tab>('latest');
 
-	let apiCtx = $state<DebugContextPayload | null>(null);
-	let ccCtx = $state<DebugContextPayload | null>(null);
-	let flow = $state<DebugFlowPayload | null>(null);
+	let ctx = $state<DebugContextPayload | null>(null);
 	let loading = $state(false);
 	let err = $state<string | null>(null);
 	let lastRefreshed = $state<string>('—');
 	let expanded = $state<Record<string, boolean>>({});
-	let flowExpanded = $state<Record<number, boolean>>({});
+	let pollTimer: ReturnType<typeof setInterval> | null = null;
 
 	const labelColors: Record<string, string> = {
 		constitution: 'var(--color-mauve)',
@@ -56,14 +52,7 @@
 		loading = true;
 		err = null;
 		try {
-			const [a, c, f] = await Promise.all([
-				api.debugContext('api').catch((e) => ({ error: String(e) }) as DebugContextPayload),
-				api.debugContext('cc').catch((e) => ({ error: String(e) }) as DebugContextPayload),
-				api.debugFlow(200).catch((e) => ({ rows: [], total: 0, returned: 0, error: String(e) }) as DebugFlowPayload)
-			]);
-			apiCtx = a;
-			ccCtx = c;
-			flow = f;
+			ctx = await api.debugContext(tab).catch((e) => ({ error: String(e) }) as DebugContextPayload);
 			lastRefreshed = new Date().toLocaleTimeString();
 		} catch (e) {
 			err = String(e);
@@ -74,38 +63,32 @@
 
 	onMount(() => {
 		refreshAll();
+		pollTimer = setInterval(refreshAll, 3000);
 	});
 
-	function togglePart(runtime: string, idx: number) {
-		const k = `${runtime}:${idx}`;
+	$effect(() => {
+		tab;
+		refreshAll();
+	});
+
+	onDestroy(() => {
+		if (pollTimer) clearInterval(pollTimer);
+	});
+
+	function togglePart(idx: number) {
+		const k = `${tab}:${idx}`;
 		expanded = { ...expanded, [k]: !expanded[k] };
 	}
-	function isOpen(runtime: string, idx: number): boolean {
-		return !!expanded[`${runtime}:${idx}`];
-	}
-
-	function toggleFlow(idx: number) {
-		flowExpanded = { ...flowExpanded, [idx]: !flowExpanded[idx] };
-	}
-
-	function flowPreview(row: Record<string, unknown>): string {
-		const text = String((row.text as string) ?? (row.preview as string) ?? '');
-		return text.length > 200 ? text.slice(0, 200) + '…' : text;
-	}
-
-	function flowScene(row: Record<string, unknown>): string {
-		const a = String((row.actor as string) ?? '');
-		const c = String((row.channel as string) ?? '');
-		if (a && c) return `${a}@${c}`;
-		return a || c || '—';
+	function isOpen(idx: number): boolean {
+		return !!expanded[`${tab}:${idx}`];
 	}
 </script>
 
 <div class="flex flex-col gap-4 max-w-6xl mx-auto">
 	<div class="flex items-center gap-3 flex-wrap">
-		<h1 class="text-lg font-mono text-[var(--color-mauve)]">context · debug</h1>
+		<h1 class="text-lg font-mono text-[var(--color-mauve)]">context · actual prompt</h1>
 		<div class="flex gap-1 ml-2">
-			{#each ['api', 'cc', 'flow'] as t (t)}
+			{#each ['latest', 'api', 'cc'] as t (t)}
 				<button
 					class="px-2 py-1 text-xs font-mono rounded border cursor-pointer"
 					class:bg-active={tab === t}
@@ -131,17 +114,15 @@
 		<div class="text-xs font-mono text-[var(--color-red)]">{err}</div>
 	{/if}
 
-	{#if tab === 'api' || tab === 'cc'}
-		{@const ctx = tab === 'api' ? apiCtx : ccCtx}
-		{#if !ctx}
+	{#if !ctx}
 			<div class="text-xs font-mono text-[var(--color-overlay0)]">loading…</div>
-		{:else if ctx.error}
+	{:else if ctx.error}
 			<div class="text-xs font-mono text-[var(--color-red)]">error: {ctx.error}</div>
-		{:else if ctx.empty}
+	{:else if ctx.empty}
 			<div class="text-xs font-mono text-[var(--color-overlay0)]">
-				no snapshot yet — send a chat to {tab.toUpperCase()} runtime first
+				no context snapshot yet
 			</div>
-		{:else}
+	{:else}
 			<!-- meta -->
 			<div class="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs font-mono">
 				<div class="border border-[var(--color-surface1)] rounded p-2">
@@ -165,8 +146,7 @@
 			</div>
 
 			<!-- metrics -->
-			{#if ctx.metrics}
-				{@const m = ctx.metrics}
+			{@const m = ctx.metrics ?? {}}
 				<div
 					class="border border-[var(--color-surface1)] rounded p-3 text-xs font-mono flex flex-wrap gap-x-6 gap-y-1"
 				>
@@ -201,16 +181,15 @@
 						<span class="ml-1 text-[var(--color-peach)]">{fmtNum(m.tokens_cache_creation)}</span>
 					</div>
 				</div>
-			{/if}
 
 			<!-- parts -->
 			<div class="flex flex-col gap-2">
 				{#each ctx.parts ?? [] as part, i (i)}
-					{@const open = isOpen(tab, i)}
+					{@const open = isOpen(i)}
 					<div class="border border-[var(--color-surface1)] rounded">
 						<button
 							class="w-full text-left px-3 py-2 flex items-center gap-2 text-xs font-mono cursor-pointer hover:bg-[var(--color-surface0)]"
-							onclick={() => togglePart(tab, i)}
+							onclick={() => togglePart(i)}
 						>
 							<span class="w-3 text-[var(--color-overlay0)]">{open ? '▾' : '▸'}</span>
 							<span
@@ -233,37 +212,6 @@
 					</div>
 				{/each}
 			</div>
-		{/if}
-	{:else if tab === 'flow'}
-		{#if !flow}
-			<div class="text-xs font-mono text-[var(--color-overlay0)]">loading…</div>
-		{:else if flow.error}
-			<div class="text-xs font-mono text-[var(--color-red)]">error: {flow.error}</div>
-		{:else}
-			<div class="text-xs font-mono text-[var(--color-overlay0)]">
-				showing {flow.returned} / {flow.total} rows (latest first)
-			</div>
-			<div class="flex flex-col gap-1">
-				{#each [...flow.rows].reverse() as row, idx (idx)}
-					{@const open = !!flowExpanded[idx]}
-					<div class="border border-[var(--color-surface1)] rounded">
-						<button
-							class="w-full text-left px-3 py-1.5 flex items-center gap-2 text-xs font-mono cursor-pointer hover:bg-[var(--color-surface0)]"
-							onclick={() => toggleFlow(idx)}
-						>
-							<span class="w-3 text-[var(--color-overlay0)]">{open ? '▾' : '▸'}</span>
-							<span class="text-[var(--color-overlay0)]">{String(row.t ?? '')}</span>
-							<span class="text-[var(--color-mauve)]">{flowScene(row)}</span>
-							<span class="text-[var(--color-text)] truncate flex-1">{flowPreview(row)}</span>
-						</button>
-						{#if open}
-							<pre
-								class="px-3 py-2 text-xs font-mono whitespace-pre-wrap break-words border-t border-[var(--color-surface1)] text-[var(--color-text)] bg-[var(--color-mantle)] max-h-96 overflow-auto">{JSON.stringify(row, null, 2)}</pre>
-						{/if}
-					</div>
-				{/each}
-			</div>
-		{/if}
 	{/if}
 </div>
 

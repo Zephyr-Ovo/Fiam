@@ -22,7 +22,7 @@ http://fiet.cc, http://www.fiet.cc {
 
 	@protected not path /api/capture /api/app/* /api/wearable/* /favilla/*
 	basic_auth @protected {
-		iris  $2a$14$REPLACE_WITH_HASH_FROM_caddy_hash_password
+		Zephyr  $2a$14$REPLACE_WITH_HASH_FROM_caddy_hash_password
 		ai    $2a$14$REPLACE_WITH_HASH_FROM_caddy_hash_password
 		live  $2a$14$REPLACE_WITH_HASH_FROM_caddy_hash_password
 	}

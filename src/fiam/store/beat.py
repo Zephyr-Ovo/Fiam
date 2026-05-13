@@ -17,15 +17,16 @@ from typing import Any, Literal
 
 # Two orthogonal dimensions:
 #   actor   — who produced this beat
-#   channel — which surface it appeared on (favilla, browser, ...)
+#   channel — canonical event/conversation domain (chat, studio, browser, ...)
+#   surface — concrete app/page/client that carried it (favilla.chat, atrium.browser, ...)
 #   kind    — what kind of beat it is (message, action, think, ...)
 # A beat with channel="browser" + kind="action" is a browser tool action;
-# channel="favilla" + kind="think" is a private thought during a Favilla turn.
+# channel="chat" + surface="favilla.chat" + kind="think" is a private thought during a Favilla turn.
 Actor = Literal["user", "ai", "external", "system"]
 Kind = Literal["message", "action", "tool_result", "think", "schedule", "dispatch", "state", "attachment", "trace"]
 Channel = str
 KNOWN_CHANNELS: set[str] = {
-    "favilla", "browser", "stroll", "email", "studio", "cc", "system",
+    "chat", "studio", "stroll", "browser", "email", "schedule", "limen", "ring", "cc", "system",
 }
 # Runtime tags the model family that produced an AI beat.
 # None for user/external/system beats.
@@ -48,6 +49,7 @@ class Beat:
     content: str             # natural-language content
     runtime: str | None = None  # model family: cc / claude / gemini / ... (None for non-AI)
     meta: dict[str, Any] | None = None  # extra info (tool name, session/source tags, ...)
+    surface: str = ""        # concrete source surface, e.g. favilla.chat / atrium.browser
 
     # ------------------------------------------------------------------
     # Serialisation
@@ -65,6 +67,8 @@ class Beat:
             data["runtime"] = self.runtime
         if self.meta:
             data["meta"] = self.meta
+        if self.surface:
+            data["surface"] = self.surface
         return data
 
     def to_json(self) -> str:
@@ -84,6 +88,7 @@ class Beat:
             content=d["content"],
             runtime=d.get("runtime"),
             meta=d.get("meta"),
+            surface=d.get("surface", ""),
         )
 
 

@@ -177,6 +177,7 @@ class BrowserBridgeTest(unittest.TestCase):
         dashboard_server._CONFIG = original_config
         self.assertTrue(result["screenshot_attached"])
         self.assertTrue(result["screenshot_attempted"])
+        self.assertEqual(len(attachments[0]["object_hash"]), 64)
         self.assertEqual(attachments[0]["mime"], "image/jpeg")
 
     def test_dashboard_browser_tick_retries_without_screenshot_on_failure(self) -> None:
@@ -322,7 +323,7 @@ class BrowserBridgeTest(unittest.TestCase):
     def test_builtin_contextual_fallback_survives_user_strict_keep_override(self) -> None:
         snapshot = {
             "snapshot": {
-                "url": "https://www.pinterest.com/irisz2340/",
+                "url": "https://www.pinterest.com/Zephyrz2340/",
                 "title": "Pinterest",
                 "profileRules": {
                     "id": "user:pinterest.com",
@@ -454,7 +455,7 @@ class BrowserBridgeTest(unittest.TestCase):
         dashboard_server._CONFIG = original_config
         dashboard_server._POOL = original_pool
         self.assertTrue(result["ok"])
-        self.assertFalse(captured["record"])
+        self.assertNotIn("record", captured)
         self.assertNotIn("OLD_BROWSER_CONTEXT", captured["extra_context"])
         self.assertIsNone(captured["conductor"])
         self.assertIsNone(captured["recall_refresher"])

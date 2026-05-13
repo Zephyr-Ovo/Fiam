@@ -6,7 +6,7 @@ kind = "channel"
 delivery = "lazy"
 description = "Email ingress/egress through IMAP and SMTP helpers."
 transports = ["mqtt", "imap", "smtp"]
-capabilities = ["receive_text", "dispatch_text"]
+capabilities = ["receive_text", "dispatch_text", "dispatch_attachment"]
 receive_channels = ["email", "mail"]
 dispatch_targets = ["email", "mail"]
 entrypoint = "scripts/bridges/bridge_email.py"
@@ -15,5 +15,6 @@ latency = "polling; default 600s inbound, dispatch is immediate SMTP call"
 env = []
 replaces = []
 notes = [
-  "Useful as a durable async channel even after the self app exists."
+  "Useful as a durable async channel even after the self app exists.",
+  "Outbound attachments use ObjectStore object_hash refs and are sent as SMTP MIME attachments."
 ]

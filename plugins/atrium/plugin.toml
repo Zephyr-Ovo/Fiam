@@ -5,7 +5,7 @@ status = "m12-browser-extension-bridge"
 kind = "device"
 description = """
 Latin atrium = central hall / entry court. Pairs with limen (threshold).
-High-privilege desktop client running on Iris's PC. Exposes a curated set of
+High-privilege desktop client running on Zephyr's PC. Exposes a curated set of
 sensors and actuators to the daemon over MQTT, gated by capabilities.toml +
 trust levels + audit log. The brain stays on ISP; atrium is hands and eyes.
 """

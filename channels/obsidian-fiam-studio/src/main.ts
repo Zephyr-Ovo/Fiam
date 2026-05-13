@@ -17,24 +17,26 @@ import { promisify } from "util";
 const execFileAsync = promisify(execFile);
 const VIEW_TYPE_FIAM_STUDIO = "fiam-studio-view";
 
-type StudioTab = "timeline" | "inbox" | "desk" | "shelf" | "quick" | "coauthor";
+type StudioTab = "timeline" | "desk" | "shelf" | "quick" | "coauthor";
 
 interface FiamStudioSettings {
-  inboxDir: string;
   deskDir: string;
   shelfDir: string;
   humanAuthor: string;
   aiAuthor: string;
   gitRemote: string;
+  studioEndpoint: string;
+  ingestToken: string;
 }
 
 const DEFAULT_SETTINGS: FiamStudioSettings = {
-  inboxDir: "inbox",
   deskDir: "desk",
   shelfDir: "shelf",
   humanAuthor: "zephyr",
   aiAuthor: "ai",
   gitRemote: "origin",
+  studioEndpoint: "",
+  ingestToken: "",
 };
 
 interface GitCommit {
@@ -43,6 +45,12 @@ interface GitCommit {
   author: string;
   subject: string;
   files: string[];
+}
+
+interface TimelineIcon {
+  slug: string;
+  alt: string;
+  size: number;
 }
 
 export default class FiamStudioPlugin extends Plugin {
@@ -74,15 +82,19 @@ export default class FiamStudioPlugin extends Plugin {
     });
 
     this.addCommand({
-      id: "send-selection-to-inbox",
-      name: "Send selection to inbox",
+      id: "send-selection-to-ai-inbox",
+      name: "Send selection to private AI inbox",
       editorCallback: async (editor) => {
         const selection = editor.getSelection();
         if (!selection.trim()) {
           new Notice("No selection");
           return;
         }
-        await this.captureToInbox(selection, "obsidian-selection", this.settings.humanAuthor);
+        try {
+          await this.sendToAiInbox(selection, "obsidian", this.settings.humanAuthor);
+        } catch (error) {
+          new Notice(`AI inbox send failed: ${String(error).slice(0, 160)}`);
+        }
       },
     });
 
@@ -100,6 +112,19 @@ export default class FiamStudioPlugin extends Plugin {
       callback: async () => {
         const result = await this.gitSync(`studio sync: ${new Date().toISOString()}`);
         new Notice(result || "Studio git sync complete");
+        this.refreshViews();
+      },
+    });
+
+    this.addCommand({
+      id: "git-commit",
+      name: "Commit Studio vault changes",
+      callback: async () => {
+        const result = await this.gitCommitAll(
+          `studio commit: ${new Date().toISOString()}`,
+          this.settings.humanAuthor,
+        );
+        new Notice(result || "No Studio changes to commit");
         this.refreshViews();
       },
     });
@@ -147,9 +172,15 @@ export default class FiamStudioPlugin extends Plugin {
   }
 
   async ensureStudioDirs() {
-    for (const dir of [this.settings.inboxDir, this.settings.deskDir, this.settings.shelfDir]) {
+    for (const dir of [this.settings.deskDir, this.settings.shelfDir]) {
       await this.ensureFolder(dir);
     }
+  }
+
+  assetUrl(fileName: string) {
+    const assetPath = normalizePath(`.obsidian/plugins/${this.manifest.id}/assets/${fileName}`);
+    const adapter = this.app.vault.adapter as unknown as { getResourcePath?: (path: string) => string };
+    return typeof adapter.getResourcePath === "function" ? adapter.getResourcePath(assetPath) : assetPath;
   }
 
   async ensureFolder(path: string) {
@@ -208,14 +239,15 @@ export default class FiamStudioPlugin extends Plugin {
     ].join("\n");
   }
 
-  async captureToInbox(text: string, source: string, author: string) {
+  async sendToAiInbox(text: string, source: string, author: string) {
     if (!text.trim()) return;
-    await this.appendMarkdown(
-      this.dailyPath(this.settings.inboxDir),
-      this.formatCaptureBlock(text, source, author),
-    );
-    new Notice("Sent to Studio inbox");
-    await this.gitCommitAll(`studio inbox: ${source}`, author);
+    const result = await this.postStudio("/studio/share", {
+      source,
+      selection: text,
+      agent: author,
+      tags: ["obsidian"],
+    });
+    new Notice(`Sent to private AI inbox: ${String(result.rel_path || "ok")}`);
     this.refreshViews();
   }
 
@@ -244,12 +276,33 @@ export default class FiamStudioPlugin extends Plugin {
     this.refreshViews();
   }
 
-  filesForSection(section: "inbox" | "desk" | "shelf") {
+  filesForSection(section: "desk" | "shelf") {
     const root = this.settings[`${section}Dir` as const];
     return this.app.vault
       .getMarkdownFiles()
       .filter((file) => file.path === `${root}.md` || file.path.startsWith(`${root}/`))
       .sort((a, b) => b.stat.mtime - a.stat.mtime);
+  }
+
+  async postStudio(path: string, payload: Record<string, unknown>) {
+    const endpoint = this.settings.studioEndpoint.trim().replace(/\/+$/, "");
+    const token = this.settings.ingestToken.trim();
+    if (!endpoint || !token) {
+      throw new Error("Set Studio endpoint and FIAM_INGEST_TOKEN in Fiam Studio settings");
+    }
+    const response = await fetch(`${endpoint}${path}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Fiam-Token": token,
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(String(data.error || `HTTP ${response.status}`));
+    }
+    return data as Record<string, unknown>;
   }
 
   async vaultBasePath(): Promise<string | null> {
@@ -292,13 +345,15 @@ export default class FiamStudioPlugin extends Plugin {
 
   async gitSync(message: string) {
     await this.git(["rev-parse", "--is-inside-work-tree"]);
+    const commitOutput = await this.gitCommitAll(message, this.settings.humanAuthor);
+    const outputs = [commitOutput];
     try {
-      await this.git(["pull", "--rebase", this.settings.gitRemote, "main"]);
+      outputs.push(await this.git(["pull", "--rebase", this.settings.gitRemote, "main"]));
     } catch {
-      await this.git(["pull", "--rebase", this.settings.gitRemote, "master"]);
+      outputs.push(await this.git(["pull", "--rebase", this.settings.gitRemote, "master"]));
     }
-    await this.gitCommitAll(message, this.settings.humanAuthor);
-    return await this.git(["push", this.settings.gitRemote]);
+    outputs.push(await this.git(["push", this.settings.gitRemote]));
+    return outputs.filter(Boolean).join("\n");
   }
 
   async gitTimeline(limit = 80): Promise<GitCommit[]> {
@@ -366,7 +421,6 @@ class FiamStudioView extends ItemView {
     const tabs = wrap.createDiv({ cls: "fiam-studio-tabs" });
     const labels: Record<StudioTab, string> = {
       timeline: "Timeline",
-      inbox: "Inbox",
       desk: "Desk",
       shelf: "Shelf",
       quick: "Quick",
@@ -382,14 +436,13 @@ class FiamStudioView extends ItemView {
 
     const panel = wrap.createDiv({ cls: "fiam-studio-panel" });
     if (this.activeTab === "timeline") await this.renderTimeline(panel);
-    if (this.activeTab === "inbox") this.renderFileList(panel, "inbox");
     if (this.activeTab === "desk") this.renderFileList(panel, "desk");
     if (this.activeTab === "shelf") this.renderFileList(panel, "shelf");
     if (this.activeTab === "quick") this.renderQuick(panel);
     if (this.activeTab === "coauthor") this.renderCoauthor(panel);
   }
 
-  renderFileList(container: HTMLElement, section: "inbox" | "desk" | "shelf") {
+  renderFileList(container: HTMLElement, section: "desk" | "shelf") {
     const files = this.plugin.filesForSection(section);
     if (!files.length) {
       container.createDiv({ text: `No ${section} notes yet.`, cls: "fiam-studio-empty" });
@@ -444,6 +497,15 @@ class FiamStudioView extends ItemView {
 
   async renderTimeline(container: HTMLElement) {
     const actions = container.createDiv({ cls: "fiam-studio-actions" });
+    const commitChanges = actions.createEl("button", { text: "Commit changes" });
+    commitChanges.onclick = async () => {
+      const output = await this.plugin.gitCommitAll(
+        `studio commit: ${new Date().toISOString()}`,
+        this.plugin.settings.humanAuthor,
+      );
+      new Notice(output || "No Studio changes to commit");
+      await this.render();
+    };
     const sync = actions.createEl("button", { text: "Git sync" });
     sync.onclick = async () => {
       const output = await this.plugin.gitSync(`studio sync: ${new Date().toISOString()}`);
@@ -459,16 +521,29 @@ class FiamStudioView extends ItemView {
         container.createDiv({ text: "No commits yet.", cls: "fiam-studio-empty" });
         return;
       }
+      const timeline = container.createDiv({ cls: "fiam-studio-timeline" });
+      timeline.createDiv({ cls: "fiam-studio-timeline-line" });
       for (const commit of commits) {
-        const row = container.createDiv({ cls: "fiam-studio-row" });
-        row.createDiv({ text: commit.subject || commit.sha.slice(0, 7), cls: "fiam-studio-row-title" });
-        row.createDiv({
-          text: `${commit.sha.slice(0, 7)} · ${commit.author} · ${new Date(commit.ts * 1000).toLocaleString()}`,
-          cls: "fiam-studio-row-meta",
-        });
-        if (commit.files.length) {
-          row.createDiv({ text: commit.files.slice(0, 8).join(", "), cls: "fiam-studio-row-meta" });
-        }
+        const isAi = this.isAiCommit(commit);
+        const icon = this.timelineIcon(commit, isAi);
+        const item = timeline.createDiv({ cls: "fiam-studio-timeline-item" });
+        const left = item.createDiv({ cls: `fiam-studio-timeline-side left${isAi ? " is-hidden" : ""}` });
+        if (!isAi) this.renderTimelineText(left, "YOU", commit);
+
+        const node = item.createDiv({ cls: `fiam-studio-timeline-node ${isAi ? "ai" : "user"}` });
+        const glyph = node.createSpan({ cls: "fiam-studio-timeline-icon", attr: { "aria-label": icon.alt } });
+        const iconUrl = this.plugin.assetUrl(`streamline/${icon.slug}.svg`);
+        glyph.style.setProperty("mask-image", `url(${iconUrl})`);
+        glyph.style.setProperty("mask-position", "center");
+        glyph.style.setProperty("mask-repeat", "no-repeat");
+        glyph.style.setProperty("mask-size", `${icon.size}px ${icon.size}px`);
+        glyph.style.setProperty("-webkit-mask-image", `url(${iconUrl})`);
+        glyph.style.setProperty("-webkit-mask-position", "center");
+        glyph.style.setProperty("-webkit-mask-repeat", "no-repeat");
+        glyph.style.setProperty("-webkit-mask-size", `${icon.size}px ${icon.size}px`);
+
+        const right = item.createDiv({ cls: `fiam-studio-timeline-side right${isAi ? "" : " is-hidden"}` });
+        if (isAi) this.renderTimelineText(right, "AI", commit);
       }
     } catch (error) {
       container.createDiv({
@@ -476,6 +551,40 @@ class FiamStudioView extends ItemView {
         cls: "fiam-studio-status",
       });
     }
+  }
+
+  private isAiCommit(commit: GitCommit) {
+    const author = commit.author.toLowerCase();
+    return ["ai", "claude", "copilot", "codex", "cc"].some((name) => author.includes(name));
+  }
+
+  private timelineIcon(commit: GitCommit, isAi: boolean): TimelineIcon {
+    const subject = commit.subject.toLowerCase();
+    const files = commit.files.join(" ").toLowerCase();
+    const haystack = `${subject} ${files}`;
+    if (/git|sync|commit|push|pull|merge|rebase/.test(haystack)) return { slug: "git", alt: "Version control", size: 14 };
+    if (/build|test|verify|check|pass|done|todo|task|plan/.test(haystack)) return { slug: "clipboard-check", alt: "Checked work", size: 13.5 };
+    if (/search|grep|find|query|lookup|scan/.test(haystack)) return { slug: "search", alt: "Search", size: 13.5 };
+    if (/web|browser|url|http|https|fetch|site|page/.test(haystack)) return { slug: "browser", alt: "Web", size: 14 };
+    if (/attach|attachment|image|photo|picture|pdf|upload|media/.test(haystack)) return { slug: "attachment", alt: "Attachment", size: 13.5 };
+    if (/shelf|read|reader|book|epub|library/.test(haystack)) return { slug: "read-book", alt: "Reading", size: 14 };
+    if (/folder|dir|tree|workspace/.test(haystack)) return { slug: "folder", alt: "Folder", size: 13.5 };
+    if (/coauthor|co-author|desk|write|note|draft|quick|compose|create|new/.test(haystack)) return { slug: "write-paper", alt: isAi ? "AI writing" : "Writing", size: 13.5 };
+    if (/edit|update|modify|patch|revise|fix/.test(haystack)) return { slug: "edit", alt: "Edit", size: 13 };
+    if (/chat|message|reply|conversation/.test(haystack)) return { slug: "chat-message", alt: "Conversation", size: 13 };
+    if (/think|reason|reflect/.test(haystack)) return { slug: "brain", alt: "Reasoning", size: 14 };
+    return { slug: "file-text", alt: isAi ? "AI document change" : "Document change", size: 13 };
+  }
+
+  private renderTimelineText(container: HTMLElement, actor: "YOU" | "AI", commit: GitCommit) {
+    const detailLines = [commit.sha, commit.author, ...commit.files.slice(0, 8)].filter(Boolean);
+    if (detailLines.length) container.setAttribute("title", detailLines.join("\n"));
+    container.createDiv({ text: actor, cls: "fiam-studio-timeline-label" });
+    container.createDiv({ text: commit.subject || commit.sha.slice(0, 7), cls: "fiam-studio-timeline-title" });
+    container.createDiv({
+      text: new Date(commit.ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      cls: "fiam-studio-timeline-time",
+    });
   }
 }
 
@@ -516,12 +625,13 @@ class FiamStudioSettingTab extends PluginSettingTab {
     containerEl.empty();
     containerEl.createEl("h2", { text: "Fiam Studio" });
 
-    this.textSetting("Inbox directory", "Default capture mailbox.", "inboxDir");
     this.textSetting("Desk directory", "Active drafts and quick notes.", "deskDir");
     this.textSetting("Shelf directory", "Reading material and archives.", "shelfDir");
     this.textSetting("Human author", "Author identity for user-originated writes.", "humanAuthor");
     this.textSetting("AI author", "Author identity for AI-originated writes.", "aiAuthor");
     this.textSetting("Git remote", "Remote used by Git sync.", "gitRemote");
+    this.textSetting("Studio endpoint", "Server base URL for private AI inbox sends.", "studioEndpoint");
+    this.secretSetting("FIAM_INGEST_TOKEN", "Token used for private AI inbox sends.", "ingestToken");
   }
 
   private textSetting(
@@ -533,6 +643,24 @@ class FiamStudioSettingTab extends PluginSettingTab {
       .setName(name)
       .setDesc(desc)
       .addText((text) => {
+        text.setValue(String(this.plugin.settings[key] || ""));
+        text.onChange(async (value) => {
+          this.plugin.settings[key] = value.trim() as never;
+          await this.plugin.saveSettings();
+        });
+      });
+  }
+
+  private secretSetting(
+    name: string,
+    desc: string,
+    key: keyof FiamStudioSettings,
+  ) {
+    new Setting(this.containerEl)
+      .setName(name)
+      .setDesc(desc)
+      .addText((text) => {
+        text.inputEl.type = "password";
         text.setValue(String(this.plugin.settings[key] || ""));
         text.onChange(async (value) => {
           this.plugin.settings[key] = value.trim() as never;

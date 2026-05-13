@@ -26,14 +26,13 @@ import shutil
 import smtplib
 import time
 from datetime import datetime
-from email.mime.text import MIMEText
+from email.message import EmailMessage
 from pathlib import Path
 
 import frontmatter
 
 from fiam.config import FiamConfig
-from fiam_lib.todo import append_to_todo, extract_scheduled_items
-from fiam.markers import strip_xml_markers
+from fiam.turn import MarkerInterpreter
 
 
 # ------------------------------------------------------------------
@@ -63,12 +62,28 @@ def _email_send(
     from_addr: str, to_addr: str,
     subject: str, body: str,
     password: str = "",
+    attachments: list[dict] | None = None,
 ) -> bool:
     """Send a plain-text email via SMTP. Uses SSL for port 465, STARTTLS otherwise."""
-    msg = MIMEText(body, "plain", "utf-8")
+    msg = EmailMessage()
     msg["From"] = from_addr
     msg["To"] = to_addr
     msg["Subject"] = subject
+    msg.set_content(body or "")
+    for att in attachments or []:
+        path = Path(str(att.get("path") or ""))
+        if not path.is_file():
+            continue
+        try:
+            data = path.read_bytes()
+        except OSError:
+            continue
+        mime = str(att.get("mime") or "application/octet-stream").strip().lower()
+        maintype, _, subtype = mime.partition("/")
+        if not maintype or not subtype:
+            maintype, subtype = "application", "octet-stream"
+        filename = Path(str(att.get("name") or path.name)).name or path.name
+        msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=filename)
     try:
         if smtp_port == 465:
             with smtplib.SMTP_SSL(smtp_host, smtp_port) as s:
@@ -99,11 +114,7 @@ def dispatch_file(path: Path, config: FiamConfig) -> bool:
     if not body:
         return False
 
-    later_todos = extract_scheduled_items(body, config)
-    if later_todos:
-        added = append_to_todo(later_todos, config)
-        print(f"[postman] todo +{added} item(s) from {path.name}")
-    body = strip_xml_markers(body, {"wake", "todo", "sleep", "mute", "notify", "cot"})
+    body = MarkerInterpreter().interpret(body).visible_reply
     if not body:
         return True  # Only had control markers, nothing to send
 

@@ -4,17 +4,15 @@ import tempfile
 import unittest
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 
 import numpy as np
 
-from fiam.runtime.recall import refresh_recall
+from fiam.runtime.recall import build_recall_context
 from fiam.store.pool import Event
 
 
 @dataclass
 class _Config:
-    background_path: Path
     recall_top_k: int = 3
 
 
@@ -50,22 +48,45 @@ class _Pool:
 class RecallRefreshTest(unittest.TestCase):
     def test_manual_recall_can_include_recent_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            config = _Config(background_path=Path(tmp) / "recall.md")
+            config = _Config()
             pool = _Pool()
 
-            shielded = refresh_recall(config, pool, np.array([1.0, 0.0, 0.0], dtype=np.float32))
-            self.assertEqual(shielded, 0)
-            self.assertFalse(config.background_path.exists())
+            shielded = build_recall_context(config, pool, np.array([1.0, 0.0, 0.0], dtype=np.float32))
+            self.assertEqual(shielded.count, 0)
 
-            unshielded = refresh_recall(
+            unshielded = build_recall_context(
                 config,
                 pool,
                 np.array([1.0, 0.0, 0.0], dtype=np.float32),
                 shield_recent=False,
             )
-            self.assertEqual(unshielded, 1)
-            self.assertIn("today event body", config.background_path.read_text(encoding="utf-8"))
+            self.assertEqual(unshielded.count, 1)
+            self.assertIn("today event body", unshielded.render())
             self.assertTrue(pool.saved)
+
+    def test_recall_skips_private_nodes(self) -> None:
+        class PrivatePool(_Pool):
+            def __init__(self) -> None:
+                super().__init__()
+                self.event = Event(
+                    id="private_event",
+                    t=datetime(2026, 5, 12, tzinfo=timezone.utc),
+                    access_count=0,
+                    fingerprint_idx=0,
+                    privacy="private",
+                )
+
+            def read_body(self, event_id: str) -> str:
+                return "private body"
+
+        context = build_recall_context(
+            _Config(),
+            PrivatePool(),
+            np.array([1.0, 0.0, 0.0], dtype=np.float32),
+            shield_recent=False,
+        )
+
+        self.assertEqual(context.count, 0)
 
 
 if __name__ == "__main__":

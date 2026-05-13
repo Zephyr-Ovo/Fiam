@@ -16,12 +16,16 @@
 ### `<send to="channel:address">...</send>`
 
 ```xml
-<send to="favilla:Zephyr">收到，已记录。</send>
+<send to="chat:Zephyr">收到，已记录。</send>
 <send to="email:zephyr@example.com">报告附后。</send>
+<send to="email:zephyr@example.com" attach="obj:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef">见附件。</send>
+<send to="email:zephyr@example.com" attach="obj:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"></send>
 <send to="limen:screen">message:短句</send>
 ```
 
 `to` 左侧是 dispatch target，右侧是收件人或设备地址。解析后内容投递到 `fiam/dispatch/<channel>`，标记本身从当前回复剥离。
+
+`attach` 是空格或逗号分隔的 object token 列表。token 可以是完整 `obj:<sha256>`，也可以是来自 ObjectCatalog/ObjectSearch 的短 `obj:<prefix>`；提交 dispatch 前会解析成完整 ObjectStore object hash。不要把 path、base64 或原始文件内容写进 marker。`<send>` 可以只有正文、只有附件，或正文加附件，但正文和附件不能同时为空。
 
 ### `<cot>...</cot>` / `<lock/>`
 
@@ -29,7 +33,7 @@
 
 ### `<hold/>` / `<hold>reason</hold>`
 
-表示撤回本轮可见回复，并自动排一个 `hold_retry`。`reason` 会写入 retry 提示。
+表示撤回本轮可见回复，并触发同一 turn 内的一次 reroll。`reason` 只作为 bounded retry context，不进入用户可见 transcript。
 
 ### `<wake at="..."/>` / `<todo at="...">...</todo>` / `<sleep at="..."/>`
 

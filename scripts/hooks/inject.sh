@@ -1,8 +1,8 @@
 #!/bin/bash
-# fiam hook: UserPromptSubmit -> inject recall + external as additionalContext
+# fiam hook: UserPromptSubmit -> inject one-shot recall + external as additionalContext
 #
 # Injection order (cache-friendly: semi-static -> dynamic):
-#   1. recall.md          -- memory fragments (surfaced by retrieval, changes on drift)
+#   1. pending_recall.md  -- one-turn memory fragments
 #   2. pending_external.txt -- external messages (changes per-message)
 #
 # self/*.md (identity / awareness / etc.) is NOT injected here. The dashboard
@@ -11,23 +11,24 @@
 # a double injection of identity material into every CC turn.
 
 HOME_DIR="$CLAUDE_PROJECT_DIR"
-RECALL_FILE="$HOME_DIR/recall.md"
-RECALL_DIRTY="$HOME_DIR/.recall_dirty"
+PENDING_RECALL="$HOME_DIR/pending_recall.md"
+PENDING_RECALL_PROCESSING="$HOME_DIR/pending_recall.processing"
 PENDING_FILE="$HOME_DIR/pending_external.txt"
 PENDING_PROCESSING="$HOME_DIR/pending_external.processing"
 
 PARTS=""
 
-# ── 1. Recall (only if .recall_dirty marker exists) ──
-if [ -f "$RECALL_DIRTY" ] && [ -f "$RECALL_FILE" ] && [ -s "$RECALL_FILE" ]; then
-    RECALL=$(sed 's/<!--.*-->//g' "$RECALL_FILE" | tr -s '\n' | sed '/^$/d')
+# ── 1. Recall (one-shot pending handoff) ──
+if [ -f "$PENDING_RECALL" ] && [ -s "$PENDING_RECALL" ]; then
+    mv "$PENDING_RECALL" "$PENDING_RECALL_PROCESSING" 2>/dev/null
+    RECALL=$(sed 's/<!--.*-->//g' "$PENDING_RECALL_PROCESSING" | tr -s '\n' | sed '/^$/d')
     if [ -n "$RECALL" ]; then
         if [ -n "$PARTS" ]; then
             PARTS="${PARTS}\n\n"
         fi
         PARTS="${PARTS}[recall]\n${RECALL}"
     fi
-    rm -f "$RECALL_DIRTY"
+    rm -f "$PENDING_RECALL_PROCESSING"
 fi
 
 # ── 2. External messages (Conductor-prepared, pre-formatted) ──

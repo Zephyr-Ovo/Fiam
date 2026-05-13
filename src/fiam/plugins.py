@@ -151,6 +151,14 @@ def resolve_dispatch_target(config_or_path: Any, target: str) -> str | None:
     return plugin.dispatch_targets[0] if plugin.dispatch_targets else plugin.id
 
 
+def dispatch_supports_capability(config_or_path: Any, target: str, capability: str) -> bool:
+    plugin = plugin_for_dispatch(config_or_path, target)
+    if plugin is None or not plugin.enabled:
+        return False
+    wanted = capability.strip().lower()
+    return wanted in {item.lower() for item in plugin.capabilities}
+
+
 def enabled_dispatch_targets(config_or_path: Any) -> set[str]:
     out: set[str] = set()
     for plugin in load_plugins(config_or_path):
