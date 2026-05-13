@@ -17,7 +17,7 @@ StandardError=journal
 # Harden: read-only for most paths, read-write only for logs
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/home/fiet/live /home/fiet/fiam-code/logs /home/fiet/fiam-code/store /home/fiet/.claude /home/fiet/.cache /home/fiet/.config /tmp
+ReadWritePaths=/home/fiet/live /home/fiet/fiam-code/logs /home/fiet/fiam-code/store /home/fiet/.claude /home/fiet/.claude.json /home/fiet/.cache /home/fiet/.config /tmp
 PrivateTmp=true
 NoNewPrivileges=true
 

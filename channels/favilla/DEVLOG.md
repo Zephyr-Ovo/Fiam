@@ -19,6 +19,8 @@
 - Streaming text deltas are joined back into one visible bubble, and backend deltas preserve whitespace from Claude Code output.
 - Thinking/task icon inference now respects explicit/native icon hints first; search steps map to the search icon instead of file-text.
 - AI replies can now return downloadable ObjectStore attachments when the visible reply contains `obj:<hash/prefix>`; file/image pills with `object_hash` call `/favilla/object/<token>`.
+- Pure upload transcript writes now preserve `object_hash`, so server-restored upload pills can also download the stored object.
+- ISP `fiam-dashboard.service` now grants write access to `/home/fiet/.claude.json` as well as `/home/fiet/.claude`; forced CC works from systemd after restart instead of returning Claude Code 401 while SSH succeeds.
 - Verification: Favilla app build passed; focused backend regression tests for stream spacing, object token extraction/download, upload, transcript persistence, and receive trace passed.
 
 ## Session 2026-05-11 — Chat usability / console cleanup

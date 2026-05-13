@@ -2004,8 +2004,8 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
         }
         const uploadedPills = up.files.map((file) => (
           file.mime?.startsWith("image/")
-            ? ({ kind: "image", name: file.name } as const)
-            : ({ kind: "file", name: file.name, size: file.size } as const)
+            ? ({ kind: "image", name: file.name, object_hash: file.object_hash, mime: file.mime, size: file.size } as const)
+            : ({ kind: "file", name: file.name, size: file.size, object_hash: file.object_hash, mime: file.mime } as const)
         ))
         const userMsg: Msg = {
           id: `u-${Date.now()}`,
@@ -2020,6 +2020,7 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
           kind: file.mime?.startsWith("image/") ? "image" : "file",
           name: file.name,
           path: file.path,
+          object_hash: file.object_hash,
           mime: file.mime,
           size: file.size,
         })) })
