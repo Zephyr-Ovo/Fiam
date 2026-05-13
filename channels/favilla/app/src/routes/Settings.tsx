@@ -69,8 +69,8 @@ export function Settings({ open, onClose }: Props) {
             : "translate(-50%, -48%) scale(0.96)",
           width: "min(340px, calc(100% - 32px))",
           maxWidth: 340,
-          height: "min(520px, calc(100dvh - 72px))",
-          maxHeight: "calc(100dvh - 72px)",
+          height: "min(430px, calc(100dvh - 88px))",
+          maxHeight: "calc(100dvh - 88px)",
           borderRadius: 20,
           background: "rgba(255, 250, 243, 0.55)",
           backdropFilter: "blur(20px) saturate(150%)",
@@ -78,7 +78,7 @@ export function Settings({ open, onClose }: Props) {
           border: "1px solid rgba(255, 255, 255, 0.6)",
           boxShadow:
             "0 18px 50px -12px rgba(40, 28, 22, 0.45), 0 1px 0 rgba(255,255,255,0.7) inset",
-          padding: "18px 20px 14px",
+          padding: "16px 20px 14px",
           color: "#3f2f29",
           fontFamily: "var(--font-sans)",
           opacity: visible ? 1 : 0,
@@ -89,7 +89,7 @@ export function Settings({ open, onClose }: Props) {
         }}
       >
         <div
-          className="mb-4 text-center text-[15px] font-medium tracking-wide"
+          className="mb-3 text-center text-[15px] font-medium tracking-wide"
           style={{ color: "#3f2f29" }}
         >
           Settings

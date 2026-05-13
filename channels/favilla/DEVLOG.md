@@ -17,13 +17,17 @@
 - Chat now sends `appConfig.defaultRuntime` to the Favilla SSE endpoint, so Settings-forced `API`/`CC` actually overrides auto routing.
 - Settings dialog keeps a fixed viewport-bounded size and scrolls its internal form area instead of growing beyond the screen.
 - Follow-up: Settings was shortened to a 520px viewport-bounded panel; its internal scroll keeps touch sliding but hides visible scrollbars.
+- Follow-up: Settings was shortened again to 430px so it reads as a compact modal while the internal form remains scrollable.
+- Dashboard flow/annotation now treat legacy `favilla` and `app` channel rows as the same scene: `chat/favilla`.
+- `scripts/migrate_flow_schema.py` can also backfill `events.sqlite3` channel/surface rows, so old `app`/`favilla.*` data can be cleaned at the source instead of only normalized in API output.
+- Favilla CC warm runner now idles for 1 hour, and cold-boundary cleanup removes hook additionalContext attachment rows from Claude JSONL without depending on hook content.
 - Streaming text deltas are joined back into one visible bubble, and backend deltas preserve whitespace from Claude Code output.
 - Thinking/task icon inference now respects explicit/native icon hints first; search steps map to the search icon instead of file-text.
 - Official/native Claude Code thinking now goes through the same summary helper as `<cot>`/Fiam thinking; the UI labels collapsed rows as `Native thinking` vs `Shared thought` so both chain types are visible.
 - AI replies can now return downloadable ObjectStore attachments when the visible reply contains `obj:<hash/prefix>`; file/image pills with `object_hash` call `/favilla/object/<token>`.
 - Pure upload transcript writes now preserve `object_hash`, so server-restored upload pills can also download the stored object.
 - ISP `fiam-dashboard.service` now grants write access to `/home/fiet/.claude.json` as well as `/home/fiet/.claude`; forced CC works from systemd after restart instead of returning Claude Code 401 while SSH succeeds.
-- Verification: Favilla app build passed; focused backend regression tests for stream spacing, object token extraction/download, upload, transcript persistence, and receive trace passed.
+- Verification: Favilla app build passed; focused backend regression tests for stream spacing, CC warm/nonstream/Studio/scrub, flow normalization, object token extraction/download, upload, transcript persistence, and receive trace passed. Official `claude.cmd -p` hook smoke test confirmed `hook_additional_context` JSONL rows are removed cleanly by the scrubber, and official `claude.cmd --resume <session_id> -p ...` confirmed the scrubbed transcript can continue the same session.
 
 ## Session 2026-05-11 — Chat usability / console cleanup
 

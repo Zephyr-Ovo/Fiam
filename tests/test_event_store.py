@@ -24,7 +24,7 @@ class EventStoreTest(unittest.TestCase):
                 kind="message",
                 content="hello",
                 meta={"message_id": "m1"},
-                surface="favilla.chat",
+                surface="favilla",
             )
 
             first = append_beat(flow, beat)
@@ -33,7 +33,7 @@ class EventStoreTest(unittest.TestCase):
             self.assertIsNotNone(first)
             self.assertIsNone(second)
             self.assertEqual(len(read_beats(flow)), 1)
-            self.assertEqual(read_beats(flow)[0].surface, "favilla.chat")
+            self.assertEqual(read_beats(flow)[0].surface, "favilla")
             self.assertFalse(flow.exists())
 
     def test_large_content_uses_object_store(self) -> None:
@@ -180,9 +180,9 @@ class EventStoreTest(unittest.TestCase):
                     "object_mime": "text/plain",
                     "object_name": "note.txt",
                     "object_size": 12,
-                    "surface": "favilla.chat",
+                    "surface": "favilla",
                 },
-                surface="favilla.chat",
+                surface="favilla",
             ))
 
             from fiam.store.events import db_path_for_flow
@@ -198,7 +198,7 @@ class EventStoreTest(unittest.TestCase):
             finally:
                 conn.close()
 
-            self.assertEqual(row, ("turn_1", "req_1", "favilla.chat", "disp_1", "Zephyr", "text/plain", 12))
+            self.assertEqual(row, ("turn_1", "req_1", "favilla", "disp_1", "Zephyr", "text/plain", 12))
             self.assertEqual(object_index, ("idx_events_object_hash",))
 
 

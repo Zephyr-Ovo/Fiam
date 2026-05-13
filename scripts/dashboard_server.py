@@ -14,7 +14,9 @@ import argparse
 import json
 import logging
 import os
+import queue
 import re
+import shutil
 import sys
 import threading
 import time
@@ -38,6 +40,11 @@ _EMBEDDER = None    # Embedder instance (lazy)
 _BUS = None         # Bus instance (lazy, for /api/capture publishing)
 _COMPUTE_LOCK = threading.Lock()  # gate concurrent mutations
 _CC_RUNTIME_LOCK = threading.Lock()  # Claude Code uses a single local session lock
+_CC_WARM_RUNNER = None
+_CC_WARM_IDLE_SECONDS = 60 * 60
+_CC_WARM_FAILURE_PREFIX = "__fiam_cc_warm_failed__:"
+_CC_HOOK_TAG_RE = re.compile(r"\s*<user-prompt-submit-hook\b[^>]*>.*?(?:</user-prompt-submit-hook>|\Z)\s*", re.DOTALL)
+_CC_TRANSCRIPT_SCRUB_TOKENS = ("hook_additional_context", "<user-prompt-submit-hook")
 _WEARABLE_LOCK = threading.Lock()
 _RECALL_LOCK = threading.Lock()
 _PENDING_RECALL_CONTEXT = None
@@ -1010,7 +1017,7 @@ def _api_capture(payload: dict) -> dict:
         raise ValueError("missing text")
     raw_channel = str(payload.get("channel") or "chat").strip().lower()
     channel = raw_channel if raw_channel in {"chat", "studio", "stroll", "browser", "email", "schedule", "limen", "ring"} else "chat"
-    surface = _surface_for_app_channel(channel, str(payload.get("surface") or "favilla.capture"))
+    surface = _surface_for_app_channel(channel, str(payload.get("surface") or "favilla"))
     url = (payload.get("url") or "").strip()
     meta = dict(payload.get("meta") or {})
     if raw_channel and raw_channel != channel:
@@ -1233,7 +1240,7 @@ def _append_browser_flow_text(text: str) -> None:
         t=datetime.now(timezone.utc),
         channel="browser",
         user_name=getattr(_CONFIG, "user_name", "") or "zephyr",
-        surface="atrium.browser",
+        surface="atrium",
     ))
 
 
@@ -1259,7 +1266,7 @@ def _append_browser_action_flow(payload: dict) -> dict:
         channel="browser",
         kind="action",
         content=text,
-        surface="atrium.browser",
+        surface="atrium",
     ))
     try:
         from fiam_lib.computer_events import get_bus as _ce_bus
@@ -1314,7 +1321,7 @@ def _append_browser_ai_decision_flow(reply: str, actions: list[dict], done: dict
         kind="message",
         content=text,
         runtime=runtime,
-        surface="atrium.browser",
+        surface="atrium",
     ))
     try:
         from fiam_lib.computer_events import get_bus as _ce_bus
@@ -1346,7 +1353,7 @@ def _browser_snapshot(payload: dict) -> dict:
         ok = bus.publish_receive("browser", {
             "text": text,
             "channel": "browser",
-            "surface": "atrium.browser",
+            "surface": "atrium",
             "from_name": meta.get("browser") or "browser",
             "url": meta.get("url") or "",
             "tags": ["browser", "snapshot"],
@@ -1373,7 +1380,7 @@ def _browser_ask(payload: dict) -> dict:
     result = _favilla_chat_send({
         "text": runtime_text,
         "channel": "browser",
-        "surface": "atrium.browser",
+        "surface": "atrium",
         "runtime": runtime,
         "record_turn": record_turn,
     })
@@ -1426,7 +1433,7 @@ def _browser_control_tick(payload: dict) -> dict:
         result = _favilla_chat_send({
             "text": send_text,
             "channel": "browser",
-            "surface": "atrium.browser",
+            "surface": "atrium",
             "runtime": runtime,
             "record_turn": False,
             "attachments": attachments,
@@ -1441,7 +1448,7 @@ def _browser_control_tick(payload: dict) -> dict:
         result = _favilla_chat_send({
             "text": send_text,
             "channel": "browser",
-            "surface": "atrium.browser",
+            "surface": "atrium",
             "runtime": runtime,
             "record_turn": False,
             "attachments": [],
@@ -1912,28 +1919,57 @@ def _run_api_studio_edit(prompt: str) -> dict:
 
 def _run_cc_studio_edit(prompt: str) -> dict:
     import subprocess
-    from fiam.runtime.prompt import build_plain_prompt_parts
 
-    system_context, user_prompt = build_plain_prompt_parts(
-        _CONFIG,
+    warm_system_context, warm_user_prompt = _build_cc_favilla_prompt_parts(
         prompt,
         channel="studio",
-        include_recall=True,
-        extra_context=_app_runtime_context(),
+        recall_context=None,
+        warm=True,
     )
-    command = [
-        "claude", "-p", user_prompt,
-        "--output-format", "json",
-        "--max-turns", "4",
-        "--setting-sources", "user,project,local",
-        "--exclude-dynamic-system-prompt-sections",
-        "--permission-mode", "bypassPermissions",
-    ]
-    if system_context:
-        command.extend(["--append-system-prompt", system_context])
-    if _CONFIG.cc_model:
-        command.extend(["--model", _CONFIG.cc_model])
+
+    def parse_stream_result(result) -> dict:
+        data, _action_events, _thinking_events = _parse_cc_stream(result.stdout or "")
+        if not data:
+            detail = (result.stderr or result.stdout or "").strip()[:500]
+            raise RuntimeError(f"bad claude stream-json: {detail}")
+        if bool(data.get("is_error")) or result.returncode != 0:
+            detail = data.get("error") or data.get("result") or result.stderr or result.stdout or "claude failed"
+            raise RuntimeError(str(detail).strip()[:500])
+        parsed = _parse_studio_edit_response(str(data.get("result") or ""))
+        return {**parsed, "runtime": "cc", "session_id": str(data.get("session_id") or ""), "cost_usd": data.get("total_cost_usd", 0)}
+
     with _CC_RUNTIME_LOCK:
+        if _cc_warm_enabled():
+            try:
+                return parse_stream_result(_run_cc_warm_turn_result_locked(warm_user_prompt, warm_system_context))
+            except RuntimeError as exc:
+                if str(exc).startswith(_CC_WARM_FAILURE_PREFIX):
+                    _cc_warm_shutdown_locked(str(exc), scrub=True)
+                else:
+                    raise
+        if _CC_WARM_RUNNER:
+            _cc_warm_shutdown_locked("cold studio fallback")
+
+        system_context, user_prompt = _build_cc_favilla_prompt_parts(
+            prompt,
+            channel="studio",
+            recall_context=None,
+            warm=False,
+        )
+        _cc_scrub_hook_transcript(_load_app_active_session())
+
+        command = [
+            "claude", "-p", user_prompt,
+            "--output-format", "json",
+            "--max-turns", "4",
+            "--setting-sources", "user,project,local",
+            "--exclude-dynamic-system-prompt-sections",
+            "--permission-mode", "bypassPermissions",
+        ]
+        if system_context:
+            command.extend(["--append-system-prompt", system_context])
+        if _CONFIG.cc_model:
+            command.extend(["--model", _CONFIG.cc_model])
         try:
             result = subprocess.run(command, capture_output=True, text=True, timeout=180, cwd=str(_CONFIG.home_path))
         except subprocess.TimeoutExpired as exc:
@@ -2000,15 +2036,17 @@ def _transcript_source(channel: str) -> str:
 def _surface_for_app_channel(channel: str, explicit: str = "") -> str:
     surface = (explicit or "").strip().lower()
     if surface:
+        if surface in {"app", "favilla"} or surface.startswith("favilla."):
+            return "favilla"
+        if surface == "atrium" or surface.startswith("atrium."):
+            return "atrium"
         return surface
     channel = (channel or "chat").strip().lower() or "chat"
     if channel == "browser":
-        return "atrium.browser"
-    if channel == "studio":
-        return "favilla.studio"
-    if channel == "stroll":
-        return "favilla.stroll"
-    return "favilla.chat"
+        return "atrium"
+    if channel in {"studio", "stroll", "chat"}:
+        return "favilla"
+    return "favilla"
 
 
 def _transcript_path(channel: str = "chat") -> Path:
@@ -3383,7 +3421,7 @@ def _session_rollover(channel: str) -> dict:
     except Exception as exc:
         info["transcript_trim_error"] = str(exc)[:200]
     try:
-        _CONFIG.active_session_path.unlink(missing_ok=True)
+        _clear_app_active_session()
     except Exception as exc:
         info["unlink_error"] = str(exc)[:200]
     new_state = {
@@ -3468,7 +3506,7 @@ def _record_debug_context(runtime: str, *, metrics: dict | None = None,
 # - Default = unlocked. AI must opt-in to lock.
 
 _APP_RUNTIME_CONTEXT_BASE = """[Direct runtime awareness]
-The scene tag describes where this turn appears in the narrative. User-side scenes use canonical channel plus surface: user@chat/favilla.chat is Favilla chat, user@stroll/favilla.stroll is the Stroll surface, and user@browser/atrium.browser is browser context. AI-side scenes mirror the same channel/surface pair; ai@think is internal reasoning; ai@action is a tool call. The runtime tag describes the capability surface for this turn: api is the OpenAI-compatible API surface, cc is Claude Code with file/shell/tool capability, and auto means the server selected one. Do not infer a fixed personal name from the runtime tag. The web dashboard is view-only and never originates a user turn — there is no console scene. Reply naturally for the active scene while staying precise about the runtime."""
+The scene tag describes where this turn appears in the narrative. User-side scenes use canonical channel plus surface: user@chat/favilla is Favilla chat, user@stroll/favilla is the Favilla Stroll surface, and user@browser/atrium is browser context. AI-side scenes mirror the same channel/surface pair; ai@think is internal reasoning; ai@action is a tool call. The runtime tag describes the capability surface for this turn: api is the OpenAI-compatible API surface, cc is Claude Code with file/shell/tool capability, and auto means the server selected one. Do not infer a fixed personal name from the runtime tag. The web dashboard is view-only and never originates a user turn — there is no console scene. Reply naturally for the active scene while staying precise about the runtime."""
 
 
 def _app_runtime_context() -> str:
@@ -3486,6 +3524,440 @@ def _app_runtime_context() -> str:
         "[tool_mode]\nUse the structured file/shell tools (Read/Write/Edit/Glob/Grep/Bash/git_diff) only when you must wait on a real result. For fire-and-forget side effects use XML markers: <send to=\"channel:address\">message</send>, <todo at=\"...\">desc</todo>, <wake at=\"...\"/>, <sleep at=\"...\"/>, and <state value=\"mute|notify|block|busy|sleep|together\" reason=\"...\"/>. Keep tool details out of the user-facing reply unless the user asks for them.",
         "[app_markers]\nFor visible thinking summaries, wrap shareable state notes in <cot>...</cot>. To lock the entire turn's thought chain (both <cot> blocks and any native reasoning), include <lock/> anywhere in the reply. The server strips these markers into structured segments; clients may or may not render them visibly. Do not promise a specific button, bubble, or visual affordance unless the current client explicitly supports it. To pull back a reply and immediately try again, include <hold/> or <hold>reason</hold>. To end this turn without a visible reply, include <held>reason</held>. Held output is stored privately and is not queued as a user todo.",
     ])
+
+
+def _cc_warm_idle_seconds() -> int:
+    try:
+        return max(1, int(os.environ.get("FIAM_CC_WARM_IDLE_SECONDS", _CC_WARM_IDLE_SECONDS)))
+    except (TypeError, ValueError):
+        return _CC_WARM_IDLE_SECONDS
+
+
+def _cc_warm_enabled() -> bool:
+    return os.environ.get("FIAM_CC_WARM_DISABLED", "").strip().lower() not in {"1", "true", "yes", "on"}
+
+
+def _cc_chat_command(*, user_prompt: str | None, system_context: str = "", input_stream: bool = False) -> list[str]:
+    command = ["claude", "-p"]
+    if input_stream:
+        command.extend(["--input-format", "stream-json"])
+    else:
+        command.append(user_prompt or "")
+    command.extend([
+        "--output-format", "stream-json",
+        "--verbose",
+        "--setting-sources", "user,project,local",
+        "--exclude-dynamic-system-prompt-sections",
+        "--permission-mode", "bypassPermissions",
+    ])
+    if system_context:
+        command.extend(["--append-system-prompt", system_context])
+    if _CONFIG and _CONFIG.cc_model:
+        command.extend(["--model", _CONFIG.cc_model])
+    if _CONFIG and _CONFIG.cc_disallowed_tools:
+        command.extend([
+            "--disallowedTools",
+            *[tool.strip() for tool in _CONFIG.cc_disallowed_tools.split(",") if tool.strip()],
+        ])
+    return command
+
+
+def _cc_stable_prompt_fingerprint() -> str:
+    if not _CONFIG:
+        return ""
+    paths: list[Path] = [_CONFIG.constitution_md_path]
+    if _CONFIG.self_dir.is_dir():
+        paths.extend(sorted(_CONFIG.self_dir.glob("*.md")))
+    claude_dir = _CONFIG.home_path / ".claude"
+    paths.extend([claude_dir / "settings.json", claude_dir / "settings.local.json"])
+    output_styles_dir = claude_dir / "output-styles"
+    if output_styles_dir.is_dir():
+        paths.extend(sorted(output_styles_dir.glob("*.md")))
+    parts: list[str] = []
+    for path in paths:
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        parts.append(f"{path}:{stat.st_mtime_ns}:{stat.st_size}")
+    parts.append(f"cc_model={_CONFIG.cc_model}")
+    parts.append(f"cc_disallowed_tools={_CONFIG.cc_disallowed_tools}")
+    return "|".join(parts)
+
+
+def _split_cc_warm_system_context(system_context: str) -> tuple[str, str]:
+    stable_parts: list[str] = []
+    turn_parts: list[str] = []
+    for part in (system_context or "").split("\n\n"):
+        text = part.strip()
+        if not text:
+            continue
+        if text.startswith("[context]") or text.startswith("[timeline]"):
+            turn_parts.append(text)
+        else:
+            stable_parts.append(text)
+    return "\n\n".join(stable_parts), "\n\n".join(turn_parts)
+
+
+def _insert_cc_turn_context(user_prompt: str, current_user_text: str, turn_context: str) -> str:
+    context = (turn_context or "").strip()
+    prompt = (user_prompt or "").strip()
+    if not context:
+        return prompt
+    current = (current_user_text or "").strip()
+    if current and prompt.endswith(current):
+        prefix = prompt[:-len(current)].rstrip()
+        return "\n\n".join(part for part in (prefix, context, current) if part)
+    return "\n\n".join(part for part in (prompt, context) if part)
+
+
+def _build_cc_favilla_prompt_parts(prompt_text: str, *, channel: str, recall_context=None, warm: bool = False) -> tuple[str, str]:
+    from fiam.runtime.prompt import build_plain_prompt_parts
+
+    system_context, user_prompt = build_plain_prompt_parts(
+        _CONFIG,
+        prompt_text,
+        channel=channel,
+        include_recall=True,
+        recall_context=recall_context,
+        extra_context="" if warm else _app_runtime_context(),
+    )
+    if not warm:
+        return system_context, user_prompt
+    system_context, dynamic_context = _split_cc_warm_system_context(system_context)
+    return system_context, _insert_cc_turn_context(user_prompt, prompt_text, dynamic_context)
+
+
+def _cc_project_transcript_path(session_id: str) -> Path | None:
+    if not _CONFIG or not session_id:
+        return None
+    config_dir = Path(os.environ.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude"))
+    try:
+        cwd = str(_CONFIG.home_path.resolve())
+    except OSError:
+        cwd = str(_CONFIG.home_path)
+    project_key = re.sub(r"[^A-Za-z0-9]", "-", cwd)
+    return config_dir / "projects" / project_key / f"{session_id}.jsonl"
+
+
+def _scrub_cc_hook_value(value):
+    if isinstance(value, str):
+        if "<user-prompt-submit-hook" not in value:
+            return value, False
+        scrubbed = value
+        if "<user-prompt-submit-hook" in scrubbed:
+            scrubbed = _CC_HOOK_TAG_RE.sub("\n", scrubbed)
+        scrubbed = scrubbed.strip()
+        return scrubbed, scrubbed != value
+    if isinstance(value, list):
+        changed = False
+        out = []
+        for item in value:
+            clean, item_changed = _scrub_cc_hook_value(item)
+            out.append(clean)
+            changed = changed or item_changed
+        return out, changed
+    if isinstance(value, dict):
+        changed = False
+        out = {}
+        for key, item in value.items():
+            clean, item_changed = _scrub_cc_hook_value(item)
+            out[key] = clean
+            changed = changed or item_changed
+        return out, changed
+    return value, False
+
+
+def _scrub_cc_hook_attachment(data: dict) -> tuple[dict | None, bool]:
+    if data.get("type") != "attachment":
+        return data, False
+    attachment = data.get("attachment")
+    if not isinstance(attachment, dict) or attachment.get("type") != "hook_additional_context":
+        return data, False
+    return None, True
+
+
+def _scrub_cc_transcript_obj(data: dict) -> tuple[dict | None, bool]:
+    clean, changed = _scrub_cc_hook_value(data)
+    if not isinstance(clean, dict):
+        return data, changed
+    clean, hook_changed = _scrub_cc_hook_attachment(clean)
+    return clean, changed or hook_changed
+
+
+def _cc_scrub_hook_transcript(session: dict | None = None) -> bool:
+    session = session or _load_app_active_session()
+    session_id = str((session or {}).get("session_id") or "").strip()
+    path = _cc_project_transcript_path(session_id)
+    if not path or not path.exists():
+        return False
+    changed = False
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        with path.open("r", encoding="utf-8") as src, tmp.open("w", encoding="utf-8") as dst:
+            for raw_line in src:
+                line = raw_line.rstrip("\n")
+                if not line.strip() or not any(token in line for token in _CC_TRANSCRIPT_SCRUB_TOKENS):
+                    dst.write(raw_line)
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    tmp.unlink(missing_ok=True)
+                    return False
+                clean, item_changed = _scrub_cc_transcript_obj(data)
+                if clean is None:
+                    changed = True
+                    continue
+                dst.write(json.dumps(clean, ensure_ascii=False) + "\n" if item_changed else raw_line)
+                changed = changed or item_changed
+        if not changed:
+            tmp.unlink(missing_ok=True)
+            return False
+        backup = path.with_name(path.name + ".fiam-context.bak")
+        shutil.copy2(path, backup)
+        tmp.replace(path)
+        logger.info("scrubbed CC hook context from %s", path)
+        return True
+    except OSError:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+
+
+class _CCWarmRunner:
+    def __init__(self, *, command: list[str], cwd_path: Path, fingerprint: str) -> None:
+        import subprocess
+
+        self.command = command
+        self.cwd_path = cwd_path
+        self.fingerprint = fingerprint
+        self.system_dirty = False
+        self.last_used = time.monotonic()
+        self.last_session_id = ""
+        self.items: "queue.Queue[dict]" = queue.Queue()
+        self.stderr_lines: list[str] = []
+        self.idle_timer: threading.Timer | None = None
+        self.proc = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            cwd=str(cwd_path),
+        )
+        self.stdout_thread = threading.Thread(target=self._read_stdout, daemon=True)
+        self.stderr_thread = threading.Thread(target=self._read_stderr, daemon=True)
+        self.stdout_thread.start()
+        self.stderr_thread.start()
+
+    def _read_stdout(self) -> None:
+        try:
+            assert self.proc.stdout is not None
+            for raw_line in self.proc.stdout:
+                raw_line = raw_line.strip()
+                if not raw_line:
+                    continue
+                try:
+                    self.items.put(json.loads(raw_line))
+                except json.JSONDecodeError:
+                    continue
+        finally:
+            self.items.put({"_fiam_event": "eof"})
+
+    def _read_stderr(self) -> None:
+        try:
+            assert self.proc.stderr is not None
+            for raw_line in self.proc.stderr:
+                line = raw_line.rstrip()
+                if line:
+                    self.stderr_lines.append(line)
+                    if len(self.stderr_lines) > 80:
+                        del self.stderr_lines[:40]
+        except Exception:
+            pass
+
+    def is_alive(self) -> bool:
+        return self.proc.poll() is None
+
+    def stderr_tail(self) -> str:
+        return "\n".join(self.stderr_lines[-20:]).strip()
+
+    def cancel_idle_timer(self) -> None:
+        timer = self.idle_timer
+        self.idle_timer = None
+        if timer:
+            timer.cancel()
+
+    def schedule_idle_timer(self) -> None:
+        self.cancel_idle_timer()
+        timer = threading.Timer(_cc_warm_idle_seconds(), _cc_warm_idle_timeout, args=(self,))
+        timer.daemon = True
+        self.idle_timer = timer
+        timer.start()
+
+    def drain_stale_items(self) -> None:
+        while True:
+            try:
+                item = self.items.get_nowait()
+            except queue.Empty:
+                return
+            if item.get("_fiam_event") == "eof":
+                raise RuntimeError(self.stderr_tail() or "claude warm process exited")
+
+    def iter_items(self, user_prompt: str, *, timeout_seconds: float = 240.0):
+        if not self.is_alive():
+            raise RuntimeError(self.stderr_tail() or "claude warm process exited")
+        self.cancel_idle_timer()
+        self.drain_stale_items()
+        payload = {"type": "user", "message": {"role": "user", "content": user_prompt}}
+        try:
+            assert self.proc.stdin is not None
+            self.proc.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            self.proc.stdin.flush()
+        except Exception as exc:
+            raise RuntimeError("failed to write to claude warm process") from exc
+
+        deadline = time.monotonic() + timeout_seconds
+        saw_result = False
+        try:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError("claude warm chat timeout")
+                try:
+                    item = self.items.get(timeout=min(1.0, remaining))
+                except queue.Empty:
+                    if not self.is_alive():
+                        raise RuntimeError(self.stderr_tail() or "claude warm process exited")
+                    continue
+                if item.get("_fiam_event") == "eof":
+                    raise RuntimeError(self.stderr_tail() or "claude warm process exited")
+                yield item
+                if item.get("type") == "result":
+                    saw_result = True
+                    session_id = str(item.get("session_id") or "").strip()
+                    if session_id:
+                        self.last_session_id = session_id
+                    return
+        finally:
+            self.last_used = time.monotonic()
+            if saw_result and self.is_alive():
+                self.schedule_idle_timer()
+
+    def close(self) -> None:
+        self.cancel_idle_timer()
+        try:
+            if self.proc.poll() is None:
+                self.proc.terminate()
+                try:
+                    self.proc.wait(timeout=3)
+                except Exception:
+                    self.proc.kill()
+        except Exception:
+            pass
+
+
+class _CCWarmTurnProcess:
+    def __init__(self, runner: _CCWarmRunner, user_prompt: str) -> None:
+        self.runner = runner
+        self.user_prompt = user_prompt
+        self.returncode = 0
+        self._stderr = ""
+        self.stderr = self
+        self.stdout = self._iter_stdout()
+
+    def _iter_stdout(self):
+        try:
+            for item in self.runner.iter_items(self.user_prompt, timeout_seconds=225.0):
+                yield json.dumps(item, ensure_ascii=False) + "\n"
+        except Exception as exc:
+            self.returncode = 1
+            self._stderr = f"{_CC_WARM_FAILURE_PREFIX} {exc}"
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def read(self):
+        return self._stderr or self.runner.stderr_tail()
+
+    def kill(self):
+        self.returncode = -9
+        self.runner.close()
+
+
+def _run_cc_warm_turn_result_locked(user_prompt: str, system_context: str):
+    from types import SimpleNamespace
+
+    runner = _cc_warm_runner_locked(system_context)
+    lines: list[str] = []
+    try:
+        for item in runner.iter_items(user_prompt, timeout_seconds=225.0):
+            lines.append(json.dumps(item, ensure_ascii=False) + "\n")
+    except Exception as exc:
+        raise RuntimeError(f"{_CC_WARM_FAILURE_PREFIX} {exc}") from exc
+    return SimpleNamespace(stdout="".join(lines), stderr="", returncode=0)
+
+
+def _cc_warm_shutdown_locked(reason: str = "", *, scrub: bool = True) -> None:
+    global _CC_WARM_RUNNER
+    runner = _CC_WARM_RUNNER
+    _CC_WARM_RUNNER = None
+    if not runner:
+        return
+    runner.close()
+    if scrub:
+        session_id = runner.last_session_id or str((_load_app_active_session() or {}).get("session_id") or "")
+        if session_id:
+            _cc_scrub_hook_transcript({"session_id": session_id})
+    if reason:
+        logger.info("CC warm runner stopped: %s", reason)
+
+
+def _cc_warm_idle_timeout(runner: _CCWarmRunner) -> None:
+    with _CC_RUNTIME_LOCK:
+        if _CC_WARM_RUNNER is not runner:
+            return
+        if time.monotonic() - runner.last_used >= _cc_warm_idle_seconds():
+            _cc_warm_shutdown_locked("idle timeout")
+        else:
+            runner.schedule_idle_timer()
+
+
+def _cc_warm_runner_locked(system_context: str) -> _CCWarmRunner:
+    global _CC_WARM_RUNNER
+    fingerprint = _cc_stable_prompt_fingerprint()
+    runner = _CC_WARM_RUNNER
+    if runner and runner.is_alive():
+        if runner.fingerprint != fingerprint:
+            runner.system_dirty = True
+        return runner
+    if runner:
+        _cc_warm_shutdown_locked("dead process")
+    session = _load_app_active_session()
+    _cc_scrub_hook_transcript(session)
+    command = _cc_chat_command(user_prompt=None, system_context=system_context, input_stream=True)
+    resume_id = str((session or {}).get("session_id") or "").strip()
+    if resume_id:
+        command.extend(["--resume", resume_id])
+    _CC_WARM_RUNNER = _CCWarmRunner(command=command, cwd_path=_CONFIG.home_path, fingerprint=fingerprint)
+    return _CC_WARM_RUNNER
+
+
+def _clear_app_active_session_locked() -> None:
+    _cc_warm_shutdown_locked("active session cleared")
+    try:
+        _CONFIG.active_session_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _clear_app_active_session() -> None:
+    with _CC_RUNTIME_LOCK:
+        _clear_app_active_session_locked()
 
 
 def _parse_cot(reply: str) -> tuple[str, list[dict], bool, list[dict]]:
@@ -3674,7 +4146,6 @@ def _run_cc_favilla_chat(*, text: str, channel: str, surface: str = "", attachme
 
 def _run_cc_favilla_chat_locked(*, text: str, channel: str, surface: str = "", attachments: list | None = None, turn_id: str = "", request_id: str = "") -> dict:
     import subprocess
-    from fiam.runtime.prompt import build_plain_prompt_parts
 
     prompt_started = datetime.now(timezone.utc)
     pending_recall_context = _pop_pending_recall_context()
@@ -3688,14 +4159,14 @@ def _run_cc_favilla_chat_locked(*, text: str, channel: str, surface: str = "", a
             lines.append(f"- obj:{a.get('object_hash', '')}  (name={a['name']!r}, mime={mime}, size={a.get('size')})")
         lines.append("")
         prompt_text = "\n".join(lines) + text
-    system_context, user_prompt = build_plain_prompt_parts(
-        _CONFIG,
+    warm_system_context, warm_user_prompt = _build_cc_favilla_prompt_parts(
         prompt_text,
         channel=channel,
-        include_recall=True,
         recall_context=pending_recall_context,
-        extra_context=_app_runtime_context(),
+        warm=True,
     )
+    use_warm_holder = {"enabled": _cc_warm_enabled()}
+    cold_command_cache: dict[str, list[str]] = {}
     _append_dashboard_trace_phase(
         turn_id=turn_id,
         request_id=request_id,
@@ -3705,28 +4176,35 @@ def _run_cc_favilla_chat_locked(*, text: str, channel: str, surface: str = "", a
         started_at=prompt_started,
         refs={"runtime": "cc", "attachment_count": len(attachments or []), "resume": bool(session)},
     )
-    command = [
-        "claude", "-p", user_prompt,
-        "--output-format", "stream-json",
-        "--verbose",
-        "--setting-sources", "user,project,local",
-        "--exclude-dynamic-system-prompt-sections",
-        "--permission-mode", "bypassPermissions",
-    ]
-    if system_context:
-        command.extend(["--append-system-prompt", system_context])
-    if _CONFIG.cc_model:
-        command.extend(["--model", _CONFIG.cc_model])
-    if _CONFIG.cc_disallowed_tools:
-        command.extend([
-            "--disallowedTools",
-            *[tool.strip() for tool in _CONFIG.cc_disallowed_tools.split(",") if tool.strip()],
-        ])
     cwd_path = _CONFIG.home_path
-    def run_claude(resume_session_id: str | None, prompt_override: str | None = None):
+
+    def cold_command(prompt_override: str | None = None) -> list[str]:
+        command = cold_command_cache.get("command")
+        if command is None:
+            if _CC_WARM_RUNNER:
+                _cc_warm_shutdown_locked("cold non-stream fallback")
+            _cc_scrub_hook_transcript(session)
+            cold_system_context, cold_user_prompt = _build_cc_favilla_prompt_parts(
+                prompt_text,
+                channel=channel,
+                recall_context=pending_recall_context,
+                warm=False,
+            )
+            command = _cc_chat_command(user_prompt=cold_user_prompt, system_context=cold_system_context, input_stream=False)
+            cold_command_cache["command"] = command
         cmd = list(command)
         if prompt_override is not None:
             cmd[2] = prompt_override
+        return cmd
+
+    def run_claude(resume_session_id: str | None, prompt_override: str | None = None):
+        if use_warm_holder["enabled"]:
+            try:
+                return _run_cc_warm_turn_result_locked(prompt_override or warm_user_prompt, warm_system_context)
+            except RuntimeError as exc:
+                _cc_warm_shutdown_locked(str(exc), scrub=True)
+                use_warm_holder["enabled"] = False
+        cmd = cold_command(prompt_override)
         if resume_session_id:
             cmd.extend(["--resume", resume_session_id])
         try:
@@ -3759,10 +4237,7 @@ def _run_cc_favilla_chat_locked(*, text: str, channel: str, surface: str = "", a
     if is_error and not is_partial_success:
         detail = (data.get("error") or data.get("result") or result.stderr or result.stdout or "claude failed")
         if resume_id and _is_cc_resume_recoverable_error(detail):
-            try:
-                _CONFIG.active_session_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+            _clear_app_active_session_locked()
             result = run_claude(None)
             data, action_events, thinking_events, is_partial_success, is_error = parse_claude_result(result)
             detail = (data.get("error") or data.get("result") or result.stderr or result.stdout or "claude failed")
@@ -3938,7 +4413,6 @@ def _iter_cc_favilla_chat_events_locked(*, text: str, channel: str, surface: str
     import subprocess
     import threading
 
-    from fiam.runtime.prompt import build_plain_prompt_parts
     from fiam_lib.app_markers import split_cot_segments
 
     pending_recall_context = _pop_pending_recall_context()
@@ -3952,32 +4426,30 @@ def _iter_cc_favilla_chat_events_locked(*, text: str, channel: str, surface: str
             lines.append(f"- obj:{a.get('object_hash', '')}  (name={a['name']!r}, mime={mime}, size={a.get('size')})")
         lines.append("")
         prompt_text = "\n".join(lines) + text
-    system_context, user_prompt = build_plain_prompt_parts(
-        _CONFIG,
+    warm_system_context, warm_user_prompt = _build_cc_favilla_prompt_parts(
         prompt_text,
         channel=channel,
-        include_recall=True,
         recall_context=pending_recall_context,
-        extra_context=_app_runtime_context(),
+        warm=True,
     )
-    base_command = [
-        "claude", "-p", user_prompt,
-        "--output-format", "stream-json",
-        "--verbose",
-        "--setting-sources", "user,project,local",
-        "--exclude-dynamic-system-prompt-sections",
-        "--permission-mode", "bypassPermissions",
-    ]
-    if system_context:
-        base_command.extend(["--append-system-prompt", system_context])
-    if _CONFIG.cc_model:
-        base_command.extend(["--model", _CONFIG.cc_model])
-    if _CONFIG.cc_disallowed_tools:
-        base_command.extend([
-            "--disallowedTools",
-            *[tool.strip() for tool in _CONFIG.cc_disallowed_tools.split(",") if tool.strip()],
-        ])
+    use_warm_holder = {"enabled": _cc_warm_enabled()}
+    cold_command_cache: dict[str, list[str]] = {}
     cwd_path = _CONFIG.home_path
+
+    def cold_base_command() -> list[str]:
+        command = cold_command_cache.get("command")
+        if command is None:
+            _cc_warm_shutdown_locked("cold stream fallback")
+            _cc_scrub_hook_transcript(session)
+            cold_system_context, cold_user_prompt = _build_cc_favilla_prompt_parts(
+                prompt_text,
+                channel=channel,
+                recall_context=pending_recall_context,
+                warm=False,
+            )
+            command = _cc_chat_command(user_prompt=cold_user_prompt, system_context=cold_system_context, input_stream=False)
+            cold_command_cache["command"] = command
+        return list(command)
 
     yield {"event": "start", "data": {"runtime": "cc"}}
 
@@ -4125,7 +4597,10 @@ def _iter_cc_favilla_chat_events_locked(*, text: str, channel: str, surface: str
             ev_queue.put({"event": "_eof", "data": {}})
 
     def run_claude(resume_session_id: str | None) -> "subprocess.Popen[str]":
-        cmd = list(base_command)
+        if use_warm_holder["enabled"]:
+            runner = _cc_warm_runner_locked(warm_system_context)
+            return _CCWarmTurnProcess(runner, warm_user_prompt)
+        cmd = cold_base_command()
         if resume_session_id:
             cmd.extend(["--resume", resume_session_id])
         return subprocess.Popen(
@@ -4170,6 +4645,16 @@ def _iter_cc_favilla_chat_events_locked(*, text: str, channel: str, surface: str
             if ev.get("event") != "_eof":
                 yield ev
 
+    def reset_stream_state() -> None:
+        state["result_data"] = {}
+        state["action_events"] = []
+        state["thinking_events"] = []
+        state["tool_names"] = {}
+        state["raw_reply_parts"] = []
+        state["thought_idx"] = 0
+        state["text_idx"] = 0
+        state["stream_text_buffer"] = ""
+
     resume_id = session["session_id"] if session else None
     proc = run_claude(resume_id)
     rc_holder = {"rc": 0, "stderr": ""}
@@ -4191,20 +4676,29 @@ def _iter_cc_favilla_chat_events_locked(*, text: str, channel: str, surface: str
     # Resume failure → retry without --resume.
     if (is_error and not is_partial_success) or not data:
         detail = (data.get("error") or data.get("result") or rc_holder["stderr"] or "")
-        if resume_id and _is_cc_resume_recoverable_error(detail):
+        if use_warm_holder["enabled"] and str(detail).startswith(_CC_WARM_FAILURE_PREFIX):
+            _cc_warm_shutdown_locked(str(detail), scrub=True)
+            use_warm_holder["enabled"] = False
+            reset_stream_state()
+            proc2 = run_claude(resume_id)
+            for ev in consume_until_eof(proc2):
+                if ev.get("event") == "error":
+                    yield ev
+                    return
+                yield ev
+            rc_holder["rc"] = proc2.returncode or 0
             try:
-                _CONFIG.active_session_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+                rc_holder["stderr"] = (proc2.stderr.read() if proc2.stderr else "") or ""
+            except Exception:
+                rc_holder["stderr"] = ""
+            data = state["result_data"]
+            is_partial_success = data.get("subtype") == "error_max_turns"
+            is_error = bool(data.get("is_error")) or rc_holder["rc"] != 0
+            detail = (data.get("error") or data.get("result") or rc_holder["stderr"] or "")
+        if resume_id and _is_cc_resume_recoverable_error(detail):
+            _clear_app_active_session_locked()
             # Reset state and try again with no resume.
-            state["result_data"] = {}
-            state["action_events"] = []
-            state["thinking_events"] = []
-            state["tool_names"] = {}
-            state["raw_reply_parts"] = []
-            state["thought_idx"] = 0
-            state["text_idx"] = 0
-            state["stream_text_buffer"] = ""
+            reset_stream_state()
             proc2 = run_claude(None)
             for ev in consume_until_eof(proc2):
                 if ev.get("event") == "error":
@@ -5124,6 +5618,22 @@ def _pool_delete_event(event_id: str) -> dict:
     return {"ok": True, "id": event_id}
 
 
+def _normalize_app_beat_dict(item: dict) -> dict:
+    channel = str(item.get("channel") or "").strip().lower()
+    surface = str(item.get("surface") or "").strip().lower()
+    if channel in {"favilla", "app"}:
+        item = dict(item)
+        item["channel"] = "chat"
+        item["surface"] = "favilla" if not surface or surface in {"favilla", "app"} or surface.startswith("favilla.") else surface
+    elif surface == "app" or surface.startswith("favilla."):
+        item = dict(item)
+        item["surface"] = "favilla"
+    elif surface.startswith("atrium."):
+        item = dict(item)
+        item["surface"] = "atrium"
+    return item
+
+
 def _api_flow(offset: int = 0, limit: int = 50) -> dict:
     """Read beats from the SQLite event store with pagination."""
     if not _CONFIG:
@@ -5139,7 +5649,7 @@ def _api_flow(offset: int = 0, limit: int = 50) -> dict:
         start = offset
     end = min(start + limit, total)
 
-    beats = [beat.to_dict() for beat in all_beats[start:end]]
+    beats = [_normalize_app_beat_dict(beat.to_dict()) for beat in all_beats[start:end]]
     return {"beats": beats, "offset": start, "total": total}
 
 

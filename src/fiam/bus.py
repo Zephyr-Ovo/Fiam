@@ -62,7 +62,7 @@ class Bus:
         bus.subscribe("fiam/receive/#", on_inbound)
         bus.connect("127.0.0.1", 1883)
         bus.loop_start()
-        bus.publish_receive("chat", {"text": "...", "surface": "favilla.chat", "from_name": "..."})
+        bus.publish_receive("chat", {"text": "...", "surface": "favilla", "from_name": "..."})
         ...
         bus.loop_stop()
     """

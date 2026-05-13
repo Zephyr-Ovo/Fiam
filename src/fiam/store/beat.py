@@ -18,10 +18,10 @@ from typing import Any, Literal
 # Two orthogonal dimensions:
 #   actor   — who produced this beat
 #   channel — canonical event/conversation domain (chat, studio, browser, ...)
-#   surface — concrete app/page/client that carried it (favilla.chat, atrium.browser, ...)
+#   surface — concrete app/page/client that carried it (favilla, atrium, ...)
 #   kind    — what kind of beat it is (message, action, think, ...)
 # A beat with channel="browser" + kind="action" is a browser tool action;
-# channel="chat" + surface="favilla.chat" + kind="think" is a private thought during a Favilla turn.
+# channel="chat" + surface="favilla" + kind="think" is a private thought during a Favilla turn.
 Actor = Literal["user", "ai", "external", "system"]
 Kind = Literal["message", "action", "tool_result", "think", "schedule", "dispatch", "state", "attachment", "trace"]
 Channel = str
@@ -49,7 +49,7 @@ class Beat:
     content: str             # natural-language content
     runtime: str | None = None  # model family: cc / claude / gemini / ... (None for non-AI)
     meta: dict[str, Any] | None = None  # extra info (tool name, session/source tags, ...)
-    surface: str = ""        # concrete source surface, e.g. favilla.chat / atrium.browser
+    surface: str = ""        # concrete source surface, e.g. favilla / atrium
 
     # ------------------------------------------------------------------
     # Serialisation

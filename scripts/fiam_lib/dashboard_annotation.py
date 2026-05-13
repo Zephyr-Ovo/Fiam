@@ -112,6 +112,22 @@ def parse_beat_time(raw: str):
 		return datetime.now(timezone.utc)
 
 
+def normalize_app_beat_dict(item: dict) -> dict:
+	channel = str(item.get("channel") or "").strip().lower()
+	surface = str(item.get("surface") or "").strip().lower()
+	if channel in {"favilla", "app"}:
+		item = dict(item)
+		item["channel"] = "chat"
+		item["surface"] = "favilla" if not surface or surface in {"favilla", "app"} or surface.startswith("favilla.") else surface
+	elif surface == "app" or surface.startswith("favilla."):
+		item = dict(item)
+		item["surface"] = "favilla"
+	elif surface.startswith("atrium."):
+		item = dict(item)
+		item["surface"] = "atrium"
+	return item
+
+
 def annotate_request(payload: dict) -> dict:
 	"""Load unprocessed event-store beats for manual annotation."""
 	global _ANNOTATION_PROPOSAL
@@ -122,7 +138,7 @@ def annotate_request(payload: dict) -> dict:
 
 	all_beats = []
 	for beat in read_beats(_CONFIG.flow_path):
-		item = beat.to_dict()
+		item = normalize_app_beat_dict(beat.to_dict())
 		item["text"] = item.get("content", "")
 		all_beats.append(item)
 	total = len(all_beats)

@@ -11,7 +11,7 @@
 ```
 Zephyr (Favilla / Email)
     ↓
-MQTT fiam/receive/<channel>  — chat(surface=favilla.chat/favilla.capture) 通过 /api/capture，email 通过 IMAP
+MQTT fiam/receive/<channel>  — chat(surface=favilla) 通过 /api/capture，email 通过 IMAP
     ↓
 Conductor.receive_turn() → events.sqlite3 + MemoryWorker jobs
     ↓
@@ -28,9 +28,9 @@ daemon 解析 marker → TurnCommit.dispatch_requests → MQTT fiam/dispatch/<ta
 
 ### 收到消息（在 [external] 区块中，或 wake 的 user 字段）
 ```
-[chat/favilla.chat:Zephyr] 文本消息
-[chat/favilla.chat:Zephyr] [标记] todo            ← Favilla 快捷标记按钮（kind=marker）
-[chat/favilla.chat:Zephyr] [图像] <描述或 OCR 文本>  ← 拍照/选择图片（kind=action，channel=chat, surface=favilla.chat）
+[chat/favilla:Zephyr] 文本消息
+[chat/favilla:Zephyr] [标记] todo            ← Favilla 快捷标记按钮（kind=marker）
+[chat/favilla:Zephyr] [图像] <描述或 OCR 文本>  ← 拍照/选择图片（kind=action，channel=chat, surface=favilla）
 [email:sender@example.com] 邮件内容
 ```
 
@@ -142,7 +142,7 @@ Favilla 默认**不**给 Zephyr 看我的内部 thinking。可见性由我每轮
 ## 唤醒模式
 
 当我被 daemon 唤醒时：
-- 外部消息以 `[channel/surface:from_name] text` 送达（例 `[chat/favilla.chat:Zephyr] hi`, `[email:zephyr@x.com] ...`）
+- 外部消息以 `[channel/surface:from_name] text` 送达（例 `[chat/favilla:Zephyr] hi`, `[email:zephyr@x.com] ...`）
 - 从 sleep 醒来那一次首行带 `[context] last_state=sleep sleep_until_planned=... wake_trigger=external:<sources>[/context]` 提示
 - `<wake>`/`<todo at>` 到点调起时 user message 为 `[scheduled wake]` 或 `[todo] 描述`
 - 我的回复会被 daemon 解析，提取 `<send to="chat:X">` / `<send to="email:X">` / `<send to="limen:screen">` 标记并派发

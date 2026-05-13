@@ -90,7 +90,7 @@ class TurnPipelineTest(unittest.TestCase):
                     channel="chat",
                     actor="user",
                     text="hello",
-                    surface="favilla.chat",
+                    surface="favilla",
                     turn_id="turn_test",
                     request_id="req_test",
                     session_id="sess_test",
@@ -104,7 +104,7 @@ class TurnPipelineTest(unittest.TestCase):
             self.assertEqual(beats[0].meta["turn_id"], "turn_test")
             self.assertEqual(beats[0].meta["request_id"], "req_test")
             self.assertEqual(beats[0].meta["session_id"], "sess_test")
-            self.assertEqual(beats[0].surface, "favilla.chat")
+            self.assertEqual(beats[0].surface, "favilla")
             self.assertEqual(len(commit.events), 2)
             self.assertEqual(beats[1].kind, "attachment")
             self.assertEqual(beats[1].meta["direction"], "inbound")
@@ -117,14 +117,14 @@ class TurnPipelineTest(unittest.TestCase):
     def test_inbound_queue_serializes_turn_request(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "queue" / "inbound.jsonl"
-            queue_id = InboundQueue(path).enqueue(TurnRequest(channel="chat", actor="user", text="hello", surface="favilla.chat", turn_id="turn_q"))
+            queue_id = InboundQueue(path).enqueue(TurnRequest(channel="chat", actor="user", text="hello", surface="favilla", turn_id="turn_q"))
 
             row = json.loads(path.read_text(encoding="utf-8").strip())
             self.assertTrue(queue_id.startswith("iq_"))
             self.assertEqual(row["queue_id"], queue_id)
             self.assertEqual(row["turn_id"], "turn_q")
             self.assertEqual(row["channel"], "chat")
-            self.assertEqual(row["surface"], "favilla.chat")
+            self.assertEqual(row["surface"], "favilla")
             self.assertNotIn("path", json.dumps(row.get("attachments") or []))
 
             claimed = InboundQueue(path).claim(worker_id="test", lease_seconds=60)
@@ -137,7 +137,7 @@ class TurnPipelineTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "queue" / "inbound.jsonl"
             queue = InboundQueue(path)
-            queue.enqueue(TurnRequest(channel="chat", actor="user", text="hello", surface="favilla.chat", turn_id="turn_q"))
+            queue.enqueue(TurnRequest(channel="chat", actor="user", text="hello", surface="favilla", turn_id="turn_q"))
 
             claimed = queue.claim(worker_id="w1", lease_seconds=60)
             self.assertEqual(len(claimed), 1)
@@ -175,7 +175,7 @@ class TurnPipelineTest(unittest.TestCase):
                     kind="message",
                     content="visible",
                     runtime="api",
-                    surface="favilla.chat",
+                    surface="favilla",
                 ),),
                 transcript_messages=({"role": "assistant", "content": "visible"},),
                 ui_history_rows=({"role": "ai", "text": "visible", "meta": {"turn_id": "turn_commit"}},),
@@ -221,7 +221,7 @@ class TurnPipelineTest(unittest.TestCase):
                 turn_id="turn_held",
                 request_id="req_held",
                 session_id="sess_held",
-                surface="favilla.chat",
+                surface="favilla",
                 hold_request=HoldRequest(
                     status="held",
                     reason="needs more thought",
@@ -254,7 +254,7 @@ class TurnPipelineTest(unittest.TestCase):
                 channel="chat",
                 kind="message",
                 content="discussed DATA-020 trace and memory timeline",
-                surface="favilla.chat",
+                surface="favilla",
                 meta={"turn_id": "turn_timeline", "request_id": "req_timeline"},
             ))
 
@@ -266,7 +266,7 @@ class TurnPipelineTest(unittest.TestCase):
             text = daily.read_text(encoding="utf-8")
             self.assertIn("### 14:08 turn_timeline", text)
             self.assertIn(f"event:{event_id}", text)
-            self.assertIn("chat/favilla.chat", text)
+            self.assertIn("chat/favilla", text)
             self.assertIn("2026-05-13.md", (config.timeline_dir / "index.md").read_text(encoding="utf-8"))
             self.assertIn("## 2026-05-13", (config.timeline_dir / "2026-05.md").read_text(encoding="utf-8"))
             self.assertIn("## 2026-05", (config.timeline_dir / "2026.md").read_text(encoding="utf-8"))

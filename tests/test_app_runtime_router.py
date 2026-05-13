@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -122,7 +123,7 @@ class AppRuntimeRouterTest(unittest.TestCase):
                     "run tool",
                     "finished",
                     "chat",
-                    surface="favilla.chat",
+                    surface="favilla",
                     action_events=[{
                         "kind": "tool_action",
                         "tool_use_id": "tool_1",
@@ -269,11 +270,11 @@ class AppRuntimeRouterTest(unittest.TestCase):
                 def kill(self):
                     self.returncode = -9
 
-            with patch("subprocess.Popen", return_value=FakeProc()):
+            with patch.dict(os.environ, {"FIAM_CC_WARM_DISABLED": "1"}), patch("subprocess.Popen", return_value=FakeProc()):
                 events = list(dashboard_server._iter_cc_favilla_chat_events(
                     text="hi",
                     channel="chat",
-                    surface="favilla.chat",
+                    surface="favilla",
                     turn_id="turn_stream_marker",
                     request_id="req_stream_marker",
                 ))
@@ -318,11 +319,11 @@ class AppRuntimeRouterTest(unittest.TestCase):
                 def kill(self):
                     self.returncode = -9
 
-            with patch("subprocess.Popen", return_value=FakeProc()):
+            with patch.dict(os.environ, {"FIAM_CC_WARM_DISABLED": "1"}), patch("subprocess.Popen", return_value=FakeProc()):
                 events = list(dashboard_server._iter_cc_favilla_chat_events(
                     text="hi",
                     channel="chat",
-                    surface="favilla.chat",
+                    surface="favilla",
                     turn_id="turn_stream_space",
                     request_id="req_stream_space",
                 ))
@@ -333,6 +334,84 @@ class AppRuntimeRouterTest(unittest.TestCase):
 
         deltas = [event["data"]["text"] for event in events if event["event"] == "text_delta"]
         self.assertEqual("".join(deltas), "hello world")
+
+    def test_cc_warm_prompt_does_not_inject_runtime_context(self) -> None:
+        original_config = dashboard_server._CONFIG
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = FiamConfig(home_path=root / "home", code_path=root / "code")
+            config.ensure_dirs()
+            config.constitution_md_path.write_text("stable constitution", encoding="utf-8")
+            (config.self_dir / "identity.md").write_text("stable identity", encoding="utf-8")
+            dashboard_server._CONFIG = config
+
+            cold_system, cold_user = dashboard_server._build_cc_favilla_prompt_parts(
+                "hello",
+                channel="chat",
+                recall_context=None,
+                warm=False,
+            )
+            warm_system, warm_user = dashboard_server._build_cc_favilla_prompt_parts(
+                "hello",
+                channel="chat",
+                recall_context=None,
+                warm=True,
+            )
+
+        dashboard_server._CONFIG = original_config
+
+        self.assertIn("stable constitution", warm_system)
+        self.assertIn("stable identity", warm_system)
+        self.assertNotIn("[server_time]", warm_system)
+        self.assertNotIn("[context]", warm_system)
+        self.assertNotIn("[server_time]", warm_user)
+        self.assertTrue(warm_user.endswith("hello"))
+        self.assertIn("[server_time]", cold_system)
+
+    def test_cc_hook_scrub_removes_hook_attachment_rows(self) -> None:
+        original_config = dashboard_server._CONFIG
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = FiamConfig(home_path=root / "home", code_path=root / "code")
+            config.ensure_dirs()
+            dashboard_server._CONFIG = config
+            session_id = "sess_scrub"
+            with patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(root / "claude")}, clear=False):
+                path = dashboard_server._cc_project_transcript_path(session_id)
+                assert path is not None
+                path.parent.mkdir(parents=True, exist_ok=True)
+                user_row = {
+                    "type": "user",
+                    "uuid": "user_1",
+                    "message": {
+                        "role": "user",
+                        "content": "before hook after",
+                    },
+                }
+                hook_row = {
+                    "type": "attachment",
+                    "parentUuid": "user_1",
+                    "attachment": {
+                        "type": "hook_additional_context",
+                        "content": ["[recall]\nsecret hook recall\n\n[external]\nsecret hook external"],
+                    },
+                }
+                assistant_row = {"type": "assistant", "message": {"role": "assistant", "content": "visible"}}
+                path.write_text(
+                    "\n".join(json.dumps(row, ensure_ascii=False) for row in (user_row, hook_row, assistant_row)) + "\n",
+                    encoding="utf-8",
+                )
+
+                changed = dashboard_server._cc_scrub_hook_transcript({"session_id": session_id})
+                lines = path.read_text(encoding="utf-8").splitlines()
+                scrubbed = [json.loads(line) for line in lines]
+
+        dashboard_server._CONFIG = original_config
+
+        self.assertTrue(changed)
+        self.assertEqual([row["type"] for row in scrubbed], ["user", "assistant"])
+        self.assertIn("before hook after", scrubbed[0]["message"]["content"])
+        self.assertNotIn("secret hook", "\n".join(lines))
 
     def test_object_token_extraction_and_download(self) -> None:
         original_config = dashboard_server._CONFIG
@@ -493,6 +572,35 @@ class AppRuntimeRouterTest(unittest.TestCase):
         self.assertEqual(result["records"][0]["direction"], "inbound")
         self.assertNotIn("path", json.dumps(result, ensure_ascii=False))
 
+    def test_flow_api_normalizes_legacy_favilla_app_channels(self) -> None:
+        original_config = dashboard_server._CONFIG
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = FiamConfig(home_path=root / "home", code_path=root / "code")
+            config.ensure_dirs()
+            dashboard_server._CONFIG = config
+            append_beat(config.flow_path, Beat(
+                t=datetime(2026, 5, 13, 18, 0, tzinfo=timezone.utc),
+                actor="user",
+                channel="favilla",
+                kind="message",
+                content="old favilla",
+            ))
+            append_beat(config.flow_path, Beat(
+                t=datetime(2026, 5, 13, 18, 1, tzinfo=timezone.utc),
+                actor="user",
+                channel="app",
+                kind="message",
+                content="old app",
+            ))
+
+            result = dashboard_server._api_flow(0, 10)
+
+        dashboard_server._CONFIG = original_config
+
+        scenes = [(row["channel"], row.get("surface")) for row in result["beats"]]
+        self.assertEqual(scenes, [("chat", "favilla"), ("chat", "favilla")])
+
     def test_api_runtime_wrapper_writes_phase_trace_rows(self) -> None:
         from types import SimpleNamespace
         import fiam.runtime.api as api_module
@@ -567,7 +675,7 @@ class AppRuntimeRouterTest(unittest.TestCase):
                 "duration_ms": 12,
             }) + "\n"
 
-            with patch("subprocess.run", return_value=SimpleNamespace(stdout=stdout, stderr="", returncode=0)):
+            with patch.dict(os.environ, {"FIAM_CC_WARM_DISABLED": "1"}), patch("subprocess.run", return_value=SimpleNamespace(stdout=stdout, stderr="", returncode=0)):
                 dashboard_server._run_cc_favilla_chat(
                     text="hi",
                     channel="chat",
@@ -584,6 +692,96 @@ class AppRuntimeRouterTest(unittest.TestCase):
 
         phases = [row["phase"] for row in trace["rows"]]
         self.assertEqual(phases, ["dashboard.prompt", "dashboard.runtime", "dashboard.marker"])
+
+    def test_cc_nonstream_uses_warm_runner_by_default(self) -> None:
+        from types import SimpleNamespace
+
+        original_config = dashboard_server._CONFIG
+        original_pool = dashboard_server._POOL
+        original_record_turn = dashboard_server._record_cc_app_turn
+        original_debug_context = dashboard_server._record_debug_context
+        original_save_session = dashboard_server._save_app_active_session
+        original_warm_turn = dashboard_server._run_cc_warm_turn_result_locked
+        captured: dict[str, str] = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = FiamConfig(home_path=root / "home", code_path=root / "code")
+            config.ensure_dirs()
+            dashboard_server._CONFIG = config
+            dashboard_server._POOL = object()
+            dashboard_server._record_cc_app_turn = lambda *args, **kwargs: None
+            dashboard_server._record_debug_context = lambda *args, **kwargs: None
+            dashboard_server._save_app_active_session = lambda _session_id: None
+
+            def fake_warm_turn(user_prompt: str, system_context: str):
+                captured["user_prompt"] = user_prompt
+                captured["system_context"] = system_context
+                stdout = json.dumps({
+                    "type": "result",
+                    "result": "hello",
+                    "session_id": "sess_warm_nonstream",
+                    "model": "claude-fake",
+                    "duration_ms": 8,
+                }) + "\n"
+                return SimpleNamespace(stdout=stdout, stderr="", returncode=0)
+
+            dashboard_server._run_cc_warm_turn_result_locked = fake_warm_turn
+            with patch("subprocess.run") as cold_run:
+                result = dashboard_server._run_cc_favilla_chat(
+                    text="hi",
+                    channel="chat",
+                    turn_id="turn_cc_warm_nonstream",
+                    request_id="req_cc_warm_nonstream",
+                )
+
+        dashboard_server._CONFIG = original_config
+        dashboard_server._POOL = original_pool
+        dashboard_server._record_cc_app_turn = original_record_turn
+        dashboard_server._record_debug_context = original_debug_context
+        dashboard_server._save_app_active_session = original_save_session
+        dashboard_server._run_cc_warm_turn_result_locked = original_warm_turn
+
+        self.assertEqual(result["session_id"], "sess_warm_nonstream")
+        self.assertFalse(cold_run.called)
+        self.assertNotIn("[server_time]", captured["user_prompt"])
+        self.assertNotIn("[server_time]", captured["system_context"])
+
+    def test_cc_studio_uses_warm_runner_by_default(self) -> None:
+        from types import SimpleNamespace
+
+        original_config = dashboard_server._CONFIG
+        original_warm_turn = dashboard_server._run_cc_warm_turn_result_locked
+        captured: dict[str, str] = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = FiamConfig(home_path=root / "home", code_path=root / "code")
+            config.ensure_dirs()
+            dashboard_server._CONFIG = config
+
+            def fake_warm_turn(user_prompt: str, system_context: str):
+                captured["user_prompt"] = user_prompt
+                captured["system_context"] = system_context
+                edit_payload = json.dumps({"summary": "append text", "edits": [{"op": "append", "text": "x"}]})
+                stdout = json.dumps({
+                    "type": "result",
+                    "result": edit_payload,
+                    "session_id": "sess_warm_studio",
+                    "model": "claude-fake",
+                }) + "\n"
+                return SimpleNamespace(stdout=stdout, stderr="", returncode=0)
+
+            dashboard_server._run_cc_warm_turn_result_locked = fake_warm_turn
+            with patch("subprocess.run") as cold_run:
+                result = dashboard_server._run_cc_studio_edit("[studio_edit_contract]\nReturn only JSON.")
+
+        dashboard_server._CONFIG = original_config
+        dashboard_server._run_cc_warm_turn_result_locked = original_warm_turn
+
+        self.assertEqual(result["session_id"], "sess_warm_studio")
+        self.assertEqual(result["edits"][0]["op"], "append")
+        self.assertFalse(cold_run.called)
+        self.assertNotIn("[server_time]", captured["user_prompt"])
+        self.assertNotIn("[server_time]", captured["system_context"])
 
     def test_stroll_send_injects_context_and_keeps_source_history_separate(self) -> None:
         original_config = dashboard_server._CONFIG
