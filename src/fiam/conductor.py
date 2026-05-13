@@ -15,6 +15,7 @@ can run retrieval and write recall.md independently.
 from __future__ import annotations
 
 import logging
+import json
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,7 +28,7 @@ from fiam.gorge import StreamGorge, detect_drift
 from fiam.store.beat import Beat, append_beat
 from fiam.store.features import FeatureStore
 from fiam.store.pool import Pool
-from fiam.turn import DispatchRequest, DispatchService, TurnCommit, TurnRequest
+from fiam.turn import DispatchRequest, DispatchService, TurnCommit, TurnRequest, TurnTraceStore, UiHistoryStore
 
 if TYPE_CHECKING:
     from fiam.retriever.embedder import Embedder
@@ -249,6 +250,165 @@ class Conductor:
             trace={"received": req.received_at.isoformat(), "commit_done": datetime.now(timezone.utc).isoformat()},
         )
 
+    def commit_turn(self, commit: TurnCommit, *, channel: str = "") -> TurnCommit:
+        """Commit events, clean transcript, UI read-model rows, side effects, and trace.
+
+        This is the single turn commit boundary used by transports and runtime
+        wrappers. Individual storage adapters remain small, but callers no
+        longer own separate write paths for one turn.
+        """
+        committed_events: list[Beat] = []
+        for beat in commit.events:
+            meta = {
+                **(beat.meta or {}),
+                "turn_id": commit.turn_id,
+                "request_id": commit.request_id,
+                "session_id": commit.session_id,
+            }
+            event_id = self._ingest_beat(replace(beat, meta=meta))
+            if event_id:
+                committed_events.append(replace(beat, meta={**meta, "event_id": event_id}))
+            else:
+                committed_events.append(replace(beat, meta=meta))
+
+        if commit.transcript_messages and self.config is not None:
+            self._commit_runtime_transcript(channel, commit.transcript_messages)
+
+        if commit.ui_history_rows and self.config is not None:
+            UiHistoryStore(self.config.home_path).append_rows(channel, commit.ui_history_rows)
+
+        for change in commit.todo_changes:
+            self._commit_todo_change(change, commit)
+        if commit.state_change is not None:
+            self._commit_state_change(commit.state_change, commit)
+
+        for request in commit.dispatch_requests:
+            self._commit_dispatch_request(request, commit)
+
+        trace = {
+            **(commit.trace or {}),
+            "commit_done": datetime.now(timezone.utc).isoformat(),
+        }
+        if self.config is not None:
+            TurnTraceStore(self.config.store_dir / "turn_traces.jsonl").append(commit.turn_id, trace)
+
+        return replace(commit, events=tuple(committed_events), trace=trace)
+
+    def _commit_runtime_transcript(self, channel: str, messages: tuple[dict, ...]) -> None:
+        try:
+            from fiam.runtime.prompt import append_transcript_messages, trim_transcript_messages
+
+            append_transcript_messages(self.config, channel, list(messages))
+            trim_transcript_messages(self.config, channel)
+        except Exception:
+            logger.error("runtime transcript commit failed", exc_info=True)
+
+    def _commit_todo_change(self, change, commit: TurnCommit) -> None:
+        if self.config is None or not change.at:
+            return
+        try:
+            at = datetime.fromisoformat(change.at.replace("Z", "+00:00"))
+            at = self.config.ensure_timezone(at)
+        except ValueError:
+            return
+        if at <= datetime.now(timezone.utc).astimezone(at.tzinfo):
+            return
+        row = {
+            "at": at.isoformat(),
+            "kind": change.kind,
+            "reason": change.reason,
+            "created": datetime.now(timezone.utc).isoformat(),
+            "turn_id": commit.turn_id,
+            "request_id": commit.request_id,
+            "marker_index": change.marker_index,
+            "idempotency_key": f"{commit.turn_id}:{change.marker_index}:{change.kind}",
+        }
+        path = self.config.todo_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        existing = set()
+        if path.exists():
+            for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(item, dict):
+                    existing.add(str(item.get("idempotency_key") or ""))
+        if row["idempotency_key"] in existing:
+            return
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+
+    def _commit_state_change(self, change, commit: TurnCommit) -> None:
+        if self.config is None:
+            return
+        state = str(change.state or "").strip().lower()
+        if state not in {"notify", "mute", "block", "sleep", "busy", "together", "online"}:
+            return
+        record = {
+            "state": state,
+            "since": self.config.now_local().isoformat(),
+            "turn_id": commit.turn_id,
+            "request_id": commit.request_id,
+            "marker_index": change.marker_index,
+            "idempotency_key": f"{commit.turn_id}:{change.marker_index}:state",
+        }
+        if change.until:
+            record["until"] = change.until
+        if change.reason:
+            record["reason"] = change.reason
+        self.config.ai_state_path.parent.mkdir(parents=True, exist_ok=True)
+        self.config.ai_state_path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+        if state == "sleep":
+            self.config.active_session_path.unlink(missing_ok=True)
+
+    def _commit_dispatch_request(self, request: DispatchRequest, commit: TurnCommit) -> None:
+        from fiam.plugins import resolve_dispatch_target
+
+        target = resolve_dispatch_target(self.config, request.channel) if self.config is not None else request.channel
+        if target is None:
+            logger.info("dispatch skipped: plugin disabled (channel=%s)", request.channel)
+            return
+        request = DispatchRequest(
+            channel=target,
+            recipient=request.recipient,
+            body=request.body,
+            marker_index=request.marker_index,
+            status=request.status,
+        )
+        accepted = DispatchService().event_for(
+            request,
+            turn_id=commit.turn_id,
+            request_id=commit.request_id,
+            session_id=commit.session_id,
+            status="accepted",
+        )
+        self._ingest_beat(accepted)
+        if self.bus is None:
+            failed = DispatchService().event_for(
+                request,
+                turn_id=commit.turn_id,
+                request_id=commit.request_id,
+                session_id=commit.session_id,
+                status="failed",
+                attempts=0,
+                last_error="no bus configured",
+            )
+            self._ingest_beat(failed)
+            return
+        ok = DispatchService(self.bus).publish(request)
+        status = "sent" if ok else "failed"
+        followup = DispatchService().event_for(
+            request,
+            turn_id=commit.turn_id,
+            request_id=commit.request_id,
+            session_id=commit.session_id,
+            status=status,
+            attempts=1,
+            last_error="" if ok else "bus rejected payload",
+        )
+        self._ingest_beat(followup)
+
     @staticmethod
     def _actor_for_channel(channel: str) -> str:
         """Default actor for inbound beats by channel."""
@@ -372,7 +532,7 @@ class Conductor:
     # Dispatch: outbound messages
     # ==================================================================
 
-    def dispatch(self, channel: str, recipient: str, text: str) -> bool:
+    def dispatch(self, channel: str, recipient: str, text: str, *, turn_id: str = "", request_id: str = "", session_id: str = "") -> bool:
         """Send outbound message via MQTT to the appropriate channel bridge.
 
         Publishes to ``fiam/dispatch/<target>``. The target bridge process
@@ -392,13 +552,43 @@ class Conductor:
         }
         dispatch_request = DispatchRequest(channel=target, recipient=recipient, body=text)
         try:
-            self._ingest_beat(DispatchService().event_for(dispatch_request))
+            self._ingest_beat(DispatchService().event_for(
+                dispatch_request,
+                turn_id=turn_id,
+                request_id=request_id,
+                session_id=session_id,
+                status="accepted",
+            ))
         except Exception:
             logger.error("dispatch event persist failed", exc_info=True)
         if self.bus is None:
             logger.error("dispatch: no bus configured (channel=%s)", target)
+            try:
+                self._ingest_beat(DispatchService().event_for(
+                    dispatch_request,
+                    turn_id=turn_id,
+                    request_id=request_id,
+                    session_id=session_id,
+                    status="failed",
+                    attempts=0,
+                    last_error="no bus configured",
+                ))
+            except Exception:
+                logger.error("dispatch no-bus event persist failed", exc_info=True)
             return False
         ok = self.bus.publish_dispatch(target, payload)
+        try:
+            self._ingest_beat(DispatchService().event_for(
+                dispatch_request,
+                turn_id=turn_id,
+                request_id=request_id,
+                session_id=session_id,
+                status="sent" if ok else "failed",
+                attempts=1,
+                last_error="" if ok else "bus rejected payload",
+            ))
+        except Exception:
+            logger.error("dispatch status event persist failed", exc_info=True)
         if not ok:
             logger.warning("dispatch: bus rejected payload (channel=%s)", target)
         return ok

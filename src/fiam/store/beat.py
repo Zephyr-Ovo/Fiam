@@ -22,7 +22,7 @@ from typing import Any, Literal
 # A beat with channel="browser" + kind="action" is a browser tool action;
 # channel="favilla" + kind="think" is a private thought during a Favilla turn.
 Actor = Literal["user", "ai", "external", "system"]
-Kind = Literal["message", "action", "tool_result", "think", "schedule"]
+Kind = Literal["message", "action", "tool_result", "think", "schedule", "dispatch", "state", "attachment", "trace"]
 Channel = str
 KNOWN_CHANNELS: set[str] = {
     "favilla", "browser", "stroll", "email", "studio", "cc", "system",

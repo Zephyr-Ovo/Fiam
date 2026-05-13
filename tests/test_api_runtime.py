@@ -104,7 +104,7 @@ class ApiRuntimeTest(unittest.TestCase):
         config.personality_path.write_text("喜欢保持连续身份。", encoding="utf-8")
         return config
 
-    def test_api_runtime_builds_prompt_and_writes_flow(self) -> None:
+    def test_api_runtime_builds_prompt_without_writing_flow(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config = self.make_config(Path(tmp))
             pool = Pool(config.pool_dir, dim=config.embedding_dim)
@@ -116,23 +116,20 @@ class ApiRuntimeTest(unittest.TestCase):
                 memory_mode="manual",
             )
             client = FakeClient('收到。\n<send to="favilla:Zephyr">已记录</send>')
-
-            def refresh_recall(vec: np.ndarray) -> int:
-                config.background_path.write_text("<!-- recall -->\n- 昨天聊过 API runtime", encoding="utf-8")
-                (config.background_path.parent / ".recall_dirty").touch()
-                return 1
+            config.background_path.write_text("<!-- recall -->\n- 昨天聊过 API runtime", encoding="utf-8")
+            (config.background_path.parent / ".recall_dirty").touch()
 
             runtime = ApiRuntime(
                 config,
                 client=client,
                 conductor=conductor,
-                recall_refresher=refresh_recall,
             )
             result = runtime.ask("帮我记一下 API 入口", channel="favilla")
 
             self.assertTrue(result.ok)
             self.assertEqual(result.backend, "api")
-            self.assertEqual(result.recall_fragments, 1)
+            self.assertEqual(result.recall_fragments, 0)
+            self.assertEqual(result.dispatched, 0)
             self.assertEqual(client.calls[0]["model"], "cheap/test-model")
 
             def _content_text(c: Any) -> str:
@@ -149,11 +146,7 @@ class ApiRuntimeTest(unittest.TestCase):
 
             from fiam.store.beat import read_beats
             lines = [beat.to_dict() for beat in read_beats(config.flow_path)]
-            self.assertEqual([(line["actor"], line["channel"]) for line in lines], [("user", "favilla"), ("ai", "favilla"), ("ai", "favilla")])
-            self.assertEqual(lines[1]["runtime"], "cheap")
-            self.assertEqual(lines[2]["runtime"], "cheap")
-            self.assertEqual(lines[0]["meta"]["event_id"][:3], "ev_")
-            self.assertEqual(lines[2]["content"], "收到。")
+            self.assertEqual(lines, [])
 
     def test_api_config_loads_from_toml(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

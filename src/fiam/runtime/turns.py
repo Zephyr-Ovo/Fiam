@@ -73,12 +73,13 @@ def assistant_text_beats(
 ) -> list[Beat]:
     """Build assistant dialogue and dispatch beats from a text response."""
     beats: list[Beat] = []
-    from fiam.markers import parse_cot_markers, strip_xml_markers
+    from fiam.turn import MarkerInterpreter
 
     canon = normalize_channel(channel)
+    interpretation = MarkerInterpreter().interpret(text)
 
     # Marker-authored thinking: AI opts in via <cot>...</cot>. No sniffing.
-    for cot_text in parse_cot_markers(text):
+    for cot_text in interpretation.private_thoughts:
         beats.append(Beat(
             t=t,
             actor="ai",
@@ -89,25 +90,30 @@ def assistant_text_beats(
             meta={"source": "fiam", "name": "fiam"},
         ))
 
-    routed, remaining = split_routed_text(strip_xml_markers(text, _CONTROL_MARKERS))
-
-    for marker in routed:
+    for marker in interpretation.dispatch_requests:
         beats.append(Beat(
             t=t,
             actor="ai",
             channel=marker.channel,
-            kind="message",
+            kind="dispatch",
             content=marker.body.strip(),
             runtime=runtime,
+            meta={
+                "name": "dispatch",
+                "dispatch_target": marker.channel,
+                "dispatch_recipient": marker.recipient,
+                "dispatch_status": marker.status,
+                "dispatch_attempts": 0,
+            },
         ))
 
-    if remaining.strip():
+    if interpretation.visible_reply.strip():
         beats.append(Beat(
             t=t,
             actor="ai",
             channel=canon,
             kind="message",
-            content=remaining.strip(),
+            content=interpretation.visible_reply.strip(),
             runtime=runtime,
         ))
 

@@ -181,6 +181,21 @@ class EventStore:
             beats.reverse()
         return beats
 
+    def read_unembedded(self, *, limit: int = 100) -> list[Beat]:
+        """Return events whose embedding/index work has not completed."""
+        if not self.db_path.exists():
+            return []
+        self.ensure_schema()
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM events WHERE embedded_at = '' ORDER BY t ASC LIMIT ?",
+                (int(limit),),
+            ).fetchall()
+        finally:
+            conn.close()
+        return [self._beat_from_row(row) for row in rows]
+
     def ensure_schema(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = self._connect()

@@ -2001,26 +2001,10 @@ def _history_attachments(attachments: list[dict]) -> list[dict]:
 
 
 def _append_transcript(channel: str, message: dict) -> dict:
-    path = _transcript_path(channel)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    now_min = int(time.time() // 60)
-    record = {
-        "id": str(message.get("id") or f"srv-{int(time.time() * 1000)}"),
-        "role": str(message.get("role") or "ai"),
-        "t": int(message.get("t") or now_min),
-    }
-    for key in (
-        "text", "raw_text", "runtime",
-        "attachments", "thinking", "thinkingLocked", "segments", "hold",
-        "divider", "recallUsed", "error",
-        # Step 6: extended schema
-        "tool_calls_summary", "actions", "presence", "metrics", "meta",
-    ):
-        if key in message and message[key] not in (None, [], ""):
-            record[key] = message[key]
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
-    return record
+    from fiam.turn import UiHistoryStore
+
+    rows = UiHistoryStore(_CONFIG.home_path).append_rows(channel, (message,))
+    return rows[0] if rows else {}
 
 
 def _persist_favilla_ai_transcript(channel: str, result: dict, runtime: str) -> dict:
@@ -2044,22 +2028,6 @@ def _persist_favilla_ai_transcript(channel: str, result: dict, runtime: str) -> 
         "meta": {"trace": result.get("trace")} if result.get("trace") else {},
         "presence": _current_presence(actor="ai", channel=channel),
     })
-
-
-def _append_runtime_transcript_turn(channel: str, user_text: str, assistant_text: str) -> None:
-    """Append the shared API-message transcript for cross-runtime context."""
-    if not _CONFIG:
-        return
-    try:
-        from fiam.runtime.prompt import append_transcript_messages, trim_transcript_messages
-
-        append_transcript_messages(_CONFIG, channel, [
-            {"role": "user", "content": user_text.strip()},
-            {"role": "assistant", "content": assistant_text.strip()},
-        ])
-        trim_transcript_messages(_CONFIG, channel)
-    except Exception:
-        logger.exception("runtime transcript append failed")
 
 
 def _normalize_metrics(
@@ -2343,43 +2311,18 @@ def _apply_app_control_markers(
 ) -> tuple[str, int, str, dict | None]:
     """Apply hold + control markers from an AI reply.
 
-    Returns ``(cleaned_reply, queued_todos, hold_reason, route)``. A
-    ``hold_retry`` todo is auto-queued when a hold is detected.
+    Returns ``(cleaned_reply, queued_todos, hold_reason, route)`` without
+    committing marker side effects. TurnCommit owns those writes.
     """
-    from fiam.markers import strip_xml_markers
     from fiam.turn import MarkerInterpreter
-    from fiam_lib.app_markers import apply_hold
-    from fiam_lib.todo import append_to_todo, extract_scheduled_items, extract_state_tag
 
     interpretation = MarkerInterpreter().interpret(reply or "")
-
-    if _CONFIG:
-        cleaned, hold_reason, retry_todos = apply_hold(
-            reply, _CONFIG, channel=channel, runtime=runtime,
-        )
-        if retry_todos:
-            append_to_todo(retry_todos, _CONFIG)
-    else:
-        from fiam_lib.app_markers import strip_hold_markers
-        hold_reason = interpretation.hold_reason
-        cleaned = strip_hold_markers(reply or "")
-        retry_todos = []
-
-    route = interpretation.route_hint
-
-    queued_todos = 0
-    if _CONFIG:
-        tags = extract_scheduled_items(cleaned, _CONFIG)
-        if tags:
-            queued_todos = append_to_todo(tags, _CONFIG)
-        state_tag = extract_state_tag(cleaned, _CONFIG)
-        if state_tag:
-            _write_app_ai_state(state_tag)
-
-    cleaned = strip_xml_markers(cleaned, {"wake", "todo", "sleep", "state", "route", "cot"}).strip()
-    if hold_reason:
-        cleaned = ""
-    return cleaned, queued_todos, hold_reason, route
+    return (
+        interpretation.visible_reply,
+        len(interpretation.todo_changes),
+        interpretation.hold_reason,
+        interpretation.route_hint,
+    )
 
 
 def _write_app_ai_state(state_tag: dict) -> None:
@@ -2458,7 +2401,7 @@ def _favilla_chat_send(payload: dict) -> dict:
     if runtime == "api":
         result = _run_api_favilla_chat(text=runtime_text, channel=channel, attachments=safe_attachments, record_turn=record_turn, family=family, turn_id=turn_id, request_id=request_id)
     elif runtime == "cc":
-        result = _run_cc_favilla_chat(text=runtime_text, channel=channel, attachments=safe_attachments)
+        result = _run_cc_favilla_chat(text=runtime_text, channel=channel, attachments=safe_attachments, turn_id=turn_id, request_id=request_id)
     else:
         raise ValueError("Favilla chat runtime must be auto, cc, or api")
     _apply_route_from_result(result)
@@ -2623,7 +2566,7 @@ def _favilla_chat_send_stream(payload: dict):
         logger.exception("stream user flow record failed")
 
     final_result: dict | None = None
-    for ev in _iter_cc_favilla_chat_events(text=runtime_text, channel=channel, attachments=safe_attachments):
+    for ev in _iter_cc_favilla_chat_events(text=runtime_text, channel=channel, attachments=safe_attachments, turn_id=turn_id, request_id=request_id):
         if ev.get("event") == "error":
             message = str((ev.get("data") or {}).get("message") or "stream error")
             try:
@@ -3255,7 +3198,7 @@ def _combine_cc_action_events(action_events: list[dict]) -> list[dict]:
     return combined
 
 
-def _run_cc_favilla_chat(*, text: str, channel: str, attachments: list | None = None) -> dict:
+def _run_cc_favilla_chat(*, text: str, channel: str, attachments: list | None = None, turn_id: str = "", request_id: str = "") -> dict:
     import subprocess
     from fiam.runtime.prompt import build_plain_prompt_parts
 
@@ -3423,8 +3366,7 @@ def _run_cc_favilla_chat(*, text: str, channel: str, attachments: list | None = 
         actions_list.append({"kind": "queued_todo", **(todo if isinstance(todo, dict) else {"text": str(todo)})})
     if route:
         actions_list.append({"kind": "route", **(route if isinstance(route, dict) else {"value": str(route)})})
-    _append_runtime_transcript_turn(channel, prompt_text, raw_reply)
-    _record_cc_app_turn(prompt_text, cleaned_reply, channel, action_events=action_events, thinking_events=thinking_events, session_id=session_id)
+    _record_cc_app_turn(prompt_text, raw_reply, channel, action_events=action_events, thinking_events=thinking_events, session_id=session_id, turn_id=turn_id, request_id=request_id)
     try:
         _record_debug_context("cc", metrics=metrics, session_id=session_id, channel=channel)
     except Exception:
@@ -3452,7 +3394,7 @@ def _run_cc_favilla_chat(*, text: str, channel: str, attachments: list | None = 
     }
 
 
-def _iter_cc_favilla_chat_events(*, text: str, channel: str, attachments: list | None = None):
+def _iter_cc_favilla_chat_events(*, text: str, channel: str, attachments: list | None = None, turn_id: str = "", request_id: str = ""):
     """Stream CC chat as SSE events.
 
     Yields dicts of shape {"event": str, "data": dict}. Events:
@@ -3835,8 +3777,7 @@ def _iter_cc_favilla_chat_events(*, text: str, channel: str, attachments: list |
         actions_list.append({"kind": "queued_todo", **(todo if isinstance(todo, dict) else {"text": str(todo)})})
     if route:
         actions_list.append({"kind": "route", **(route if isinstance(route, dict) else {"value": str(route)})})
-    _append_runtime_transcript_turn(channel, prompt_text, raw_reply)
-    _record_cc_app_turn(prompt_text, cleaned_reply, channel, action_events=action_events, thinking_events=thinking_events, session_id=session_id, record_user=False)
+    _record_cc_app_turn(prompt_text, raw_reply, channel, action_events=action_events, thinking_events=thinking_events, session_id=session_id, record_user=False, turn_id=turn_id, request_id=request_id)
     try:
         _record_debug_context("cc", metrics=metrics, session_id=session_id, channel=channel)
     except Exception:
@@ -3890,6 +3831,7 @@ def _record_app_user_flow(user_text: str, channel: str, *, turn_id: str = "", re
     if conductor is None:
         return
     from fiam.runtime.turns import user_beat
+    from fiam.turn import TurnCommit
 
     now = datetime.now(timezone.utc)
     beat = user_beat(
@@ -3905,7 +3847,12 @@ def _record_app_user_flow(user_text: str, channel: str, *, turn_id: str = "", re
         if request_id:
             meta["request_id"] = request_id
         beat = replace(beat, meta=meta)
-    conductor._ingest_beat(beat)
+    conductor.commit_turn(TurnCommit(
+        turn_id=turn_id or f"turn_{uuid.uuid4().hex}",
+        request_id=request_id,
+        events=(beat,),
+        trace={"received": now.isoformat()},
+    ), channel=channel)
 
 
 def _record_app_error_flow(message: str, channel: str, *, runtime: str = "", turn_id: str = "", request_id: str = "") -> None:
@@ -3913,13 +3860,14 @@ def _record_app_error_flow(message: str, channel: str, *, runtime: str = "", tur
     if conductor is None:
         return
     from fiam.store.beat import Beat
+    from fiam.turn import TurnCommit
 
     meta = {"error": True}
     if turn_id:
         meta["turn_id"] = turn_id
     if request_id:
         meta["request_id"] = request_id
-    conductor._ingest_beat(Beat(
+    beat = Beat(
         t=datetime.now(timezone.utc),
         actor="ai",
         channel=channel,
@@ -3927,7 +3875,13 @@ def _record_app_error_flow(message: str, channel: str, *, runtime: str = "", tur
         content=f"error: {message}"[:2000],
         runtime=(runtime or None),
         meta=meta,
-    ))
+    )
+    conductor.commit_turn(TurnCommit(
+        turn_id=turn_id or f"turn_{uuid.uuid4().hex}",
+        request_id=request_id,
+        events=(beat,),
+        trace={"error": str(message)[:500]},
+    ), channel=channel)
 
 
 def _record_cc_app_turn(user_text: str, assistant_reply: str, channel: str, *, action_events: list[dict] | None = None, thinking_events: list[dict] | None = None, session_id: str = "", record_user: bool = True, turn_id: str = "", request_id: str = "") -> None:
@@ -3936,9 +3890,11 @@ def _record_cc_app_turn(user_text: str, assistant_reply: str, channel: str, *, a
         return
     from fiam.runtime.turns import assistant_text_beats
     from fiam.store.beat import Beat
+    from fiam.turn import TurnCommit
 
+    commit_turn_id = turn_id or f"turn_{uuid.uuid4().hex}"
     if record_user:
-        _record_app_user_flow(user_text, channel, turn_id=turn_id, request_id=request_id)
+        _record_app_user_flow(user_text, channel, turn_id=commit_turn_id, request_id=request_id)
     trace_meta = {}
     if turn_id:
         trace_meta["turn_id"] = turn_id
@@ -3947,11 +3903,12 @@ def _record_cc_app_turn(user_text: str, assistant_reply: str, channel: str, *, a
     # Native thinking beats — Anthropic extended-thinking blocks captured from
     # cc stream-json. Emitted before tool actions so flow order matches model
     # output order (think first, then act, then answer).
+    beats = []
     for ev in thinking_events or []:
         text_t = str(ev.get("text") or "").strip()
         if not text_t:
             continue
-        conductor._ingest_beat(Beat(
+        beats.append(Beat(
             t=datetime.now(timezone.utc),
             actor="ai",
             channel=channel,
@@ -3978,7 +3935,7 @@ def _record_cc_app_turn(user_text: str, assistant_reply: str, channel: str, *, a
                 text = f"{prefix}: {name}" + (f" — {summary}" if summary else "")
             else:
                 continue
-        conductor._ingest_beat(Beat(
+        beats.append(Beat(
             t=datetime.now(timezone.utc),
             actor="ai",
             channel=channel,
@@ -3992,7 +3949,7 @@ def _record_cc_app_turn(user_text: str, assistant_reply: str, channel: str, *, a
         if kind == "tool_action" and (result_summary or is_error):
             prefix = "error" if is_error else "result"
             result_text = f"{prefix}: {name}" + (f" — {result_summary}" if result_summary else " — (no output)")
-            conductor._ingest_beat(Beat(
+            beats.append(Beat(
                 t=datetime.now(timezone.utc),
                 actor="ai",
                 channel=channel,
@@ -4001,6 +3958,7 @@ def _record_cc_app_turn(user_text: str, assistant_reply: str, channel: str, *, a
                 runtime="cc",
                 meta={"tool": name, "name": name, "is_error": is_error, "session_id": session_id, **trace_meta},
             ))
+    interpretation = MarkerInterpreter().interpret(assistant_reply)
     for beat in assistant_text_beats(
         assistant_reply,
         t=datetime.now(timezone.utc),
@@ -4013,15 +3971,35 @@ def _record_cc_app_turn(user_text: str, assistant_reply: str, channel: str, *, a
                 meta.setdefault("session_id", session_id)
             meta.update(trace_meta)
             beat = replace(beat, meta=meta)
-        conductor._ingest_beat(beat)
+        beats.append(beat)
+    transcript_messages = [{"role": "assistant", "content": interpretation.visible_reply}]
+    if record_user:
+        transcript_messages.insert(0, {"role": "user", "content": user_text.strip()})
+    if not interpretation.visible_reply:
+        transcript_messages = [msg for msg in transcript_messages if msg["role"] != "assistant"]
+    conductor.commit_turn(TurnCommit(
+        turn_id=commit_turn_id,
+        request_id=request_id,
+        session_id=session_id,
+        events=tuple(beats),
+        transcript_messages=tuple(transcript_messages),
+        dispatch_requests=interpretation.dispatch_requests,
+        todo_changes=interpretation.todo_changes,
+        state_change=interpretation.state_change,
+        trace={"model_done": datetime.now(timezone.utc).isoformat()},
+    ), channel=channel)
 
 
 def _record_api_turn_light(user_text: str, assistant_reply: str, channel: str, *, tool_calls: list[dict] | None = None, family: str = "", turn_id: str = "", request_id: str = "") -> None:
     if not _CONFIG:
         return
     from fiam.runtime.turns import assistant_text_beats, user_beat
-    from fiam.store.beat import Beat, append_beats
+    from fiam.store.beat import Beat
+    from fiam.turn import MarkerInterpreter, TurnCommit
 
+    conductor = _app_flow_conductor()
+    if conductor is None:
+        return
     runtime_tag = (family or "").strip().lower() or None
     trace_meta = {}
     if turn_id:
@@ -4050,6 +4028,7 @@ def _record_api_turn_light(user_text: str, assistant_reply: str, channel: str, *
             runtime=runtime_tag,
             meta={"tool": tool_name, **trace_meta},
         ))
+    interpretation = MarkerInterpreter().interpret(assistant_reply)
     assistant_beats = assistant_text_beats(
         assistant_reply,
         t=datetime.now(timezone.utc),
@@ -4059,50 +4038,33 @@ def _record_api_turn_light(user_text: str, assistant_reply: str, channel: str, *
     if trace_meta:
         assistant_beats = [replace(beat, meta={**(beat.meta or {}), **trace_meta}) for beat in assistant_beats]
     beats.extend(assistant_beats)
-    append_beats(_CONFIG.flow_path, beats)
+    conductor.commit_turn(TurnCommit(
+        turn_id=turn_id or f"turn_{uuid.uuid4().hex}",
+        request_id=request_id,
+        events=tuple(beats),
+        transcript_messages=tuple(
+            msg for msg in (
+                {"role": "user", "content": user_text.strip()},
+                {"role": "assistant", "content": interpretation.visible_reply},
+            )
+            if msg["role"] != "assistant" or interpretation.visible_reply
+        ),
+        dispatch_requests=interpretation.dispatch_requests,
+        todo_changes=interpretation.todo_changes,
+        state_change=interpretation.state_change,
+        trace={"model_done": datetime.now(timezone.utc).isoformat()},
+    ), channel=channel)
 
 
 def _run_api_favilla_chat(*, text: str, channel: str, attachments: list | None = None, record_turn: bool = True, family: str = "", turn_id: str = "", request_id: str = "") -> dict:
     if not _CONFIG or not _POOL:
         raise RuntimeError("config not loaded")
     config = _config_for_catalog_family(_CONFIG, family)
-    pool = _POOL
 
-    from fiam.conductor import Conductor
     from fiam.runtime.api import ApiRuntime
-    from fiam.runtime.recall import refresh_recall
-    from fiam.store.features import FeatureStore
 
-    light_browser_record = channel == "browser" and getattr(config, "embedding_backend", "local") == "local"
-    feature_store = None if light_browser_record else FeatureStore(config.feature_dir, dim=config.embedding_dim)
-    bus = None if light_browser_record else _get_bus()
-
-    def _refresh(vec):
-        return refresh_recall(config, pool, vec, top_k=config.recall_top_k)
-
-    conductor = None
-    if not light_browser_record:
-        embedder = _get_embedder()
-        if embedder is None:
-            raise RuntimeError("embedder unavailable")
-        conductor = Conductor(
-            pool=pool,
-            embedder=embedder,
-            config=config,
-            flow_path=config.flow_path,
-            drift_threshold=config.drift_threshold,
-            gorge_max_beat=config.gorge_max_beat,
-            gorge_min_depth=config.gorge_min_depth,
-            gorge_stream_confirm=config.gorge_stream_confirm,
-            bus=bus,
-            memory_mode=config.memory_mode,
-            feature_store=feature_store,
-        )
     runtime = ApiRuntime.from_config(
         config,
-        conductor=conductor,
-        dispatcher=conductor.dispatch if bus is not None and conductor is not None else None,
-        recall_refresher=None if light_browser_record else _refresh,
     )
     api_text = text
     if attachments:
@@ -4171,8 +4133,7 @@ def _run_api_favilla_chat(*, text: str, channel: str, attachments: list | None =
             "loop": call.get("loop"),
         })
     if record_turn:
-        _record_api_turn_light(api_text, cleaned_reply, channel=channel, tool_calls=api_tool_calls_summary, family=family, turn_id=turn_id, request_id=request_id)
-        _append_runtime_transcript_turn(channel, api_text, raw_reply)
+        _record_api_turn_light(api_text, raw_reply, channel=channel, tool_calls=api_tool_calls_summary, family=family, turn_id=turn_id, request_id=request_id)
     for todo in queued_todos or []:
         actions_list.append({"kind": "queued_todo", **(todo if isinstance(todo, dict) else {"text": str(todo)})})
     if route:

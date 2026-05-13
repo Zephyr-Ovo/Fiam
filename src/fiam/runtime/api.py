@@ -9,30 +9,11 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Protocol
-
-import numpy as np
+from typing import Any, Protocol
 
 from fiam.runtime.prompt import PromptAssembler
 from fiam.runtime.tools import TOOL_SCHEMAS, execute_tool_call
-from fiam.runtime.turns import assistant_text_beats, user_beat
-from fiam.store.beat import Beat
-
-
-def _infer_runtime_family(model: str) -> str | None:
-    """Map a model id to a runtime family tag (claude / gemini / gpt / ...)."""
-    m = (model or "").lower()
-    if not m:
-        return None
-    if "gemini" in m:
-        return "gemini"
-    if "claude" in m or "anthropic" in m:
-        return "claude"
-    if "gpt" in m or "openai" in m or m.startswith("o1") or m.startswith("o3"):
-        return "gpt"
-    return m.split("/", 1)[0] or None
 
 
 class ApiClient(Protocol):
@@ -609,17 +590,12 @@ class ApiRuntime:
         config,
         *,
         client: ApiClient | None = None,
-        conductor=None,
-        dispatcher: Callable[[str, str, str], bool] | None = None,
-        recall_refresher: Callable[[np.ndarray], int] | None = None,
         vision_client: ApiClient | None = None,
+        **_ignored: Any,
     ) -> None:
         self.config = config
         self.client = client or _api_client_from_config(config)
         self.vision_client = vision_client
-        self.conductor = conductor
-        self.dispatcher = dispatcher
-        self.recall_refresher = recall_refresher
 
     @classmethod
     def from_config(cls, config, **kwargs) -> "ApiRuntime":
@@ -635,14 +611,18 @@ class ApiRuntime:
         extra_context: str = "",
         image_attachments: list[dict[str, Any]] | None = None,
     ) -> ApiRuntimeResult:
+        """Run an API model call and return structured result only.
+
+        ``record`` is accepted for old call sites but no longer causes this
+        runtime adapter to write events, transcripts, state/todo, or dispatch
+        side effects. Turn owners commit those facts from the returned result.
+        """
         clean = text.strip()
         if not clean:
             raise ValueError("missing text")
 
         started_at = time.perf_counter()
         recall_fragments = 0
-        if record:
-            recall_fragments = self._record_user(clean, channel=channel)
 
         prompt_started_at = time.perf_counter()
         messages = PromptAssembler(self.config).build_messages(
@@ -652,7 +632,6 @@ class ApiRuntime:
             consume_recall_dirty=True,
             extra_context=extra_context,
         )
-        transcript_start = max(0, len(messages) - 1)
         prompt_ready_at = time.perf_counter()
         model = self.config.api_model
         usage_total: dict[str, Any] = {}
@@ -702,8 +681,6 @@ class ApiRuntime:
                 name = str(fn.get("name") or "")
                 raw_args = str(fn.get("arguments") or "{}")
                 result = execute_tool_call(self.config, name, raw_args)
-                if record:
-                    self._record_tool_action(name, raw_args, result, channel=channel)
                 executed_calls.append({
                     "id": str(call.get("id") or ""),
                     "name": name,
@@ -733,21 +710,6 @@ class ApiRuntime:
 
         assert completion is not None
         reply_text = completion.text or "(empty reply)"
-        dispatched = self._dispatch(reply_text)
-        if record:
-            try:
-                from fiam.runtime.prompt import append_transcript_messages, trim_transcript_messages
-
-                append_transcript_messages(
-                    self.config,
-                    channel,
-                    [*messages[transcript_start:], {"role": "assistant", "content": reply_text}],
-                )
-                trim_transcript_messages(self.config, channel)
-            except Exception:
-                pass
-        if record:
-            self._record_assistant(reply_text, channel=channel)
 
         return ApiRuntimeResult(
             ok=True,
@@ -756,7 +718,7 @@ class ApiRuntime:
             model=completion.model,
             usage=usage_total or completion.usage,
             recall_fragments=recall_fragments,
-            dispatched=dispatched,
+            dispatched=0,
             raw=completion.raw,
             tool_loops=loops,
             tool_calls=executed_calls,
@@ -812,110 +774,3 @@ class ApiRuntime:
         _merge_usage(usage_total, completion.usage)
         return completion.text or "(no image description)"
 
-    def _record_user(self, text: str, *, channel: str) -> int:
-        if self.conductor is None:
-            return 0
-        beat = user_beat(
-            text,
-            t=datetime.now(timezone.utc),
-            channel=channel,
-            user_name=getattr(self.config, "user_name", "") or "zephyr",
-        )
-        self.conductor._ingest_beat(beat)
-        vec = getattr(self.conductor, "last_ingested_vector", None)
-        if self.recall_refresher is not None and vec is not None:
-            return self.recall_refresher(vec)
-        return 0
-
-    def _record_assistant(self, text: str, *, channel: str) -> None:
-        if self.conductor is None:
-            return
-        # Apply XML markers (todo/wake/state) before recording the beat.
-        # This mirrors the dashboard's _apply_app_control_markers post-processing
-        # so callers that drive ApiRuntime directly (e.g. `fiam api` CLI) also
-        # benefit. The dashboard layer still runs its own pass for hold/cot
-        # markers which require richer context (attachments, runtime label).
-        self._apply_simple_markers(text)
-        for beat in assistant_text_beats(
-            text,
-            t=datetime.now(timezone.utc),
-            channel=channel,
-            runtime=_infer_runtime_family(self.config.api_model),
-        ):
-            self.conductor._ingest_beat(beat)
-
-    def _record_tool_action(self, name: str, raw_args: str, result: str, *, channel: str) -> None:
-        if self.conductor is None:
-            return
-        args_summary = raw_args.replace("\n", " ")[:300]
-        text = f"action: {name}" + (f" — {args_summary}" if args_summary else "")
-        self.conductor._ingest_beat(Beat(
-            t=datetime.now(timezone.utc),
-            actor="ai",
-            channel=channel,
-            kind="action",
-            content=text,
-            runtime=_infer_runtime_family(self.config.api_model),
-            meta={"tool": name},
-        ))
-
-    def _dispatch(self, text: str) -> int:
-        if self.dispatcher is None:
-            return 0
-        from fiam.markers import parse_outbound_markers
-
-        count = 0
-        for marker in parse_outbound_markers(text):
-            if self.dispatcher(marker.channel, marker.recipient, marker.body):
-                count += 1
-        return count
-
-    def _apply_simple_markers(self, text: str) -> None:
-        """Parse <todo>/<wake>/<sleep>/<mute>/<notify> XML markers and persist them.
-
-        Mirrors the marker-driven side-effects the CC runtime gets via the
-        dashboard layer. Hold/CoT markers are intentionally NOT
-        handled here — the dashboard still owns those because they need
-        attachments + runtime metadata.
-        """
-        if not text:
-            return
-        try:
-            from fiam_lib.todo import (
-                append_to_todo,
-                extract_scheduled_items,
-                extract_state_tag,
-            )
-        except ImportError:
-            return
-        try:
-            tags = extract_scheduled_items(text, self.config)
-            if tags:
-                append_to_todo(tags, self.config)
-            state_tag = extract_state_tag(text, self.config)
-            if state_tag:
-                self._write_ai_state(state_tag)
-        except Exception:
-            # Marker handling must never crash the tool loop.
-            pass
-
-    def _write_ai_state(self, state_tag: dict) -> None:
-        state = str(state_tag.get("state") or "").strip().lower()
-        if state not in {"notify", "mute", "block", "sleep", "busy", "together", "online"}:
-            return
-        record = {
-            "state": state,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }
-        until = state_tag.get("until") or state_tag.get("sleeping_until") or ""
-        if until:
-            record["until"] = until
-        reason = state_tag.get("reason")
-        if reason:
-            record["reason"] = reason
-        path = self.config.home_path / "self" / "ai_state.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(record, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )

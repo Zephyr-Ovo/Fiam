@@ -8,6 +8,7 @@ can share these structures without importing the dashboard server.
 from __future__ import annotations
 
 import uuid
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -231,20 +232,34 @@ class DispatchService:
     def __init__(self, bus: object | None = None) -> None:
         self.bus = bus
 
-    def event_for(self, request: DispatchRequest, *, turn_id: str = "", request_id: str = "") -> Beat:
+    def event_for(
+        self,
+        request: DispatchRequest,
+        *,
+        turn_id: str = "",
+        request_id: str = "",
+        session_id: str = "",
+        status: str | None = None,
+        attempts: int = 0,
+        last_error: str = "",
+    ) -> Beat:
+        status_value = status or request.status
         return Beat(
             t=datetime.now(timezone.utc),
             actor="ai",
             channel=request.channel,
-            kind="message",
+            kind="dispatch",
             content=request.body,
             meta={
                 "turn_id": turn_id,
                 "request_id": request_id,
+                "session_id": session_id,
+                "name": "dispatch",
                 "dispatch_target": request.channel,
                 "dispatch_recipient": request.recipient,
-                "dispatch_status": request.status,
-                "dispatch_attempts": 0,
+                "dispatch_status": status_value,
+                "dispatch_attempts": attempts,
+                "dispatch_last_error": last_error,
             },
         )
 
@@ -289,8 +304,6 @@ class InboundQueue:
         self.path = path
 
     def enqueue(self, request: TurnRequest) -> None:
-        import json
-
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "turn_id": request.turn_id,
@@ -307,15 +320,118 @@ class InboundQueue:
         with self.path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
 
+    def drain(self, *, limit: int = 100) -> list[TurnRequest]:
+        """Pop up to ``limit`` queued requests in FIFO order."""
+        if not self.path.exists():
+            return []
+        rows = self.path.read_text(encoding="utf-8", errors="replace").splitlines()
+        selected = rows[: max(0, int(limit))]
+        remaining = rows[len(selected):]
+        requests: list[TurnRequest] = []
+        for line in selected:
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            received_at = datetime.now(timezone.utc)
+            raw_received = str(payload.get("received_at") or "")
+            if raw_received:
+                try:
+                    received_at = datetime.fromisoformat(raw_received.replace("Z", "+00:00"))
+                except ValueError:
+                    pass
+            requests.append(TurnRequest(
+                channel=str(payload.get("channel") or "favilla"),
+                actor=str(payload.get("actor") or "user"),
+                text=str(payload.get("text") or ""),
+                turn_id=str(payload.get("turn_id") or f"turn_{uuid.uuid4().hex}"),
+                request_id=str(payload.get("request_id") or ""),
+                session_id=str(payload.get("session_id") or ""),
+                source_meta=payload.get("source_meta") if isinstance(payload.get("source_meta"), dict) else {},
+                delivery_policy=payload.get("delivery_policy") if payload.get("delivery_policy") in {"record_only", "lazy", "instant", "batch", "state_only"} else "instant",
+                trace=payload.get("trace") if isinstance(payload.get("trace"), dict) else {},
+                received_at=received_at,
+            ))
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(("\n".join(remaining) + "\n") if remaining else "", encoding="utf-8")
+        return requests
+
+
+class UiHistoryStore:
+    """Append-only UI read model generated from TurnCommit."""
+
+    def __init__(self, home_path: Path) -> None:
+        self.home_path = home_path
+
+    def append_rows(self, channel: str, rows: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
+        if not rows:
+            return []
+        source = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in (channel or "chat").strip().lower()).strip("_") or "chat"
+        path = self.home_path / "transcript" / f"{source}.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        written: list[dict[str, Any]] = []
+        now_min = int(datetime.now(timezone.utc).timestamp() // 60)
+        with path.open("a", encoding="utf-8") as fh:
+            for row in rows:
+                record = {
+                    "id": str(row.get("id") or f"turn-{uuid.uuid4().hex}"),
+                    "role": str(row.get("role") or "ai"),
+                    "t": int(row.get("t") or now_min),
+                    **{k: v for k, v in row.items() if v not in (None, [], "") and k not in {"id", "role", "t"}},
+                }
+                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+                written.append(record)
+        return written
+
+
+class TurnTraceStore:
+    """Durable turn-phase trace rows for observability."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def append(self, turn_id: str, trace: dict[str, Any]) -> None:
+        if not turn_id or not trace:
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        row = {
+            "turn_id": turn_id,
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+            "trace": trace,
+        }
+        with self.path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+
 
 class MemoryWorker:
     """Idempotent worker boundary for async memory processing."""
 
-    def __init__(self, event_store: object | None = None) -> None:
+    def __init__(self, event_store: object | None = None, *, embedder: object | None = None, feature_store: object | None = None, model_id: str = "") -> None:
         self.event_store = event_store
+        self.embedder = embedder
+        self.feature_store = feature_store
+        self.model_id = model_id
 
     def pending_query(self) -> str:
         return "SELECT id FROM events WHERE embedded_at = '' ORDER BY t ASC"
 
-    def process_once(self) -> int:
-        return 0
+    def process_once(self, *, limit: int = 100) -> int:
+        if self.event_store is None or self.embedder is None:
+            return 0
+        read_unembedded = getattr(self.event_store, "read_unembedded", None)
+        mark_embedded = getattr(self.event_store, "mark_embedded", None)
+        if read_unembedded is None or mark_embedded is None:
+            return 0
+        processed = 0
+        for beat in read_unembedded(limit=limit):
+            event_id = str((beat.meta or {}).get("event_id") or "")
+            if not event_id:
+                continue
+            vec = self.embedder.embed(beat.content)
+            if self.feature_store is not None:
+                self.feature_store.append_beat_vector(beat, vec, model_id=self.model_id)
+            mark_embedded(event_id, model_id=self.model_id, embedded_at=datetime.now(timezone.utc))
+            processed += 1
+        return processed

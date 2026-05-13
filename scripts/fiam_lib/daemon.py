@@ -38,7 +38,7 @@ from fiam_lib.jsonl import (
     _save_cursor,
 )
 from fiam_lib.postman import sweep_outbox
-from fiam_lib.todo import extract_scheduled_items, extract_state_tag, append_to_todo, load_due
+from fiam_lib.todo import load_due
 from fiam_lib.app_markers import parse_app_cot
 from fiam_lib.cost import log_cost, check_budget
 from fiam_lib.ui import _console, _flow, _ANIM_IDLE, _ANIM_ACTIVE, _animated_sleep
@@ -358,26 +358,28 @@ def _wake_session(config, message: str, tag: str = "inbox", conductor=None) -> b
                 _console.print(f"  [dim]└ new session {new_sid[:8]}[/dim]")
                 _plog.info("new session created: %s", new_sid)
 
-        # Extract outbound markers from response → dispatch via conductor
+        # Commit marker side effects from response through the turn layer.
         if data:
             response_text = data.get("result", "")
             if response_text:
-                _extract_and_dispatch(config, response_text, conductor)
-                later_todos = extract_scheduled_items(response_text, config)
-                if later_todos:
-                    added = append_to_todo(later_todos, config)
-                    _plog.info("todo  +%d item(s) queued", added)
-                    _console.print(f"  [dim]└ todo +{added} item(s)[/dim]")
-                state_tag = extract_state_tag(response_text, config)
-                if state_tag:
-                    state = state_tag["state"]
-                    _save_ai_state(
-                        config,
-                        state,
-                        until=str(state_tag.get("until") or ""),
-                        reason=str(state_tag.get("reason") or ""),
-                    )
-                    _plog.info("AI state  state=%s reason=%s", state, state_tag.get("reason", ""))
+                from fiam.turn import MarkerInterpreter, TurnCommit
+
+                interpretation = MarkerInterpreter().interpret(response_text)
+                if conductor is not None:
+                    turn_id = f"turn_{uuid.uuid4().hex}"
+                    conductor.commit_turn(TurnCommit(
+                        turn_id=turn_id,
+                        dispatch_requests=interpretation.dispatch_requests,
+                        todo_changes=interpretation.todo_changes,
+                        state_change=interpretation.state_change,
+                        trace={"model_done": config.now_utc().isoformat()},
+                    ), channel="cc")
+                    if interpretation.dispatch_requests:
+                        _console.print(f"  [dim]└ dispatched {len(interpretation.dispatch_requests)}[/dim]")
+                    if interpretation.todo_changes:
+                        _console.print(f"  [dim]└ todo +{len(interpretation.todo_changes)} item(s)[/dim]")
+                    if interpretation.state_change:
+                        _plog.info("AI state  state=%s reason=%s", interpretation.state_change.state, interpretation.state_change.reason)
 
         # Bump per-session event counter and rotate if we've hit the cap
         # (skip if sleep already retired the session above)
@@ -459,34 +461,6 @@ def _append_transcript(config, source: str, message: dict) -> dict:
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, ensure_ascii=False) + "\n")
     return record
-
-
-def _extract_and_dispatch(config, text: str, conductor) -> int:
-    """Extract ``<send to="channel:recipient">`` markers and dispatch.
-
-    Returns count of dispatched messages.
-    """
-    from fiam.markers import parse_outbound_markers
-    from fiam.plugins import resolve_dispatch_target
-
-    count = 0
-    for marker in parse_outbound_markers(text):
-        target = resolve_dispatch_target(config, marker.channel)
-        if target is None:
-            _plog.info("dispatch skipped disabled plugin channel=%s", marker.channel)
-            continue
-        if conductor is not None:
-            try:
-                conductor.dispatch(target, marker.recipient, marker.body)
-                count += 1
-            except Exception as e:
-                _plog.error("dispatch failed: %s", e)
-        else:
-            _plog.warning("no conductor for dispatch, skipping")
-
-    if count:
-        _console.print(f"  [dim]└ dispatched {count}[/dim]")
-    return count
 
 
 def cmd_start(args: argparse.Namespace) -> None:

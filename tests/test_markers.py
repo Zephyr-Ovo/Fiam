@@ -134,15 +134,14 @@ class MarkerParsingTest(unittest.TestCase):
 
         self.assertEqual(strip_xml_markers(text, {"todo", "state"}), "正文  后文")
 
-    def test_assistant_flow_beats_strip_hold_marker(self) -> None:
+    def test_assistant_flow_beats_drop_held_reply(self) -> None:
         beats = assistant_text_beats(
             '外层 <hold/> 中间 <hold>重写</hold>',
             t=datetime.now(timezone.utc),
             channel="api",
         )
 
-        self.assertEqual(len(beats), 1)
-        self.assertEqual(beats[0].content, "外层  中间")
+        self.assertEqual(beats, [])
 
     def test_parse_cot_markers_extracts_bodies(self) -> None:
         text = "前 <cot>第一段思考</cot> 中 <cot>  第二段  </cot> 后 <cot></cot>"
