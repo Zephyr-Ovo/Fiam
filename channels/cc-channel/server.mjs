@@ -58,7 +58,7 @@ async function sendInitialEvent(trigger) {
     }
     await mcp.notification({
       method: "notifications/claude/channel",
-      params: event,
+      params: { content: event.content, ...event.meta },
     });
     log(`sent initial event request_id=${event.meta.request_id || ""}`);
   } catch (error) {

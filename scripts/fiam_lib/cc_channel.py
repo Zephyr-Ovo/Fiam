@@ -342,7 +342,8 @@ def _wait_for_result(
         time.sleep(0.1)
     tail = "".join((pty_tail or [])[-40:]).strip()
     detail = f"; pty_tail={tail[-1200:]}" if tail else ""
-    raise RuntimeError(f"claude channel turn timeout{detail}")
+    file_info = f"transcript={'exists' if transcript.exists() else 'missing'} path={transcript}"
+    raise RuntimeError(f"claude channel turn timeout ({file_info}){detail}")
 
 
 def _read_rows_from(path: Path, offset: int) -> tuple[list[dict], int]:
