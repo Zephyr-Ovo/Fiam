@@ -60,6 +60,7 @@ def reset(config: FiamConfig, plan: ResetPlan) -> None:
     config.ensure_dirs()
 
     plan.truncate(config.constitution_md_path, create=True)
+    plan.truncate(config.manual_md_path, create=True)
     plan.truncate(config.pending_recall_path, create=True)
     prompt_paths: set[Path] = set()
     for name in PROMPT_PLACEHOLDERS:
@@ -118,6 +119,7 @@ def reset(config: FiamConfig, plan: ResetPlan) -> None:
         for name in PROMPT_PLACEHOLDERS:
             (config.self_dir / name).touch()
         config.constitution_md_path.touch()
+        config.manual_md_path.touch()
         config.pending_recall_path.touch()
 
 

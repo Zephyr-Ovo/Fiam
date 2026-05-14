@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 from fiam_lib.core import _project_root, _toml_path, _detect_platform
-from fiam_lib.hooks import write_constitution_md, write_awareness_md, write_gitignore, install_hooks
+from fiam_lib.hooks import write_constitution_md, write_manual_md, write_awareness_md, write_gitignore, install_hooks
 from fiam_lib.ui import _conjure
 
 
@@ -135,6 +135,12 @@ def cmd_init(args: argparse.Namespace) -> None:
         print(f"  constitution.md  {config.constitution_md_path}")
     else:
         print(f"  constitution.md  {config.constitution_md_path}  (exists, not overwritten)")
+    manual_result = write_manual_md(config)
+    if manual_result:
+        print(f"  manual.md        {config.manual_md_path}")
+    else:
+        if config.manual_md_path.exists():
+            print(f"  manual.md        {config.manual_md_path}  (exists, not overwritten)")
     awareness_dest = config.self_dir / "awareness.md"
     awareness_result = write_awareness_md(config)
     if awareness_result:

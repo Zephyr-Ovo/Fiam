@@ -45,7 +45,7 @@ Runtime data is ignored by git. Do not commit `store/`, `self/`, logs, local con
 
 - `TurnRequest` captures a normalized incoming turn with channel, surface, actor, text, attachments, ids, delivery policy, and trace metadata.
 - `Conductor` owns the public turn boundary. Transport adapters should call `Conductor.receive_turn()` or commit a `TurnCommit`, not write facts directly.
-- `PromptAssembler` builds API/plain prompts from self context, explicit recall context, selected timeline snippets, and clean transcript history.
+- `PromptAssembler` builds API/plain prompts from constitution, system manual, self context, explicit recall context, selected timeline snippets, and clean transcript history.
 - Runtime adapters are pure model callers. `ApiRuntime.ask()` returns structured results and transcript messages, but does not write events, state, todo, dispatch, or UI history.
 - `MarkerInterpreter` is the single high-level XML marker parser for `<send>`, `<cot>`, `<hold>`, `<held>`, `<todo>`, `<wake>`, `<sleep>`, `<state>`, and `<route>`.
 - `TurnCommit` is the single commit point for events, clean transcript messages, UI rows, state/todo read models, dispatch facts, and trace rows.

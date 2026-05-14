@@ -3565,7 +3565,7 @@ def _cc_chat_command(*, user_prompt: str | None, system_context: str = "", input
 def _cc_stable_prompt_fingerprint() -> str:
     if not _CONFIG:
         return ""
-    paths: list[Path] = [_CONFIG.constitution_md_path]
+    paths: list[Path] = [_CONFIG.constitution_md_path, _CONFIG.manual_md_path]
     if _CONFIG.self_dir.is_dir():
         paths.extend(sorted(_CONFIG.self_dir.glob("*.md")))
     claude_dir = _CONFIG.home_path / ".claude"

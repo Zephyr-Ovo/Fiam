@@ -2,8 +2,9 @@
 
 Layout:
     [system 1] constitution.md       (cache_control if non-empty)
-    [system 2] self/*.md combined    (cache_control if non-empty)
-    [system 3] [recall] + extras     (no cache, churn-prone)
+    [system 2] manual.md             (cache_control if non-empty)
+    [system 3] self/*.md combined    (cache_control if non-empty)
+    [system 4] [recall] + extras     (no cache, churn-prone)
     [user]    [source:from_name] text
 
 cache_control uses the OpenAI-compatible structured-blocks form. Providers
@@ -101,17 +102,22 @@ def build_api_messages(
     """
     messages: list[dict[str, Any]] = []
 
-    # system 1 — constitution.md (project knowledge / environment / guide)
+    # system 1 — constitution.md (project-specific constitution; often blank)
     constitution = _read_text(config.constitution_md_path).strip()
     if constitution:
         messages.append(_system_block(constitution, cache=True))
 
-    # system 2 — self/*.md combined (identity / impressions / lessons / commitments)
+    # system 2 — manual.md (fiam operating checklist)
+    manual = _read_text(config.manual_md_path).strip()
+    if manual:
+        messages.append(_system_block(manual, cache=True))
+
+    # system 3 — self/*.md combined (identity / impressions / lessons / commitments)
     self_context = load_self_context(config)
     if self_context:
         messages.append(_system_block(self_context, cache=True))
 
-    # system 3 — recall + extras (churn-prone, no cache)
+    # system 4 — recall + extras (churn-prone, no cache)
     # Channel context: tells the model which surface this message came from,
     # without polluting the persisted user text in events. Emitted as a
     # standalone system block so the recall-routing in build_plain_prompt_parts
@@ -432,6 +438,9 @@ def _write_debug_assembly(
     import json
     import time
 
+    constitution_text = _read_text(config.constitution_md_path).strip()
+    manual_text = _read_text(config.manual_md_path).strip()
+    self_text = load_self_context(config)
     parts: list[dict[str, Any]] = []
     for msg in messages:
         role = msg.get("role", "")
@@ -443,13 +452,17 @@ def _write_debug_assembly(
                 if isinstance(block, dict) and block.get("cache_control"):
                     cache = True
                     break
-        # Label the system blocks by content for the UI ("constitution"/"self"/"context"/"recall")
+        # Label the system blocks by content for the UI ("constitution"/"manual"/"self"/"context"/"recall")
         label = role
         if role == "system":
-            if cache and parts and not any(p.get("label") == "constitution" for p in parts if p.get("role") == "system"):
+            if cache and constitution_text and text == constitution_text:
                 label = "constitution"
-            elif cache:
+            elif cache and manual_text and text == manual_text:
+                label = "manual"
+            elif cache and self_text and text == self_text:
                 label = "self"
+            elif cache:
+                label = "system"
             elif text.startswith("[context]"):
                 label = "context"
             elif text.startswith("[recall]") or "[recall]" in text[:40]:

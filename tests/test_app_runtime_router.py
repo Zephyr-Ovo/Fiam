@@ -342,6 +342,7 @@ class AppRuntimeRouterTest(unittest.TestCase):
             config = FiamConfig(home_path=root / "home", code_path=root / "code")
             config.ensure_dirs()
             config.constitution_md_path.write_text("stable constitution", encoding="utf-8")
+            config.manual_md_path.write_text("stable manual", encoding="utf-8")
             (config.self_dir / "identity.md").write_text("stable identity", encoding="utf-8")
             dashboard_server._CONFIG = config
 
@@ -361,6 +362,7 @@ class AppRuntimeRouterTest(unittest.TestCase):
         dashboard_server._CONFIG = original_config
 
         self.assertIn("stable constitution", warm_system)
+        self.assertIn("stable manual", warm_system)
         self.assertIn("stable identity", warm_system)
         self.assertNotIn("[server_time]", warm_system)
         self.assertNotIn("[context]", warm_system)

@@ -307,6 +307,7 @@ class ApiRuntimeTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             config = self.make_config(Path(tmp))
             config.constitution_md_path.write_text("constitution text", encoding="utf-8")
+            config.manual_md_path.write_text("manual text", encoding="utf-8")
             (config.self_dir / "identity.md").write_text("identity text", encoding="utf-8")
             (config.self_dir / "impressions.md").write_text("impressions text", encoding="utf-8")
             recall_context = RecallContext(fragments=(RecallFragment(
@@ -323,7 +324,8 @@ class ApiRuntimeTest(unittest.TestCase):
                 recall_context=recall_context,
             )
 
-            self.assertLess(system_context.index("constitution text"), system_context.index("# identity"))
+            self.assertLess(system_context.index("constitution text"), system_context.index("manual text"))
+            self.assertLess(system_context.index("manual text"), system_context.index("# identity"))
             self.assertLess(system_context.index("# identity"), system_context.index("# impressions"))
             self.assertNotIn("[recall]", system_context)
             self.assertIn("[recall]", user_prompt)

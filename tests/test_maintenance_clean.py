@@ -37,6 +37,7 @@ class MaintenanceCleanTest(unittest.TestCase):
             )
             config.ensure_dirs()
             config.constitution_md_path.write_text("constitution", encoding="utf-8")
+            config.manual_md_path.write_text("manual", encoding="utf-8")
             (config.self_dir / "identity.md").write_text("identity", encoding="utf-8")
             (code / "fiam.toml").write_text("home_path = 'x'\n", encoding="utf-8")
 
@@ -78,6 +79,7 @@ class MaintenanceCleanTest(unittest.TestCase):
             for path in generated_files:
                 self.assertFalse(path.exists(), path)
             self.assertTrue(config.constitution_md_path.exists())
+            self.assertTrue(config.manual_md_path.exists())
             self.assertTrue((config.self_dir / "identity.md").exists())
             self.assertTrue((code / "fiam.toml").exists())
             self.assertTrue((config.pool_dir / "events").is_dir())

@@ -397,6 +397,11 @@ class FiamConfig:
         return self.home_path / "constitution.md"
 
     @property
+    def manual_md_path(self) -> Path:
+        """System-level fiam usage guide injected after constitution.md."""
+        return self.home_path / "manual.md"
+
+    @property
     def self_dir(self) -> Path:
         """AI's private space — personality, journal, inner thoughts."""
         return self.home_path / "self"

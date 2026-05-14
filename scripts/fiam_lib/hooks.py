@@ -240,7 +240,7 @@ def install_hooks(config: "FiamConfig", platform: str) -> list[str]:
 
 
 # ------------------------------------------------------------------
-# constitution.md bootstrap
+# constitution.md / manual.md bootstrap
 # ------------------------------------------------------------------
 
 def write_constitution_md(config: "FiamConfig") -> bool:
@@ -271,13 +271,34 @@ def write_constitution_md(config: "FiamConfig") -> bool:
     return True
 
 
+def write_manual_md(config: "FiamConfig") -> bool:
+    """Write manual.md to home from template. Returns False if exists.
+
+    manual.md is the compact system-level checklist for using fiam correctly.
+    It is loaded after constitution.md and before self/*.md.
+    """
+    dest = config.manual_md_path
+    if dest.exists():
+        return False
+
+    template_path = config.code_path / "scripts" / "templates" / "manual.md"
+    if not template_path.exists():
+        return False
+
+    content = template_path.read_text(encoding="utf-8")
+    if config.user_name:
+        content = content.replace("Zephyr", config.user_name)
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(content, encoding="utf-8")
+    return True
+
+
 def write_awareness_md(config: "FiamConfig") -> bool:
     """Write self/awareness.md to home from template. Returns False if already exists.
 
-    awareness.md is the API runtime's equivalent of CLAUDE.md: it teaches the AI
-    about XML markers (<send>/<wake>/<todo at>/<sleep>/<state>/<hold>/COT)
-    and other runtime conventions. prompt.load_self_context() picks it up automatically
-    via the sorted-glob fallback.
+    awareness.md is now a legacy self-space placeholder. Fiam operating
+    instructions belong in system-level manual.md instead of self/*.md.
     """
     dest = config.self_dir / "awareness.md"
     if dest.exists():
