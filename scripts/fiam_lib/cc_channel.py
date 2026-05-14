@@ -245,9 +245,12 @@ def _drive_startup_prompts(master_fd: int, *, timeout_seconds: float) -> None:
         if chunk:
             buffer = (buffer + chunk)[-4000:]
             low = buffer.lower()
-            if "dangerously" in low and ("continue" in low or "yes" in low or "confirm" in low):
+            if (
+                ("dangerously" in low and ("continue" in low or "yes" in low or "confirm" in low))
+                or ("loading" in low and "development" in low and "channels" in low)
+            ):
                 try:
-                    os.write(master_fd, b"y\r")
+                    os.write(master_fd, b"\r\n")
                 except OSError:
                     return
             if "blocked by org policy" in low:
@@ -283,7 +286,7 @@ def _start_pty_pump(master_fd: int, stop: threading.Event, tail: list[str]) -> t
                     return
             if "do you trust" in low or "trust the files" in low or ("quick" in low and "safety" in low and "trust" in low):
                 try:
-                    os.write(master_fd, b"\r")
+                    os.write(master_fd, b"\r\n")
                 except OSError:
                     return
 
