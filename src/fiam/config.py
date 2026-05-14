@@ -217,6 +217,7 @@ class FiamConfig:
     # ------------------------------------------------------------------
     cc_model: str = ""                # e.g. "opus", "sonnet", "claude-opus-4-6"; empty = CC default
     cc_disallowed_tools: str = ""     # comma-separated tool names to disable (e.g. "WebFetch,NotebookEdit")
+    cc_effort: str = ""               # e.g. "max", "high", "medium"; empty = CC default
 
     # ------------------------------------------------------------------
     # API runtime parameters (OpenAI-compatible chat completions)
@@ -745,6 +746,7 @@ class FiamConfig:
             daily_budget_usd=daemon.get("daily_budget_usd", cls.daily_budget_usd),
             cc_model=daemon.get("cc_model", cls.cc_model),
             cc_disallowed_tools=daemon.get("cc_disallowed_tools", cls.cc_disallowed_tools),
+            cc_effort=daemon.get("cc_effort", cls.cc_effort),
             events_per_session=daemon.get("events_per_session", cls.events_per_session),
             # API runtime
             api_provider=api.get("provider", cls.api_provider),

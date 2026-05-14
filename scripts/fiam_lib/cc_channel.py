@@ -210,6 +210,8 @@ def _channel_command(
         tools = [t.strip() for t in config.cc_disallowed_tools.split(",") if t.strip()]
         if tools:
             cmd.extend(["--disallowedTools", *tools])
+    if getattr(config, "cc_effort", ""):
+        cmd.extend(["--effort", config.cc_effort])
     return cmd
 
 

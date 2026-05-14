@@ -3585,6 +3585,8 @@ def _cc_chat_command(*, user_prompt: str | None, system_context: str = "", input
             "--disallowedTools",
             *[tool.strip() for tool in _CONFIG.cc_disallowed_tools.split(",") if tool.strip()],
         ])
+    if _CONFIG and getattr(_CONFIG, "cc_effort", ""):
+        command.extend(["--effort", _CONFIG.cc_effort])
     return command
 
 
@@ -3608,6 +3610,7 @@ def _cc_stable_prompt_fingerprint() -> str:
         parts.append(f"{path}:{stat.st_mtime_ns}:{stat.st_size}")
     parts.append(f"cc_model={_CONFIG.cc_model}")
     parts.append(f"cc_disallowed_tools={_CONFIG.cc_disallowed_tools}")
+    parts.append(f"cc_effort={getattr(_CONFIG, 'cc_effort', '')}")
     return "|".join(parts)
 
 
