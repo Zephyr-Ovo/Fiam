@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { InitializedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 
 const initialPath = process.env.FIAM_CC_CHANNEL_INITIAL_FILE || "";
 const serverName = process.env.FIAM_CC_CHANNEL_NAME || "fiam-channel";
@@ -43,14 +44,12 @@ const mcp = new Server(
   },
 );
 
-const transport = new StdioServerTransport();
-const originalOnMessage = transport.onmessage?.bind(transport);
 let sent = false;
 
-transport.onmessage = async (message) => {
-  if (originalOnMessage) originalOnMessage(message);
-  if (sent || message?.method !== "notifications/initialized") return;
+async function sendInitialEvent(trigger) {
+  if (sent) return;
   sent = true;
+  log(`sending initial event (trigger: ${trigger})`);
   try {
     const event = loadInitialEvent();
     if (!event || !event.content.trim()) {
@@ -65,9 +64,22 @@ transport.onmessage = async (message) => {
   } catch (error) {
     log(`failed to send initial event: ${error?.stack || error}`);
   }
+}
+
+mcp.setNotificationHandler(InitializedNotificationSchema, async () => {
+  log("received notifications/initialized");
+  await sendInitialEvent("initialized");
+});
+
+mcp.fallbackNotificationHandler = async (notification) => {
+  log(`received notification: ${notification.method}`);
 };
 
+const transport = new StdioServerTransport();
 await mcp.connect(transport);
 log("connected");
+
+// Fallback: if notifications/initialized is never received, send after 2 s
+setTimeout(() => sendInitialEvent("2s-fallback"), 2000);
 
 await delay(keepaliveMs);
