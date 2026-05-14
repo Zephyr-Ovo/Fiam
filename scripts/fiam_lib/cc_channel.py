@@ -214,9 +214,16 @@ def _channel_command(
 
 
 def _spawn_pty(cmd: list[str], *, cwd: Path):
+    import fcntl
     import pty
+    import termios
 
     master_fd, slave_fd = pty.openpty()
+
+    def set_controlling_tty() -> None:
+        os.setsid()
+        fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
+
     proc = subprocess.Popen(
         cmd,
         stdin=slave_fd,
@@ -225,7 +232,7 @@ def _spawn_pty(cmd: list[str], *, cwd: Path):
         cwd=str(cwd),
         text=False,
         close_fds=True,
-        start_new_session=True,
+        preexec_fn=set_controlling_tty,
     )
     os.close(slave_fd)
     return proc, master_fd
