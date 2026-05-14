@@ -283,7 +283,7 @@ def _start_pty_pump(master_fd: int, stop: threading.Event, tail: list[str]) -> t
                     return
             if "do you trust" in low or "trust the files" in low:
                 try:
-                    os.write(master_fd, b"y\r")
+                    os.write(master_fd, b"\r")
                 except OSError:
                     return
 
