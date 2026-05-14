@@ -80,6 +80,15 @@ uv run python scripts/fiam.py start  # 启动 daemon
 
 远程嵌入（推荐）：在 GPU 服务器部署 `serve_embeddings.py`，在 `fiam.toml` 中设置 `embedding_backend = "remote"`。
 
+部署态 Claude Code 传递推荐走官方 MCP channel：
+
+```bash
+npm --prefix channels/cc-channel install
+FIAM_CC_TRANSPORT=channel uv run python scripts/fiam.py start
+```
+
+设置 `FIAM_CC_TRANSPORT=channel` 后，Fiam 每个自动 turn 都通过单向 MCP channel 投递，并从 Claude Code JSONL transcript 重构回复；不设置时保留本地开发用的 legacy `claude -p` 路径。
+
 ## 目录结构
 
 ```

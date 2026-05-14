@@ -1939,6 +1939,23 @@ def _run_cc_studio_edit(prompt: str) -> dict:
         return {**parsed, "runtime": "cc", "session_id": str(data.get("session_id") or ""), "cost_usd": data.get("total_cost_usd", 0)}
 
     with _CC_RUNTIME_LOCK:
+        if _cc_channel_transport_enabled():
+            session = _load_app_active_session()
+            resume_id = str((session or {}).get("session_id") or "").strip()
+            try:
+                result = _run_cc_channel_turn_result_locked(
+                    warm_user_prompt,
+                    warm_system_context,
+                    resume_session_id=resume_id,
+                    max_turns=4,
+                )
+            except RuntimeError as exc:
+                raise RuntimeError(f"claude studio channel failed: {str(exc).strip()[:500]}") from exc
+            parsed = parse_stream_result(result)
+            session_id = str(parsed.get("session_id") or "").strip()
+            if session_id:
+                _save_app_active_session(session_id)
+            return parsed
         if _cc_warm_enabled():
             try:
                 return parse_stream_result(_run_cc_warm_turn_result_locked(warm_user_prompt, warm_system_context))
@@ -3537,6 +3554,15 @@ def _cc_warm_enabled() -> bool:
     return os.environ.get("FIAM_CC_WARM_DISABLED", "").strip().lower() not in {"1", "true", "yes", "on"}
 
 
+def _cc_channel_transport_enabled() -> bool:
+    try:
+        from fiam_lib.cc_channel import channel_enabled
+
+        return channel_enabled()
+    except Exception:
+        return False
+
+
 def _cc_chat_command(*, user_prompt: str | None, system_context: str = "", input_stream: bool = False) -> list[str]:
     command = ["claude", "-p"]
     if input_stream:
@@ -3689,6 +3715,13 @@ def _cc_scrub_hook_transcript(session: dict | None = None) -> bool:
     session = session or _load_app_active_session()
     session_id = str((session or {}).get("session_id") or "").strip()
     path = _cc_project_transcript_path(session_id)
+    if path and path.exists():
+        try:
+            from fiam_lib.cc_channel import scrub_transcript
+
+            return scrub_transcript(path)
+        except Exception:
+            logger.exception("shared CC transcript scrub failed; using local scrubber")
     if not path or not path.exists():
         return False
     changed = False
@@ -3887,6 +3920,34 @@ class _CCWarmTurnProcess:
     def kill(self):
         self.returncode = -9
         self.runner.close()
+
+
+class _CCCompletedTurnProcess:
+    def __init__(self, stdout: str, stderr: str = "", returncode: int = 0) -> None:
+        from io import StringIO
+
+        self.stdout = StringIO(stdout or "")
+        self.stderr = StringIO(stderr or "")
+        self.returncode = returncode
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def kill(self):
+        self.returncode = -9
+
+
+def _run_cc_channel_turn_result_locked(user_prompt: str, system_context: str, *, resume_session_id: str = "", max_turns: int = 10):
+    from fiam_lib.cc_channel import as_completed_process, run_channel_turn
+
+    turn = run_channel_turn(
+        _CONFIG,
+        user_prompt,
+        system_context=system_context,
+        resume_session_id=resume_session_id,
+        max_turns=max_turns,
+    )
+    return as_completed_process(turn)
 
 
 def _run_cc_warm_turn_result_locked(user_prompt: str, system_context: str):
@@ -4198,6 +4259,16 @@ def _run_cc_favilla_chat_locked(*, text: str, channel: str, surface: str = "", a
         return cmd
 
     def run_claude(resume_session_id: str | None, prompt_override: str | None = None):
+        if _cc_channel_transport_enabled():
+            try:
+                return _run_cc_channel_turn_result_locked(
+                    prompt_override or warm_user_prompt,
+                    warm_system_context,
+                    resume_session_id=resume_session_id or "",
+                    max_turns=10,
+                )
+            except RuntimeError as exc:
+                raise RuntimeError(f"claude channel failed: {str(exc).strip()[:500]}") from exc
         if use_warm_holder["enabled"]:
             try:
                 return _run_cc_warm_turn_result_locked(prompt_override or warm_user_prompt, warm_system_context)
@@ -4597,6 +4668,14 @@ def _iter_cc_favilla_chat_events_locked(*, text: str, channel: str, surface: str
             ev_queue.put({"event": "_eof", "data": {}})
 
     def run_claude(resume_session_id: str | None) -> "subprocess.Popen[str]":
+        if _cc_channel_transport_enabled():
+            result = _run_cc_channel_turn_result_locked(
+                warm_user_prompt,
+                warm_system_context,
+                resume_session_id=resume_session_id or "",
+                max_turns=10,
+            )
+            return _CCCompletedTurnProcess(result.stdout, result.stderr, result.returncode)
         if use_warm_holder["enabled"]:
             runner = _cc_warm_runner_locked(warm_system_context)
             return _CCWarmTurnProcess(runner, warm_user_prompt)

@@ -95,6 +95,15 @@ uv run python scripts/fiam.py start
 
 For local ML embeddings, install the optional ML dependencies if configured by your environment. Remote/OpenAI-compatible embeddings and model providers are configured through environment variable names, not committed secrets.
 
+For the Claude Code channel transport used in deployment, install the MCP channel helper once:
+
+```bash
+npm --prefix channels/cc-channel install
+FIAM_CC_TRANSPORT=channel uv run python scripts/fiam.py start
+```
+
+This runs each automated Claude Code turn through an official one-way MCP channel and reconstructs replies from the Claude Code JSONL transcript. Without `FIAM_CC_TRANSPORT=channel`, Fiam keeps the legacy `claude -p` path for local development.
+
 ## Configuration
 
 Copy `fiam.toml.example` to `fiam.toml`, or run:

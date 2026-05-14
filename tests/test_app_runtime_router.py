@@ -415,6 +415,48 @@ class AppRuntimeRouterTest(unittest.TestCase):
         self.assertIn("before hook after", scrubbed[0]["message"]["content"])
         self.assertNotIn("secret hook", "\n".join(lines))
 
+    def test_cc_scrub_unwraps_channel_user_rows(self) -> None:
+        original_config = dashboard_server._CONFIG
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = FiamConfig(home_path=root / "home", code_path=root / "code")
+            config.ensure_dirs()
+            dashboard_server._CONFIG = config
+            session_id = "sess_channel_scrub"
+            with patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(root / "claude")}, clear=False):
+                path = dashboard_server._cc_project_transcript_path(session_id)
+                assert path is not None
+                path.parent.mkdir(parents=True, exist_ok=True)
+                rows = [
+                    {
+                        "type": "queue-operation",
+                        "operation": "enqueue",
+                        "content": '<channel source="fiam-channel" request_id="req_1">\nhello channel\n</channel>',
+                    },
+                    {
+                        "type": "user",
+                        "isMeta": True,
+                        "origin": {"kind": "channel", "server": "fiam-channel"},
+                        "message": {
+                            "role": "user",
+                            "content": '<channel source="fiam-channel" request_id="req_1">\nhello channel\n</channel>',
+                        },
+                    },
+                    {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "ok"}]}},
+                ]
+                path.write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n", encoding="utf-8")
+
+                changed = dashboard_server._cc_scrub_hook_transcript({"session_id": session_id})
+                scrubbed = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+        dashboard_server._CONFIG = original_config
+
+        self.assertTrue(changed)
+        self.assertEqual(scrubbed[0]["content"], "hello channel")
+        self.assertEqual(scrubbed[1]["message"]["content"], "hello channel")
+        self.assertNotIn("origin", scrubbed[1])
+        self.assertNotIn("<channel", json.dumps(scrubbed, ensure_ascii=False))
+
     def test_object_token_extraction_and_download(self) -> None:
         original_config = dashboard_server._CONFIG
         with tempfile.TemporaryDirectory() as tmp:
