@@ -263,10 +263,19 @@ def _start_pty_pump(master_fd: int, stop: threading.Event, tail: list[str]) -> t
 
     def run() -> None:
         buffer = ""
+        confirm_until = 0.0
+        last_confirm = 0.0
         while not stop.is_set():
             try:
                 chunk = os.read(master_fd, 4096).decode("utf-8", errors="ignore")
             except BlockingIOError:
+                now = time.monotonic()
+                if now < confirm_until and now - last_confirm > 0.25:
+                    try:
+                        os.write(master_fd, b"1\r")
+                    except OSError:
+                        return
+                    last_confirm = now
                 time.sleep(0.05)
                 continue
             except OSError:
@@ -279,16 +288,13 @@ def _start_pty_pump(master_fd: int, stop: threading.Event, tail: list[str]) -> t
             if len(tail) > 200:
                 del tail[:100]
             low = buffer.lower()
-            if "dangerously" in low and ("continue" in low or "yes" in low or "confirm" in low):
-                try:
-                    os.write(master_fd, b"y\r")
-                except OSError:
-                    return
+            if (
+                ("dangerously" in low and ("continue" in low or "yes" in low or "confirm" in low))
+                or ("loading" in low and "development" in low and "channels" in low)
+            ):
+                confirm_until = time.monotonic() + 3.0
             if "do you trust" in low or "trust the files" in low or ("quick" in low and "safety" in low and "trust" in low):
-                try:
-                    os.write(master_fd, b"\r\n")
-                except OSError:
-                    return
+                confirm_until = time.monotonic() + 3.0
 
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
