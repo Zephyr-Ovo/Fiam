@@ -272,14 +272,15 @@ def _start_pty_pump(master_fd: int, stop: threading.Event, tail: list[str]) -> t
         buffer = ""
         confirm_until = 0.0
         last_confirm = 0.0
+        startup_confirm_until = time.monotonic() + 12.0
         while not stop.is_set():
             try:
                 chunk = os.read(master_fd, 4096).decode("utf-8", errors="ignore")
             except BlockingIOError:
                 now = time.monotonic()
-                if now < confirm_until and now - last_confirm > 0.25:
+                if (now < confirm_until or now < startup_confirm_until) and now - last_confirm > 0.5:
                     try:
-                        os.write(master_fd, b"1\r")
+                        os.write(master_fd, b"\r")
                     except OSError:
                         return
                     last_confirm = now
