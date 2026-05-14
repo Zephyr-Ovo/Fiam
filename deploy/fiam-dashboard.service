@@ -8,6 +8,7 @@ User=fiet
 Group=fiet
 WorkingDirectory=/home/fiet/fiam-code
 EnvironmentFile=-/home/fiet/fiam-code/.env
+Environment=FIAM_CC_TRANSPORT=channel
 ExecStart=/home/fiet/fiam-code/.venv/bin/python /home/fiet/fiam-code/scripts/dashboard_server.py --port 8766
 Restart=on-failure
 RestartSec=5

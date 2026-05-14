@@ -10,6 +10,7 @@ User=fiet
 Group=fiet
 WorkingDirectory=/home/fiet/fiam-code
 Environment=PYTHONUNBUFFERED=1
+Environment=FIAM_CC_TRANSPORT=channel
 Environment=PATH=/home/fiet/fiam-code/.venv/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=/home/fiet/fiam-code/.venv/bin/python /home/fiet/fiam-code/scripts/fiam.py start
 Restart=on-failure

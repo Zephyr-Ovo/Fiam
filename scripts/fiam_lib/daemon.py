@@ -51,6 +51,38 @@ from fiam_lib.ui import _console, _flow, _ANIM_IDLE, _ANIM_ACTIVE, _animated_sle
 _AI_STATES = {"notify", "mute", "block", "sleep", "busy", "together", "online"}
 
 
+def _cc_channel_transport_enabled() -> bool:
+    try:
+        from fiam_lib.cc_channel import channel_enabled
+
+        return channel_enabled()
+    except Exception:
+        return False
+
+
+def _run_cc_channel_json(config, message: str, *, resume_session_id: str = "", max_turns: int = 10):
+    from types import SimpleNamespace
+
+    from fiam_lib.cc_channel import run_channel_turn
+
+    turn = run_channel_turn(
+        config,
+        message,
+        resume_session_id=resume_session_id,
+        max_turns=max_turns,
+    )
+    data = None
+    for raw_line in (turn.stdout or "").splitlines():
+        try:
+            item = json.loads(raw_line)
+        except json.JSONDecodeError:
+            continue
+        if item.get("type") == "result":
+            data = item
+    stdout = json.dumps(data or {}, ensure_ascii=False)
+    return SimpleNamespace(stdout=stdout, stderr=turn.stderr, returncode=turn.returncode), data
+
+
 def _default_ai_state() -> dict:
     return {"state": "notify"}
 
@@ -279,34 +311,43 @@ def _wake_session(config, message: str, tag: str = "inbox", conductor=None) -> b
         cmd.extend(["--resume", session["session_id"]])
 
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=180,
-            cwd=str(config.home_path),
-        )
+        if _cc_channel_transport_enabled():
+            result, data = _run_cc_channel_json(
+                config,
+                message,
+                resume_session_id=session["session_id"] if resuming else "",
+                max_turns=10,
+            )
+        else:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=180,
+                cwd=str(config.home_path),
+            )
+            data = None
         _plog.info("wake cmd=%s  exit=%d", " ".join(cmd[:4]), result.returncode)
         if result.stderr:
             _plog.info("wake stderr: %s", result.stderr.strip()[:500])
 
         # Parse result JSON — even on exit 1 (error_max_turns still has session_id)
-        data = None
-        try:
-            data = json.loads(result.stdout)
+        if data is None:
+            try:
+                data = json.loads(result.stdout)
+            except (json.JSONDecodeError, ValueError):
+                data = None
+        if data:
             _plog.info("wake response: cost=$%.4f  session=%s  subtype=%s",
                        data.get("total_cost_usd", 0),
                        data.get("session_id", "?")[:8],
                        data.get("subtype", ""))
-            # Log cost to ledger
             cost = data.get("total_cost_usd", 0)
             if cost > 0:
                 log_cost(config, cost,
                          session_id=data.get("session_id", ""),
                          tag=tag,
                          turns=data.get("num_turns", 0))
-        except (json.JSONDecodeError, ValueError):
-            pass
 
         if result.returncode != 0:
             # error_max_turns is a partial success — session exists, save it
@@ -327,15 +368,18 @@ def _wake_session(config, message: str, tag: str = "inbox", conductor=None) -> b
                     if "--resume" in cmd_retry:
                         idx = cmd_retry.index("--resume")
                         del cmd_retry[idx:idx+2]
-                    result = subprocess.run(
-                        cmd_retry, capture_output=True, text=True,
-                        timeout=180, cwd=str(config.home_path),
-                    )
+                    if _cc_channel_transport_enabled():
+                        result, data = _run_cc_channel_json(config, message, max_turns=10)
+                    else:
+                        result = subprocess.run(
+                            cmd_retry, capture_output=True, text=True,
+                            timeout=180, cwd=str(config.home_path),
+                        )
+                        try:
+                            data = json.loads(result.stdout)
+                        except (json.JSONDecodeError, ValueError):
+                            data = None
                     _plog.info("wake retry exit=%d", result.returncode)
-                    try:
-                        data = json.loads(result.stdout)
-                    except (json.JSONDecodeError, ValueError):
-                        data = None
                     resuming = False
                     # Save new session id from retry regardless of outcome
                     if data:
@@ -418,17 +462,25 @@ def _wake_session(config, message: str, tag: str = "inbox", conductor=None) -> b
                         reroll_cmd.extend(["--disallowedTools"] + [t.strip() for t in config.cc_disallowed_tools.split(",") if t.strip()])
                     if sid:
                         reroll_cmd.extend(["--resume", sid])
-                    reroll_result = subprocess.run(
-                        reroll_cmd,
-                        capture_output=True,
-                        text=True,
-                        timeout=180,
-                        cwd=str(config.home_path),
-                    )
-                    try:
-                        reroll_data = json.loads(reroll_result.stdout)
-                    except (json.JSONDecodeError, ValueError):
-                        reroll_data = None
+                    if _cc_channel_transport_enabled():
+                        reroll_result, reroll_data = _run_cc_channel_json(
+                            config,
+                            hold_reroll_message(interpretation.hold_reason),
+                            resume_session_id=sid,
+                            max_turns=10,
+                        )
+                    else:
+                        reroll_result = subprocess.run(
+                            reroll_cmd,
+                            capture_output=True,
+                            text=True,
+                            timeout=180,
+                            cwd=str(config.home_path),
+                        )
+                        try:
+                            reroll_data = json.loads(reroll_result.stdout)
+                        except (json.JSONDecodeError, ValueError):
+                            reroll_data = None
                     if reroll_data:
                         cost = reroll_data.get("total_cost_usd", 0)
                         if cost > 0:
@@ -479,18 +531,26 @@ def _run_claude_json(config, message: str, *, tag: str) -> tuple[bool, dict | No
     if resuming:
         cmd.extend(["--resume", session["session_id"]])
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=180,
-            cwd=str(config.home_path),
-        )
+        if _cc_channel_transport_enabled():
+            result, data = _run_cc_channel_json(
+                config,
+                message,
+                resume_session_id=session["session_id"] if resuming else "",
+                max_turns=10,
+            )
+        else:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=180,
+                cwd=str(config.home_path),
+            )
+            try:
+                data = json.loads(result.stdout or "{}")
+            except json.JSONDecodeError:
+                return False, None
     except (subprocess.TimeoutExpired, FileNotFoundError):
-        return False, None
-    try:
-        data = json.loads(result.stdout or "{}")
-    except json.JSONDecodeError:
         return False, None
     if result.returncode != 0 and data.get("subtype") != "error_max_turns":
         return False, data
