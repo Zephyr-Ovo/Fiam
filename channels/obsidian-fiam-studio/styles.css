@@ -186,8 +186,8 @@
   position: absolute;
   left: 50%;
   top: 4px;
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -197,10 +197,10 @@
   z-index: 2;
 }
 
-.fiam-studio-timeline-node svg {
-  width: 14px;
-  height: 14px;
-  stroke-width: 2;
+.fiam-studio-timeline-node .svg-icon {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.75;
 }
 
 .fiam-studio-timeline-node.ai {

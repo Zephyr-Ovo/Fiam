@@ -751,20 +751,18 @@ class FiamStudioView extends ItemView {
   }
 
   private timelineIcon(commit: GitCommit, isAi: boolean): TimelineIcon {
-    const subject = commit.subject.toLowerCase();
-    const files = commit.files.join(" ").toLowerCase();
-    const h = `${subject} ${files}`;
-    if (/git|sync|push|pull|merge|rebase/.test(h)) return { lucide: "git-branch", alt: "Version control" };
-    if (/build|test|verify|check|pass|done|todo|task|plan/.test(h)) return { lucide: "clipboard-check", alt: "Checked work" };
-    if (/search|grep|find|query|lookup|scan/.test(h)) return { lucide: "search", alt: "Search" };
-    if (/web|browser|url|http|https|fetch|site|page/.test(h)) return { lucide: "globe", alt: "Web" };
-    if (/attach|image|photo|picture|pdf|upload|media/.test(h)) return { lucide: "paperclip", alt: "Attachment" };
-    if (/shelf|read|reader|book|epub|library/.test(h)) return { lucide: "book-open", alt: "Reading" };
-    if (/folder|dir|tree|workspace/.test(h)) return { lucide: "folder", alt: "Folder" };
-    if (/coauthor|co-author|desk|write|note|draft|quick|compose|create|new/.test(h)) return { lucide: "pen-line", alt: isAi ? "AI writing" : "Writing" };
-    if (/edit|update|modify|patch|revise|fix|commit/.test(h)) return { lucide: "pencil", alt: "Edit" };
-    if (/chat|message|reply|conversation/.test(h)) return { lucide: "message-circle", alt: "Conversation" };
-    if (/think|reason|reflect/.test(h)) return { lucide: "brain", alt: "Reasoning" };
+    const s = commit.subject.toLowerCase();
+    if (/\bgit\b|sync|push|pull|merge|rebase/.test(s)) return { lucide: "git-branch", alt: "Version control" };
+    if (/build|test|check|verify|pass|plan/.test(s)) return { lucide: "check-circle", alt: "Checked work" };
+    if (/search|grep|find|query|scan/.test(s)) return { lucide: "search", alt: "Search" };
+    if (/web|browser|url|http|fetch|page/.test(s)) return { lucide: "globe", alt: "Web" };
+    if (/image|photo|picture|pdf|upload|media|attach/.test(s)) return { lucide: "paperclip", alt: "Attachment" };
+    if (/shelf|read|book|epub|library/.test(s)) return { lucide: "book-open", alt: "Reading" };
+    if (/folder|dir|tree|workspace|init/.test(s)) return { lucide: "folder", alt: "Folder" };
+    if (/coauthor|co-author|write|note|draft|quick|compose|create|new|add/.test(s)) return { lucide: "pen-line", alt: isAi ? "AI writing" : "Writing" };
+    if (/edit|update|modify|patch|revise|fix|refactor|chore/.test(s)) return { lucide: "pencil", alt: "Edit" };
+    if (/chat|message|reply|conversation/.test(s)) return { lucide: "message-circle", alt: "Conversation" };
+    if (/think|reason|reflect/.test(s)) return { lucide: "brain", alt: "Reasoning" };
     if (isAi) return { lucide: "sparkles", alt: "AI change" };
     return { lucide: "file-text", alt: "Document change" };
   }
