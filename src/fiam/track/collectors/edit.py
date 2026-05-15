@@ -48,7 +48,7 @@ def collect_edit_events(
         cmd.append(f"--since={since.astimezone(timezone.utc).isoformat()}")
     if limit is not None and limit > 0:
         cmd.append(f"-n{int(limit)}")
-    cmd += ["--", ".", ":(exclude)track/**"]
+    cmd += ["--", ".", ":(exclude)track/**", ":(exclude)**/private/**"]
     try:
         proc = subprocess.run(
             cmd, cwd=str(vault_dir), check=False,
@@ -101,7 +101,7 @@ def _parse_log(raw: str) -> list[EditEvent]:
                 del_total += int(del_s) if del_s.isdigit() else 0
             except ValueError:
                 pass
-            if path.startswith("track/"):
+            if path.startswith("track/") or "/private/" in path or path.startswith("private/"):
                 continue
             files.append(path)
         events.append(EditEvent(

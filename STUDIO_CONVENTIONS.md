@@ -127,7 +127,20 @@ tags: #studio/inbox
 | 路径越界（`..` / 绝对）       | 拒绝              |
 | `shelf/<source>/<slug>.md` 已存在 | 拒绝覆盖     |
 
-## 9. 变更约定
+## 9. 私有空间
+
+每一方有一个私有文件夹，对方**默认不可见**。文件只能在文件夹内创建，不从外部拖入。
+
+| 所有者 | 路径 | 机制 |
+|--------|------|------|
+| 人 (Zephyr) | `desk/private/` | vault 内，git 跟踪；AI collector/recall 跳过 `**/private/**` 路径 |
+| AI | `studio_ai_inbox/` | 独立 repo，不在 vault 内；Obsidian 天然看不到 |
+
+- `desk/private/` 下的文件遵循正常 frontmatter 约定，默认 `visibility: human`。
+- AI 侧工具（collector、recall、share 路由）遇到 `private/` 路径一律跳过，不读不写不摘要。
+- 人侧 Obsidian 正常显示 `desk/private/`，无限制。
+
+## 10. 变更约定
 
 改本文件需在 PR 描述（或 commit message）写明：
 - 改了哪个章节
