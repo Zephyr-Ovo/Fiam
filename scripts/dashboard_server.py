@@ -3481,10 +3481,11 @@ def _favilla_chat_cut(payload: dict) -> dict:
     with cut_path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record) + "\n")
     channel = str(payload.get("channel") or "chat")
-    _append_transcript(channel, {
-        "role": "ai",
-        "divider": {"kind": "scissor", "label": "cut"},
-    })
+    if not payload.get("_auto"):
+        _append_transcript(channel, {
+            "role": "ai",
+            "divider": {"kind": "scissor", "label": "cut"},
+        })
     return {"ok": True, "flow_offset": offset}
 
 
@@ -3637,7 +3638,7 @@ def _session_rollover(channel: str) -> dict:
     """
     info: dict = {"ok": True}
     try:
-        cut_res = _favilla_chat_cut({"channel": channel})
+        cut_res = _favilla_chat_cut({"channel": channel, "_auto": True})
         info["cut_offset"] = cut_res.get("flow_offset")
     except Exception as exc:
         info["cut_error"] = str(exc)[:200]
@@ -5931,10 +5932,16 @@ def _run_api_favilla_chat(*, text: str, channel: str, surface: str = "", attachm
         if not isinstance(call, dict):
             continue
         name = str(call.get("name") or "")
+        raw_args = call.get("arguments") or ""
+        try:
+            args_dict = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args if isinstance(raw_args, dict) else {})
+        except (json.JSONDecodeError, TypeError):
+            args_dict = {}
+        input_summary = _summarize_cc_tool_input(name, args_dict) if args_dict else str(raw_args)[:300]
         api_tool_calls_summary.append({
             "tool_name": name,
             "tool_id": call.get("id") or "",
-            "input_summary": str(call.get("arguments") or "")[:300],
+            "input_summary": input_summary,
             "result_summary": str(call.get("result_preview") or "")[:500],
             "result_object_hash": str(call.get("result_object_hash") or ""),
             "result_size": call.get("result_size") or 0,
@@ -5948,6 +5955,31 @@ def _run_api_favilla_chat(*, text: str, channel: str, surface: str = "", attachm
             "result_preview": call.get("result_preview") or "",
             "loop": call.get("loop"),
         })
+    # Inject tool_use / tool_result segments so the frontend can display them.
+    if api_tool_calls_summary:
+        tool_segments: list[dict] = []
+        for tc in api_tool_calls_summary:
+            tool_id = tc.get("tool_id") or ""
+            tool_name = tc.get("tool_name") or "tool"
+            if tc.get("input_summary"):
+                tool_segments.append({
+                    "type": "tool_use",
+                    "tool_use_id": tool_id,
+                    "tool_name": tool_name,
+                    "input_summary": str(tc["input_summary"]),
+                })
+            if tc.get("result_summary") or tc.get("is_error"):
+                tool_segments.append({
+                    "type": "tool_result",
+                    "tool_use_id": tool_id,
+                    "tool_name": tool_name,
+                    "result_summary": str(tc.get("result_summary") or ""),
+                    "is_error": bool(tc.get("is_error")),
+                })
+        if tool_segments:
+            thought_segs = [s for s in segments if s.get("type") == "thought"]
+            text_segs = [s for s in segments if s.get("type") == "text"]
+            segments = thought_segs + tool_segments + text_segs
     if record_turn:
         transcript_messages = None if used_reroll else list(getattr(result, "transcript_messages", None) or [])
         _record_api_turn_light(api_text, raw_reply, channel=channel, surface=surface, tool_calls=api_tool_calls_summary, family=family, turn_id=turn_id, request_id=request_id, transcript_messages=transcript_messages)
