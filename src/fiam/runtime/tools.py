@@ -241,6 +241,26 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "Recall",
+            "description": (
+                "Retrieve a time-decayed summary from the Studio track system. "
+                "Available names: 'edit' (vault editing activity), 'work' (code repo commits), "
+                "'system' (runtime phases/traces). Recent content is returned in full; "
+                "older content is progressively folded (7d full → 30d headings → 90d titles → omitted)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Track name: 'edit', 'work', or 'system'."},
+                    "since": {"type": "string", "description": "Optional ISO datetime; hide sections older than this."},
+                },
+                "required": ["name"],
+            },
+        },
+    },
 ]
 
 
@@ -576,6 +596,26 @@ def _truncate_bash_output(text: str) -> str:
     return f"{head}\n\n... [{omitted} chars omitted] ...\n\n{tail}"
 
 
+def _recall(home: Path, args: dict) -> str:
+    from fiam.track import recall as recall_fn
+    from fiam.track.config import load_track_config
+    name = str(args.get("name") or "").strip()
+    if name not in ("edit", "work", "system"):
+        return f"error: unknown track name {name!r} (available: edit, work, system)"
+    cfg = load_track_config(home.parent / "fiam.toml")
+    since_str = str(args.get("since") or "").strip()
+    since = None
+    if since_str:
+        try:
+            since = datetime.fromisoformat(since_str)
+            if since.tzinfo is None:
+                since = since.replace(tzinfo=timezone.utc)
+        except ValueError:
+            return f"error: invalid since datetime: {since_str}"
+    text = recall_fn(cfg.vault_dir, name, since=since)
+    return text or "(no track data available)"
+
+
 _DISPATCH = {
     # Claude Code parity names
     "Read": _read_file,
@@ -586,6 +626,7 @@ _DISPATCH = {
     "Bash": _bash,
     # fiam-specific tools (no CC counterpart yet; will migrate to fiam CLI)
     "git_diff": _git_diff,
+    "Recall": _recall,
 }
 
 

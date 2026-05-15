@@ -1,0 +1,28 @@
+id = "studio"
+name = "Studio vault"
+enabled = true
+status = "v0.1-share-endpoints"
+kind = "channel"
+delivery = "record_only"
+description = """
+Studio = shared markdown vault (desk/shelf/track) + AI-private inbox + git timeline.
+Records every write into fiam history but never wakes the AI: humans editing or
+saving in Studio is not a notification source. AI-side writes naturally enter
+flow through their own tool-use frames.
+"""
+transports = ["http"]
+capabilities = ["receive_text", "dispatch_text"]
+receive_channels = ["studio"]
+dispatch_targets = ["studio"]
+entrypoint = "scripts/dashboard_server.py"
+auth = "FIAM_INGEST_TOKEN via X-Fiam-Token header on /studio/* endpoints"
+latency = "synchronous file write + best-effort git commit; sub-second"
+env = ["FIAM_INGEST_TOKEN", "FIAM_STUDIO_VAULT_DIR", "FIAM_STUDIO_AI_INBOX_DIR"]
+replaces = []
+notes = [
+  "Writes land in <home>/studio/ (shared vault) or <home>/studio_ai_inbox/ (AI private).",
+  "record_only delivery: events ledger records the write but no notification is queued and no runtime wake fires.",
+  "Endpoints: POST /studio/share, POST /studio/quicknote, GET /studio/list, GET /studio/file (see STUDIO_DESIGN.md §3).",
+  "Conventions for folder layout, frontmatter, and paragraph-level signatures: STUDIO_CONVENTIONS.md.",
+  "Roadmap and phase plan: STUDIO_ROADMAP.md.",
+]

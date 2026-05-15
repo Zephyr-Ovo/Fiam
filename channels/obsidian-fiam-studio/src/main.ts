@@ -1,6 +1,7 @@
 import {
   App,
   ItemView,
+  MarkdownPostProcessorContext,
   MarkdownView,
   Modal,
   Notice,
@@ -19,6 +20,8 @@ const VIEW_TYPE_FIAM_STUDIO = "fiam-studio-view";
 
 type StudioTab = "timeline" | "desk" | "shelf" | "quick" | "coauthor";
 
+const SIGNATURE_RE = /<!--\s*@(\S+)\s+(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})\s*-->/g;
+
 interface FiamStudioSettings {
   deskDir: string;
   shelfDir: string;
@@ -27,6 +30,8 @@ interface FiamStudioSettings {
   gitRemote: string;
   studioEndpoint: string;
   ingestToken: string;
+  autoSignature: boolean;
+  showAuthorHighlight: boolean;
 }
 
 const DEFAULT_SETTINGS: FiamStudioSettings = {
@@ -37,6 +42,8 @@ const DEFAULT_SETTINGS: FiamStudioSettings = {
   gitRemote: "origin",
   studioEndpoint: "",
   ingestToken: "",
+  autoSignature: true,
+  showAuthorHighlight: true,
 };
 
 interface GitCommit {
@@ -55,6 +62,10 @@ interface TimelineIcon {
 
 export default class FiamStudioPlugin extends Plugin {
   settings: FiamStudioSettings = DEFAULT_SETTINGS;
+  private _contentCache = new Map<string, string>();
+  private _sigGuard = false;
+  private _sigTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private static readonly SIG_DEBOUNCE_MS = 3000;
 
   async onload() {
     await this.loadSettings();
@@ -129,11 +140,43 @@ export default class FiamStudioPlugin extends Plugin {
       },
     });
 
+    this.addCommand({
+      id: "toggle-author-highlight",
+      name: "Toggle paragraph author highlighting",
+      callback: () => {
+        this.settings.showAuthorHighlight = !this.settings.showAuthorHighlight;
+        void this.saveSettings();
+        new Notice(`Author highlighting: ${this.settings.showAuthorHighlight ? "on" : "off"}`);
+      },
+    });
+
+    this.registerEvent(
+      this.app.vault.on("modify", (file) => {
+        if (file instanceof TFile && file.extension === "md") {
+          void this._onFileModified(file);
+        }
+      }),
+    );
+
+    this.registerEvent(
+      this.app.workspace.on("file-open", (file) => {
+        if (file instanceof TFile && file.extension === "md") {
+          void this._cacheFileContent(file);
+        }
+      }),
+    );
+
+    this.registerMarkdownPostProcessor((el, ctx) => {
+      this._postProcessAuthorHighlight(el, ctx);
+    });
+
     this.addSettingTab(new FiamStudioSettingTab(this.app, this));
     await this.ensureStudioDirs();
   }
 
   onunload() {
+    for (const timer of this._sigTimers.values()) clearTimeout(timer);
+    this._sigTimers.clear();
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_FIAM_STUDIO);
   }
 
@@ -383,7 +426,170 @@ export default class FiamStudioPlugin extends Plugin {
     if (current) commits.push(current);
     return commits;
   }
+
+  private async _cacheFileContent(file: TFile) {
+    try {
+      const content = await this.app.vault.cachedRead(file);
+      this._contentCache.set(file.path, content);
+    } catch {
+      // File may have been deleted between event and read
+    }
+  }
+
+  private async _onFileModified(file: TFile) {
+    if (this._sigGuard) return;
+    if (!this.settings.autoSignature) return;
+    if (!this._isSignableFile(file)) return;
+
+    // Debounce: reset timer on every keystroke, only stamp after pause
+    const existing = this._sigTimers.get(file.path);
+    if (existing) clearTimeout(existing);
+
+    // Snapshot the "before" on first edit (cache miss means file just opened)
+    if (!this._contentCache.has(file.path)) {
+      // Too late to get the pre-edit state — skip this round
+      try {
+        this._contentCache.set(file.path, await this.app.vault.cachedRead(file));
+      } catch { /* deleted */ }
+      return;
+    }
+
+    this._sigTimers.set(
+      file.path,
+      setTimeout(() => void this._applySignatures(file), FiamStudioPlugin.SIG_DEBOUNCE_MS),
+    );
+  }
+
+  private async _applySignatures(file: TFile) {
+    this._sigTimers.delete(file.path);
+    if (this._sigGuard) return;
+
+    const oldContent = this._contentCache.get(file.path);
+    let newContent: string;
+    try {
+      newContent = await this.app.vault.cachedRead(file);
+    } catch {
+      return;
+    }
+    if (oldContent === undefined || oldContent === newContent) {
+      this._contentCache.set(file.path, newContent);
+      return;
+    }
+
+    const signed = stampChangedParagraphs(
+      oldContent,
+      newContent,
+      this.settings.humanAuthor,
+    );
+    if (signed === newContent) {
+      this._contentCache.set(file.path, newContent);
+      return;
+    }
+
+    this._sigGuard = true;
+    try {
+      await this.app.vault.modify(file, signed);
+      this._contentCache.set(file.path, signed);
+    } finally {
+      this._sigGuard = false;
+    }
+  }
+
+  private _isSignableFile(file: TFile): boolean {
+    const path = file.path;
+    if (path.startsWith("track/")) return false;
+    if (path.startsWith(".obsidian/")) return false;
+    return (
+      path.startsWith(`${this.settings.deskDir}/`) ||
+      path.startsWith(`${this.settings.shelfDir}/`)
+    );
+  }
+
+  private _postProcessAuthorHighlight(
+    el: HTMLElement,
+    _ctx: MarkdownPostProcessorContext,
+  ) {
+    if (!this.settings.showAuthorHighlight) return;
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_COMMENT);
+    let node: Comment | null;
+    while ((node = walker.nextNode() as Comment | null)) {
+      const text = node.nodeValue?.trim() ?? "";
+      const match = text.match(/^@(\S+)\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}$/);
+      if (!match) continue;
+      const author = match[1];
+      const parent = node.parentElement;
+      if (!parent) continue;
+      const isAi = ["ai", "claude", "copilot", "codex", "cc"].some(
+        (n) => author.toLowerCase() === n,
+      );
+      parent.classList.add(
+        "fiam-studio-signed",
+        isAi ? "fiam-studio-signed-ai" : "fiam-studio-signed-human",
+      );
+      parent.dataset.fiamAuthor = author;
+    }
+  }
 }
+
+
+function splitParagraphs(text: string): string[] {
+  return text.split(/\n{2,}/);
+}
+
+function stripSignatures(paragraph: string): string {
+  return paragraph.replace(SIGNATURE_RE, "").trimEnd();
+}
+
+function stampChangedParagraphs(
+  oldText: string,
+  newText: string,
+  author: string,
+): string {
+  const oldParas = splitParagraphs(oldText);
+  const newParas = splitParagraphs(newText);
+  const now = new Date();
+  const stamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+  const tag = `<!-- @${author} ${stamp} -->`;
+
+  const oldStripped = oldParas.map(stripSignatures);
+  const result: string[] = [];
+  for (let i = 0; i < newParas.length; i++) {
+    const para = newParas[i];
+    const stripped = stripSignatures(para);
+    if (!stripped.trim()) {
+      result.push(para);
+      continue;
+    }
+    // Frontmatter block — never stamp
+    if (i === 0 && stripped.startsWith("---")) {
+      result.push(para);
+      continue;
+    }
+    const matchIdx = oldStripped.indexOf(stripped);
+    if (matchIdx >= 0) {
+      // Paragraph unchanged (ignoring signatures) — keep as-is
+      result.push(para);
+      oldStripped[matchIdx] = "\x00"; // consume match
+    } else {
+      // New or changed paragraph — append signature
+      const existingSigs = para.match(SIGNATURE_RE) ?? [];
+      const alreadyStamped = existingSigs.some((sig) => {
+        const m = sig.match(/<!--\s*@(\S+)/);
+        return m && m[1] === author;
+      });
+      if (alreadyStamped) {
+        result.push(para);
+      } else {
+        const lines = para.split("\n");
+        const lastLine = lines[lines.length - 1];
+        lines[lines.length - 1] = `${lastLine} ${tag}`;
+        result.push(lines.join("\n"));
+      }
+    }
+  }
+  return result.join("\n\n");
+}
+
 
 class FiamStudioView extends ItemView {
   private activeTab: StudioTab = "timeline";
@@ -632,6 +838,28 @@ class FiamStudioSettingTab extends PluginSettingTab {
     this.textSetting("Git remote", "Remote used by Git sync.", "gitRemote");
     this.textSetting("Studio endpoint", "Server base URL for private AI inbox sends.", "studioEndpoint");
     this.secretSetting("FIAM_INGEST_TOKEN", "Token used for private AI inbox sends.", "ingestToken");
+
+    new Setting(this.containerEl)
+      .setName("Auto paragraph signatures")
+      .setDesc("Append author/timestamp signatures to changed paragraphs on save.")
+      .addToggle((toggle) => {
+        toggle.setValue(this.plugin.settings.autoSignature);
+        toggle.onChange(async (value) => {
+          this.plugin.settings.autoSignature = value;
+          await this.plugin.saveSettings();
+        });
+      });
+
+    new Setting(this.containerEl)
+      .setName("Show author highlighting")
+      .setDesc("Highlight paragraphs by author in reading view (left border + hover label).")
+      .addToggle((toggle) => {
+        toggle.setValue(this.plugin.settings.showAuthorHighlight);
+        toggle.onChange(async (value) => {
+          this.plugin.settings.showAuthorHighlight = value;
+          await this.plugin.saveSettings();
+        });
+      });
   }
 
   private textSetting(

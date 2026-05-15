@@ -201,3 +201,35 @@
 .fiam-studio-timeline-node.ai {
   color: var(--fiam-studio-accent);
 }
+
+.fiam-studio-signed {
+  position: relative;
+  border-left: 2px solid transparent;
+  padding-left: 6px;
+  transition: border-color 0.15s ease;
+}
+
+.fiam-studio-signed-human {
+  border-left-color: color-mix(in srgb, var(--text-normal) 25%, transparent);
+}
+
+.fiam-studio-signed-ai {
+  border-left-color: color-mix(in srgb, var(--interactive-accent) 40%, transparent);
+}
+
+.fiam-studio-signed::after {
+  content: attr(data-fiam-author);
+  position: absolute;
+  right: 4px;
+  top: 2px;
+  font-size: 9px;
+  font-family: var(--font-monospace, monospace);
+  color: var(--text-faint);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  pointer-events: none;
+}
+
+.fiam-studio-signed:hover::after {
+  opacity: 1;
+}
