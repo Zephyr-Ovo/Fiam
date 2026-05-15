@@ -136,6 +136,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "path": {"type": "string", "description": "Relative path to limit the diff (optional)."},
                     "since": {"type": "string", "description": "Optional revision (e.g. 'HEAD~3')."},
                 },
+                "required": [],
             },
         },
     },
@@ -173,6 +174,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "token": {"type": "string", "description": "Optional obj:<prefix> or full object hash to resolve."},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 50},
                 },
+                "required": [],
             },
         },
     },
@@ -258,6 +260,120 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "since": {"type": "string", "description": "Optional ISO datetime; hide sections older than this."},
                 },
                 "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "book_list",
+            "description": "List all books on the shared bookshelf.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "book_toc",
+            "description": "Get the table of contents for a book.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "book_id": {"type": "string", "description": "Book identifier."},
+                },
+                "required": ["book_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "book_read",
+            "description": "Read paragraphs from a specific chapter. Updates the reading cursor.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "book_id": {"type": "string"},
+                    "chapter": {"type": "integer", "description": "Chapter index (from book_toc)."},
+                    "start": {"type": "integer", "description": "Starting paragraph index (default 0)."},
+                    "count": {"type": "integer", "description": "Number of paragraphs to read (default 20)."},
+                },
+                "required": ["book_id", "chapter"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "book_next",
+            "description": "Continue reading from the current position. Advances the cursor.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "count": {"type": "integer", "description": "Number of paragraphs (default 20)."},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "book_prev",
+            "description": "Go back and re-read previous paragraphs.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "count": {"type": "integer", "description": "Number of paragraphs (default 20)."},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "book_search",
+            "description": "Search for text across a book's paragraphs.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "book_id": {"type": "string"},
+                    "query": {"type": "string", "description": "Text to search for."},
+                    "max_results": {"type": "integer", "minimum": 1, "maximum": 50},
+                },
+                "required": ["book_id", "query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "book_annotate",
+            "description": "Leave an annotation on a specific paragraph. Both you and the human can annotate.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "book_id": {"type": "string"},
+                    "paragraph_id": {"type": "string", "description": "Paragraph ID (from book_read output)."},
+                    "text": {"type": "string", "description": "Your annotation or comment."},
+                },
+                "required": ["book_id", "paragraph_id", "text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "book_annotations",
+            "description": "View annotations on a book, optionally filtered by chapter.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "book_id": {"type": "string"},
+                    "chapter_id": {"type": "string", "description": "Optional chapter ID to filter (e.g. 'ch_0003')."},
+                },
+                "required": ["book_id"],
             },
         },
     },
@@ -616,6 +732,54 @@ def _recall(home: Path, args: dict) -> str:
     return text or "(no track data available)"
 
 
+def _book_tool(config: "FiamConfig", name: str, args: dict[str, Any]) -> str:
+    from fiam.bookshelf import Bookshelf
+
+    shelf = Bookshelf(config.home_path / "bookshelf")
+    try:
+        if name == "book_list":
+            return json.dumps(shelf.list_books(), ensure_ascii=False)
+        if name == "book_toc":
+            return json.dumps(shelf.toc(args["book_id"]), ensure_ascii=False)
+        if name == "book_read":
+            return json.dumps(shelf.read(
+                args["book_id"],
+                int(args["chapter"]),
+                start=int(args.get("start", 0)),
+                count=int(args.get("count", 20)),
+            ), ensure_ascii=False)
+        if name == "book_next":
+            return json.dumps(shelf.read_next(count=int(args.get("count", 20))), ensure_ascii=False)
+        if name == "book_prev":
+            return json.dumps(shelf.read_prev(count=int(args.get("count", 20))), ensure_ascii=False)
+        if name == "book_search":
+            return json.dumps(shelf.search(
+                args["book_id"],
+                args["query"],
+                max_results=int(args.get("max_results", 10)),
+            ), ensure_ascii=False)
+        if name == "book_annotate":
+            return json.dumps(shelf.annotate(
+                args["book_id"],
+                args["paragraph_id"],
+                args["text"],
+                author="ai",
+            ), ensure_ascii=False)
+        if name == "book_annotations":
+            return json.dumps(shelf.get_annotations(
+                args["book_id"],
+                chapter_id=args.get("chapter_id"),
+            ), ensure_ascii=False)
+    except (FileNotFoundError, IndexError, RuntimeError, KeyError) as exc:
+        return f"error: {exc}"
+    return f"error: unknown book tool {name!r}"
+
+
+_BOOK_TOOLS = frozenset({
+    "book_list", "book_toc", "book_read", "book_next", "book_prev",
+    "book_search", "book_annotate", "book_annotations",
+})
+
 _DISPATCH = {
     # Claude Code parity names
     "Read": _read_file,
@@ -636,6 +800,19 @@ def execute_tool_call(config: "FiamConfig", name: str, raw_args: str) -> str:
     Errors are returned as ``"error: ..."`` strings so the model can recover
     rather than the whole loop crashing.
     """
+    if name in _BOOK_TOOLS:
+        try:
+            args = json.loads(raw_args) if raw_args else {}
+        except json.JSONDecodeError as exc:
+            return f"error: invalid JSON arguments ({exc})"
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except json.JSONDecodeError:
+                pass
+        if not isinstance(args, dict):
+            return "error: arguments must be a JSON object"
+        return _book_tool(config, name, args)
     handler = _DISPATCH.get(name)
     if handler is None and name not in {"ObjectSearch", "ObjectSave", "ObjectImport"}:
         return f"error: unknown tool {name!r}"

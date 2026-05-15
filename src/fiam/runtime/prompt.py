@@ -283,9 +283,17 @@ def _valid_transcript_message(message: Any) -> dict[str, Any] | None:
     if not isinstance(message, dict):
         return None
     role = str(message.get("role") or "").strip()
+    # Favilla/dashboard stores role as "ai"; map to OpenAI-compatible "assistant"
+    if role == "ai":
+        role = "assistant"
     if role not in {"system", "user", "assistant", "tool"}:
         return None
     out = {k: v for k, v in message.items() if k in {"role", "content", "tool_calls", "tool_call_id", "name"}}
+    # Favilla stores body as "text"; map to "content"
+    if "content" not in out and "text" in message:
+        text = message["text"]
+        if isinstance(text, str) and text.strip():
+            out["content"] = text
     if "content" not in out and "tool_calls" not in out:
         return None
     out["role"] = role
@@ -389,7 +397,23 @@ def load_transcript_messages(
             continue
         if message:
             out.append(message)
-    return out
+    # Drop orphaned tool results at the start (their tool_use was truncated)
+    while out and out[0].get("role") == "tool":
+        out.pop(0)
+    # Deduplicate consecutive same-role messages with identical content
+    # (cross-platform transcripts record the same message from both CC and API).
+    # Never dedup tool results — each is tied to a unique tool_call_id.
+    deduped: list[dict[str, Any]] = []
+    for msg in out:
+        if (
+            deduped
+            and msg.get("role") == deduped[-1].get("role")
+            and msg.get("role") != "tool"
+            and msg.get("content") == deduped[-1].get("content")
+        ):
+            continue
+        deduped.append(msg)
+    return deduped
 
 
 def append_transcript_messages(
@@ -421,7 +445,18 @@ def trim_transcript_messages(
         return
     if len(lines) <= max_messages:
         return
-    path.write_text("\n".join(lines[-max_messages:]) + "\n", encoding="utf-8")
+    kept = lines[-max_messages:]
+    # Don't start with orphaned tool results (their tool_use was truncated)
+    while kept and kept[0].strip():
+        try:
+            msg = json.loads(kept[0])
+        except (json.JSONDecodeError, TypeError):
+            break
+        if msg.get("role") == "tool":
+            kept.pop(0)
+        else:
+            break
+    path.write_text("\n".join(kept) + "\n", encoding="utf-8")
 
 
 def _write_debug_assembly(

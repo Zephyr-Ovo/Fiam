@@ -3678,6 +3678,8 @@ def _check_and_run_session_rollover(channel: str) -> dict | None:
     """
     if not _CONFIG:
         return None
+    if getattr(_CONFIG, "memory_mode", "manual") == "manual":
+        return None
     cap = max(1, int(getattr(_CONFIG, "events_per_session", 10)))
     state = _load_session_state()
     state["turns_since_boundary"] = int(state.get("turns_since_boundary", 0) or 0) + 1
@@ -4508,7 +4510,7 @@ def _official_thought_payloads(thinking_events: list[dict] | None, *, locked: bo
         summary = by_index.get(index, {})
         item = {
             **raw,
-            "summary": str(summary.get("summary") or "Native thinking"),
+            "summary": str(summary.get("summary") or ""),
             "source": "official",
             "locked": locked,
             "icon": "Brain",

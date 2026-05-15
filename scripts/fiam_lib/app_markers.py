@@ -156,8 +156,8 @@ def summarize_cot_steps(steps: list[dict[str, Any]], *, locked: bool, config: Fi
     if not api_key:
         return fallback
 
-    base_url = (getattr(config, "app_cot_summary_base_url", "") or "https://api.deepseek.com").rstrip("/")
-    model = getattr(config, "app_cot_summary_model", "") or "deepseek-chat"
+    base_url = (getattr(config, "app_cot_summary_base_url", "") or "https://token-plan-cn.xiaomimimo.com/v1").rstrip("/")
+    model = getattr(config, "app_cot_summary_model", "") or "mimo-v2.5"
     prompt = {
         "locked": locked,
         "items": [{"index": i, "text": str(step.get("text") or "")[:1800]} for i, step in enumerate(steps)],
@@ -213,6 +213,9 @@ def _summary_api_key(config: FiamConfig) -> tuple[str, str]:
     api_key = os.environ.get(env_name, "").strip()
     if api_key:
         return api_key, env_name
+    api_key = os.environ.get("FIAM_MIMO_API_KEY", "").strip() or os.environ.get("MIMO_API_KEY", "").strip()
+    if api_key:
+        return api_key, "FIAM_MIMO_API_KEY"
     api_key = os.environ.get("FIAM_GRAPH_API_KEY", "").strip()
     if api_key:
         return api_key, "FIAM_GRAPH_API_KEY"
@@ -252,8 +255,8 @@ def narrate_recall_fragments(
     if not api_key:
         return None
 
-    base_url = (getattr(config, "app_cot_summary_base_url", "") or "https://api.deepseek.com").rstrip("/")
-    model = getattr(config, "app_cot_summary_model", "") or "deepseek-chat"
+    base_url = (getattr(config, "app_cot_summary_base_url", "") or "https://token-plan-cn.xiaomimimo.com/v1").rstrip("/")
+    model = getattr(config, "app_cot_summary_model", "") or "mimo-v2.5"
     items = [
         {"index": i, "hint": str(f.get("hint") or ""), "text": str(f.get("text") or "")[:1800]}
         for i, f in enumerate(fragments)

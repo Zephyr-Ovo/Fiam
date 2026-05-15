@@ -201,6 +201,8 @@
   width: 16px;
   height: 16px;
   stroke-width: 1.75;
+  fill: none;
+  stroke: currentColor;
 }
 
 .fiam-studio-timeline-node.ai {

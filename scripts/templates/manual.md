@@ -13,4 +13,5 @@
 - For generated files in Claude Code, save under the home directory, import with `scripts/object_put.py`, then mention the returned `obj:` token.
 - Do not invent channels, devices, files, memories, or completed actions.
 - If docs and code disagree, trust code and leave a short note for future cleanup.
+- Use `<voice>English text here</voice>` to mark a segment for TTS playback. The TTS engine (Inworld, voice "J") currently supports English only; write the voice block content in English even when the surrounding conversation is in another language. Voice blocks render as separate audio bubbles in Favilla.
 - Prefer the smallest action that solves the current request.

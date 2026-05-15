@@ -5,13 +5,14 @@ import { Settings } from "./routes/Settings"
 import { Stroll } from "./routes/Stroll"
 import { Dashboard } from "./routes/Dashboard"
 import { Studio } from "./routes/Studio"
+import { Terminal } from "./routes/Terminal"
 import { appConfig } from "./config"
 import { installGlobalTapHaptics } from "./lib/haptics"
 import { App as CapApp } from "@capacitor/app"
 import { LocalNotifications } from "@capacitor/local-notifications"
 import { StatusBar } from "@capacitor/status-bar"
 
-type Page = "home" | "chat" | "stroll" | "dashboard" | "studio"
+type Page = "home" | "chat" | "stroll" | "dashboard" | "studio" | "terminal"
 
 /**
  * On real device (Capacitor) or any narrow viewport we drop the desktop
@@ -80,7 +81,9 @@ export default function Shell() {
                 id: Date.now() % 2147483647,
                 title: peer,
                 body: preview,
+                channelId: "fiam_messages",
                 smallIcon: "ic_launcher",
+                largeIcon: "f_logo",
                 extra: { route: "chat" },
               },
             ],
@@ -98,6 +101,14 @@ export default function Shell() {
   useEffect(() => {
     if (!isNative()) return
     void LocalNotifications.requestPermissions().catch(() => undefined)
+    void LocalNotifications.createChannel({
+      id: "fiam_messages",
+      name: "Messages",
+      importance: 5,
+      description: "Chat messages",
+      visibility: 1,
+      vibration: true,
+    }).catch(() => undefined)
     let handle: { remove: () => void } | null = null
     let cancelled = false
     void LocalNotifications.addListener(
@@ -174,6 +185,11 @@ export default function Shell() {
       setPage("studio")
       return
     }
+    if (t === "easter") {
+      leaveNativeFullscreen()
+      setPage("terminal")
+      return
+    }
   }
 
   // Render Home + App together; toggle visibility instead of unmount so
@@ -185,11 +201,12 @@ export default function Shell() {
   const isStroll = page === "stroll"
   const isDashboard = page === "dashboard"
   const isStudio = page === "studio"
+  const isTerminal = page === "terminal"
   const homeTransform = isChat
     ? "translate3d(-12%,0,0)"
     : isStroll
       ? "translate3d(0,7%,0)"
-      : isDashboard || isStudio
+      : isDashboard || isStudio || isTerminal
         ? "translate3d(-12%,0,0)"
       : "translate3d(0,0,0)"
   const strollTransform = isStroll
@@ -252,6 +269,17 @@ export default function Shell() {
         }}
       >
         {isStudio && <Studio onBack={() => { blurActiveInput(); leaveNativeFullscreen(); setPage("home") }} />}
+      </div>
+      <div
+        className="absolute inset-0 h-full w-full"
+        style={{
+          transform: isTerminal ? "translate3d(0,0,0)" : "translate3d(100%,0,0)",
+          transition: slide,
+          pointerEvents: isTerminal ? "auto" : "none",
+          willChange: "transform",
+        }}
+      >
+        {isTerminal && <Terminal onBack={() => { blurActiveInput(); leaveNativeFullscreen(); setPage("home") }} />}
       </div>
       <Settings open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </>

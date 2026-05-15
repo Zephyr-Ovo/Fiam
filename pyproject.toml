@@ -12,6 +12,9 @@ dependencies = [
     "google-auth>=2.35.0",
     "rich>=13.0.0",
     "paho-mqtt>=2.1.0",
+    "ebooklib>=0.20",
+    "beautifulsoup4>=4.14.3",
+    "lxml>=6.1.0",
 ]
 
 [project.optional-dependencies]
