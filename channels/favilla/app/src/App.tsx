@@ -1154,6 +1154,8 @@ function BubbleBody({
 }) {
   const [showCopy, setShowCopy] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [msgTranslating, setMsgTranslating] = useState(false)
+  const [msgTranslated, setMsgTranslated] = useState(false)
   const wrapRef = useRef<HTMLDivElement | null>(null)
   const longPressTimerRef = useRef<number | null>(null)
   const longPressFiredRef = useRef(false)
@@ -1275,30 +1277,67 @@ function BubbleBody({
       )}
       <AnimatePresence>
         {showCopy && !selectionMode && (
-          <motion.button
-            type="button"
+          <motion.div
             initial={{ opacity: 0, scale: 0.92, x: isUser ? 4 : -4 }}
             animate={{ opacity: 1, scale: 1, x: 0 }}
             exit={{ opacity: 0, scale: 0.92 }}
             transition={{ duration: 0.14, ease: "easeOut" }}
-            onClick={(e) => { e.stopPropagation(); copy() }}
-            className="absolute top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center rounded-full"
-            style={{
-              [isUser ? "right" : "left"]: "calc(100% + 6px)",
-              background: "transparent",
-              border: "none",
-              boxShadow: "none",
-              filter: "drop-shadow(0 1px 2px rgba(255,250,243,0.65)) drop-shadow(0 2px 4px rgba(63,47,41,0.24))",
-              color: copied ? "#7a8a52" : INK,
-            }}
-            aria-label={copied ? "Copied" : "Copy message"}
+            className="absolute top-1/2 flex -translate-y-1/2 flex-col gap-1"
+            style={{ [isUser ? "right" : "left"]: "calc(100% + 6px)" }}
           >
-            {copied ? (
-              <Check className="h-[14px] w-[14px]" strokeWidth={2} />
-            ) : (
-              <Copy className="h-[14px] w-[14px]" strokeWidth={1.7} />
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); copy() }}
+              className="grid h-7 w-7 place-items-center rounded-full"
+              style={{
+                background: "transparent",
+                border: "none",
+                filter: "drop-shadow(0 1px 2px rgba(255,250,243,0.65)) drop-shadow(0 2px 4px rgba(63,47,41,0.24))",
+                color: copied ? "#7a8a52" : INK,
+              }}
+              aria-label={copied ? "Copied" : "Copy message"}
+            >
+              {copied ? (
+                <Check className="h-[14px] w-[14px]" strokeWidth={2} />
+              ) : (
+                <Copy className="h-[14px] w-[14px]" strokeWidth={1.7} />
+              )}
+            </button>
+            {!isUser && (
+              <button
+                type="button"
+                disabled={msgTranslating}
+                onClick={async (e) => {
+                  e.stopPropagation()
+                  if (msgTranslating) return
+                  setMsgTranslating(true)
+                  try {
+                    const res = await translateText(text)
+                    if (res.translated) {
+                      await navigator.clipboard.writeText(res.translated)
+                      setMsgTranslated(true)
+                      window.setTimeout(() => setMsgTranslated(false), 1400)
+                    }
+                  } catch { /* ignore */ }
+                  finally { setMsgTranslating(false) }
+                }}
+                className="grid h-7 w-7 place-items-center rounded-full"
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  filter: "drop-shadow(0 1px 2px rgba(255,250,243,0.65)) drop-shadow(0 2px 4px rgba(63,47,41,0.24))",
+                  color: msgTranslated ? "#7a8a52" : msgTranslating ? "rgba(102,78,68,0.4)" : INK,
+                }}
+                aria-label={msgTranslated ? "Translated & copied" : "Translate message"}
+              >
+                {msgTranslated ? (
+                  <Check className="h-[14px] w-[14px]" strokeWidth={2} />
+                ) : (
+                  <TranslateIcon size={14} />
+                )}
+              </button>
             )}
-          </motion.button>
+          </motion.div>
         )}
       </AnimatePresence>
     </div>
@@ -1397,7 +1436,6 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const cameraInputRef = useRef<HTMLInputElement | null>(null)
   const [attachOpen, setAttachOpen] = useState(false)
-  const [translateOpen, setTranslateOpen] = useState(false)
   const [translating, setTranslating] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const [voiceRecording, setVoiceRecording] = useState(false)
@@ -2446,101 +2484,26 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
                     cycleSeconds={1}
                   />
                 </button>
-                <div className="relative">
-                  <button
-                    type="button"
-                    onPointerDown={onStableControlPointerDown}
-                    onClick={() => setTranslateOpen((v) => !v)}
-                    className="grid h-9 w-9 shrink-0 place-items-center rounded-full transition-colors hover:bg-black/5"
-                    style={{ color: "var(--color-cocoa)" }}
-                    aria-label="Translate"
-                    aria-expanded={translateOpen}
-                  >
-                    <TranslateIcon size={15} />
-                  </button>
-                  <AnimatePresence>
-                    {translateOpen && (
-                      <>
-                        <button
-                          type="button"
-                          aria-label="Close translate menu"
-                          onClick={() => setTranslateOpen(false)}
-                          onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); setTranslateOpen(false) }}
-                          className="fixed inset-0 z-10 cursor-default bg-transparent"
-                        />
-                        <motion.div
-                          initial={{ opacity: 0, y: 8, scale: 0.96 }}
-                          animate={{ opacity: 1, y: 0, scale: 1 }}
-                          exit={{ opacity: 0, y: 6, scale: 0.96 }}
-                          transition={{ duration: 0.14, ease: "easeOut" }}
-                          className="absolute z-20 flex flex-col overflow-hidden rounded-2xl"
-                          style={{
-                            left: "50%",
-                            transform: "translateX(-50%)",
-                            bottom: "calc(100% + 8px)",
-                            minWidth: 120,
-                            background: "rgba(255,250,243,0.96)",
-                            backdropFilter: "blur(14px) saturate(110%)",
-                            WebkitBackdropFilter: "blur(14px) saturate(110%)",
-                            border: "1px solid rgba(176,139,127,0.22)",
-                            boxShadow: "0 12px 28px -10px rgba(63,47,41,0.32)",
-                          }}
-                        >
-                          <button
-                            type="button"
-                            disabled={translating || !input.trim()}
-                            onPointerDown={onStableControlPointerDown}
-                            onClick={async () => {
-                              if (!input.trim()) return
-                              setTranslating(true)
-                              try {
-                                const res = await translateText(input.trim())
-                                if (res.translated) setInput(res.translated)
-                              } finally {
-                                setTranslating(false)
-                                setTranslateOpen(false)
-                              }
-                            }}
-                            className="flex items-center gap-2 px-3 py-2 text-left hover:bg-black/5 disabled:opacity-40"
-                            style={{ color: INK, fontFamily: "var(--font-sans)" }}
-                          >
-                            <TranslateIcon size={15} />
-                            <span className="text-[13px]">{translating ? "…" : "Translate"}</span>
-                          </button>
-                          <div style={{ height: 1, background: "rgba(176,139,127,0.18)" }} />
-                          <button
-                            type="button"
-                            disabled={!input.trim()}
-                            onPointerDown={onStableControlPointerDown}
-                            onClick={() => { void navigator.clipboard.writeText(input); setTranslateOpen(false) }}
-                            className="flex items-center gap-2 px-3 py-2 text-left hover:bg-black/5 disabled:opacity-40"
-                            style={{ color: INK, fontFamily: "var(--font-sans)" }}
-                          >
-                            <Copy className="h-[15px] w-[15px]" strokeWidth={1.6} />
-                            <span className="text-[13px]">Copy</span>
-                          </button>
-                          <div style={{ height: 1, background: "rgba(176,139,127,0.18)" }} />
-                          <button
-                            type="button"
-                            onPointerDown={onStableControlPointerDown}
-                            onClick={async () => {
-                              try {
-                                const text = await navigator.clipboard.readText()
-                                if (text) setInput((prev) => prev + text)
-                              } catch { /* clipboard denied */ }
-                              setTranslateOpen(false)
-                            }}
-                            className="flex items-center gap-2 px-3 py-2 text-left hover:bg-black/5"
-                            style={{ color: INK, fontFamily: "var(--font-sans)" }}
-                          >
-                            <FileText className="h-[15px] w-[15px]" strokeWidth={1.6} />
-                            <span className="text-[13px]">Paste</span>
-                          </button>
-                        </motion.div>
-                      </>
-                    )}
-                  </AnimatePresence>
-                </div>
+                <button
+                  type="button"
+                  disabled={translating || !input.trim()}
+                  onPointerDown={onStableControlPointerDown}
+                  onClick={async () => {
+                    if (!input.trim() || translating) return
+                    setTranslating(true)
+                    try {
+                      const res = await translateText(input.trim())
+                      if (res.translated) setInput(res.translated)
+                    } finally {
+                      setTranslating(false)
+                    }
+                  }}
+                  className="grid h-9 w-9 shrink-0 place-items-center rounded-full transition-colors hover:bg-black/5 disabled:opacity-40"
+                  style={{ color: "var(--color-cocoa)" }}
+                  aria-label="Translate input"
+                >
+                  <TranslateIcon size={15} />
+                </button>
                 {/* spacer */}
                 <div className="flex-1" />
                 <button

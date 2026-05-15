@@ -112,7 +112,7 @@ def parse_app_cot(reply: str, config: FiamConfig | None = None) -> AppCotResult:
             continue
         summary = summary_by_index.get(thought_index, {})
         segment["summary"] = summary.get("summary") or _fallback_summary(str(segment.get("text") or ""), locked)
-        segment["icon"] = summary.get("icon") or _fallback_icon(str(segment.get("text") or ""), locked)
+        segment["icon"] = "Sparkles"
         segment["locked"] = locked
         if locked:
             segment.pop("text", None)
@@ -124,7 +124,7 @@ def parse_app_cot(reply: str, config: FiamConfig | None = None) -> AppCotResult:
         summary = summary_by_index.get(thought_index, {})
         item = dict(raw)
         item["summary"] = summary.get("summary") or _fallback_summary(str(raw.get("text") or ""), locked)
-        item["icon"] = summary.get("icon") or _fallback_icon(str(raw.get("text") or ""), locked)
+        item["icon"] = "Sparkles"
         item["locked"] = locked
         if locked:
             item["text"] = item["summary"]

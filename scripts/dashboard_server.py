@@ -4510,7 +4510,7 @@ def _official_thought_payloads(thinking_events: list[dict] | None, *, locked: bo
             "summary": str(summary.get("summary") or "Native thinking"),
             "source": "official",
             "locked": locked,
-            "icon": str(summary.get("icon") or "Brain"),
+            "icon": "Brain",
         }
         if locked:
             item.pop("text", None)
