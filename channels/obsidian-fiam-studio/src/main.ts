@@ -230,7 +230,7 @@ export default class FiamStudioPlugin extends Plugin {
     const clean = normalizePath(path);
     if (!clean) return;
     if (!this.app.vault.getAbstractFileByPath(clean)) {
-      await this.app.vault.createFolder(clean);
+      try { await this.app.vault.createFolder(clean); } catch { /* already exists */ }
     }
   }
 
