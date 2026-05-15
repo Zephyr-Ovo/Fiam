@@ -191,7 +191,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--fiam-studio-paper);
+  background: transparent;
   color: var(--fiam-studio-ink);
   transform: translateX(-50%);
   z-index: 2;
@@ -239,4 +239,159 @@
 
 .fiam-studio-signed:hover::after {
   opacity: 0.7;
+}
+
+/* ── EPUB Reader ── */
+
+.fiam-reader-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  background: var(--background-primary);
+}
+
+.fiam-reader-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  min-height: 36px;
+  flex-shrink: 0;
+}
+
+.fiam-reader-title {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-normal);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+}
+
+.fiam-reader-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.fiam-reader-btn:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.fiam-reader-btn .svg-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.fiam-reader-content {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+
+.fiam-reader-foliate {
+  width: 100%;
+  height: 100%;
+}
+
+foliate-view::part(filter) {
+  color-scheme: light dark;
+}
+
+.fiam-reader-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px;
+  border-top: 1px solid var(--background-modifier-border);
+  flex-shrink: 0;
+}
+
+.fiam-reader-progress {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font-monospace, monospace);
+}
+
+.fiam-reader-error {
+  padding: 24px;
+  color: var(--text-error);
+  font-size: 13px;
+  text-align: center;
+}
+
+/* ── TOC sidebar ── */
+
+.fiam-reader-toc {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 280px;
+  max-width: 80%;
+  background: var(--background-secondary);
+  border-right: 1px solid var(--background-modifier-border);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  transform: translateX(-100%);
+  transition: transform 0.2s ease;
+  overflow: hidden;
+}
+
+.fiam-reader-toc.is-visible {
+  transform: translateX(0);
+}
+
+.fiam-reader-toc-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-normal);
+}
+
+.fiam-reader-toc-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.fiam-reader-toc-list ul {
+  list-style: none;
+  padding-left: 12px;
+  margin: 0;
+}
+
+.fiam-reader-toc-link {
+  display: block;
+  padding: 6px 8px;
+  border-radius: 4px;
+  color: var(--text-normal);
+  text-decoration: none;
+  font-size: 12px;
+  cursor: pointer;
+  line-height: 1.4;
+}
+
+.fiam-reader-toc-link:hover {
+  background: var(--background-modifier-hover);
 }

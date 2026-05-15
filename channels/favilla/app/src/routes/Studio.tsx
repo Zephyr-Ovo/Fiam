@@ -510,7 +510,7 @@ export function Studio({ onBack }: { onBack: () => void }) {
                       <div className="text-[0.65rem] text-lead mt-0 font-mono tracking-wide">{item.time}</div>
                     </div>
 
-                    <div className="w-5 h-5 flex items-center justify-center shrink-0 z-10 absolute left-1/2 -translate-x-1/2 bg-paper py-0.5 my-0.5">
+                    <div className="w-5 h-5 flex items-center justify-center shrink-0 z-10 absolute left-1/2 -translate-x-1/2 py-0.5 my-0.5">
                       <IconComp size={14} strokeWidth={2} className={isUser ? "text-ink" : "text-accent"} />
                     </div>
 

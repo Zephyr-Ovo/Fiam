@@ -1,5 +1,6 @@
 import {
   App,
+  FileView,
   ItemView,
   MarkdownPostProcessorContext,
   MarkdownView,
@@ -15,9 +16,11 @@ import {
 } from "obsidian";
 import { execFile } from "child_process";
 import { promisify } from "util";
+import "./foliate-bundle.js";
 
 const execFileAsync = promisify(execFile);
 const VIEW_TYPE_FIAM_STUDIO = "fiam-studio-view";
+const VIEW_TYPE_EPUB_READER = "fiam-epub-reader";
 
 type StudioTab = "timeline" | "desk" | "shelf" | "quick" | "coauthor";
 
@@ -73,6 +76,11 @@ export default class FiamStudioPlugin extends Plugin {
       VIEW_TYPE_FIAM_STUDIO,
       (leaf) => new FiamStudioView(leaf, this),
     );
+    this.registerView(
+      VIEW_TYPE_EPUB_READER,
+      (leaf) => new EpubReaderView(leaf, this),
+    );
+    this.registerExtensions(["epub"], VIEW_TYPE_EPUB_READER);
 
     this.addRibbonIcon("sparkles", "Open Fiam Studio", () => {
       void this.activateView();
@@ -178,6 +186,7 @@ export default class FiamStudioPlugin extends Plugin {
     for (const timer of this._sigTimers.values()) clearTimeout(timer);
     this._sigTimers.clear();
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_FIAM_STUDIO);
+    this.app.workspace.detachLeavesOfType(VIEW_TYPE_EPUB_READER);
   }
 
   async loadSettings() {
@@ -780,6 +789,208 @@ class FiamStudioView extends ItemView {
       const shown = commit.files.slice(0, 3).map((f) => f.split("/").pop() || f);
       const extra = commit.files.length > 3 ? ` +${commit.files.length - 3}` : "";
       container.createDiv({ text: shown.join(", ") + extra, cls: "fiam-studio-timeline-files" });
+    }
+  }
+}
+
+interface FoliateView extends HTMLElement {
+  open(book: File | Blob): Promise<void>;
+  book?: {
+    metadata?: { title?: string; creator?: string; language?: string };
+    toc?: TocItem[];
+    getCover?(): Promise<Blob | null>;
+  };
+  renderer?: {
+    prev(): void;
+    next(): void;
+    goTo(target: unknown): Promise<void>;
+    setAttribute(name: string, value: string): void;
+    getContents(): Array<{ doc: Document; index: number }>;
+  };
+  goTo(target: unknown): Promise<void>;
+  resolveNavigation(target: unknown): unknown;
+  lastLocation?: { fraction?: number; tocItem?: TocItem; cfi?: string };
+}
+
+interface TocItem {
+  label: string;
+  href: string;
+  subitems?: TocItem[];
+}
+
+class EpubReaderView extends FileView {
+  private foliateEl: FoliateView | null = null;
+  private plugin: FiamStudioPlugin;
+  private tocContainer: HTMLElement | null = null;
+  private tocVisible = false;
+  private progressEl: HTMLElement | null = null;
+  private titleEl: HTMLElement | null = null;
+  private readingStart = 0;
+
+  constructor(leaf: WorkspaceLeaf, plugin: FiamStudioPlugin) {
+    super(leaf);
+    this.plugin = plugin;
+  }
+
+  getViewType() {
+    return VIEW_TYPE_EPUB_READER;
+  }
+
+  getDisplayText() {
+    return this.file?.basename ?? "Reader";
+  }
+
+  getIcon() {
+    return "book-open";
+  }
+
+  async onLoadFile(file: TFile): Promise<void> {
+    const root = this.containerEl.children[1] as HTMLElement;
+    root.empty();
+    root.addClass("fiam-reader-root");
+
+    const header = root.createDiv({ cls: "fiam-reader-header" });
+    const tocBtn = header.createEl("button", { cls: "fiam-reader-btn" });
+    setIcon(tocBtn, "list");
+    tocBtn.setAttribute("aria-label", "Table of contents");
+    tocBtn.onclick = () => this.toggleToc();
+
+    this.titleEl = header.createDiv({ cls: "fiam-reader-title" });
+    this.titleEl.textContent = file.basename;
+
+    const closeBtn = header.createEl("button", { cls: "fiam-reader-btn" });
+    setIcon(closeBtn, "x");
+    closeBtn.setAttribute("aria-label", "Close reader");
+    closeBtn.onclick = () => {
+      this.leaf.detach();
+    };
+
+    this.tocContainer = root.createDiv({ cls: "fiam-reader-toc" });
+
+    const viewContainer = root.createDiv({ cls: "fiam-reader-content" });
+    const view = document.createElement("foliate-view") as FoliateView;
+    view.setAttribute("flow", "paginated");
+    view.setAttribute("animated", "");
+    view.classList.add("fiam-reader-foliate");
+    viewContainer.appendChild(view);
+    this.foliateEl = view;
+
+    const nav = root.createDiv({ cls: "fiam-reader-nav" });
+    const prevBtn = nav.createEl("button", { cls: "fiam-reader-btn" });
+    setIcon(prevBtn, "chevron-left");
+    prevBtn.onclick = () => view.renderer?.prev();
+
+    this.progressEl = nav.createDiv({ cls: "fiam-reader-progress" });
+
+    const nextBtn = nav.createEl("button", { cls: "fiam-reader-btn" });
+    setIcon(nextBtn, "chevron-right");
+    nextBtn.onclick = () => view.renderer?.next();
+
+    view.addEventListener("relocate", ((e: CustomEvent) => {
+      const detail = e.detail;
+      if (this.progressEl && detail?.fraction != null) {
+        const pct = Math.round(detail.fraction * 100);
+        this.progressEl.textContent = `${pct}%`;
+      }
+      if (this.titleEl && detail?.tocItem?.label) {
+        this.titleEl.textContent = detail.tocItem.label;
+      }
+    }) as EventListener);
+
+    viewContainer.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowLeft") view.renderer?.prev();
+      else if (e.key === "ArrowRight") view.renderer?.next();
+    });
+
+    try {
+      const buffer = await this.app.vault.readBinary(file);
+      const blob = new File([buffer], file.name, { type: "application/epub+zip" });
+      await view.open(blob);
+
+      if (view.book?.metadata?.title && this.titleEl) {
+        this.titleEl.textContent = view.book.metadata.title;
+      }
+      if (view.book?.toc) {
+        this.buildToc(view.book.toc);
+      }
+
+      this.readingStart = Date.now();
+    } catch (error) {
+      viewContainer.empty();
+      viewContainer.createDiv({
+        text: `Failed to open: ${String(error).slice(0, 200)}`,
+        cls: "fiam-reader-error",
+      });
+    }
+  }
+
+  async onUnloadFile(file: TFile): Promise<void> {
+    if (this.readingStart > 0) {
+      const elapsed = Math.round((Date.now() - this.readingStart) / 1000);
+      if (elapsed > 30) {
+        void this.logReadingTime(file, elapsed);
+      }
+      this.readingStart = 0;
+    }
+    this.foliateEl = null;
+    this.tocContainer = null;
+    this.progressEl = null;
+    this.titleEl = null;
+    const root = this.containerEl.children[1] as HTMLElement;
+    root.empty();
+  }
+
+  canAcceptExtension(extension: string) {
+    return extension === "epub";
+  }
+
+  private toggleToc() {
+    this.tocVisible = !this.tocVisible;
+    this.tocContainer?.toggleClass("is-visible", this.tocVisible);
+  }
+
+  private buildToc(items: TocItem[], container?: HTMLElement) {
+    const target = container ?? this.tocContainer;
+    if (!target) return;
+    if (!container) {
+      target.empty();
+      const tocHeader = target.createDiv({ cls: "fiam-reader-toc-header" });
+      tocHeader.createEl("span", { text: "Contents" });
+      const closeBtn = tocHeader.createEl("button", { cls: "fiam-reader-btn" });
+      setIcon(closeBtn, "x");
+      closeBtn.onclick = () => this.toggleToc();
+    }
+    const list = target.createEl("ul", { cls: "fiam-reader-toc-list" });
+    for (const item of items) {
+      const li = list.createEl("li");
+      const link = li.createEl("a", { text: item.label, cls: "fiam-reader-toc-link" });
+      link.onclick = (e) => {
+        e.preventDefault();
+        if (this.foliateEl) {
+          const resolved = this.foliateEl.resolveNavigation(item.href);
+          void this.foliateEl.renderer?.goTo(resolved);
+        }
+        this.toggleToc();
+      };
+      if (item.subitems?.length) {
+        this.buildToc(item.subitems, li);
+      }
+    }
+  }
+
+  private async logReadingTime(file: TFile, seconds: number) {
+    const minutes = Math.round(seconds / 60);
+    if (minutes < 1) return;
+    const now = new Date();
+    const hhmm = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const date = now.toISOString().slice(0, 10);
+    const title = this.foliateEl?.book?.metadata?.title ?? file.basename;
+    const entry = `## ${hhmm} · reading · ${this.plugin.settings.humanAuthor}\n\n> ${title} — ${minutes} min\n\ntags: #studio/reading`;
+    const trackPath = normalizePath(`track/reading/${date}.md`);
+    try {
+      await this.plugin.appendMarkdown(trackPath, entry);
+    } catch {
+      // track/ may not exist in all vaults
     }
   }
 }
