@@ -24,10 +24,11 @@ import { DynamicIcon, iconNames, type IconName } from "lucide-react/dynamic"
 import { LockIcon } from "./components/LockIcon"
 import { RecallIcon } from "./components/RecallIcon"
 import { HourglassIcon } from "./components/HourglassIcon"
+import { TranslateIcon } from "./components/TranslateIcon"
 import { ConfirmModal } from "./components/ConfirmModal"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
-import { abortChat, downloadObject, fetchChatTranscript, recordChatMessage, sendChatStream, uploadFiles, recallNow, cutFlow, processFlow, type ChatAttachment, type ChatSegment, type StoredChatMessage } from "./lib/api"
+import { abortChat, downloadObject, fetchChatTranscript, recordChatMessage, sendChatStream, translateText, uploadFiles, recallNow, cutFlow, processFlow, type ChatAttachment, type ChatSegment, type StoredChatMessage } from "./lib/api"
 import { useComputerStatus, describeEvent } from "./lib/computerStatus"
 import { appConfig } from "./config"
 import { createBrowserSttSession, transcribeAudioOpenAICompatible, speakText } from "./lib/voice"
@@ -1382,6 +1383,7 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
   const [messages, setMessages] = useState<Msg[]>([])
   const [input, setInput] = useState("")
   const [sending, setSending] = useState(false)
+  const chatAbortRef = useRef<AbortController | null>(null)
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [sharing, setSharing] = useState(false)
   const [pendingFiles, setPendingFiles] = useState<{ id: string; file: File }[]>([])
@@ -1395,6 +1397,8 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const cameraInputRef = useRef<HTMLInputElement | null>(null)
   const [attachOpen, setAttachOpen] = useState(false)
+  const [translateOpen, setTranslateOpen] = useState(false)
+  const [translating, setTranslating] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const [voiceRecording, setVoiceRecording] = useState(false)
   const [voiceBusy, setVoiceBusy] = useState(false)
@@ -1845,6 +1849,8 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
         )
       }
 
+      const ac = new AbortController()
+      chatAbortRef.current = ac
       await sendChatStream(expectedStreamText, "chat", attachments, appConfig.defaultRuntime, (ev) => {
         if (ev.event === "tool_use") {
           segs.push({
@@ -1935,7 +1941,16 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
         } else if (ev.event === "error") {
           lastError = ev.data.message || "unknown"
         }
-      })
+      }, ac.signal)
+
+      if (ac.signal.aborted) {
+        setMessages((m) => {
+          const msg = m.find((x) => x.id === aiId)
+          if (!msg || (!msg.text && !msg.segments?.length)) return m.filter((x) => x.id !== aiId)
+          return m
+        })
+        return
+      }
 
       if (lastError) {
         const recovered = await recoverTranscriptAfterStreamError(aiId, sendStartedMinute, expectedStreamText).catch(() => false)
@@ -1961,6 +1976,7 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
         ),
       )
     } finally {
+      chatAbortRef.current = null
       setSending(false)
     }
   }
@@ -2430,6 +2446,101 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
                     cycleSeconds={1}
                   />
                 </button>
+                <div className="relative">
+                  <button
+                    type="button"
+                    onPointerDown={onStableControlPointerDown}
+                    onClick={() => setTranslateOpen((v) => !v)}
+                    className="grid h-9 w-9 shrink-0 place-items-center rounded-full transition-colors hover:bg-black/5"
+                    style={{ color: "var(--color-cocoa)" }}
+                    aria-label="Translate"
+                    aria-expanded={translateOpen}
+                  >
+                    <TranslateIcon size={15} />
+                  </button>
+                  <AnimatePresence>
+                    {translateOpen && (
+                      <>
+                        <button
+                          type="button"
+                          aria-label="Close translate menu"
+                          onClick={() => setTranslateOpen(false)}
+                          onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); setTranslateOpen(false) }}
+                          className="fixed inset-0 z-10 cursor-default bg-transparent"
+                        />
+                        <motion.div
+                          initial={{ opacity: 0, y: 8, scale: 0.96 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          exit={{ opacity: 0, y: 6, scale: 0.96 }}
+                          transition={{ duration: 0.14, ease: "easeOut" }}
+                          className="absolute z-20 flex flex-col overflow-hidden rounded-2xl"
+                          style={{
+                            left: "50%",
+                            transform: "translateX(-50%)",
+                            bottom: "calc(100% + 8px)",
+                            minWidth: 120,
+                            background: "rgba(255,250,243,0.96)",
+                            backdropFilter: "blur(14px) saturate(110%)",
+                            WebkitBackdropFilter: "blur(14px) saturate(110%)",
+                            border: "1px solid rgba(176,139,127,0.22)",
+                            boxShadow: "0 12px 28px -10px rgba(63,47,41,0.32)",
+                          }}
+                        >
+                          <button
+                            type="button"
+                            disabled={translating || !input.trim()}
+                            onPointerDown={onStableControlPointerDown}
+                            onClick={async () => {
+                              if (!input.trim()) return
+                              setTranslating(true)
+                              try {
+                                const res = await translateText(input.trim())
+                                if (res.translated) setInput(res.translated)
+                              } finally {
+                                setTranslating(false)
+                                setTranslateOpen(false)
+                              }
+                            }}
+                            className="flex items-center gap-2 px-3 py-2 text-left hover:bg-black/5 disabled:opacity-40"
+                            style={{ color: INK, fontFamily: "var(--font-sans)" }}
+                          >
+                            <TranslateIcon size={15} />
+                            <span className="text-[13px]">{translating ? "…" : "Translate"}</span>
+                          </button>
+                          <div style={{ height: 1, background: "rgba(176,139,127,0.18)" }} />
+                          <button
+                            type="button"
+                            disabled={!input.trim()}
+                            onPointerDown={onStableControlPointerDown}
+                            onClick={() => { void navigator.clipboard.writeText(input); setTranslateOpen(false) }}
+                            className="flex items-center gap-2 px-3 py-2 text-left hover:bg-black/5 disabled:opacity-40"
+                            style={{ color: INK, fontFamily: "var(--font-sans)" }}
+                          >
+                            <Copy className="h-[15px] w-[15px]" strokeWidth={1.6} />
+                            <span className="text-[13px]">Copy</span>
+                          </button>
+                          <div style={{ height: 1, background: "rgba(176,139,127,0.18)" }} />
+                          <button
+                            type="button"
+                            onPointerDown={onStableControlPointerDown}
+                            onClick={async () => {
+                              try {
+                                const text = await navigator.clipboard.readText()
+                                if (text) setInput((prev) => prev + text)
+                              } catch { /* clipboard denied */ }
+                              setTranslateOpen(false)
+                            }}
+                            className="flex items-center gap-2 px-3 py-2 text-left hover:bg-black/5"
+                            style={{ color: INK, fontFamily: "var(--font-sans)" }}
+                          >
+                            <FileText className="h-[15px] w-[15px]" strokeWidth={1.6} />
+                            <span className="text-[13px]">Paste</span>
+                          </button>
+                        </motion.div>
+                      </>
+                    )}
+                  </AnimatePresence>
+                </div>
                 {/* spacer */}
                 <div className="flex-1" />
                 <button
@@ -2454,7 +2565,10 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
                 {sending ? (
                   <button
                     type="button"
-                    onClick={() => { void abortChat("chat") }}
+                    onClick={() => {
+                      chatAbortRef.current?.abort()
+                      void abortChat("chat")
+                    }}
                     aria-label="Stop"
                     className="grid h-9 w-9 place-items-center rounded-full"
                     style={{ color: "var(--color-cocoa)" }}

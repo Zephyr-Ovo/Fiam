@@ -56,6 +56,7 @@
 			<a href="/events" class="hover:text-[var(--color-lavender)]">events</a>
 			<a href="/objects" class="hover:text-[var(--color-lavender)]">objects</a>
 			<a href="/panel" class="hover:text-[var(--color-lavender)]">panel</a>
+			<a href="/runtime" class="hover:text-[var(--color-lavender)]">runtime</a>
 			<a href="/trace" class="hover:text-[var(--color-lavender)]">trace</a>
 			<a href="/graph" class="hover:text-[var(--color-lavender)]">graph</a>
 			<a href="/annotate" class="hover:text-[var(--color-lavender)]">annotate</a>

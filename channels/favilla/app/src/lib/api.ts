@@ -313,6 +313,7 @@ export async function sendChatStream(
   attachments: ChatAttachment[],
   runtime: "auto" | "cc" | "api",
   onEvent: (ev: StreamChatEvent) => void,
+  externalSignal?: AbortSignal,
 ): Promise<void> {
   const body: Record<string, unknown> = {
     text,
@@ -332,6 +333,12 @@ export async function sendChatStream(
   const INITIAL_TIMEOUT_MS = 30_000
   const IDLE_TIMEOUT_MS = 90_000
   const controller = new AbortController()
+  let abortedExternally = false
+  if (externalSignal) {
+    const onAbort = () => { abortedExternally = true; try { controller.abort() } catch { /* ignore */ } }
+    if (externalSignal.aborted) { onAbort() }
+    else { externalSignal.addEventListener("abort", onAbort, { once: true }) }
+  }
   let stalled = false
   let timedOutInitial = false
   const initialTimer: ReturnType<typeof setTimeout> = setTimeout(() => {
@@ -348,6 +355,7 @@ export async function sendChatStream(
     })
   } catch (e) {
     clearTimeout(initialTimer)
+    if (abortedExternally) return
     const msg = timedOutInitial
       ? `connect timeout after ${Math.round(INITIAL_TIMEOUT_MS / 1000)}s`
       : (e instanceof Error ? e.message : String(e))
@@ -396,6 +404,7 @@ export async function sendChatStream(
       try {
         chunk = await reader.read()
       } catch (e) {
+        if (abortedExternally) return
         if (stalled) {
           onEvent({ event: "error", data: { message: `stream stalled (no data for ${Math.round(IDLE_TIMEOUT_MS / 1000)}s)` } })
         } else {
@@ -428,6 +437,21 @@ export async function sendChatStream(
     if (curData) flush()
   } finally {
     disarmIdle()
+  }
+}
+
+export async function translateText(text: string): Promise<{ translated: string; source_lang: string; target_lang: string; error?: string }> {
+  try {
+    const res = await fetch(`${getBase()}/favilla/chat/translate`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ text }),
+    })
+    const data = await res.json()
+    if (!res.ok) return { translated: "", source_lang: "", target_lang: "", error: data.error || `HTTP ${res.status}` }
+    return data
+  } catch (e) {
+    return { translated: "", source_lang: "", target_lang: "", error: e instanceof Error ? e.message : "fetch failed" }
   }
 }
 

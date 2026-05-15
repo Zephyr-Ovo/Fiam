@@ -3886,6 +3886,117 @@ def _cc_project_transcript_path(session_id: str) -> Path | None:
     return config_dir / "projects" / project_key / f"{session_id}.jsonl"
 
 
+_MIMO_BASE_URL = "https://token-plan-cn.xiaomimimo.com/v1"
+_MIMO_CHAT_MODEL = "mimo-v2.5"
+
+
+def _mimo_api_key() -> str:
+    return (os.environ.get("FIAM_MIMO_API_KEY") or os.environ.get("MIMO_API_KEY") or "").strip()
+
+
+def _mimo_chat(system: str, user: str, *, max_tokens: int = 800, temperature: float = 0.3) -> str:
+    api_key = _mimo_api_key()
+    if not api_key:
+        return ""
+    body = {
+        "model": _MIMO_CHAT_MODEL,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    request = urllib.request.Request(
+        f"{_MIMO_BASE_URL}/chat/completions",
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        return str(((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, IndexError, KeyError, TypeError, ValueError) as exc:
+        logger.warning("mimo chat failed: %s", exc)
+        return ""
+
+
+def _translate_text(text: str) -> dict:
+    has_cjk = bool(re.search(r"[一-鿿㐀-䶿]", text))
+    if has_cjk:
+        source_lang, target_lang = "zh", "en"
+    else:
+        source_lang, target_lang = "en", "zh"
+    system = (
+        "You are a translator. Translate the given text faithfully. "
+        "If the input is Chinese (or mostly Chinese), translate to English. "
+        "If the input is English (or mostly English), translate to Chinese. "
+        "Output ONLY the translation, nothing else — no quotes, no explanation, no labels."
+    )
+    result = _mimo_chat(system, text, max_tokens=max(len(text) * 3, 200))
+    if not result:
+        return {"translated": "", "source_lang": source_lang, "target_lang": target_lang, "error": "mimo unavailable"}
+    return {"translated": result, "source_lang": source_lang, "target_lang": target_lang}
+
+
+_USER_MENTION_RE = re.compile(
+    r"\b(?:The\s+user|the\s+user|User|user)\b",
+)
+
+
+def _scrub_native_thinking_user_refs(text: str) -> str:
+    return _USER_MENTION_RE.sub("Zephyr", text)
+
+
+def _polish_native_thinking(thinking_text: str, reply_text: str) -> str:
+    reply_lang = "Chinese" if re.search(r"[一-鿿]", reply_text or "") else "English"
+    system = (
+        f"Rewrite the following internal thought to sound natural and personal — "
+        f"like genuine inner reflection, not an assistant processing a request. "
+        f"Replace any mention of 'the user' / 'User' / 'user' with 'Zephyr'. "
+        f"Do NOT add tool-call language, assistant-speak, or formulaic phrases. "
+        f"Keep the same language as the original (if mixed, lean toward {reply_lang}). "
+        f"Preserve all factual content, reasoning steps, and conclusions. "
+        f"Output ONLY the rewritten thought, nothing else."
+    )
+    result = _mimo_chat(system, thinking_text, max_tokens=max(len(thinking_text) * 2, 500), temperature=0.4)
+    return result or _scrub_native_thinking_user_refs(thinking_text)
+
+
+def _scrub_cc_transcript_thinking(data: dict, *, reply_context: str = "") -> tuple[dict, bool]:
+    if data.get("type") != "assistant":
+        return data, False
+    message = data.get("message")
+    if not isinstance(message, dict):
+        return data, False
+    content = message.get("content")
+    if not isinstance(content, list):
+        return data, False
+    reply_text = reply_context
+    if not reply_text:
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                reply_text = str(block.get("text") or "")
+                break
+    changed = False
+    new_content = []
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "thinking":
+            orig = str(block.get("text") or "")
+            if not orig.strip():
+                new_content.append(block)
+                continue
+            polished = _polish_native_thinking(orig, reply_text)
+            if polished and polished != orig:
+                block = {**block, "text": polished}
+                changed = True
+        new_content.append(block)
+    if not changed:
+        return data, False
+    return {**data, "message": {**message, "content": new_content}}, True
+
+
 def _scrub_cc_hook_value(value):
     if isinstance(value, str):
         if "<user-prompt-submit-hook" not in value:
@@ -3931,46 +4042,36 @@ def _scrub_cc_transcript_obj(data: dict) -> tuple[dict | None, bool]:
     return clean, changed or hook_changed
 
 
-def _cc_scrub_hook_transcript(session: dict | None = None) -> bool:
-    session = session or _load_app_active_session()
-    session_id = str((session or {}).get("session_id") or "").strip()
-    path = _cc_project_transcript_path(session_id)
-    if path and path.exists():
-        try:
-            from fiam_lib.cc_channel import scrub_transcript
-
-            return scrub_transcript(path)
-        except Exception:
-            logger.exception("shared CC transcript scrub failed; using local scrubber")
-    if not path or not path.exists():
+def _cc_polish_thinking_pass(path: Path) -> bool:
+    """Second pass: polish native thinking blocks in a CC transcript JSONL."""
+    if not path.exists() or not _mimo_api_key():
         return False
     changed = False
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp = path.with_suffix(path.suffix + ".think-tmp")
     try:
         with path.open("r", encoding="utf-8") as src, tmp.open("w", encoding="utf-8") as dst:
             for raw_line in src:
-                line = raw_line.rstrip("\n")
-                if not line.strip() or not any(token in line for token in _CC_TRANSCRIPT_SCRUB_TOKENS):
+                if not raw_line.strip() or '"thinking"' not in raw_line:
                     dst.write(raw_line)
                     continue
                 try:
-                    data = json.loads(line)
+                    data = json.loads(raw_line)
                 except json.JSONDecodeError:
-                    tmp.unlink(missing_ok=True)
-                    return False
-                clean, item_changed = _scrub_cc_transcript_obj(data)
-                if clean is None:
-                    changed = True
+                    dst.write(raw_line)
                     continue
-                dst.write(json.dumps(clean, ensure_ascii=False) + "\n" if item_changed else raw_line)
-                changed = changed or item_changed
+                data, think_changed = _scrub_cc_transcript_thinking(data)
+                if think_changed:
+                    dst.write(json.dumps(data, ensure_ascii=False) + "\n")
+                    changed = True
+                else:
+                    dst.write(raw_line)
         if not changed:
             tmp.unlink(missing_ok=True)
             return False
-        backup = path.with_name(path.name + ".fiam-context.bak")
+        backup = path.with_name(path.name + ".fiam-think.bak")
         shutil.copy2(path, backup)
         tmp.replace(path)
-        logger.info("scrubbed CC hook context from %s", path)
+        logger.info("polished native thinking in %s", path)
         return True
     except OSError:
         try:
@@ -3978,6 +4079,23 @@ def _cc_scrub_hook_transcript(session: dict | None = None) -> bool:
         except OSError:
             pass
         return False
+
+
+def _cc_scrub_hook_transcript(session: dict | None = None) -> bool:
+    session = session or _load_app_active_session()
+    session_id = str((session or {}).get("session_id") or "").strip()
+    path = _cc_project_transcript_path(session_id)
+    if not path or not path.exists():
+        return False
+    hook_changed = False
+    try:
+        from fiam_lib.cc_channel import scrub_transcript
+
+        hook_changed = scrub_transcript(path)
+    except Exception:
+        logger.exception("shared CC transcript scrub failed")
+    think_changed = _cc_polish_thinking_pass(path)
+    return hook_changed or think_changed
 
 
 class _CCWarmRunner:
@@ -4339,7 +4457,33 @@ def _parse_cot(reply: str) -> tuple[str, list[dict], bool, list[dict]]:
     return parsed.reply, parsed.thoughts, parsed.locked, parsed.segments
 
 
-def _official_thought_payloads(thinking_events: list[dict] | None) -> tuple[list[dict], list[dict]]:
+_NON_COT_CONTROL_NAMES = {"send", "hold", "held", "todo", "wake", "sleep", "state", "route"}
+
+
+def _strip_control_from_cot_result(
+    cleaned_reply: str,
+    segments: list[dict],
+) -> tuple[str, list[dict]]:
+    """Strip remaining non-cot control markers from _parse_cot output.
+
+    When _parse_cot runs on the raw reply (before MarkerInterpreter), the
+    text segments still contain <send>, <hold>, etc. This helper strips them.
+    """
+    from fiam.markers import strip_xml_markers
+
+    cleaned_reply = strip_xml_markers(cleaned_reply, _NON_COT_CONTROL_NAMES).strip()
+    out: list[dict] = []
+    for seg in segments:
+        if seg.get("type") == "text":
+            seg = dict(seg)
+            seg["text"] = strip_xml_markers(str(seg.get("text") or ""), _NON_COT_CONTROL_NAMES).strip()
+            if not seg["text"]:
+                continue
+        out.append(seg)
+    return cleaned_reply, out
+
+
+def _official_thought_payloads(thinking_events: list[dict] | None, *, locked: bool = False) -> tuple[list[dict], list[dict]]:
     raw_steps: list[dict] = []
     for ev in thinking_events or []:
         text = str(ev.get("text") or "").strip()
@@ -4347,7 +4491,7 @@ def _official_thought_payloads(thinking_events: list[dict] | None) -> tuple[list
             raw_steps.append({"kind": "think", "text": text, "source": "official"})
     if not raw_steps:
         return [], []
-    summaries = summarize_cot_steps(raw_steps, locked=False, config=_CONFIG)
+    summaries = summarize_cot_steps(raw_steps, locked=locked, config=_CONFIG)
     by_index: dict[int, dict] = {}
     for item in summaries:
         if not isinstance(item, dict):
@@ -4365,9 +4509,11 @@ def _official_thought_payloads(thinking_events: list[dict] | None) -> tuple[list
             **raw,
             "summary": str(summary.get("summary") or "Native thinking"),
             "source": "official",
-            "locked": False,
-            "icon": str(summary.get("icon") or "NativeThinking"),
+            "locked": locked,
+            "icon": str(summary.get("icon") or "Brain"),
         }
+        if locked:
+            item.pop("text", None)
         thoughts.append(item)
         segments.append({"type": "thought", **item})
     return thoughts, segments
@@ -4698,7 +4844,6 @@ def _run_cc_favilla_chat_locked(*, text: str, channel: str, surface: str = "", a
         reply = str(data.get("result") or "").strip()
         raw_reply = reply
         interpretation = _interpret_app_control_markers(reply)
-    reply = interpretation.visible_reply
     queued_todos = [
         {"at": todo.at, "kind": todo.kind, "reason": todo.reason}
         for todo in interpretation.todo_changes
@@ -4715,8 +4860,9 @@ def _run_cc_favilla_chat_locked(*, text: str, channel: str, surface: str = "", a
         started_at=marker_started,
         refs={"todo_count": len(queued_todos), "hold": bool(hold), "route": bool(route)},
     )
-    cleaned_reply, thoughts, thoughts_locked, segments = _parse_cot(reply)
-    native_thoughts, native_segments = _official_thought_payloads(thinking_events)
+    cleaned_reply, thoughts, thoughts_locked, segments = _parse_cot(raw_reply)
+    cleaned_reply, segments = _strip_control_from_cot_result(cleaned_reply, segments)
+    native_thoughts, native_segments = _official_thought_payloads(thinking_events, locked=thoughts_locked)
     if native_thoughts:
         thoughts = native_thoughts + thoughts
         segments = native_segments + list(segments)
@@ -5152,7 +5298,6 @@ def _iter_cc_favilla_chat_events_locked(*, text: str, channel: str, surface: str
     reply = str(data.get("result") or "").strip()
     raw_reply = reply
     interpretation = _interpret_app_control_markers(reply)
-    reply = interpretation.visible_reply
     queued_todos = [
         {"at": todo.at, "kind": todo.kind, "reason": todo.reason}
         for todo in interpretation.todo_changes
@@ -5160,9 +5305,10 @@ def _iter_cc_favilla_chat_events_locked(*, text: str, channel: str, surface: str
     hold = _app_hold_payload(interpretation)
     hold_reason = interpretation.hold_reason
     route = interpretation.route_hint
-    cleaned_reply, thoughts, thoughts_locked, segments = _parse_cot(reply)
+    cleaned_reply, thoughts, thoughts_locked, segments = _parse_cot(raw_reply)
+    cleaned_reply, segments = _strip_control_from_cot_result(cleaned_reply, segments)
     thinking_events = state.get("thinking_events") or []
-    native_thoughts, native_segments = _official_thought_payloads(thinking_events)
+    native_thoughts, native_segments = _official_thought_payloads(thinking_events, locked=thoughts_locked)
     if native_thoughts:
         thoughts = native_thoughts + thoughts
         segments = native_segments + list(segments)
@@ -5730,7 +5876,6 @@ def _run_api_favilla_chat(*, text: str, channel: str, surface: str = "", attachm
         )
         raw_reply = str(result.reply or "")
         interpretation = _interpret_app_control_markers(result.reply)
-    reply = interpretation.visible_reply
     queued_todos = [
         {"at": todo.at, "kind": todo.kind, "reason": todo.reason}
         for todo in interpretation.todo_changes
@@ -5747,9 +5892,8 @@ def _run_api_favilla_chat(*, text: str, channel: str, surface: str = "", attachm
         started_at=marker_started,
         refs={"todo_count": len(queued_todos), "hold": bool(hold), "route": bool(route)},
     )
-    cleaned_reply, thoughts, thoughts_locked, segments = _parse_cot(reply)
-    # If the API returned native reasoning blocks, prepend them as thoughts so
-    # the UI gets the same "Native thinking" treatment CC channel turns get.
+    cleaned_reply, thoughts, thoughts_locked, segments = _parse_cot(raw_reply)
+    cleaned_reply, segments = _strip_control_from_cot_result(cleaned_reply, segments)
     api_thinking_blocks = list(getattr(result, "thinking_blocks", None) or [])
     if api_thinking_blocks:
         native_events = [
@@ -5757,7 +5901,7 @@ def _run_api_favilla_chat(*, text: str, channel: str, surface: str = "", attachm
             for block in api_thinking_blocks
             if isinstance(block, dict) and str(block.get("text") or "").strip()
         ]
-        native_thoughts, native_segments = _official_thought_payloads(native_events)
+        native_thoughts, native_segments = _official_thought_payloads(native_events, locked=thoughts_locked)
         if native_thoughts:
             thoughts = native_thoughts + thoughts
             segments = native_segments + list(segments)
@@ -7382,6 +7526,33 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 )
             except Exception as e:
                 logger.exception("Favilla chat abort error")
+                self._serve_json({"error": str(e)}, status=500)
+                return
+            self._serve_json(result)
+            return
+
+        if path == "/favilla/chat/translate":
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = 0
+            payload: dict = {}
+            if length > 0:
+                try:
+                    payload = json.loads(self.rfile.read(length).decode("utf-8")) or {}
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    payload = {}
+            text = str(payload.get("text") or "").strip()
+            if not text:
+                self._serve_json({"error": "empty text"}, status=400)
+                return
+            try:
+                result = _translate_text(text)
+            except Exception as e:
+                logger.exception("translate error")
                 self._serve_json({"error": str(e)}, status=500)
                 return
             self._serve_json(result)

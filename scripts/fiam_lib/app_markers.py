@@ -213,6 +213,9 @@ def _summary_api_key(config: FiamConfig) -> tuple[str, str]:
     api_key = os.environ.get(env_name, "").strip()
     if api_key:
         return api_key, env_name
+    api_key = os.environ.get("FIAM_GRAPH_API_KEY", "").strip()
+    if api_key:
+        return api_key, "FIAM_GRAPH_API_KEY"
     return "", env_name
 
 
@@ -328,7 +331,7 @@ def _fallback_icon(text: str, locked: bool) -> str:
         return "Search"
     if any(word in lowered for word in ("check", "verify", "确认", "检查")):
         return "CheckCircle2"
-    return "Brain"
+    return "Sparkles"
 
 
 def _clean_summary(value: str) -> str:

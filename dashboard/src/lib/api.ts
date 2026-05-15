@@ -221,6 +221,100 @@ export interface TracePayload {
 	error?: string;
 }
 
+export interface RuntimeChannelStatus {
+	transcript_path?: string;
+	transcript_dir?: string;
+	session_id?: string;
+	channel_request_id?: string;
+	resume_attempted?: boolean;
+	start_offset?: number;
+	transcript_exists?: boolean;
+	transcript_size?: number;
+	rows_read?: number;
+	safe_offset?: number;
+	seen_matching_user?: boolean;
+	user_origins_seen?: string[];
+	user_row_previews?: string[];
+	assistant_stops_seen?: string[];
+	parsed_rows?: number;
+	last_updated?: number;
+}
+
+export interface RuntimeInflightEntry {
+	id: number;
+	kind: string;
+	channel: string;
+	surface: string;
+	request_id: string;
+	turn_id: string;
+	started_at: number;
+	elapsed_ms: number;
+	pty_tail?: string;
+	status?: RuntimeChannelStatus;
+}
+
+export interface RuntimeFailureEntry {
+	kind?: string;
+	channel?: string;
+	surface?: string;
+	request_id?: string;
+	turn_id?: string;
+	started_at?: number;
+	ended_at?: number;
+	duration_ms?: number;
+	error?: string;
+	pty_tail?: string;
+	status?: RuntimeChannelStatus;
+}
+
+export interface RuntimeTurnRow {
+	started_at: string;
+	ended_at: string;
+	duration_ms: number;
+	phase: string;
+	status: string;
+	channel: string;
+	surface: string;
+	turn_id: string;
+	request_id: string;
+	model?: string;
+	subtype?: string;
+	returncode?: number | null;
+	action_count?: number | null;
+	error?: string;
+}
+
+export interface RuntimePayload {
+	transport: {
+		env: string;
+		mode: string;
+		channel_supported: boolean;
+		channel_enabled: boolean;
+	};
+	channel_health: {
+		server_path: string;
+		server_exists: boolean;
+		node_modules_path: string;
+		node_modules_exists: boolean;
+	};
+	channel_flags?: {
+		exclude_dynamic_system_prompt: boolean;
+		max_turns: boolean;
+		effort: boolean;
+	};
+	warm_runner: {
+		alive: boolean;
+		fingerprint?: string;
+		last_session_id?: string;
+		last_used_ago_sec?: number;
+	};
+	inflight: RuntimeInflightEntry[];
+	recent_runtime: RuntimeTurnRow[];
+	recent_failures: RuntimeFailureEntry[];
+	trace_file: string;
+	error?: string;
+}
+
 export interface TimelineRecord {
 	path: string;
 	heading: string;
@@ -344,6 +438,7 @@ export const api = {
 	// Debug — last assembled context per runtime + raw flow tail
 	debugContext: (runtime: 'latest' | 'api' | 'cc' = 'latest') => j<DebugContextPayload>(`/debug/context?runtime=${runtime}`),
 	debugFlow: (limit = 200) => j<DebugFlowPayload>(`/debug/flow?limit=${limit}`),
+	debugRuntime: () => j<RuntimePayload>('/debug/runtime'),
 	debugTrace: (params: {
 		turn_id?: string;
 		request_id?: string;
