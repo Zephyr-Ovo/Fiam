@@ -18,6 +18,7 @@ import {
   Copy,
   Check,
   Share2,
+  Square,
 } from "lucide-react"
 import { DynamicIcon, iconNames, type IconName } from "lucide-react/dynamic"
 import { LockIcon } from "./components/LockIcon"
@@ -26,7 +27,7 @@ import { HourglassIcon } from "./components/HourglassIcon"
 import { ConfirmModal } from "./components/ConfirmModal"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
-import { downloadObject, fetchChatTranscript, recordChatMessage, sendChatStream, uploadFiles, recallNow, cutFlow, processFlow, type ChatAttachment, type ChatSegment, type StoredChatMessage } from "./lib/api"
+import { abortChat, downloadObject, fetchChatTranscript, recordChatMessage, sendChatStream, uploadFiles, recallNow, cutFlow, processFlow, type ChatAttachment, type ChatSegment, type StoredChatMessage } from "./lib/api"
 import { useComputerStatus, describeEvent } from "./lib/computerStatus"
 import { appConfig } from "./config"
 import { createBrowserSttSession, transcribeAudioOpenAICompatible, speakText } from "./lib/voice"
@@ -2450,13 +2451,25 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
                 >
                   <Mic className="h-5 w-5" strokeWidth={1.6} />
                 </button>
-                <SendButton
-                  onStablePointerDown={onStableControlPointerDown}
-                  onSend={() => {
-                    if (input.trim() || pendingFiles.length > 0) handleSend()
-                  }}
-                  disabled={sealBusy || sending || (!input.trim() && pendingFiles.length === 0)}
-                />
+                {sending ? (
+                  <button
+                    type="button"
+                    onClick={() => { void abortChat("chat") }}
+                    aria-label="Stop"
+                    className="grid h-9 w-9 place-items-center rounded-full"
+                    style={{ color: "var(--color-cocoa)" }}
+                  >
+                    <Square className="h-4 w-4" strokeWidth={0} fill="currentColor" />
+                  </button>
+                ) : (
+                  <SendButton
+                    onStablePointerDown={onStableControlPointerDown}
+                    onSend={() => {
+                      if (input.trim() || pendingFiles.length > 0) handleSend()
+                    }}
+                    disabled={sealBusy || (!input.trim() && pendingFiles.length === 0)}
+                  />
+                )}
               </div>
               {voiceError && (
                 <div

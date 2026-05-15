@@ -37,6 +37,7 @@ class ApiCompletion:
     raw: dict[str, Any] = field(default_factory=dict)
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     finish_reason: str = ""
+    reasoning: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +54,7 @@ class ApiRuntimeResult:
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     transcript_messages: list[dict[str, Any]] = field(default_factory=list)
     timings: dict[str, int] = field(default_factory=dict)
+    thinking_blocks: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _merge_usage(total: dict[str, Any], usage: dict[str, Any]) -> None:
@@ -217,6 +219,8 @@ class OpenAICompatibleClient:
         temperature: float,
         max_tokens: int,
         tools: list[dict[str, Any]] | None = None,
+        reasoning_effort: str = "",
+        thinking_budget_tokens: int = 0,
         _retries: int = 2,
     ) -> ApiCompletion:
         body: dict[str, Any] = {
@@ -227,6 +231,17 @@ class OpenAICompatibleClient:
         }
         if tools:
             body["tools"] = tools
+        # Request reasoning when configured. Different providers honour different
+        # fields; send the common ones so at least one lands. Anthropic-via-Poe
+        # historically picks up `thinking`; OpenRouter / OpenAI o-series picks up
+        # `reasoning_effort`. Unknown fields are ignored by spec-following
+        # providers.
+        if reasoning_effort:
+            body["reasoning_effort"] = reasoning_effort
+        if thinking_budget_tokens > 0:
+            body["thinking"] = {"type": "enabled", "budget_tokens": int(thinking_budget_tokens)}
+            # OpenRouter passes a different shape under `reasoning`.
+            body["reasoning"] = {"effort": reasoning_effort or "high", "max_tokens": int(thinking_budget_tokens)}
         headers = self._headers()
         last_exc: Exception | None = None
         for attempt in range(1 + _retries):
@@ -250,6 +265,32 @@ class OpenAICompatibleClient:
             message = choice.get("message") or {}
             text = str(message.get("content") or "").strip()
             tool_calls = list(message.get("tool_calls") or [])
+            # Extract reasoning text. Providers vary:
+            #   - Anthropic via Poe / DeepSeek-R1: `reasoning_content`
+            #   - OpenRouter / OpenAI o-series:    `reasoning`
+            #   - Some shims:                       content list with type=thinking
+            reasoning_text = ""
+            for key in ("reasoning_content", "reasoning"):
+                value = message.get(key)
+                if isinstance(value, str) and value.strip():
+                    reasoning_text = value.strip()
+                    break
+                if isinstance(value, dict):
+                    inner = value.get("content") or value.get("text") or ""
+                    if isinstance(inner, str) and inner.strip():
+                        reasoning_text = inner.strip()
+                        break
+            if not reasoning_text:
+                content = message.get("content")
+                if isinstance(content, list):
+                    parts: list[str] = []
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") in {"thinking", "reasoning"}:
+                            txt = block.get("thinking") or block.get("text") or ""
+                            if isinstance(txt, str) and txt.strip():
+                                parts.append(txt.strip())
+                    if parts:
+                        reasoning_text = "\n\n".join(parts)
             if not text and not tool_calls:
                 last_exc = RuntimeError(
                     f"API response has neither content nor tool_calls (attempt {attempt + 1}/{1 + _retries})"
@@ -262,6 +303,7 @@ class OpenAICompatibleClient:
                 raw=data,
                 tool_calls=tool_calls,
                 finish_reason=str(choice.get("finish_reason") or ""),
+                reasoning=reasoning_text,
             )
         raise last_exc or RuntimeError("API response has neither content nor tool_calls")
 
@@ -538,6 +580,8 @@ class FallbackApiClient:
         temperature: float,
         max_tokens: int,
         tools: list[dict[str, Any]] | None = None,
+        reasoning_effort: str = "",
+        thinking_budget_tokens: int = 0,
     ) -> ApiCompletion:
         try:
             return self.primary.complete(
@@ -546,6 +590,8 @@ class FallbackApiClient:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 tools=tools,
+                reasoning_effort=reasoning_effort,
+                thinking_budget_tokens=thinking_budget_tokens,
             )
         except Exception as primary_exc:
             try:
@@ -555,6 +601,8 @@ class FallbackApiClient:
                     temperature=temperature,
                     max_tokens=max_tokens,
                     tools=tools,
+                    reasoning_effort=reasoning_effort,
+                    thinking_budget_tokens=thinking_budget_tokens,
                 )
             except Exception as fallback_exc:
                 raise RuntimeError(f"Primary API failed: {primary_exc}; fallback API failed: {fallback_exc}") from fallback_exc
@@ -657,10 +705,22 @@ class ApiRuntime:
         tools = TOOL_SCHEMAS if tools_enabled and not has_image_input else None
         max_loops = max(1, int(getattr(self.config, "api_tools_max_loops", 10)))
 
+        # Forward extended-thinking config into the API request. The catalog
+        # entry sets these (see fiam.toml [catalog.<family>]). Providers that
+        # ignore unknown fields stay unaffected. Set FIAM_API_REASONING_OFF=1
+        # to disable if the upstream rejects them.
+        extended_thinking_on = (
+            bool(getattr(self.config, "extended_thinking", False))
+            and os.environ.get("FIAM_API_REASONING_OFF", "").strip().lower() not in {"1", "true", "yes", "on"}
+        )
+        thinking_budget = int(getattr(self.config, "budget_tokens", 0) or 0) if extended_thinking_on else 0
+        reasoning_effort = os.environ.get("FIAM_API_REASONING_EFFORT", "").strip() or ("high" if extended_thinking_on else "")
+
         executed_calls: list[dict[str, Any]] = []
         loops = 0
         provider_ms_total = 0
         completion: ApiCompletion | None = None
+        thinking_chunks: list[str] = []
         while True:
             loops += 1
             provider_started_at = time.perf_counter()
@@ -670,7 +730,11 @@ class ApiRuntime:
                 temperature=self.config.api_temperature,
                 max_tokens=self.config.api_max_tokens,
                 tools=tools,
+                reasoning_effort=reasoning_effort,
+                thinking_budget_tokens=thinking_budget,
             )
+            if completion.reasoning:
+                thinking_chunks.append(completion.reasoning)
             provider_ms_total += int((time.perf_counter() - provider_started_at) * 1000)
             _merge_usage(usage_total, completion.usage)
             if not completion.tool_calls:
@@ -713,9 +777,13 @@ class ApiRuntime:
                     temperature=self.config.api_temperature,
                     max_tokens=self.config.api_max_tokens,
                     tools=None,
+                    reasoning_effort=reasoning_effort,
+                    thinking_budget_tokens=thinking_budget,
                 )
                 provider_ms_total += int((time.perf_counter() - provider_started_at) * 1000)
                 _merge_usage(usage_total, completion.usage)
+                if completion.reasoning:
+                    thinking_chunks.append(completion.reasoning)
                 break
 
         assert completion is not None
@@ -724,6 +792,10 @@ class ApiRuntime:
             clean_message
             for message in [*messages[transcript_start:], {"role": "assistant", "content": reply_text}]
             if (clean_message := _valid_transcript_message(message)) is not None
+        ]
+
+        thinking_blocks: list[dict[str, Any]] = [
+            {"text": chunk} for chunk in thinking_chunks if chunk
         ]
 
         return ApiRuntimeResult(
@@ -743,6 +815,7 @@ class ApiRuntime:
                 "provider_ms": provider_ms_total,
                 "total_ms": int((time.perf_counter() - started_at) * 1000),
             },
+            thinking_blocks=thinking_blocks,
         )
 
     def _describe_images(self, user_text: str, image_blocks: list[dict[str, Any]], usage_total: dict[str, Any]) -> str:

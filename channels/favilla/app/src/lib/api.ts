@@ -431,6 +431,19 @@ export async function sendChatStream(
   }
 }
 
+export async function abortChat(channel = "chat"): Promise<{ aborted: boolean; reason?: string }> {
+  try {
+    const res = await fetch(`${getBase()}/favilla/chat/abort`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ channel }),
+    })
+    return await res.json()
+  } catch {
+    return { aborted: false, reason: "fetch failed" }
+  }
+}
+
 export async function downloadObject(token: string, fallbackName = "attachment") {
   const clean = token.trim()
   if (!clean) throw new Error("missing object token")

@@ -104,6 +104,8 @@ def run_channel_turn(
     resume_session_id: str = "",
     max_turns: int = 10,
     timeout_seconds: float = 240.0,
+    pty_tail_sink: list[str] | None = None,
+    status_sink: dict | None = None,
 ) -> ChannelTurn:
     if not channel_supported():
         raise RuntimeError("Claude Code channel transport requires a POSIX PTY")
@@ -113,6 +115,13 @@ def run_channel_turn(
     scrub_transcript(transcript)
     start_offset = transcript.stat().st_size if transcript.exists() else 0
     request_id = f"req_{uuid.uuid4().hex[:16]}"
+    if status_sink is not None:
+        status_sink["transcript_path"] = str(transcript)
+        status_sink["transcript_dir"] = str(transcript.parent)
+        status_sink["session_id"] = session_id
+        status_sink["channel_request_id"] = request_id
+        status_sink["resume_attempted"] = bool(resume_session_id)
+        status_sink["start_offset"] = start_offset
 
     with tempfile.TemporaryDirectory(prefix="fiam-cc-channel-") as tmp_dir:
         tmp = Path(tmp_dir)
@@ -151,8 +160,10 @@ def run_channel_turn(
             max_turns=max_turns,
         )
         proc, master_fd = _spawn_pty(cmd, cwd=Path(config.home_path))
+        if status_sink is not None:
+            status_sink["pid"] = proc.pid
         stop_pump = threading.Event()
-        pty_tail: list[str] = []
+        pty_tail: list[str] = pty_tail_sink if pty_tail_sink is not None else []
         pump = _start_pty_pump(master_fd, stop_pump, pty_tail)
         try:
             result = _wait_for_result(
@@ -162,6 +173,7 @@ def run_channel_turn(
                 session_id=session_id,
                 timeout_seconds=timeout_seconds,
                 pty_tail=pty_tail,
+                status_sink=status_sink,
             )
             return result
         finally:
@@ -173,6 +185,10 @@ def run_channel_turn(
             except OSError:
                 pass
             scrub_transcript(transcript)
+
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _channel_command(
@@ -192,12 +208,15 @@ def _channel_command(
         str(mcp_config),
         "--setting-sources",
         "user,project,local",
-        "--exclude-dynamic-system-prompt-sections",
         "--permission-mode",
         "bypassPermissions",
-        "--max-turns",
-        str(max_turns),
     ]
+    # Suspect flags that may interfere with transcript persistence in channel
+    # mode. Each is on by default, drop with FIAM_CC_CHANNEL_NO_<X>=1.
+    if not _env_flag("FIAM_CC_CHANNEL_NO_EXCLUDE_DYNAMIC"):
+        cmd.append("--exclude-dynamic-system-prompt-sections")
+    if not _env_flag("FIAM_CC_CHANNEL_NO_MAX_TURNS"):
+        cmd.extend(["--max-turns", str(max_turns)])
     if resume_session_id:
         cmd.extend(["--resume", resume_session_id])
     else:
@@ -210,7 +229,7 @@ def _channel_command(
         tools = [t.strip() for t in config.cc_disallowed_tools.split(",") if t.strip()]
         if tools:
             cmd.extend(["--disallowedTools", *tools])
-    if getattr(config, "cc_effort", ""):
+    if getattr(config, "cc_effort", "") and not _env_flag("FIAM_CC_CHANNEL_NO_EFFORT"):
         cmd.extend(["--effort", config.cc_effort])
     return cmd
 
@@ -319,15 +338,53 @@ def _wait_for_result(
     session_id: str,
     timeout_seconds: float,
     pty_tail: list[str] | None = None,
+    status_sink: dict | None = None,
 ) -> ChannelTurn:
     deadline = time.monotonic() + timeout_seconds
     seen_user = False
     parsed: list[dict] = []
     safe_offset = start_offset
+    rows_total = 0
+    user_origins: list[str] = []
+    user_row_previews: list[str] = []
+    assistant_stops: list[str] = []
+    last_status_update = 0.0
+
+    def _push_status() -> None:
+        if status_sink is None:
+            return
+        status_sink.update({
+            "transcript_exists": transcript.exists(),
+            "transcript_size": transcript.stat().st_size if transcript.exists() else 0,
+            "rows_read": rows_total,
+            "safe_offset": safe_offset,
+            "seen_matching_user": seen_user,
+            "user_origins_seen": user_origins[-8:],
+            "user_row_previews": user_row_previews[-3:],
+            "assistant_stops_seen": assistant_stops[-8:],
+            "parsed_rows": len(parsed),
+            "last_updated": time.time(),
+        })
+
+    _push_status()
     while time.monotonic() < deadline:
         if transcript.exists() and transcript.stat().st_size > safe_offset:
             new_rows, safe_offset = _read_rows_from(transcript, safe_offset)
             for row in new_rows:
+                rows_total += 1
+                rtype = row.get("type")
+                if rtype == "user":
+                    origin = ((row.get("origin") or {}).get("kind")) or "user"
+                    user_origins.append(str(origin))
+                    msg = row.get("message") if isinstance(row.get("message"), dict) else {}
+                    content = msg.get("content")
+                    if isinstance(content, str):
+                        user_row_previews.append(content[:200])
+                    elif isinstance(content, list):
+                        user_row_previews.append("[" + ",".join(b.get("type", "?") for b in content if isinstance(b, dict))[:120] + "]")
+                if rtype == "assistant":
+                    msg = row.get("message") if isinstance(row.get("message"), dict) else {}
+                    assistant_stops.append(str(msg.get("stop_reason") or "-"))
                 if _is_matching_channel_user(row, request_id):
                     seen_user = True
                     parsed = [row]
@@ -335,15 +392,30 @@ def _wait_for_result(
                 if seen_user:
                     parsed.append(row)
                     if _is_final_assistant(row):
+                        _push_status()
                         return _rows_to_turn(parsed, session_id=session_id, transcript=transcript)
             if not seen_user:
+                _push_status()
                 time.sleep(0.05)
                 continue
+        now = time.monotonic()
+        if now - last_status_update > 1.0:
+            last_status_update = now
+            _push_status()
         time.sleep(0.1)
+    _push_status()
     tail = "".join((pty_tail or [])[-40:]).strip()
     detail = f"; pty_tail={tail[-1200:]}" if tail else ""
     file_info = f"transcript={'exists' if transcript.exists() else 'missing'} path={transcript}"
-    raise RuntimeError(f"claude channel turn timeout ({file_info}){detail}")
+    diag = ""
+    if status_sink is not None:
+        diag = (
+            f"; rows_read={rows_total}"
+            f" seen_matching_user={seen_user}"
+            f" user_origins={user_origins[-8:]}"
+            f" assistant_stops={assistant_stops[-8:]}"
+        )
+    raise RuntimeError(f"claude channel turn timeout ({file_info}){diag}{detail}")
 
 
 def _read_rows_from(path: Path, offset: int) -> tuple[list[dict], int]:

@@ -16,6 +16,7 @@ import logging
 import os
 import queue
 import re
+import signal
 import shutil
 import sys
 import threading
@@ -40,6 +41,11 @@ _EMBEDDER = None    # Embedder instance (lazy)
 _BUS = None         # Bus instance (lazy, for /api/capture publishing)
 _COMPUTE_LOCK = threading.Lock()  # gate concurrent mutations
 _CC_RUNTIME_LOCK = threading.Lock()  # Claude Code uses a single local session lock
+_CC_INFLIGHT_LOCK = threading.Lock()
+_CC_INFLIGHT: dict[int, dict] = {}
+_CC_INFLIGHT_NEXT_ID = 0
+_CC_RECENT_FAILURES: list[dict] = []
+_CC_RECENT_FAILURES_MAX = 20
 _CC_WARM_RUNNER = None
 _CC_WARM_IDLE_SECONDS = 60 * 60
 _CC_WARM_FAILURE_PREFIX = "__fiam_cc_warm_failed__:"
@@ -2114,6 +2120,104 @@ def _persist_favilla_ai_transcript(channel: str, result: dict, runtime: str) -> 
     })
 
 
+def _cc_inflight_register(kind: str, *, channel: str = "", surface: str = "", request_id: str = "", turn_id: str = "", pty_tail: list | None = None, status: dict | None = None) -> int:
+    global _CC_INFLIGHT_NEXT_ID
+    with _CC_INFLIGHT_LOCK:
+        _CC_INFLIGHT_NEXT_ID += 1
+        token = _CC_INFLIGHT_NEXT_ID
+        _CC_INFLIGHT[token] = {
+            "id": token,
+            "kind": kind,
+            "channel": channel,
+            "surface": surface,
+            "request_id": request_id,
+            "turn_id": turn_id,
+            "started_at": time.time(),
+            "_pty_tail": pty_tail,
+            "_status": status,
+        }
+    return token
+
+
+def _cc_inflight_unregister(token: int, *, error: str = "") -> None:
+    with _CC_INFLIGHT_LOCK:
+        entry = _CC_INFLIGHT.pop(token, None)
+    if not entry or not error:
+        return
+    tail_list = entry.get("_pty_tail")
+    tail_text = ""
+    if isinstance(tail_list, list) and tail_list:
+        tail_text = "".join(tail_list)[-1500:]
+    status_snapshot = entry.get("_status") if isinstance(entry.get("_status"), dict) else {}
+    record = {
+        "kind": entry.get("kind"),
+        "channel": entry.get("channel"),
+        "surface": entry.get("surface"),
+        "request_id": entry.get("request_id"),
+        "turn_id": entry.get("turn_id"),
+        "started_at": entry.get("started_at"),
+        "ended_at": time.time(),
+        "duration_ms": int((time.time() - float(entry.get("started_at") or 0)) * 1000),
+        "error": str(error)[:500],
+        "pty_tail": tail_text,
+        "status": dict(status_snapshot),
+    }
+    with _CC_INFLIGHT_LOCK:
+        _CC_RECENT_FAILURES.append(record)
+        if len(_CC_RECENT_FAILURES) > _CC_RECENT_FAILURES_MAX:
+            del _CC_RECENT_FAILURES[: len(_CC_RECENT_FAILURES) - _CC_RECENT_FAILURES_MAX]
+
+
+def _cc_inflight_abort(request_id: str = "", channel: str = "") -> dict:
+    """Kill the in-flight process for a channel/request and clean up."""
+    with _CC_INFLIGHT_LOCK:
+        target = None
+        for entry in _CC_INFLIGHT.values():
+            if request_id and entry.get("request_id") == request_id:
+                target = entry
+                break
+            if channel and entry.get("channel") == channel:
+                target = entry
+                break
+        if not target and not request_id and not channel:
+            candidates = list(_CC_INFLIGHT.values())
+            if candidates:
+                target = candidates[-1]
+        if not target:
+            return {"aborted": False, "reason": "no inflight request found"}
+        kind = target.get("kind", "")
+        status = target.get("_status") if isinstance(target.get("_status"), dict) else {}
+        pid = status.get("pid") or 0
+
+    killed = False
+    if kind in ("warm", "warm-stream") and _CC_WARM_RUNNER:
+        try:
+            runner = _CC_WARM_RUNNER
+            if runner and runner.proc and runner.proc.poll() is None:
+                pid = runner.proc.pid
+                runner.proc.terminate()
+                killed = True
+        except Exception:
+            pass
+    if not killed and pid:
+        try:
+            os.killpg(int(pid), signal.SIGTERM)
+            killed = True
+        except (ProcessLookupError, PermissionError, OSError):
+            try:
+                os.kill(int(pid), signal.SIGTERM)
+                killed = True
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+    return {
+        "aborted": True,
+        "killed_pid": pid if killed else 0,
+        "request_id": target.get("request_id", ""),
+        "channel": target.get("channel", ""),
+        "kind": kind,
+    }
+
+
 def _trace_summary(turn_id: str, request_id: str, *, runtime: str = "") -> dict:
     return {k: v for k, v in {
         "turn_id": turn_id,
@@ -2229,6 +2333,119 @@ def _debug_trace_aggregate(rows: list[dict]) -> dict:
         "retry_phases": retry_phases,
         "total_duration_ms": total_duration_ms,
         "slowest": sorted(slowest, key=lambda item: int(item.get("duration_ms") or 0), reverse=True)[:10],
+    }
+
+
+def _api_debug_runtime() -> dict:
+    """Aggregated CC runtime status for the /runtime dashboard page."""
+    transport_env = os.environ.get("FIAM_CC_TRANSPORT", "")
+    # cc_channel.channel_enabled() defaults to "print" when the env is unset.
+    transport_resolved = transport_env.strip().lower() or "print"
+    try:
+        from fiam_lib.cc_channel import channel_enabled, channel_supported
+        channel_supported_flag = channel_supported()
+        channel_enabled_flag = channel_enabled()
+    except Exception as exc:
+        channel_supported_flag = False
+        channel_enabled_flag = False
+        transport_resolved = f"error: {exc}"
+
+    server_path = (_CONFIG.code_path / "channels" / "cc-channel" / "server.mjs") if _CONFIG else None
+    node_modules = (server_path.parent / "node_modules" / "@modelcontextprotocol" / "sdk") if server_path else None
+    channel_health = {
+        "server_path": str(server_path) if server_path else "",
+        "server_exists": bool(server_path and server_path.exists()),
+        "node_modules_path": str(node_modules) if node_modules else "",
+        "node_modules_exists": bool(node_modules and node_modules.exists()),
+    }
+    channel_flags = {
+        "exclude_dynamic_system_prompt": os.environ.get("FIAM_CC_CHANNEL_NO_EXCLUDE_DYNAMIC", "").strip().lower() not in {"1", "true", "yes", "on"},
+        "max_turns": os.environ.get("FIAM_CC_CHANNEL_NO_MAX_TURNS", "").strip().lower() not in {"1", "true", "yes", "on"},
+        "effort": os.environ.get("FIAM_CC_CHANNEL_NO_EFFORT", "").strip().lower() not in {"1", "true", "yes", "on"},
+    }
+
+    now = time.time()
+    with _CC_INFLIGHT_LOCK:
+        inflight = []
+        for entry in _CC_INFLIGHT.values():
+            tail_list = entry.get("_pty_tail")
+            tail_text = ""
+            if isinstance(tail_list, list) and tail_list:
+                tail_text = "".join(tail_list)[-1500:]
+            status_snapshot = entry.get("_status") if isinstance(entry.get("_status"), dict) else {}
+            inflight.append({
+                **{k: v for k, v in entry.items() if not k.startswith("_")},
+                "elapsed_ms": int((now - float(entry.get("started_at") or now)) * 1000),
+                "pty_tail": tail_text,
+                "status": dict(status_snapshot),
+            })
+        recent_failures = list(_CC_RECENT_FAILURES[-20:])
+
+    recent_runtime: list[dict] = []
+    if _CONFIG:
+        path = _CONFIG.store_dir / "turn_traces.jsonl"
+        if path.exists():
+            try:
+                lines = path.read_text(encoding="utf-8", errors="replace").splitlines()[-2000:]
+            except OSError:
+                lines = []
+            for raw_line in reversed(lines):
+                if len(recent_runtime) >= 30:
+                    break
+                try:
+                    row = json.loads(raw_line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(row, dict):
+                    continue
+                phase = str(row.get("phase") or "")
+                if phase not in {"dashboard.runtime", "dashboard.prompt"}:
+                    continue
+                refs = row.get("refs") if isinstance(row.get("refs"), dict) else {}
+                recent_runtime.append({
+                    "started_at": row.get("started_at") or "",
+                    "ended_at": row.get("ended_at") or "",
+                    "duration_ms": int(row.get("duration_ms") or 0),
+                    "phase": phase,
+                    "status": row.get("status") or "",
+                    "channel": row.get("channel") or "",
+                    "surface": row.get("surface") or "",
+                    "turn_id": row.get("turn_id") or "",
+                    "request_id": row.get("request_id") or "",
+                    "model": refs.get("model") or "",
+                    "subtype": refs.get("subtype") or "",
+                    "returncode": refs.get("returncode"),
+                    "action_count": refs.get("action_count"),
+                    "error": row.get("error") or "",
+                })
+
+    warm_runner_info: dict = {"alive": False}
+    try:
+        global _CC_WARM_RUNNER  # noqa: F824
+        if _CC_WARM_RUNNER is not None:
+            warm_runner_info = {
+                "alive": bool(_CC_WARM_RUNNER.is_alive()),
+                "fingerprint": str(getattr(_CC_WARM_RUNNER, "fingerprint", "") or "")[:80],
+                "last_session_id": str(getattr(_CC_WARM_RUNNER, "last_session_id", "") or ""),
+                "last_used_ago_sec": max(0, int(time.monotonic() - float(getattr(_CC_WARM_RUNNER, "last_used", time.monotonic())))),
+            }
+    except Exception:
+        pass
+
+    return {
+        "transport": {
+            "env": transport_env,
+            "mode": transport_resolved,
+            "channel_supported": channel_supported_flag,
+            "channel_enabled": channel_enabled_flag,
+        },
+        "channel_health": channel_health,
+        "channel_flags": channel_flags,
+        "warm_runner": warm_runner_info,
+        "inflight": inflight,
+        "recent_runtime": recent_runtime,
+        "recent_failures": recent_failures,
+        "trace_file": "store/turn_traces.jsonl",
     }
 
 
@@ -3940,7 +4157,88 @@ class _CCCompletedTurnProcess:
         self.returncode = -9
 
 
-def _run_cc_channel_turn_result_locked(user_prompt: str, system_context: str, *, resume_session_id: str = "", max_turns: int = 10):
+class _CCChannelAsyncProcess:
+    """Run a channel turn in a background thread, exposing stdout when ready.
+
+    Unlike _CCCompletedTurnProcess (which blocks the caller until the full turn
+    is done), this class starts the channel turn immediately in a daemon thread
+    and provides a line-iterator stdout that blocks only while waiting for the
+    thread to finish.  The consumer (reader_for) runs in *its own* thread, so
+    the main generator thread is free to yield keepalive events.
+    """
+
+    def __init__(self, user_prompt: str, system_context: str, *, resume_session_id: str = "", max_turns: int = 10, channel: str = "", surface: str = "", request_id: str = "", turn_id: str = "") -> None:
+        from io import StringIO
+
+        self._done = threading.Event()
+        self._stdout_text = ""
+        self._stderr_text = ""
+        self.returncode = 0
+        self._error: BaseException | None = None
+        self._pty_tail: list[str] = []
+        self._status: dict = {}
+        self._inflight_token = _cc_inflight_register(
+            "channel-async",
+            channel=channel,
+            surface=surface,
+            request_id=request_id,
+            turn_id=turn_id,
+            pty_tail=self._pty_tail,
+            status=self._status,
+        )
+
+        def _run() -> None:
+            try:
+                result = _run_cc_channel_turn_result_locked(
+                    user_prompt,
+                    system_context,
+                    resume_session_id=resume_session_id,
+                    max_turns=max_turns,
+                    pty_tail_sink=self._pty_tail,
+                    status_sink=self._status,
+                )
+                self._stdout_text = result.stdout or ""
+                self._stderr_text = result.stderr or ""
+                self.returncode = result.returncode or 0
+            except BaseException as exc:
+                self._error = exc
+                self.returncode = 1
+                _cc_inflight_unregister(self._inflight_token, error=str(exc))
+                self._inflight_token = 0
+            finally:
+                if self._inflight_token:
+                    _cc_inflight_unregister(self._inflight_token)
+                    self._inflight_token = 0
+                self._done.set()
+
+        self._thread = threading.Thread(target=_run, daemon=True)
+        self._thread.start()
+        self.stdout: Any = self
+        self.stderr: Any = StringIO("")
+
+    def __iter__(self):
+        self._done.wait()
+        from io import StringIO
+        if self._error:
+            self.stderr = StringIO(str(self._error))
+            err_line = json.dumps({"type": "result", "subtype": "error", "is_error": True, "result": str(self._error)[:500]}, ensure_ascii=False) + "\n"
+            yield err_line
+            return
+        self.stderr = StringIO(self._stderr_text)
+        yield from StringIO(self._stdout_text)
+
+    def wait(self, timeout=None):
+        self._done.wait(timeout=timeout)
+        return self.returncode
+
+    def kill(self):
+        self.returncode = -9
+
+    def is_done(self) -> bool:
+        return self._done.is_set()
+
+
+def _run_cc_channel_turn_result_locked(user_prompt: str, system_context: str, *, resume_session_id: str = "", max_turns: int = 10, pty_tail_sink: list | None = None, status_sink: dict | None = None):
     from fiam_lib.cc_channel import as_completed_process, run_channel_turn
 
     turn = run_channel_turn(
@@ -3949,6 +4247,8 @@ def _run_cc_channel_turn_result_locked(user_prompt: str, system_context: str, *,
         system_context=system_context,
         resume_session_id=resume_session_id,
         max_turns=max_turns,
+        pty_tail_sink=pty_tail_sink,
+        status_sink=status_sink,
     )
     return as_completed_process(turn)
 
@@ -4263,24 +4563,41 @@ def _run_cc_favilla_chat_locked(*, text: str, channel: str, surface: str = "", a
 
     def run_claude(resume_session_id: str | None, prompt_override: str | None = None):
         if _cc_channel_transport_enabled():
+            pty_tail: list[str] = []
+            status: dict = {}
+            token = _cc_inflight_register("channel-sync", channel=channel, surface=surface, request_id=request_id, turn_id=turn_id, pty_tail=pty_tail, status=status)
             try:
                 return _run_cc_channel_turn_result_locked(
                     prompt_override or warm_user_prompt,
                     warm_system_context,
                     resume_session_id=resume_session_id or "",
                     max_turns=10,
+                    pty_tail_sink=pty_tail,
+                    status_sink=status,
                 )
             except RuntimeError as exc:
+                _cc_inflight_unregister(token, error=str(exc))
+                token = 0
                 raise RuntimeError(f"claude channel failed: {str(exc).strip()[:500]}") from exc
+            finally:
+                if token:
+                    _cc_inflight_unregister(token)
         if use_warm_holder["enabled"]:
+            token = _cc_inflight_register("warm", channel=channel, surface=surface, request_id=request_id, turn_id=turn_id)
             try:
                 return _run_cc_warm_turn_result_locked(prompt_override or warm_user_prompt, warm_system_context)
             except RuntimeError as exc:
+                _cc_inflight_unregister(token, error=str(exc))
+                token = 0
                 _cc_warm_shutdown_locked(str(exc), scrub=True)
                 use_warm_holder["enabled"] = False
+            finally:
+                if token:
+                    _cc_inflight_unregister(token)
         cmd = cold_command(prompt_override)
         if resume_session_id:
             cmd.extend(["--resume", resume_session_id])
+        token = _cc_inflight_register("cold-print", channel=channel, surface=surface, request_id=request_id, turn_id=turn_id)
         try:
             return subprocess.run(
                 cmd,
@@ -4291,9 +4608,16 @@ def _run_cc_favilla_chat_locked(*, text: str, channel: str, surface: str = "", a
                 cwd=str(cwd_path),
             )
         except subprocess.TimeoutExpired as exc:
+            _cc_inflight_unregister(token, error="claude chat timeout")
+            token = 0
             raise RuntimeError("claude chat timeout") from exc
         except FileNotFoundError as exc:
+            _cc_inflight_unregister(token, error="claude not found on server PATH")
+            token = 0
             raise RuntimeError("claude not found on server PATH") from exc
+        finally:
+            if token:
+                _cc_inflight_unregister(token)
 
     def parse_claude_result(result):
         data, action_events, thinking_events = _parse_cc_stream(result.stdout or "")
@@ -4672,20 +4996,25 @@ def _iter_cc_favilla_chat_events_locked(*, text: str, channel: str, surface: str
 
     def run_claude(resume_session_id: str | None) -> "subprocess.Popen[str]":
         if _cc_channel_transport_enabled():
-            result = _run_cc_channel_turn_result_locked(
+            return _CCChannelAsyncProcess(
                 warm_user_prompt,
                 warm_system_context,
                 resume_session_id=resume_session_id or "",
                 max_turns=10,
+                channel=channel,
+                surface=surface,
+                request_id=request_id,
+                turn_id=turn_id,
             )
-            return _CCCompletedTurnProcess(result.stdout, result.stderr, result.returncode)
         if use_warm_holder["enabled"]:
             runner = _cc_warm_runner_locked(warm_system_context)
-            return _CCWarmTurnProcess(runner, warm_user_prompt)
+            proc = _CCWarmTurnProcess(runner, warm_user_prompt)
+            proc._inflight_token = _cc_inflight_register("warm-stream", channel=channel, surface=surface, request_id=request_id, turn_id=turn_id)
+            return proc
         cmd = cold_base_command()
         if resume_session_id:
             cmd.extend(["--resume", resume_session_id])
-        return subprocess.Popen(
+        popen = subprocess.Popen(
             cmd,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -4694,38 +5023,58 @@ def _iter_cc_favilla_chat_events_locked(*, text: str, channel: str, surface: str
             bufsize=1,
             cwd=str(cwd_path),
         )
+        popen._inflight_token = _cc_inflight_register("cold-stream", channel=channel, surface=surface, request_id=request_id, turn_id=turn_id)
+        return popen
 
     def consume_until_eof(proc: "subprocess.Popen[str]"):
         """Drive reader thread + drain queue, yielding events. Returns rc."""
         rt = threading.Thread(target=reader_for, args=(proc,), daemon=True)
         rt.start()
         deadline = time.time() + 240.0
-        while True:
-            try:
-                ev = ev_queue.get(timeout=1.0)
-            except queue.Empty:
-                if time.time() > deadline:
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
-                    yield {"event": "error", "data": {"message": "claude chat timeout"}}
-                    return
-                continue
-            if ev.get("event") == "_eof":
-                break
-            yield ev
+        last_keepalive = time.time()
+        token = getattr(proc, "_inflight_token", 0) or 0
         try:
-            proc.wait(timeout=10)
-        except Exception:
-            pass
-        while True:
-            try:
-                ev = ev_queue.get_nowait()
-            except queue.Empty:
-                break
-            if ev.get("event") != "_eof":
+            while True:
+                try:
+                    ev = ev_queue.get(timeout=1.0)
+                except queue.Empty:
+                    now = time.time()
+                    if now > deadline:
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
+                        if token:
+                            _cc_inflight_unregister(token, error="claude chat timeout")
+                            token = 0
+                        yield {"event": "error", "data": {"message": "claude chat timeout"}}
+                        return
+                    if now - last_keepalive >= 15.0:
+                        last_keepalive = now
+                        yield {"event": "_keepalive", "data": {}}
+                    continue
+                if ev.get("event") == "_eof":
+                    break
                 yield ev
+            try:
+                proc.wait(timeout=10)
+            except Exception:
+                pass
+            while True:
+                try:
+                    ev = ev_queue.get_nowait()
+                except queue.Empty:
+                    break
+                if ev.get("event") != "_eof":
+                    yield ev
+        finally:
+            if token:
+                _cc_inflight_unregister(token)
+            # _CCChannelAsyncProcess unregisters itself; the attribute may not be set.
+            try:
+                proc._inflight_token = 0
+            except Exception:
+                pass
 
     def reset_stream_state() -> None:
         state["result_data"] = {}
@@ -5318,6 +5667,9 @@ def _run_api_favilla_chat(*, text: str, channel: str, surface: str = "", attachm
         )
         raise
     api_latency_ms = int((time.time() - api_started_at) * 1000)
+    api_thinking_count = len(list(getattr(result, "thinking_blocks", None) or []))
+    api_tool_loops = int(getattr(result, "tool_loops", 0) or 0)
+    api_tool_count = len(list(getattr(result, "tool_calls", None) or []))
     _append_dashboard_trace_phase(
         turn_id=turn_id,
         request_id=request_id,
@@ -5325,7 +5677,15 @@ def _run_api_favilla_chat(*, text: str, channel: str, surface: str = "", attachm
         surface=surface,
         phase="dashboard.runtime",
         started_at=runtime_started,
-        refs={"runtime": "api", "family": family, "model": getattr(result, "model", ""), "latency_ms": api_latency_ms},
+        refs={
+            "runtime": "api",
+            "family": family,
+            "model": getattr(result, "model", ""),
+            "latency_ms": api_latency_ms,
+            "thinking_blocks": api_thinking_count,
+            "tool_loops": api_tool_loops,
+            "tool_calls": api_tool_count,
+        },
     )
     raw_reply = str(result.reply or "")
     marker_started = datetime.now(timezone.utc)
@@ -5388,6 +5748,19 @@ def _run_api_favilla_chat(*, text: str, channel: str, surface: str = "", attachm
         refs={"todo_count": len(queued_todos), "hold": bool(hold), "route": bool(route)},
     )
     cleaned_reply, thoughts, thoughts_locked, segments = _parse_cot(reply)
+    # If the API returned native reasoning blocks, prepend them as thoughts so
+    # the UI gets the same "Native thinking" treatment CC channel turns get.
+    api_thinking_blocks = list(getattr(result, "thinking_blocks", None) or [])
+    if api_thinking_blocks:
+        native_events = [
+            {"text": str(block.get("text") or ""), "signature": ""}
+            for block in api_thinking_blocks
+            if isinstance(block, dict) and str(block.get("text") or "").strip()
+        ]
+        native_thoughts, native_segments = _official_thought_payloads(native_events)
+        if native_thoughts:
+            thoughts = native_thoughts + thoughts
+            segments = native_segments + list(segments)
     if hold and not segments:
         thoughts_locked = True
         summary = hold_reason or "holding this reply"
@@ -6246,6 +6619,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     self._serve_json({"error": "config not loaded"}, status=503)
                     return
                 self._serve_json(_api_debug_trace(query))
+            elif path == "/api/debug/runtime":
+                if not _CONFIG:
+                    self._serve_json({"error": "config not loaded"}, status=503)
+                    return
+                self._serve_json(_api_debug_runtime())
             elif path == "/api/debug/flow":
                 try:
                     limit = max(1, min(2000, int(query.get("limit", "200") or "200")))
@@ -6737,6 +7115,14 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                         sse_id = 0
                         client_gone = False
                         for ev in _favilla_chat_send_stream(payload):
+                            if ev.get("event") == "_keepalive":
+                                if not client_gone:
+                                    try:
+                                        self.wfile.write(b": keepalive\n\n")
+                                        self.wfile.flush()
+                                    except (BrokenPipeError, ConnectionResetError):
+                                        client_gone = True
+                                continue
                             sse_id += 1
                             if client_gone:
                                 continue
@@ -6970,6 +7356,32 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return
             except Exception as e:
                 logger.exception("Favilla Stroll state op error")
+                self._serve_json({"error": str(e)}, status=500)
+                return
+            self._serve_json(result)
+            return
+
+        if path == "/favilla/chat/abort":
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = 0
+            payload: dict = {}
+            if length > 0:
+                try:
+                    payload = json.loads(self.rfile.read(length).decode("utf-8")) or {}
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    payload = {}
+            try:
+                result = _cc_inflight_abort(
+                    request_id=str(payload.get("request_id") or ""),
+                    channel=str(payload.get("channel") or ""),
+                )
+            except Exception as e:
+                logger.exception("Favilla chat abort error")
                 self._serve_json({"error": str(e)}, status=500)
                 return
             self._serve_json(result)
