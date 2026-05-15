@@ -91,6 +91,8 @@
   white-space: pre-wrap;
 }
 
+/* ── Timeline ── */
+
 .fiam-studio-timeline {
   position: relative;
   padding: 24px 20px 4px;
@@ -111,7 +113,7 @@
 .fiam-studio-timeline-item {
   position: relative;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   margin-bottom: 20px;
   z-index: 1;
@@ -170,6 +172,11 @@
   line-height: 1.35;
 }
 
+.fiam-studio-timeline-files {
+  margin-top: 2px;
+  opacity: 0.75;
+}
+
 .fiam-studio-timeline-side.right .fiam-studio-timeline-time,
 .fiam-studio-timeline-side.right .fiam-studio-timeline-files {
   color: color-mix(in srgb, var(--fiam-studio-accent) 65%, transparent);
@@ -178,43 +185,43 @@
 .fiam-studio-timeline-node {
   position: absolute;
   left: 50%;
-  top: 6px;
-  width: 20px;
-  height: 20px;
+  top: 4px;
+  width: 22px;
+  height: 22px;
   display: flex;
   align-items: center;
   justify-content: center;
   background: var(--fiam-studio-paper);
   color: var(--fiam-studio-ink);
-  padding: 2px;
   transform: translateX(-50%);
   z-index: 2;
 }
 
-.fiam-studio-timeline-icon {
+.fiam-studio-timeline-node svg {
   width: 14px;
   height: 14px;
-  display: block;
-  background: currentColor;
+  stroke-width: 2;
 }
 
 .fiam-studio-timeline-node.ai {
   color: var(--fiam-studio-accent);
 }
 
+/* ── Paragraph author signatures ── */
+
 .fiam-studio-signed {
   position: relative;
   border-left: 2px solid transparent;
   padding-left: 6px;
-  transition: border-color 0.15s ease;
+  transition: border-color 0.2s ease;
 }
 
 .fiam-studio-signed-human {
-  border-left-color: color-mix(in srgb, var(--text-normal) 25%, transparent);
+  border-left-color: color-mix(in srgb, var(--text-normal) 18%, transparent);
 }
 
 .fiam-studio-signed-ai {
-  border-left-color: color-mix(in srgb, var(--interactive-accent) 40%, transparent);
+  border-left-color: color-mix(in srgb, var(--interactive-accent) 35%, transparent);
 }
 
 .fiam-studio-signed::after {
@@ -226,10 +233,10 @@
   font-family: var(--font-monospace, monospace);
   color: var(--text-faint);
   opacity: 0;
-  transition: opacity 0.15s ease;
+  transition: opacity 0.2s ease;
   pointer-events: none;
 }
 
 .fiam-studio-signed:hover::after {
-  opacity: 1;
+  opacity: 0.7;
 }

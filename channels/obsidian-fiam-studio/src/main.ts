@@ -11,6 +11,7 @@ import {
   TFile,
   WorkspaceLeaf,
   normalizePath,
+  setIcon,
 } from "obsidian";
 import { execFile } from "child_process";
 import { promisify } from "util";
@@ -55,9 +56,8 @@ interface GitCommit {
 }
 
 interface TimelineIcon {
-  slug: string;
+  lucide: string;
   alt: string;
-  size: number;
 }
 
 export default class FiamStudioPlugin extends Plugin {
@@ -218,12 +218,6 @@ export default class FiamStudioPlugin extends Plugin {
     for (const dir of [this.settings.deskDir, this.settings.shelfDir]) {
       await this.ensureFolder(dir);
     }
-  }
-
-  assetUrl(fileName: string) {
-    const assetPath = normalizePath(`.obsidian/plugins/${this.manifest.id}/assets/${fileName}`);
-    const adapter = this.app.vault.adapter as unknown as { getResourcePath?: (path: string) => string };
-    return typeof adapter.getResourcePath === "function" ? adapter.getResourcePath(assetPath) : assetPath;
   }
 
   async ensureFolder(path: string) {
@@ -737,16 +731,8 @@ class FiamStudioView extends ItemView {
         if (!isAi) this.renderTimelineText(left, "YOU", commit);
 
         const node = item.createDiv({ cls: `fiam-studio-timeline-node ${isAi ? "ai" : "user"}` });
-        const glyph = node.createSpan({ cls: "fiam-studio-timeline-icon", attr: { "aria-label": icon.alt } });
-        const iconUrl = this.plugin.assetUrl(`streamline/${icon.slug}.svg`);
-        glyph.style.setProperty("mask-image", `url(${iconUrl})`);
-        glyph.style.setProperty("mask-position", "center");
-        glyph.style.setProperty("mask-repeat", "no-repeat");
-        glyph.style.setProperty("mask-size", `${icon.size}px ${icon.size}px`);
-        glyph.style.setProperty("-webkit-mask-image", `url(${iconUrl})`);
-        glyph.style.setProperty("-webkit-mask-position", "center");
-        glyph.style.setProperty("-webkit-mask-repeat", "no-repeat");
-        glyph.style.setProperty("-webkit-mask-size", `${icon.size}px ${icon.size}px`);
+        setIcon(node, icon.lucide);
+        node.setAttribute("aria-label", icon.alt);
 
         const right = item.createDiv({ cls: `fiam-studio-timeline-side right${isAi ? "" : " is-hidden"}` });
         if (isAi) this.renderTimelineText(right, "AI", commit);
@@ -767,23 +753,24 @@ class FiamStudioView extends ItemView {
   private timelineIcon(commit: GitCommit, isAi: boolean): TimelineIcon {
     const subject = commit.subject.toLowerCase();
     const files = commit.files.join(" ").toLowerCase();
-    const haystack = `${subject} ${files}`;
-    if (/git|sync|commit|push|pull|merge|rebase/.test(haystack)) return { slug: "git", alt: "Version control", size: 14 };
-    if (/build|test|verify|check|pass|done|todo|task|plan/.test(haystack)) return { slug: "clipboard-check", alt: "Checked work", size: 13.5 };
-    if (/search|grep|find|query|lookup|scan/.test(haystack)) return { slug: "search", alt: "Search", size: 13.5 };
-    if (/web|browser|url|http|https|fetch|site|page/.test(haystack)) return { slug: "browser", alt: "Web", size: 14 };
-    if (/attach|attachment|image|photo|picture|pdf|upload|media/.test(haystack)) return { slug: "attachment", alt: "Attachment", size: 13.5 };
-    if (/shelf|read|reader|book|epub|library/.test(haystack)) return { slug: "read-book", alt: "Reading", size: 14 };
-    if (/folder|dir|tree|workspace/.test(haystack)) return { slug: "folder", alt: "Folder", size: 13.5 };
-    if (/coauthor|co-author|desk|write|note|draft|quick|compose|create|new/.test(haystack)) return { slug: "write-paper", alt: isAi ? "AI writing" : "Writing", size: 13.5 };
-    if (/edit|update|modify|patch|revise|fix/.test(haystack)) return { slug: "edit", alt: "Edit", size: 13 };
-    if (/chat|message|reply|conversation/.test(haystack)) return { slug: "chat-message", alt: "Conversation", size: 13 };
-    if (/think|reason|reflect/.test(haystack)) return { slug: "brain", alt: "Reasoning", size: 14 };
-    return { slug: "file-text", alt: isAi ? "AI document change" : "Document change", size: 13 };
+    const h = `${subject} ${files}`;
+    if (/git|sync|push|pull|merge|rebase/.test(h)) return { lucide: "git-branch", alt: "Version control" };
+    if (/build|test|verify|check|pass|done|todo|task|plan/.test(h)) return { lucide: "clipboard-check", alt: "Checked work" };
+    if (/search|grep|find|query|lookup|scan/.test(h)) return { lucide: "search", alt: "Search" };
+    if (/web|browser|url|http|https|fetch|site|page/.test(h)) return { lucide: "globe", alt: "Web" };
+    if (/attach|image|photo|picture|pdf|upload|media/.test(h)) return { lucide: "paperclip", alt: "Attachment" };
+    if (/shelf|read|reader|book|epub|library/.test(h)) return { lucide: "book-open", alt: "Reading" };
+    if (/folder|dir|tree|workspace/.test(h)) return { lucide: "folder", alt: "Folder" };
+    if (/coauthor|co-author|desk|write|note|draft|quick|compose|create|new/.test(h)) return { lucide: "pen-line", alt: isAi ? "AI writing" : "Writing" };
+    if (/edit|update|modify|patch|revise|fix|commit/.test(h)) return { lucide: "pencil", alt: "Edit" };
+    if (/chat|message|reply|conversation/.test(h)) return { lucide: "message-circle", alt: "Conversation" };
+    if (/think|reason|reflect/.test(h)) return { lucide: "brain", alt: "Reasoning" };
+    if (isAi) return { lucide: "sparkles", alt: "AI change" };
+    return { lucide: "file-text", alt: "Document change" };
   }
 
   private renderTimelineText(container: HTMLElement, actor: "YOU" | "AI", commit: GitCommit) {
-    const detailLines = [commit.sha, commit.author, ...commit.files.slice(0, 8)].filter(Boolean);
+    const detailLines = [commit.sha.slice(0, 7), commit.author, ...commit.files.slice(0, 8)].filter(Boolean);
     if (detailLines.length) container.setAttribute("title", detailLines.join("\n"));
     container.createDiv({ text: actor, cls: "fiam-studio-timeline-label" });
     container.createDiv({ text: commit.subject || commit.sha.slice(0, 7), cls: "fiam-studio-timeline-title" });
@@ -791,6 +778,11 @@ class FiamStudioView extends ItemView {
       text: new Date(commit.ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
       cls: "fiam-studio-timeline-time",
     });
+    if (commit.files.length) {
+      const shown = commit.files.slice(0, 3).map((f) => f.split("/").pop() || f);
+      const extra = commit.files.length > 3 ? ` +${commit.files.length - 3}` : "";
+      container.createDiv({ text: shown.join(", ") + extra, cls: "fiam-studio-timeline-files" });
+    }
   }
 }
 
