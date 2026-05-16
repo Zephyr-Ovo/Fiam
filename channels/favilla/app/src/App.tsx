@@ -353,10 +353,8 @@ function VoiceChip({ seconds, objectHash }: { seconds: number; objectHash?: stri
     <div
       className="flex items-center gap-2.5 rounded-full px-3"
       style={{
-        background: "rgba(255,255,255,0.78)",
+        background: "#ececec",
         border: "1px solid rgba(63,47,41,0.1)",
-        backdropFilter: "blur(6px)",
-        WebkitBackdropFilter: "blur(6px)",
         width: 200,
         height: 44,
         cursor: canPlay ? "pointer" : "default",
@@ -451,7 +449,12 @@ function VoiceSegmentBubble({ text, objectHash }: { text: string; objectHash?: s
   const active = current && (ps.status === "playing" || ps.status === "paused" || ps.status === "loading")
   const progress = active && ps.duration > 0 ? ps.currentTime / ps.duration : 0
 
+  const [expanded, setExpanded] = useState(false)
+  const lpTimer = useRef<number | null>(null)
+  const lpFired = useRef(false)
+
   const handleTap = () => {
+    if (lpFired.current) { lpFired.current = false; return }
     unlockAudio()
     if (current && ps.status === "playing") {
       playerRef.current.pause()
@@ -464,20 +467,75 @@ function VoiceSegmentBubble({ text, objectHash }: { text: string; objectHash?: s
     }
   }
 
+  const startLongPress = () => {
+    lpFired.current = false
+    if (lpTimer.current !== null) window.clearTimeout(lpTimer.current)
+    lpTimer.current = window.setTimeout(() => {
+      lpTimer.current = null
+      lpFired.current = true
+      setExpanded((v) => !v)
+    }, 420)
+  }
+  const cancelLongPress = () => {
+    if (lpTimer.current !== null) { window.clearTimeout(lpTimer.current); lpTimer.current = null }
+  }
+
+  if (!expanded) {
+    return (
+      <button
+        type="button"
+        className="flex items-center gap-2 rounded-full px-3 select-none"
+        style={{
+          background: "#ececec",
+          border: "1px solid rgba(63,47,41,0.12)",
+          height: 36,
+          maxWidth: 240,
+          cursor: "pointer",
+        }}
+        onClick={handleTap}
+        onPointerDown={startLongPress}
+        onPointerUp={cancelLongPress}
+        onPointerLeave={cancelLongPress}
+        onPointerCancel={cancelLongPress}
+        title="点击播放 · 长按展开"
+      >
+        <span
+          className="grid h-6 w-6 shrink-0 place-items-center rounded-full"
+          style={{ background: "var(--color-cocoa)", color: "var(--color-cream)" }}
+        >
+          {ps.status === "loading" && current
+            ? <Loader2 className="h-3 w-3 animate-spin" strokeWidth={2} />
+            : ps.status === "playing" && current
+              ? <Pause className="h-3 w-3" strokeWidth={2.2} fill="currentColor" />
+              : <Play className="h-3 w-3 ml-[1px]" strokeWidth={2} fill="currentColor" />}
+        </span>
+        <span className="text-[12px]" style={{ color: "rgba(63,47,41,0.7)" }}>语音</span>
+        <span
+          className="text-[11px] tabular-nums"
+          style={{ color: "rgba(63,47,41,0.5)", fontFamily: "var(--font-mono)" }}
+        >
+          {active ? formatDuration(ps.currentTime) : formatDuration(current ? ps.duration : 0)}
+        </span>
+      </button>
+    )
+  }
+
   return (
     <div className="flex flex-col gap-1.5">
       <div
         className="flex items-center gap-2.5 rounded-2xl px-3 select-none"
         style={{
-          background: "rgba(255,255,255,0.82)",
+          background: "#ececec",
           border: "1px solid rgba(63,47,41,0.12)",
-          backdropFilter: "blur(6px)",
-          WebkitBackdropFilter: "blur(6px)",
           width: 220,
           height: 48,
           cursor: "pointer",
         }}
         onClick={handleTap}
+        onPointerDown={startLongPress}
+        onPointerUp={cancelLongPress}
+        onPointerLeave={cancelLongPress}
+        onPointerCancel={cancelLongPress}
       >
         <div
           className="grid h-8 w-8 shrink-0 place-items-center rounded-full transition-all"
@@ -517,10 +575,18 @@ function VoiceSegmentBubble({ text, objectHash }: { text: string; objectHash?: s
       </div>
       <div
         className="rounded-xl px-3 py-1.5 text-[13px] leading-relaxed"
-        style={{ background: "rgba(63,47,41,0.06)", color: "rgba(63,47,41,0.6)", maxWidth: 280 }}
+        style={{ background: "#efefef", color: "rgba(63,47,41,0.78)", maxWidth: 280 }}
       >
         {text}
       </div>
+      <button
+        type="button"
+        className="self-start text-[11px]"
+        style={{ color: "rgba(63,47,41,0.45)" }}
+        onClick={() => setExpanded(false)}
+      >
+        收起
+      </button>
     </div>
   )
 }

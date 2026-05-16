@@ -120,15 +120,6 @@ function loadOverrides(): Partial<AppConfig> {
 
 export const appConfig: AppConfig = { ...defaults, ...loadOverrides() }
 
-export function hasBackgroundOverride(): boolean {
-  const bg = loadOverrides().bg
-  return typeof bg === "string" && bg.trim().length > 0
-}
-
-export function currentHomeBackground(): string {
-  return hasBackgroundOverride() ? appConfig.bg : "/home/bg.png"
-}
-
 /** Push themable colors into CSS custom properties so all chat bubbles
  *  re-paint immediately when settings change — no React re-render dance.
  *  Safe to call repeatedly; idempotent. */

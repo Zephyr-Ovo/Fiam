@@ -133,7 +133,10 @@ export function Settings({ open, onClose }: Props) {
         />
         <RuntimeField
           value={draft.defaultRuntime}
-          onChange={(v) => setDraft({ ...draft, defaultRuntime: v })}
+          onChange={(v) => {
+            setDraft((cur) => ({ ...cur, defaultRuntime: v }))
+            saveConfig({ defaultRuntime: v })
+          }}
         />
         <BoolField
           label="Auto speak AI"
@@ -491,18 +494,35 @@ function BgField({
             border: "1px solid rgba(63,47,41,0.18)",
           }}
         />
-        <button
-          type="button"
-          onClick={() => inputRef.current?.click()}
-          disabled={busy}
+        <label
           className="rounded-full px-3 py-1 text-[12px]"
           style={{
             color: "rgba(63, 47, 41, 0.85)",
             background: "rgba(63, 47, 41, 0.08)",
+            cursor: busy ? "default" : "pointer",
+            opacity: busy ? 0.6 : 1,
           }}
         >
           {busy ? "读取中…" : "选择图片"}
-        </button>
+          <input
+            ref={inputRef}
+            type="file"
+            accept="image/*"
+            disabled={busy}
+            onChange={(e) => onPick(e.target.files?.[0])}
+            style={{
+              position: "absolute",
+              width: 1,
+              height: 1,
+              padding: 0,
+              margin: -1,
+              overflow: "hidden",
+              clip: "rect(0 0 0 0)",
+              whiteSpace: "nowrap",
+              border: 0,
+            }}
+          />
+        </label>
         {preview && (
           <button
             type="button"
@@ -516,13 +536,6 @@ function BgField({
             恢复默认
           </button>
         )}
-        <input
-          ref={inputRef}
-          type="file"
-          accept="image/*"
-          onChange={(e) => onPick(e.target.files?.[0])}
-          style={{ display: "none" }}
-        />
       </div>
       {error && (
         <div className="mt-1 text-[11px]" style={{ color: "#a83a2a" }}>
