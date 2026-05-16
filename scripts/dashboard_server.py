@@ -302,17 +302,27 @@ def _generate_voice_audio(text: str) -> str | None:
     """Generate TTS audio for a voice segment, store in ObjectStore, return hash."""
     if not _CONFIG or not text.strip():
         return None
-    tts_provider = getattr(_CONFIG, "tts_provider", "mimo")
+    tts_provider = getattr(_CONFIG, "tts_provider", "inworld")
     tts_base = getattr(_CONFIG, "tts_base_url", "").strip()
     tts_key_env = getattr(_CONFIG, "tts_api_key_env", "FIAM_TTS_API_KEY")
     tts_key = os.environ.get(tts_key_env, "").strip()
     tts_model = getattr(_CONFIG, "tts_model", "")
     tts_voice = getattr(_CONFIG, "tts_voice", "")
-    is_mimo = (
+    is_inworld = (
+        tts_provider == "inworld"
+        or "api.inworld.ai" in tts_base
+        or str(tts_model or "").startswith("inworld-")
+    )
+    is_mimo = not is_inworld and (
         tts_provider == "mimo"
         or "xiaomimimo.com" in tts_base
         or str(tts_model or "").startswith("mimo-")
     )
+    if is_inworld:
+        if not tts_base:
+            tts_base = "https://api.inworld.ai/tts/v1/voice"
+        if not tts_key:
+            tts_key = os.environ.get("FIAM_INWORLD_API_KEY", "").strip()
     if not tts_base and is_mimo:
         tts_base = "https://token-plan-cn.xiaomimimo.com/v1"
     if not tts_key and is_mimo:
@@ -321,7 +331,19 @@ def _generate_voice_audio(text: str) -> str | None:
         logger.info("TTS generation skipped: missing %s or base_url", tts_key_env)
         return None
     try:
-        if is_mimo:
+        # Inworld auth is Basic with the portal key verbatim, not Bearer.
+        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {tts_key}"}
+        if is_inworld:
+            # tts_base is already the full voice endpoint.
+            url = tts_base.rstrip("/") if tts_base.endswith("/voice") else f"{tts_base.rstrip('/')}/tts/v1/voice"
+            body = json.dumps({
+                "voiceId": tts_voice or "Ashley",
+                "modelId": tts_model or "inworld-tts-1",
+                "text": text.strip(),
+                "audioConfig": {"audioEncoding": "MP3", "sampleRateHertz": 24000},
+            }).encode()
+            headers["Authorization"] = f"Basic {tts_key}"
+        elif is_mimo:
             body = json.dumps({
                 "model": tts_model or "mimo-v2.5-tts",
                 "messages": [{"role": "assistant", "content": text.strip()}],
@@ -334,10 +356,13 @@ def _generate_voice_audio(text: str) -> str | None:
         else:
             body = json.dumps({"text": text.strip(), "voice": tts_voice, "model": tts_model or "mimo-v2.5-tts", "format": "mp3"}).encode()
             url = f"{tts_base.rstrip('/')}/tts"
-        req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json", "Authorization": f"Bearer {tts_key}"}, method="POST")
+        req = urllib.request.Request(url, data=body, headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=30) as resp:
             raw_response = resp.read()
-        if is_mimo:
+        if is_inworld:
+            payload = json.loads(raw_response.decode("utf-8"))
+            audio_data = base64.b64decode(payload.get("audioContent") or "")
+        elif is_mimo:
             payload = json.loads(raw_response.decode("utf-8"))
             audio_b64 = (
                 ((payload.get("choices") or [{}])[0].get("message") or {})

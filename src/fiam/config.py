@@ -174,10 +174,11 @@ class FiamConfig:
     stt_model: str = "whisper-1"
     stt_base_url: str = ""
     stt_api_key_env: str = "FIAM_STT_API_KEY"
-    tts_provider: str = "mimo"
-    tts_model: str = "mimo-v2.5-tts"
-    tts_base_url: str = "https://token-plan-cn.xiaomimimo.com/v1"
+    tts_provider: str = "inworld"
+    tts_model: str = "inworld-tts-1"
+    tts_base_url: str = "https://api.inworld.ai/tts/v1/voice"
     tts_api_key_env: str = "FIAM_TTS_API_KEY"
+    tts_voice: str = "Ashley"
 
     # ------------------------------------------------------------------
     # Debug
@@ -647,6 +648,7 @@ class FiamConfig:
             f'model = "{self.tts_model}"',
             f'base_url = "{self.tts_base_url}"',
             f'api_key_env = "{self.tts_api_key_env}"',
+            f'voice = "{self.tts_voice}"',
             "",
             "[comms]",
             f'email_from = "{self.email_from}"',
@@ -812,6 +814,7 @@ class FiamConfig:
             tts_model=tts.get("model", cls.tts_model),
             tts_base_url=tts.get("base_url", cls.tts_base_url),
             tts_api_key_env=tts.get("api_key_env", cls.tts_api_key_env),
+            tts_voice=tts.get("voice", cls.tts_voice),
             # Communication
             email_from=comm.get("email_from", ""),
             email_to=comm.get("email_to", ""),
