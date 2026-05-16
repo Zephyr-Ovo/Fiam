@@ -339,6 +339,7 @@ function VoiceChip({ seconds }: { seconds: number }) {
 // ---------- AI voice segment (TTS playback bubble) ----------
 function VoiceSegmentBubble({ text }: { text: string }) {
   const [playing, setPlaying] = useState(false)
+  const bars = [4, 9, 6, 12, 8, 14, 10, 6, 11, 7, 13, 8, 5, 10, 7, 12, 6, 9]
   const handlePlay = async () => {
     if (playing) return
     setPlaying(true)
@@ -352,30 +353,44 @@ function VoiceSegmentBubble({ text }: { text: string }) {
   }
   return (
     <div
-      className="flex items-center gap-2 rounded-2xl px-3 py-2 cursor-pointer select-none"
+      className="flex items-center gap-2.5 rounded-2xl px-3 select-none"
       style={{
-        background: "rgba(199,195,176,0.35)",
-        border: "1px solid rgba(63,47,41,0.08)",
-        maxWidth: 320,
+        background: "rgba(255,255,255,0.82)",
+        border: "1px solid rgba(63,47,41,0.12)",
+        backdropFilter: "blur(6px)",
+        WebkitBackdropFilter: "blur(6px)",
+        minWidth: 200,
+        maxWidth: 300,
+        height: 48,
+        cursor: "pointer",
       }}
       onClick={handlePlay}
     >
       <div
-        className="grid h-7 w-7 shrink-0 place-items-center rounded-full"
+        className="grid h-8 w-8 shrink-0 place-items-center rounded-full"
         style={{
-          background: playing ? "rgba(63,47,41,0.15)" : "var(--color-cocoa)",
+          background: playing ? "rgba(176,76,76,0.15)" : "var(--color-cocoa)",
           color: playing ? "var(--color-cocoa)" : "var(--color-cream)",
-          transition: "background 0.2s",
+          transition: "all 0.2s",
         }}
       >
-        <Volume2 className="h-3.5 w-3.5" strokeWidth={2} />
+        {playing
+          ? <Volume2 className="h-3.5 w-3.5" strokeWidth={2} />
+          : <Play className="h-3.5 w-3.5 ml-0.5" strokeWidth={2} fill="currentColor" />}
       </div>
-      <span
-        className="text-[13px] leading-snug"
-        style={{ color: "rgba(63,47,41,0.75)" }}
-      >
-        {text}
-      </span>
+      <div className="flex flex-1 items-center justify-between gap-[2px]">
+        {bars.map((h, i) => (
+          <span
+            key={i}
+            className="block w-[2px] rounded-full"
+            style={{
+              height: playing ? h * 1.2 : h,
+              background: playing ? "rgba(176,76,76,0.6)" : "rgba(63,47,41,0.4)",
+              transition: "height 0.3s, background 0.3s",
+            }}
+          />
+        ))}
+      </div>
     </div>
   )
 }
