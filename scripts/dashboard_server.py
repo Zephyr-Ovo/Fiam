@@ -365,14 +365,11 @@ def _enrich_sticker_segments(segments: list[dict]) -> list[dict]:
 
 
 def _enrich_voice_segments(segments: list[dict]) -> list[dict]:
-    """Generate TTS audio for voice segments that don't have object_hash yet."""
+    """Strip HTML tags from voice segment text (AI sometimes adds <p> etc)."""
     for seg in segments:
-        if seg.get("type") == "voice" and not seg.get("object_hash"):
-            text = str(seg.get("text") or "").strip()
-            if text:
-                obj_hash = _generate_voice_audio(text)
-                if obj_hash:
-                    seg["object_hash"] = obj_hash
+        if seg.get("type") == "voice":
+            text = str(seg.get("text") or "")
+            seg["text"] = re.sub(r"</?[a-zA-Z][^>]*>", "", text).strip()
     return segments
 
 
@@ -1262,6 +1259,74 @@ def _browser_wakeup_pop_all() -> list[dict]:
     items = list(_BROWSER_WAKEUP_QUEUE)
     _BROWSER_WAKEUP_QUEUE.clear()
     return items
+
+
+def _apply_browse_intents(result: dict, *, channel: str, runtime: str) -> None:
+    """Turn AI-authored ``<browse>`` markers in a normal chat reply into a
+    browser wakeup. Makes "it went off to browse on its own" visible: queues
+    the URL for the extension, sets life state, leaves a flow note, and pushes
+    a live computer-events row the chat surfaces. Strips the marker from the
+    visible reply/segments. Best-effort: side-channel failures never break the
+    chat turn."""
+    if not _CONFIG:
+        return
+    from fiam.browser_bridge import extract_browse_intents, strip_browse_markers
+
+    cleaned, intents = extract_browse_intents(str(result.get("reply") or ""))
+    if not intents:
+        return
+    result["reply"] = cleaned
+    cleaned_segments = []
+    for segment in result.get("segments") or []:
+        if isinstance(segment, dict) and "text" in segment:
+            segment = dict(segment)
+            segment["text"] = strip_browse_markers(str(segment.get("text") or ""))
+            if segment.get("type") == "text" and not str(segment.get("text") or "").strip():
+                continue
+        cleaned_segments.append(segment)
+    result["segments"] = cleaned_segments
+
+    queued: list[dict] = []
+    for intent in intents:
+        url = intent.get("url") or ""
+        why = intent.get("why") or ""
+        try:
+            _browser_wakeup_push({"url": url, "reason": f"ai_browse:{why}"[:120]})
+        except ValueError:
+            continue
+        queued.append({"url": url, "why": why})
+        try:
+            from fiam_lib import life_state
+            life_state.set_activity(_CONFIG, "browsing", summary=why, target=url, surface="atrium")
+        except Exception:
+            logger.exception("life_state set_activity (browse) failed")
+        try:
+            from fiam.store.beat import Beat, append_beat
+            note = f"browse_intent: {url}" + (f" — {why}" if why else "")
+            append_beat(_CONFIG.flow_path, Beat(
+                t=datetime.now(timezone.utc),
+                actor="ai",
+                channel="browser",
+                kind="message",
+                content=note,
+                runtime=runtime,
+                surface="atrium",
+            ))
+        except Exception:
+            logger.exception("browse intent flow append failed")
+        try:
+            from fiam_lib.computer_events import get_bus as _ce_bus
+            _ce_bus().publish("info", {
+                "surface": "b",
+                "kind": "browse_intent",
+                "reply": why,
+                "url": url,
+                "text": f"🌐 going to browse {url}",
+            })
+        except Exception:
+            logger.exception("computer bus publish (browse_intent) failed")
+    if queued:
+        result["browse_intents"] = queued
 
 
 def _browser_screenshot_attachments(payload: dict) -> list[dict]:
@@ -3174,6 +3239,8 @@ def _favilla_chat_send(payload: dict) -> dict:
                     continue
             cleaned_segments.append(segment)
         result["segments"] = cleaned_segments
+    if channel != "browser":
+        _apply_browse_intents(result, channel=channel, runtime=runtime)
     _merge_result_object_attachments(result)
     _append_transcript(channel, {
         "role": "user",

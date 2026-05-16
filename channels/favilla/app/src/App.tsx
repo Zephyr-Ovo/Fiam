@@ -351,7 +351,6 @@ function formatDuration(s: number): string {
 
 function VoiceSegmentBubble({ text, objectHash }: { text: string; objectHash?: string }) {
   const [ps, setPs] = useState<TtsPlayerState>({ status: "idle", duration: 0, currentTime: 0 })
-  const [expanded, setExpanded] = useState(false)
   const playerRef = useRef(_ttsPlayer)
   const bars = [4, 9, 6, 12, 8, 14, 10, 6, 11, 7, 13, 8, 5, 10, 7, 12, 6, 9]
 
@@ -376,7 +375,7 @@ function VoiceSegmentBubble({ text, objectHash }: { text: string; objectHash?: s
   }
 
   return (
-    <div className="flex flex-col gap-1" style={{ minWidth: 200, maxWidth: 300 }}>
+    <div className="flex flex-col gap-1.5">
       <div
         className="flex items-center gap-2.5 rounded-2xl px-3 select-none"
         style={{
@@ -384,6 +383,7 @@ function VoiceSegmentBubble({ text, objectHash }: { text: string; objectHash?: s
           border: "1px solid rgba(63,47,41,0.12)",
           backdropFilter: "blur(6px)",
           WebkitBackdropFilter: "blur(6px)",
+          width: 220,
           height: 48,
           cursor: "pointer",
         }}
@@ -402,7 +402,7 @@ function VoiceSegmentBubble({ text, objectHash }: { text: string; objectHash?: s
               ? <Pause className="h-3.5 w-3.5" strokeWidth={2} fill="currentColor" />
               : <Play className="h-3.5 w-3.5 ml-0.5" strokeWidth={2} fill="currentColor" />}
         </div>
-        <div className="flex flex-1 items-center gap-[2px] relative">
+        <div className="flex flex-1 items-center gap-[2px]">
           {bars.map((h, i) => {
             const barProgress = (i + 1) / bars.length
             const filled = active && barProgress <= progress
@@ -425,22 +425,12 @@ function VoiceSegmentBubble({ text, objectHash }: { text: string; objectHash?: s
           {active ? formatDuration(ps.currentTime) : formatDuration(ps.duration)}
         </span>
       </div>
-      <button
-        type="button"
-        className="text-[12px] px-1 self-start"
-        style={{ color: "rgba(63,47,41,0.45)" }}
-        onClick={() => setExpanded((v) => !v)}
+      <div
+        className="rounded-xl px-3 py-1.5 text-[13px] leading-relaxed"
+        style={{ background: "rgba(63,47,41,0.06)", color: "rgba(63,47,41,0.6)", maxWidth: 280 }}
       >
-        {expanded ? "▾ hide text" : "▸ show text"}
-      </button>
-      {expanded && (
-        <div
-          className="text-[13px] leading-relaxed px-2 pb-1"
-          style={{ color: "rgba(63,47,41,0.7)" }}
-        >
-          {text}
-        </div>
-      )}
+        {text}
+      </div>
     </div>
   )
 }

@@ -35,6 +35,10 @@ PROFILE_DIR = Path(__file__).resolve().parents[2] / "channels" / "atrium" / "bro
 BROWSER_ACTION_RE = re.compile(r"<browser_action\b([^>]*)\s*/>|<browser_action\b([^>]*)>.*?</browser_action>", re.IGNORECASE | re.DOTALL)
 BROWSER_DONE_RE = re.compile(r"<browser_done\b([^>]*)\s*/>|<browser_done\b([^>]*)>.*?</browser_done>", re.IGNORECASE | re.DOTALL)
 BROWSER_PROFILE_RE = re.compile(r"<browser_profile\b([^>]*)>(.*?)</browser_profile>", re.IGNORECASE | re.DOTALL)
+# AI-initiated browse: from any normal chat turn the AI may decide to go roam
+# the web on its own. `<browse url="https://..." why="quick reason"/>` (body
+# form also accepted). The server turns this into a /browser/wakeup item.
+BROWSE_RE = re.compile(r"<browse\b([^>]*)\s*/>|<browse\b([^>]*)>(.*?)</browse>", re.IGNORECASE | re.DOTALL)
 ACTION_ATTR_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_-]*)\s*=\s*(['\"])(.*?)\2")
 
 ACTION_ROLES = {
@@ -588,6 +592,34 @@ def strip_browser_done_markers(text: str) -> str:
 
 def strip_browser_profile_markers(text: str) -> str:
     return BROWSER_PROFILE_RE.sub("", text or "").strip()
+
+
+def strip_browse_markers(text: str) -> str:
+    return BROWSE_RE.sub("", text or "").strip()
+
+
+def extract_browse_intents(text: str) -> tuple[str, list[dict[str, str]]]:
+    """Pull AI-initiated ``<browse url="..." why="..."/>`` markers.
+
+    Returns ``(cleaned_text, intents)`` where each intent is
+    ``{"url": <http(s) url>, "why": <short reason>}``. Markers with a missing
+    or non-http(s) url are dropped (and still stripped from the text). At most
+    3 intents per turn so one reply can't flood the wakeup queue.
+    """
+    intents: list[dict[str, str]] = []
+    for match in BROWSE_RE.finditer(text or ""):
+        raw_attrs = match.group(1) or match.group(2) or ""
+        attrs = _action_attrs(raw_attrs)
+        url = (attrs.get("url") or "").strip()
+        if not url and match.group(3):
+            url = (match.group(3) or "").strip()
+        if not url.lower().startswith(("http://", "https://")):
+            continue
+        why = _clean_text(attrs.get("why") or attrs.get("reason") or "", limit=120)
+        intents.append({"url": url[:2000], "why": why})
+        if len(intents) >= 3:
+            break
+    return strip_browse_markers(text), intents
 
 
 _PROFILE_ID_SAFE = re.compile(r"[^a-z0-9_.-]+")

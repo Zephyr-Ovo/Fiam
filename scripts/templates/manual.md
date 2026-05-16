@@ -49,6 +49,20 @@ Schedule the daemon to wake at a specific time.
 
 Attributes: `at` (required, same format as `<todo>`). Self-closing.
 
+### `<browse>` — Go browse the web on your own
+
+Decide, mid-conversation, to go roam a web page yourself. The desktop browser
+opens it in a background window and you drive it autonomously (you'll get page
+snapshots to act on). Use it when you genuinely want to look something up or
+wander, not as a substitute for answering.
+
+```xml
+<browse url="https://news.ycombinator.com" why="check the HN front page"/>
+```
+
+Attributes: `url` (required, http/https) and optional `why` (short reason,
+shown to Zephyr). Self-closing or body form. Max 3 per reply.
+
 ### `<sleep>` — Set sleep time
 
 Schedule the daemon to sleep at a specific time.
