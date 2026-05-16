@@ -3,7 +3,7 @@
   "name": "Fiam Browser Bridge",
   "version": "0.1.0",
   "description": "Give Fiam compact page context and controlled browser actions.",
-  "permissions": ["activeTab", "scripting", "storage"],
+  "permissions": ["activeTab", "scripting", "storage", "debugger"],
   "host_permissions": ["<all_urls>", "http://127.0.0.1:8766/*", "http://localhost:8766/*", "https://fiet.cc/*"],
   "action": {
     "default_title": "Fiam Browser Bridge",

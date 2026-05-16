@@ -7,8 +7,101 @@ const DEFAULT_SETTINGS = {
   controlMode: "session",
   autoScreenshot: true,
   controlCooldownMs: 8000,
-  controlMaxSteps: 6
+  controlMaxSteps: 6,
+  // When true (Chrome only), use the browser's own accessibility tree as a
+  // noise oracle: drop snapshot nodes the a11y tree marks ignored/unnamed so
+  // redundant chrome is trimmed generically, without per-site profiles. Off
+  // by default; any failure falls back to the unfiltered node list.
+  useAxtreeFilter: false
 };
+
+// AX roles whose controls are meaningful even with an empty accessible name
+// (form fields the AI still needs to act on).
+const AX_KEEP_UNNAMED_ROLES = new Set([
+  "textbox", "searchbox", "combobox", "checkbox", "radio",
+  "switch", "slider", "listbox", "spinbutton"
+]);
+
+function normName(value) {
+  return String(value || "").toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function dbgCommand(target, method, params) {
+  return new Promise((resolve, reject) => {
+    ext.debugger.sendCommand(target, method, params || {}, (result) => {
+      const err = ext.runtime.lastError;
+      if (err) reject(new Error(err.message));
+      else resolve(result);
+    });
+  });
+}
+
+function dbgAttach(target) {
+  return new Promise((resolve, reject) => {
+    ext.debugger.attach(target, "1.3", () => {
+      const err = ext.runtime.lastError;
+      if (err) reject(new Error(err.message));
+      else resolve();
+    });
+  });
+}
+
+function dbgDetach(target) {
+  return new Promise((resolve) => {
+    try {
+      ext.debugger.detach(target, () => {
+        void ext.runtime.lastError;
+        resolve();
+      });
+    } catch (_e) {
+      resolve();
+    }
+  });
+}
+
+// Returns { names: Set<normalizedName> } of accessible names the a11y tree
+// considers meaningful, or null if the tree is unavailable (→ no filtering).
+async function collectAxMeaningful(tabId) {
+  if (!ext.debugger || typeof ext.debugger.attach !== "function") return null;
+  const target = { tabId };
+  let attached = false;
+  try {
+    await dbgAttach(target);
+    attached = true;
+    const tree = await dbgCommand(target, "Accessibility.getFullAXTree", {});
+    const axNodes = (tree && Array.isArray(tree.nodes)) ? tree.nodes : [];
+    if (!axNodes.length) return null;
+    const names = new Set();
+    for (const node of axNodes) {
+      if (!node || node.ignored) continue;
+      const role = normName(node.role && node.role.value);
+      const name = normName(node.name && node.name.value);
+      if (name) names.add(name);
+      else if (AX_KEEP_UNNAMED_ROLES.has(role)) names.add(`__role__:${role}`);
+    }
+    return names.size ? { names } : null;
+  } catch (_error) {
+    return null;
+  } finally {
+    if (attached) await dbgDetach(target);
+  }
+}
+
+function applyAxFilter(snapshot, ax) {
+  if (!snapshot || !Array.isArray(snapshot.nodes) || !ax || !ax.names) return snapshot;
+  const before = snapshot.nodes.length;
+  const kept = snapshot.nodes.filter((n) => {
+    const nm = normName(n && n.name);
+    if (nm && ax.names.has(nm)) return true;
+    const role = normName(n && n.role);
+    if (!nm && AX_KEEP_UNNAMED_ROLES.has(role) && ax.names.has(`__role__:${role}`)) return true;
+    return false;
+  });
+  // Never let the oracle nuke everything (broken/edge pages): keep original
+  // if filtering would drop essentially the whole list.
+  if (!kept.length || kept.length < Math.min(3, before)) return snapshot;
+  return { ...snapshot, nodes: kept, axFiltered: { before, after: kept.length } };
+}
 const PROFILE_RULES_KEY = "fiamProfileRules";
 
 const ext = globalThis.browser || globalThis.chrome;
@@ -109,9 +202,19 @@ async function activeTab() {
 async function collectSnapshot(tab) {
   const response = await callApi(ext.tabs, "sendMessage", tab.id, { type: "FIAM_COLLECT_SNAPSHOT" });
   if (!response || !response.ok) throw new Error("Snapshot collection failed");
-  const profileRules = response.snapshot?.profileRules || await profileRulesForUrl(response.snapshot?.url || tab.url || "");
+  let snap = response.snapshot;
+  try {
+    const settings = await getSettings();
+    if (settings.useAxtreeFilter && snap && Array.isArray(snap.nodes) && /^https?:/i.test(String(tab.url || ""))) {
+      const ax = await collectAxMeaningful(tab.id);
+      if (ax) snap = applyAxFilter(snap, ax);
+    }
+  } catch (_e) {
+    // any failure → keep the unfiltered snapshot
+  }
+  const profileRules = snap?.profileRules || await profileRulesForUrl(snap?.url || tab.url || "");
   return {
-    ...response.snapshot,
+    ...snap,
     profileRules,
     tabId: String(tab.id),
     browser: "extension",
