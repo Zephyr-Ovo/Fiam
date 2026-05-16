@@ -21,6 +21,7 @@ import {
   Square,
   Pause,
   Loader2,
+  ChevronDown,
 } from "lucide-react"
 import { DynamicIcon, iconNames, type IconName } from "lucide-react/dynamic"
 import { LockIcon } from "./components/LockIcon"
@@ -449,12 +450,9 @@ function VoiceSegmentBubble({ text, objectHash }: { text: string; objectHash?: s
   const active = current && (ps.status === "playing" || ps.status === "paused" || ps.status === "loading")
   const progress = active && ps.duration > 0 ? ps.currentTime / ps.duration : 0
 
-  const [expanded, setExpanded] = useState(false)
-  const lpTimer = useRef<number | null>(null)
-  const lpFired = useRef(false)
+  const [showText, setShowText] = useState(false)
 
   const handleTap = () => {
-    if (lpFired.current) { lpFired.current = false; return }
     unlockAudio()
     if (current && ps.status === "playing") {
       playerRef.current.pause()
@@ -465,59 +463,6 @@ function VoiceSegmentBubble({ text, objectHash }: { text: string; objectHash?: s
     } else {
       void playerRef.current.play(text, sourceId)
     }
-  }
-
-  const startLongPress = () => {
-    lpFired.current = false
-    if (lpTimer.current !== null) window.clearTimeout(lpTimer.current)
-    lpTimer.current = window.setTimeout(() => {
-      lpTimer.current = null
-      lpFired.current = true
-      setExpanded((v) => !v)
-    }, 420)
-  }
-  const cancelLongPress = () => {
-    if (lpTimer.current !== null) { window.clearTimeout(lpTimer.current); lpTimer.current = null }
-  }
-
-  if (!expanded) {
-    return (
-      <button
-        type="button"
-        className="flex items-center gap-2 rounded-full px-3 select-none"
-        style={{
-          background: "#ececec",
-          border: "1px solid rgba(63,47,41,0.12)",
-          height: 36,
-          maxWidth: 240,
-          cursor: "pointer",
-        }}
-        onClick={handleTap}
-        onPointerDown={startLongPress}
-        onPointerUp={cancelLongPress}
-        onPointerLeave={cancelLongPress}
-        onPointerCancel={cancelLongPress}
-        title="点击播放 · 长按展开"
-      >
-        <span
-          className="grid h-6 w-6 shrink-0 place-items-center rounded-full"
-          style={{ background: "var(--color-cocoa)", color: "var(--color-cream)" }}
-        >
-          {ps.status === "loading" && current
-            ? <Loader2 className="h-3 w-3 animate-spin" strokeWidth={2} />
-            : ps.status === "playing" && current
-              ? <Pause className="h-3 w-3" strokeWidth={2.2} fill="currentColor" />
-              : <Play className="h-3 w-3 ml-[1px]" strokeWidth={2} fill="currentColor" />}
-        </span>
-        <span className="text-[12px]" style={{ color: "rgba(63,47,41,0.7)" }}>语音</span>
-        <span
-          className="text-[11px] tabular-nums"
-          style={{ color: "rgba(63,47,41,0.5)", fontFamily: "var(--font-mono)" }}
-        >
-          {active ? formatDuration(ps.currentTime) : formatDuration(current ? ps.duration : 0)}
-        </span>
-      </button>
-    )
   }
 
   return (
@@ -532,10 +477,6 @@ function VoiceSegmentBubble({ text, objectHash }: { text: string; objectHash?: s
           cursor: "pointer",
         }}
         onClick={handleTap}
-        onPointerDown={startLongPress}
-        onPointerUp={cancelLongPress}
-        onPointerLeave={cancelLongPress}
-        onPointerCancel={cancelLongPress}
       >
         <div
           className="grid h-8 w-8 shrink-0 place-items-center rounded-full transition-all"
@@ -572,21 +513,26 @@ function VoiceSegmentBubble({ text, objectHash }: { text: string; objectHash?: s
         >
           {active ? formatDuration(ps.currentTime) : formatDuration(current ? ps.duration : 0)}
         </span>
+        {text && (
+          <ChevronDown
+            className="h-3.5 w-3.5 shrink-0 transition-transform"
+            strokeWidth={2}
+            style={{
+              color: "rgba(63,47,41,0.45)",
+              transform: showText ? "rotate(180deg)" : "rotate(0deg)",
+            }}
+            onClick={(e) => { e.stopPropagation(); setShowText((v) => !v) }}
+          />
+        )}
       </div>
-      <div
-        className="rounded-xl px-3 py-1.5 text-[13px] leading-relaxed"
-        style={{ background: "#efefef", color: "rgba(63,47,41,0.78)", maxWidth: 280 }}
-      >
-        {text}
-      </div>
-      <button
-        type="button"
-        className="self-start text-[11px]"
-        style={{ color: "rgba(63,47,41,0.45)" }}
-        onClick={() => setExpanded(false)}
-      >
-        收起
-      </button>
+      {showText && text && (
+        <div
+          className="rounded-xl px-3 py-1.5 text-[13px] leading-relaxed"
+          style={{ background: "#efefef", color: "rgba(63,47,41,0.78)", maxWidth: 280 }}
+        >
+          {text}
+        </div>
+      )}
     </div>
   )
 }
@@ -1340,11 +1286,10 @@ const AGENT_BUBBLE_BG = "var(--agent-bubble-bg, rgba(245,245,245,0.88))"
 function NameTag({ children }: { children: React.ReactNode }) {
   return (
     <span
-      className="px-1 text-[14.5px]"
+      className="px-1 text-[13px]"
       style={{
-        color: "rgba(63,47,41,0.7)",
-        fontFamily: "var(--font-serif)",
-        fontStyle: "italic",
+        color: "rgba(63,47,41,0.6)",
+        fontFamily: "var(--font-sans)",
         fontWeight: 600,
       }}
     >
@@ -1471,10 +1416,39 @@ function buildRenderItems(segments: ChatSegment[] | undefined): RenderItem[] {
   return out
 }
 
+function Avatar({ src, name, isUser }: { src?: string; name: string; isUser: boolean }) {
+  const letter = (name || (isUser ? "U" : "A")).trim().charAt(0).toUpperCase()
+  return (
+    <span
+      aria-hidden
+      className="grid shrink-0 place-items-center select-none"
+      style={{
+        width: 30,
+        height: 30,
+        borderRadius: "50%",
+        overflow: "hidden",
+        background: src ? "transparent" : (isUser ? "var(--user-bubble-bg, #d0bcbe)" : "var(--agent-bubble-bg, #e8e8e8)"),
+        backgroundImage: src ? `url(${src})` : "none",
+        backgroundSize: "cover",
+        backgroundPosition: "center",
+        border: "1px solid rgba(63,47,41,0.14)",
+        color: "rgba(63,47,41,0.7)",
+        fontSize: 13,
+        fontWeight: 600,
+        fontFamily: "var(--font-sans)",
+      }}
+    >
+      {src ? "" : letter}
+    </span>
+  )
+}
+
 function Bubble({
   msg,
   peerName,
   showName,
+  userAvatar,
+  aiAvatar,
   selectionMode,
   selected,
   onSelect,
@@ -1483,6 +1457,8 @@ function Bubble({
   msg: Msg
   peerName: string
   showName: boolean
+  userAvatar?: string
+  aiAvatar?: string
   selectionMode?: boolean
   selected?: boolean
   onSelect?: () => void
@@ -1582,7 +1558,17 @@ function Bubble({
         className={`flex w-full ${isUser ? "justify-end" : "justify-start"}`}
       >
         <div
-          className={`flex max-w-[82%] min-w-0 flex-col gap-1 ${
+          className={`flex max-w-[88%] min-w-0 items-start gap-2 ${
+            isUser ? "flex-row-reverse" : "flex-row"
+          }`}
+        >
+          <Avatar
+            src={isUser ? userAvatar : aiAvatar}
+            name={isUser ? (appConfig.userName || "you") : peerName}
+            isUser={isUser}
+          />
+        <div
+          className={`flex min-w-0 flex-col gap-1 ${
             isUser ? "items-end" : "items-start"
           }`}
         >
@@ -1627,6 +1613,7 @@ function Bubble({
               onLongSelect={onLongSelect}
             />
           )}
+        </div>
         </div>
       </motion.div>
     )
@@ -2800,6 +2787,8 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
                     msg={m}
                     peerName={peerName}
                     showName={!sameAuthorAsPrev}
+                    userAvatar={liveConfig.userAvatar}
+                    aiAvatar={liveConfig.aiAvatar}
                     selectionMode={selectedIds.length > 0}
                     selected={selectedIds.includes(m.id)}
                     onLongSelect={() => startSelecting(m.id)}

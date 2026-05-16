@@ -12,12 +12,18 @@
  */
 
 import bgDefault from "./assets/brand/bg.jpg"
-import { loadBgImage, saveBgImage } from "./lib/bg-store"
+import { loadBgImage, saveBgImage, loadImage } from "./lib/bg-store"
 
 /** Sentinel stored in the (size-limited) config blob when the real
  *  background image lives in IndexedDB. Resolved to the actual data URI at
  *  runtime so the persisted config stays tiny. */
 export const BG_IDB = "idb:bg"
+
+/** Same IndexedDB-sentinel scheme for the user / AI avatars. */
+export const AVATAR_USER_IDB = "idb:avatar:user"
+export const AVATAR_AI_IDB = "idb:avatar:ai"
+export const AVATAR_USER_KEY = "avatar:user"
+export const AVATAR_AI_KEY = "avatar:ai"
 
 export type AppConfig = {
   /** Display name of the user (currently unused but reserved). */
@@ -60,6 +66,10 @@ export type AppConfig = {
   ttsVoice: string
   /** Auto-speak latest AI reply when available. */
   ttsAutoPlayAi: boolean
+  /** User avatar (IndexedDB sentinel or data URI). Empty = initial letter. */
+  userAvatar: string
+  /** AI avatar (IndexedDB sentinel or data URI). Empty = initial letter. */
+  aiAvatar: string
 }
 
 const defaults: AppConfig = {
@@ -83,6 +93,8 @@ const defaults: AppConfig = {
   ttsModel: "gpt-4o-mini-tts",
   ttsVoice: "",
   ttsAutoPlayAi: false,
+  userAvatar: "",
+  aiAvatar: "",
 }
 
 const STORAGE_KEY = "favilla:config"
@@ -165,8 +177,32 @@ function migrateInlineBgToIndexedDb() {
     .catch(() => {})
 }
 
+/** Swap the IndexedDB avatar sentinels for their real data URIs. */
+function resolveAvatarSentinels() {
+  const pairs: [keyof AppConfig, string, string][] = [
+    ["userAvatar", AVATAR_USER_IDB, AVATAR_USER_KEY],
+    ["aiAvatar", AVATAR_AI_IDB, AVATAR_AI_KEY],
+  ]
+  for (const [field, sentinel, key] of pairs) {
+    if (appConfig[field] !== sentinel) continue
+    ;(appConfig as Record<string, unknown>)[field] = ""
+    loadImage(key)
+      .then((data) => {
+        if (!data) return
+        ;(appConfig as Record<string, unknown>)[field] = data
+        try {
+          window.dispatchEvent(new CustomEvent("favilla:config-changed"))
+        } catch {
+          /* SSR / non-browser */
+        }
+      })
+      .catch(() => {})
+  }
+}
+
 applyThemeVars(appConfig)
 resolveBgSentinel()
+resolveAvatarSentinels()
 migrateInlineBgToIndexedDb()
 
 /** Persist a partial config patch and update the live `appConfig` object. */
@@ -183,6 +219,7 @@ export function saveConfig(patch: Partial<AppConfig>) {
   }
   applyThemeVars(appConfig)
   resolveBgSentinel()
+  resolveAvatarSentinels()
   // Notify subscribers so live components (header peer name, etc.) re-read.
   try {
     window.dispatchEvent(new CustomEvent("favilla:config-changed"))

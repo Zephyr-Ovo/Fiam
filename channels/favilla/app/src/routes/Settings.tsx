@@ -1,6 +1,10 @@
-import { useEffect, useRef, useState } from "react"
-import { appConfig, saveConfig, BG_IDB, type AppConfig } from "../config"
-import { saveBgImage, loadBgImage, clearBgImage } from "../lib/bg-store"
+import { useEffect, useState } from "react"
+import {
+  appConfig, saveConfig, type AppConfig,
+  BG_IDB, AVATAR_USER_IDB, AVATAR_AI_IDB, AVATAR_USER_KEY, AVATAR_AI_KEY,
+} from "../config"
+import { saveImage, loadImage, clearImage } from "../lib/bg-store"
+import { pickImageDataUrl } from "../lib/pick-image"
 
 type Props = {
   open: boolean
@@ -168,11 +172,39 @@ export function Settings({ open, onClose }: Props) {
             },
           ]}
         />
-        <BgField
+        <ImagePickField
+          label="Background"
           value={draft.bg}
+          sentinel={BG_IDB}
+          idbKey="bg"
+          maxDim={1400}
           onChange={(v) => {
             setDraft((cur) => ({ ...cur, bg: v }))
             saveConfig({ bg: v })
+          }}
+        />
+        <ImagePickField
+          label="Your avatar"
+          value={draft.userAvatar}
+          sentinel={AVATAR_USER_IDB}
+          idbKey={AVATAR_USER_KEY}
+          round
+          maxDim={256}
+          onChange={(v) => {
+            setDraft((cur) => ({ ...cur, userAvatar: v }))
+            saveConfig({ userAvatar: v })
+          }}
+        />
+        <ImagePickField
+          label="AI avatar"
+          value={draft.aiAvatar}
+          sentinel={AVATAR_AI_IDB}
+          idbKey={AVATAR_AI_KEY}
+          round
+          maxDim={256}
+          onChange={(v) => {
+            setDraft((cur) => ({ ...cur, aiAvatar: v }))
+            saveConfig({ aiAvatar: v })
           }}
         />
         </div>
@@ -406,93 +438,74 @@ function toHex(input: string): string {
   }
 }
 
-// BgField — Background image. Accepts a URL/data-URI in the text box, plus
-// a "Pick file" button that reads any local image (computer or phone) and
-// stores it as a data: URI so it survives reloads without a server upload.
-// A "Clear" button resets to the bundled default (empty string → defaults
-// fall back to the imported asset). A small thumbnail previews the current
-// value so users can confirm before saving.
-function BgField({
+// ImagePickField — generic image picker (background + avatars). Uses the
+// native OS photo picker on device (Capacitor Camera) with a web <input>
+// fallback. The picked image is downscaled and stored in IndexedDB; only a
+// tiny sentinel goes into the localStorage config blob.
+function ImagePickField({
+  label,
   value,
+  sentinel,
+  idbKey,
+  round,
+  maxDim,
   onChange,
 }: {
+  label: string
   value: string
+  sentinel: string
+  idbKey: string
+  round?: boolean
+  maxDim?: number
   onChange: (v: string) => void
 }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState("")
-  const [preview, setPreview] = useState(value === BG_IDB ? "" : value)
-  const inputRef = useRef<HTMLInputElement | null>(null)
+  const [preview, setPreview] = useState(value === sentinel ? "" : value)
 
   useEffect(() => {
     let alive = true
-    if (value === BG_IDB) {
-      loadBgImage().then((d) => { if (alive) setPreview(d || "") })
+    if (value === sentinel) {
+      loadImage(idbKey).then((d) => { if (alive) setPreview(d || "") })
     } else {
       setPreview(value)
     }
     return () => { alive = false }
-  }, [value])
+  }, [value, sentinel, idbKey])
 
-  const onPick = (file: File | null | undefined) => {
-    if (!file) return
+  const pick = async () => {
     setError("")
-    if (file.size > 10 * 1024 * 1024) {
-      setError("图片太大")
-      return
-    }
     setBusy(true)
-    const img = new Image()
-    const url = URL.createObjectURL(file)
-    img.onload = () => {
-      const canvas = document.createElement("canvas")
-      const maxDim = 1200
-      let w = img.width, h = img.height
-      if (w > maxDim || h > maxDim) {
-        const scale = maxDim / Math.max(w, h)
-        w = Math.round(w * scale)
-        h = Math.round(h * scale)
-      }
-      canvas.width = w
-      canvas.height = h
-      canvas.getContext("2d")!.drawImage(img, 0, 0, w, h)
-      const dataUrl = canvas.toDataURL("image/jpeg", 0.75)
-      URL.revokeObjectURL(url)
-      saveBgImage(dataUrl)
-        .then(() => {
-          setPreview(dataUrl)
-          setBusy(false)
-          onChange(BG_IDB)
-        })
-        .catch(() => {
-          setBusy(false)
-          setError("保存失败")
-        })
-    }
-    img.onerror = () => {
-      URL.revokeObjectURL(url)
+    try {
+      const dataUrl = await pickImageDataUrl(maxDim ?? 1200)
+      if (!dataUrl) { setBusy(false); return }
+      await saveImage(idbKey, dataUrl)
+      setPreview(dataUrl)
+      onChange(sentinel)
+    } catch {
+      setError("Couldn't load image")
+    } finally {
       setBusy(false)
-      setError("图片读取失败")
     }
-    img.src = url
   }
 
+  const side = round ? 44 : 56
   return (
     <div style={{ paddingTop: 10, paddingBottom: 10 }}>
       <div
         className="text-[10.5px] uppercase tracking-[0.08em]"
         style={{ color: "rgba(63, 47, 41, 0.55)" }}
       >
-        Background
+        {label}
       </div>
       <div className="mt-2 flex items-center gap-3">
         <span
           aria-hidden
           style={{
             display: "inline-block",
-            width: 56,
-            height: 56,
-            borderRadius: 8,
+            width: side,
+            height: side,
+            borderRadius: round ? "50%" : 8,
             backgroundImage: preview ? `url(${preview})` : "none",
             backgroundColor: preview ? "transparent" : "rgba(63,47,41,0.08)",
             backgroundSize: "cover",
@@ -500,46 +513,27 @@ function BgField({
             border: "1px solid rgba(63,47,41,0.18)",
           }}
         />
-        <label
+        <button
+          type="button"
+          onClick={pick}
+          disabled={busy}
           className="rounded-full px-3 py-1 text-[12px]"
           style={{
             color: "rgba(63, 47, 41, 0.85)",
             background: "rgba(63, 47, 41, 0.08)",
-            cursor: busy ? "default" : "pointer",
             opacity: busy ? 0.6 : 1,
           }}
         >
-          {busy ? "读取中…" : "选择图片"}
-          <input
-            ref={inputRef}
-            type="file"
-            accept="image/*"
-            disabled={busy}
-            onChange={(e) => onPick(e.target.files?.[0])}
-            style={{
-              position: "absolute",
-              width: 1,
-              height: 1,
-              padding: 0,
-              margin: -1,
-              overflow: "hidden",
-              clip: "rect(0 0 0 0)",
-              whiteSpace: "nowrap",
-              border: 0,
-            }}
-          />
-        </label>
+          {busy ? "Loading…" : "Choose"}
+        </button>
         {preview && (
           <button
             type="button"
-            onClick={() => { clearBgImage(); setPreview(""); onChange("") }}
+            onClick={() => { clearImage(idbKey); setPreview(""); onChange("") }}
             className="rounded-full px-3 py-1 text-[12px]"
-            style={{
-              color: "rgba(63, 47, 41, 0.6)",
-              background: "transparent",
-            }}
+            style={{ color: "rgba(63, 47, 41, 0.6)", background: "transparent" }}
           >
-            恢复默认
+            Reset
           </button>
         )}
       </div>

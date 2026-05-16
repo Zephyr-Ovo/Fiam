@@ -23,10 +23,12 @@ function openDB(): Promise<IDBDatabase> {
   });
 }
 
-export async function saveBgImage(dataUri: string): Promise<void> {
+// Generic keyed image store (same kv object store). Used for the chat
+// background ("bg") and the user/AI avatars ("avatar:user"/"avatar:ai").
+export async function saveImage(key: string, dataUri: string): Promise<void> {
   const db = await openDB();
   const tx = db.transaction(STORE_NAME, "readwrite");
-  tx.objectStore(STORE_NAME).put(dataUri, KEY);
+  tx.objectStore(STORE_NAME).put(dataUri, key);
   await new Promise<void>((res, rej) => {
     tx.oncomplete = () => res();
     tx.onerror = () => rej(tx.error);
@@ -34,11 +36,11 @@ export async function saveBgImage(dataUri: string): Promise<void> {
   db.close();
 }
 
-export async function loadBgImage(): Promise<string | null> {
+export async function loadImage(key: string): Promise<string | null> {
   try {
     const db = await openDB();
     const tx = db.transaction(STORE_NAME, "readonly");
-    const req = tx.objectStore(STORE_NAME).get(KEY);
+    const req = tx.objectStore(STORE_NAME).get(key);
     return await new Promise<string | null>((resolve) => {
       req.onsuccess = () => {
         db.close();
@@ -51,14 +53,18 @@ export async function loadBgImage(): Promise<string | null> {
   }
 }
 
-export async function clearBgImage(): Promise<void> {
+export async function clearImage(key: string): Promise<void> {
   try {
     const db = await openDB();
     const tx = db.transaction(STORE_NAME, "readwrite");
-    tx.objectStore(STORE_NAME).delete(KEY);
+    tx.objectStore(STORE_NAME).delete(key);
     await new Promise<void>((res) => { tx.oncomplete = () => res(); });
     db.close();
   } catch {
     // ignore
   }
 }
+
+export const saveBgImage = (dataUri: string) => saveImage(KEY, dataUri);
+export const loadBgImage = () => loadImage(KEY);
+export const clearBgImage = () => clearImage(KEY);
