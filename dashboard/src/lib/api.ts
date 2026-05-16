@@ -98,6 +98,23 @@ export interface FlowPayload {
 
 export interface RuntimeConfig {
 	memory_mode: 'manual' | 'auto';
+	app?: {
+		default_runtime: 'auto' | 'api' | 'cc';
+		recall_include_recent: boolean;
+	};
+	cc?: {
+		model: string;
+		effort: string;
+		disallowed_tools: string;
+		transport: string;
+		warm_alive: boolean;
+	};
+	route_state?: {
+		family?: string;
+		reason?: string;
+		remaining_turns?: number;
+		updated_at?: string;
+	};
 	annotation: { processed_until: number };
 	catalog?: Record<string, CatalogEntry>;
 }
@@ -395,6 +412,14 @@ export const api = {
 		extended_thinking?: boolean;
 		budget_tokens?: number;
 	}) => mutate<{ ok: boolean; family: string; catalog: CatalogEntry }>('POST', '/config/catalog', payload),
+	saveRuntimeConfig: (payload: {
+		default_runtime?: 'auto' | 'api' | 'cc';
+		recall_include_recent?: boolean;
+		cc_model?: string;
+		cc_effort?: string;
+		cc_disallowed_tools?: string;
+		clear_route_state?: boolean;
+	}) => mutate<{ ok: boolean; config: RuntimeConfig }>('POST', '/config/runtime', payload),
 	setMemoryMode: (memory_mode: 'manual' | 'auto') =>
 		mutate<{ ok: boolean; memory_mode: 'manual' | 'auto' }>('POST', '/config/memory-mode', { memory_mode }),
 	plugins: () => j<{ plugins: PluginManifest[] }>('/plugins'),

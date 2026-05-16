@@ -335,7 +335,7 @@ class AppRuntimeRouterTest(unittest.TestCase):
         deltas = [event["data"]["text"] for event in events if event["event"] == "text_delta"]
         self.assertEqual("".join(deltas), "hello world")
 
-    def test_cc_warm_prompt_does_not_inject_runtime_context(self) -> None:
+    def test_cc_warm_prompt_injects_runtime_context_per_turn(self) -> None:
         original_config = dashboard_server._CONFIG
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -366,7 +366,8 @@ class AppRuntimeRouterTest(unittest.TestCase):
         self.assertIn("stable identity", warm_system)
         self.assertNotIn("[server_time]", warm_system)
         self.assertNotIn("[context]", warm_system)
-        self.assertNotIn("[server_time]", warm_user)
+        self.assertIn("[server_time]", warm_user)
+        self.assertIn("[tool_mode]", warm_user)
         self.assertTrue(warm_user.endswith("hello"))
         self.assertIn("[server_time]", cold_system)
 
@@ -787,7 +788,7 @@ class AppRuntimeRouterTest(unittest.TestCase):
 
         self.assertEqual(result["session_id"], "sess_warm_nonstream")
         self.assertFalse(cold_run.called)
-        self.assertNotIn("[server_time]", captured["user_prompt"])
+        self.assertIn("[server_time]", captured["user_prompt"])
         self.assertNotIn("[server_time]", captured["system_context"])
 
     def test_cc_studio_uses_warm_runner_by_default(self) -> None:
@@ -824,7 +825,7 @@ class AppRuntimeRouterTest(unittest.TestCase):
         self.assertEqual(result["session_id"], "sess_warm_studio")
         self.assertEqual(result["edits"][0]["op"], "append")
         self.assertFalse(cold_run.called)
-        self.assertNotIn("[server_time]", captured["user_prompt"])
+        self.assertIn("[server_time]", captured["user_prompt"])
         self.assertNotIn("[server_time]", captured["system_context"])
 
     def test_stroll_send_injects_context_and_keeps_source_history_separate(self) -> None:

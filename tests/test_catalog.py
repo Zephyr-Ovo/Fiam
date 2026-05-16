@@ -143,6 +143,69 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual(routed.api_provider, "anthropic")
         self.assertEqual(routed.api_key_env, "ANTHROPIC_API_KEY")
 
+    def test_openrouter_and_deepseek_families_route_to_api(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = FiamConfig(home_path=root / "home", code_path=root / "code")
+            from fiam.config import Catalog
+
+            config.catalog["gpt"] = Catalog(provider="openrouter", model="openai/gpt-5.1")
+            config.catalog["deepseek"] = Catalog(provider="deepseek", model="deepseek-chat")
+            routed_gpt = dashboard_server._config_for_catalog_family(config, "gpt")
+            routed_deepseek = dashboard_server._config_for_catalog_family(config, "deepseek")
+
+        self.assertEqual(routed_gpt.api_provider, "openai_compatible")
+        self.assertEqual(routed_gpt.api_base_url, "https://openrouter.ai/api/v1")
+        self.assertEqual(routed_gpt.api_key_env, "OPENROUTER_API_KEY")
+        self.assertEqual(routed_deepseek.api_base_url, "https://api.deepseek.com")
+        self.assertEqual(routed_deepseek.api_key_env, "DEEPSEEK_API_KEY")
+        self.assertEqual(dashboard_server._runtime_for_family("gpt"), "api")
+        self.assertEqual(dashboard_server._runtime_for_family("deepseek"), "api")
+
+    def test_runtime_config_update_persists_and_updates_memory(self) -> None:
+        original_config = dashboard_server._CONFIG
+        original_runner = dashboard_server._CC_WARM_RUNNER
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            toml = root / "fiam.toml"
+            toml.write_text(
+                "\n".join([
+                    f'home_path = "{(root / "home").as_posix()}"',
+                    "",
+                    "[daemon]",
+                    'cc_model = "old"',
+                    "",
+                    "[app]",
+                    'default_runtime = "auto"',
+                    "recall_include_recent = true",
+                ]) + "\n",
+                encoding="utf-8",
+            )
+            config = FiamConfig.from_toml(toml, root)
+            dashboard_server._CONFIG = config
+            dashboard_server._CC_WARM_RUNNER = None
+
+            result = dashboard_server._update_runtime_config({
+                "default_runtime": "cc",
+                "recall_include_recent": False,
+                "cc_model": "sonnet",
+                "cc_effort": "high",
+                "cc_disallowed_tools": "WebFetch, NotebookEdit",
+            })
+            text = toml.read_text(encoding="utf-8")
+
+        dashboard_server._CONFIG = original_config
+        dashboard_server._CC_WARM_RUNNER = original_runner
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(config.app_default_runtime, "cc")
+        self.assertFalse(config.app_recall_include_recent)
+        self.assertEqual(config.cc_model, "sonnet")
+        self.assertEqual(config.cc_effort, "high")
+        self.assertEqual(config.cc_disallowed_tools, "WebFetch,NotebookEdit")
+        self.assertIn('default_runtime = "cc"', text)
+        self.assertIn('cc_model = "sonnet"', text)
+
     def test_catalog_toml_section_replacement(self) -> None:
         text = 'home_path = "F:/home"\n\n[api]\nmodel = "old"\n'
         updated = dashboard_server._replace_toml_section(

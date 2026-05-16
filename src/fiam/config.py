@@ -235,6 +235,8 @@ class FiamConfig:
     api_fallback_model: str = ""
     api_fallback_base_url: str = ""
     api_fallback_key_env: str = ""
+    extended_thinking: bool = False
+    budget_tokens: int = 0
 
     # ------------------------------------------------------------------
     # Model catalog: family -> provider/model/fallback chain.
@@ -565,6 +567,10 @@ class FiamConfig:
             f"poll_interval_seconds = {self.poll_interval_seconds}",
             f"email_poll_interval = {self.email_poll_interval}",
             f"events_per_session = {self.events_per_session}",
+            f"daily_budget_usd = {self.daily_budget_usd}",
+            f'cc_model = "{self.cc_model}"',
+            f'cc_effort = "{self.cc_effort}"',
+            f'cc_disallowed_tools = "{self.cc_disallowed_tools}"',
             "",
             "[api]",
             f'provider = "{self.api_provider}"',
@@ -576,6 +582,8 @@ class FiamConfig:
             f"timeout_seconds = {self.api_timeout_seconds}",
             f"tools_enabled = {str(self.api_tools_enabled).lower()}",
             f"tools_max_loops = {self.api_tools_max_loops}",
+            f"extended_thinking = {str(self.extended_thinking).lower()}",
+            f"budget_tokens = {int(self.budget_tokens or 0)}",
             "",
             "[api.fallback]",
             f'provider = "{self.api_fallback_provider}"',
@@ -762,6 +770,8 @@ class FiamConfig:
             api_fallback_model=api_fallback.get("model", cls.api_fallback_model),
             api_fallback_base_url=api_fallback.get("base_url", cls.api_fallback_base_url),
             api_fallback_key_env=api_fallback.get("api_key_env", cls.api_fallback_key_env),
+            extended_thinking=api.get("extended_thinking", cls.extended_thinking),
+            budget_tokens=api.get("budget_tokens", cls.budget_tokens),
             catalog=catalog,
             # Favilla app runtime
             app_default_runtime=app.get("default_runtime", cls.app_default_runtime),

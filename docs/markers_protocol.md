@@ -55,7 +55,7 @@
 <route family="gemini" reason="math/code fallback"/>
 ```
 
-设置后续若干轮模型 family 选择。它不传递上下文；跨 runtime 上下文由 `store/transcripts/{channel}.jsonl` 统一承载。
+设置后续若干轮 API 模型 family 选择。内置 family 为 `claude`、`gpt`、`deepseek`、`gemini`，具体 provider/model 在 `/panel` 或 `[catalog.<family>]` 中配置。它不传递上下文；跨 runtime 上下文由 `store/transcripts/{channel}.jsonl` 统一承载。cc 仍是主平台，`<route>` 只是让后续 turn 走更合适的 API family。
 
 ## 3. 实现位置
 

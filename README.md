@@ -83,7 +83,7 @@ Requirements:
 - `uv`
 - Optional: Node.js for dashboard/app work
 - Optional: MQTT broker for async device/plugin transport
-- Optional: Claude Code for the Claude Code runtime adapter
+- Optional: cc for the local work runtime
 
 ```bash
 git clone https://github.com/Zephyr-Ovo/Fiam.git
@@ -95,14 +95,14 @@ uv run python scripts/fiam.py start
 
 For local ML embeddings, install the optional ML dependencies if configured by your environment. Remote/OpenAI-compatible embeddings and model providers are configured through environment variable names, not committed secrets.
 
-For the Claude Code channel transport used in deployment, install the MCP channel helper once:
+For the cc channel transport used in deployment, install the MCP channel helper once:
 
 ```bash
 npm --prefix channels/cc-channel install
 FIAM_CC_TRANSPORT=channel uv run python scripts/fiam.py start
 ```
 
-This runs each automated Claude Code turn through an official one-way MCP channel and reconstructs replies from the Claude Code JSONL transcript. Without `FIAM_CC_TRANSPORT=channel`, Fiam keeps the legacy `claude -p` path for local development.
+This runs each automated cc turn through an official one-way MCP channel and reconstructs replies from the cc JSONL transcript. Without `FIAM_CC_TRANSPORT=channel`, Fiam keeps the legacy `claude -p` path for local development.
 
 ## Configuration
 
@@ -114,16 +114,19 @@ uv run python scripts/fiam.py init
 
 Important sections:
 
-- `[api]`: default OpenAI-compatible provider/model for API runtime.
-- `[catalog.<family>]`: explicit route/model family configuration.
-- `[app]`: app runtime defaults and COT summary config.
+- `[daemon]`: cc model, effort, and disallowed-tool settings.
+- `[api]`: default API runtime settings used when no catalog family is selected.
+- `[catalog.<family>]`: explicit API family routing. Built-in families are `claude`, `gpt`, `deepseek`, and `gemini`; providers include `openrouter`, `poe`, `deepseek`, `aistudio`, `vertex`, and `anthropic`.
+- `[app]`: app runtime defaults and COT summary config. `default_runtime = "cc"` keeps cc as the main platform; `auto` allows routing to API families when the model or user asks for it.
 - `[conductor]`: memory mode, gorge/drift/recall settings.
 - `[mqtt]`: MQTT transport settings.
 - `[graph]`: optional edge typing/event naming model.
 - `[vision]`: optional image description model.
 - `[voice.stt]` / `[voice.tts]`: optional voice providers.
 
-Secrets must live in environment variables named by config, for example `POE_API_KEY`, `GEMINI_API_KEY`, `FIAM_GRAPH_API_KEY`, `FIAM_SUMMARY_API_KEY`, or deployment-specific equivalents. Do not commit real keys or local config.
+The `/panel` console can edit `default_runtime`, cc model/effort/disallowed tools, and catalog family provider/model choices. Saves update the in-memory server config immediately; cc warm sessions are restarted when cc settings change.
+
+Secrets must live in environment variables named by config, for example `OPENROUTER_API_KEY`, `POE_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`, `ANTHROPIC_API_KEY`, `FIAM_GRAPH_API_KEY`, `FIAM_SUMMARY_API_KEY`, or deployment-specific equivalents. Do not commit real keys or local config.
 
 ## CLI
 
@@ -153,7 +156,7 @@ python scripts/reset_favilla_whiteboard.py --apply
 
 The reset truncates AI prompt markdown placeholders under the configured home, clears local UI/model transcripts, cuts/session state, derived memory/training stores, ObjectStore blobs, timeline/features/pool data, and leaves source files, README/docs, config, secrets, and git history untouched.
 
-Claude Code can return a generated home file to Favilla as a downloadable object with:
+cc can return a generated home file to Favilla as a downloadable object with:
 
 ```bash
 python scripts/object_put.py --path relative-file.txt --direction outbound
