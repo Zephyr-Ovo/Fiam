@@ -12,6 +12,12 @@
  */
 
 import bgDefault from "./assets/brand/bg.jpg"
+import { loadBgImage } from "./lib/bg-store"
+
+/** Sentinel stored in the (size-limited) config blob when the real
+ *  background image lives in IndexedDB. Resolved to the actual data URI at
+ *  runtime so the persisted config stays tiny. */
+export const BG_IDB = "idb:bg"
 
 export type AppConfig = {
   /** Display name of the user (currently unused but reserved). */
@@ -127,7 +133,27 @@ function applyThemeVars(cfg: AppConfig) {
     /* SSR / no DOM */
   }
 }
+/** If `bg` is the IndexedDB sentinel, fall back to the bundled default
+ *  immediately, then asynchronously swap in the stored image and notify
+ *  subscribers so the chat background repaints without a reload. */
+function resolveBgSentinel() {
+  if (appConfig.bg !== BG_IDB) return
+  appConfig.bg = bgDefault
+  loadBgImage()
+    .then((data) => {
+      if (!data) return
+      appConfig.bg = data
+      try {
+        window.dispatchEvent(new CustomEvent("favilla:config-changed"))
+      } catch {
+        /* SSR / non-browser */
+      }
+    })
+    .catch(() => {})
+}
+
 applyThemeVars(appConfig)
+resolveBgSentinel()
 
 /** Persist a partial config patch and update the live `appConfig` object. */
 export function saveConfig(patch: Partial<AppConfig>) {
@@ -142,6 +168,7 @@ export function saveConfig(patch: Partial<AppConfig>) {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(withoutBg)) } catch { /* give up */ }
   }
   applyThemeVars(appConfig)
+  resolveBgSentinel()
   // Notify subscribers so live components (header peer name, etc.) re-read.
   try {
     window.dispatchEvent(new CustomEvent("favilla:config-changed"))

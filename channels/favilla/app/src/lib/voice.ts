@@ -1,5 +1,48 @@
 import { appConfig } from "../config"
 
+// --- Autoplay / Android WebView unlock --------------------------------------
+// HTMLAudioElement.play() is rejected with NotAllowedError unless it runs in
+// (or after) a real user gesture. Two paths hit this: auto-playing an AI reply
+// (no gesture at all) and a *manual* tap whose play() happens after an awaited
+// TTS fetch (the gesture activation is gone by then). Fix: keep ONE reusable
+// audio element and "unlock" it on the first user interaction; afterwards all
+// programmatic play() on that same element is allowed for the session.
+let _sharedAudio: HTMLAudioElement | null = null
+let _audioUnlocked = false
+const _SILENT_WAV =
+  "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA="
+
+export function getSharedAudio(): HTMLAudioElement {
+  if (!_sharedAudio) _sharedAudio = new Audio()
+  return _sharedAudio
+}
+
+export function unlockAudio(): void {
+  if (_audioUnlocked || typeof Audio === "undefined") return
+  const a = getSharedAudio()
+  try {
+    a.muted = true
+    a.src = _SILENT_WAV
+    const p = a.play() as unknown as Promise<void> | undefined
+    const done = () => {
+      try { a.pause(); a.currentTime = 0 } catch { /* */ }
+      a.muted = false
+      _audioUnlocked = true
+    }
+    if (p && typeof p.then === "function") p.then(done).catch(() => { a.muted = false })
+    else done()
+  } catch {
+    a.muted = false
+  }
+}
+
+if (typeof window !== "undefined") {
+  const onGesture = () => unlockAudio()
+  window.addEventListener("pointerdown", onGesture, { passive: true })
+  window.addEventListener("touchend", onGesture, { passive: true })
+  window.addEventListener("keydown", onGesture)
+}
+
 export type VoicePlaybackProvider = "browser" | "openai_compatible" | "mimo"
 export type VoiceSttProvider = "browser" | "openai_compatible"
 
@@ -227,7 +270,8 @@ export class TtsPlayer {
     this.stop()
     this.emit({ status: "loading", duration: 0, currentTime: 0 })
     try {
-      this.audio = new Audio(url)
+      this.audio = getSharedAudio()
+      this.audio.src = url
       this.audio.onended = () => { this.emit({ status: "idle", currentTime: 0 }); this.stopTick() }
       this.audio.onerror = () => { this.emit({ status: "error", error: "playback failed" }); this.stopTick() }
       this.audio.onloadedmetadata = () => { this.emit({ duration: this.audio!.duration || 0 }) }
@@ -254,7 +298,8 @@ export class TtsPlayer {
     try {
       const blob = await fetchTtsAudio(clean, provider)
       this.objectUrl = URL.createObjectURL(blob)
-      this.audio = new Audio(this.objectUrl)
+      this.audio = getSharedAudio()
+      this.audio.src = this.objectUrl
       this.audio.onended = () => { this.emit({ status: "idle", currentTime: 0 }); this.stopTick() }
       this.audio.onerror = () => { this.emit({ status: "error", error: "playback failed" }); this.stopTick() }
       this.audio.onloadedmetadata = () => { this.emit({ duration: this.audio!.duration || 0 }) }

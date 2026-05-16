@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react"
-import { appConfig, saveConfig, type AppConfig } from "../config"
+import { appConfig, saveConfig, BG_IDB, type AppConfig } from "../config"
+import { saveBgImage, loadBgImage, clearBgImage } from "../lib/bg-store"
 
 type Props = {
   open: boolean
@@ -408,7 +409,18 @@ function BgField({
 }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState("")
+  const [preview, setPreview] = useState(value === BG_IDB ? "" : value)
   const inputRef = useRef<HTMLInputElement | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    if (value === BG_IDB) {
+      loadBgImage().then((d) => { if (alive) setPreview(d || "") })
+    } else {
+      setPreview(value)
+    }
+    return () => { alive = false }
+  }, [value])
 
   const onPick = (file: File | null | undefined) => {
     if (!file) return
@@ -434,8 +446,16 @@ function BgField({
       canvas.getContext("2d")!.drawImage(img, 0, 0, w, h)
       const dataUrl = canvas.toDataURL("image/jpeg", 0.75)
       URL.revokeObjectURL(url)
-      setBusy(false)
-      onChange(dataUrl)
+      saveBgImage(dataUrl)
+        .then(() => {
+          setPreview(dataUrl)
+          setBusy(false)
+          onChange(BG_IDB)
+        })
+        .catch(() => {
+          setBusy(false)
+          setError("保存失败")
+        })
     }
     img.onerror = () => {
       URL.revokeObjectURL(url)
@@ -461,8 +481,8 @@ function BgField({
             width: 56,
             height: 56,
             borderRadius: 8,
-            backgroundImage: value ? `url(${value})` : "none",
-            backgroundColor: value ? "transparent" : "rgba(63,47,41,0.08)",
+            backgroundImage: preview ? `url(${preview})` : "none",
+            backgroundColor: preview ? "transparent" : "rgba(63,47,41,0.08)",
             backgroundSize: "cover",
             backgroundPosition: "center",
             border: "1px solid rgba(63,47,41,0.18)",
@@ -480,10 +500,10 @@ function BgField({
         >
           {busy ? "读取中…" : "选择图片"}
         </button>
-        {value && (
+        {preview && (
           <button
             type="button"
-            onClick={() => onChange("")}
+            onClick={() => { clearBgImage(); setPreview(""); onChange("") }}
             className="rounded-full px-3 py-1 text-[12px]"
             style={{
               color: "rgba(63, 47, 41, 0.6)",
