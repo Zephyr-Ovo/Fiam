@@ -209,7 +209,7 @@ class TurnCommit:
 class MarkerInterpreter:
     """Single parser for model-authored XML markers."""
 
-    CONTROL_NAMES = {"send", "cot", "hold", "held", "todo", "wake", "sleep", "state", "route", "lock"}
+    CONTROL_NAMES = {"send", "cot", "hold", "held", "todo", "wake", "sleep", "state", "route", "lock", "voice"}
 
     def __init__(self, object_resolver: Callable[[str], str] | None = None) -> None:
         self.object_resolver = object_resolver

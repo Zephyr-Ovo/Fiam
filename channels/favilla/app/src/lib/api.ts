@@ -60,6 +60,7 @@ export type ChatSegment =
       result_summary?: string
       is_error?: boolean
     }
+  | { type: "voice"; text: string }
 
 export type ChatAttachment = {
   object_hash?: string

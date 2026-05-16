@@ -105,7 +105,7 @@ def _wipe(home: Path, store: Path, *, wipe_identity: bool) -> list[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--home", required=True, help="AI home directory (e.g. /home/fiet/live)")
+    parser.add_argument("--home", required=True, help="AI home directory (e.g. /home/live)")
     parser.add_argument("--store", required=True, help="Code-side store/ directory (e.g. /home/fiet/fiam-code/store)")
     parser.add_argument("--yes", action="store_true", help="Confirm destructive action")
     parser.add_argument("--wipe-identity", action="store_true", help="Also wipe self/personality, identity, impressions, lessons, commitments, goals")

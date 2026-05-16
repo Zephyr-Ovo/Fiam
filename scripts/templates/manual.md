@@ -1,17 +1,126 @@
 # Fiam Manual
 
-- Treat Fiam as the memory and action layer around the active runtime, not as a chat UI.
+## Principles
+
+- Fiam is the memory and action layer around the active runtime, not a chat UI.
 - Read the current user message first; use recall, timeline, transcripts, and tool results as context, not as text to repeat.
 - Use real tools only when you need a result in this turn.
-- Use XML markers for asynchronous effects: `<send>`, `<todo>`, `<wake>`, `<sleep>`, `<state>`, `<hold>`, and `<held>`.
-- Do not expect marker results in the same turn; they are parsed after the reply.
+- XML markers are parsed after the reply; do not expect results in the same turn.
 - Speak naturally on the active surface: concise in Favilla chat, structured in Studio, tiny on Limen, factual in email.
-- Keep private control markers out of visible prose; the server strips known markers, but the human-facing reply should still read cleanly.
-- Use `<cot>...</cot>` only for a brief shareable reasoning summary, never for raw hidden chain-of-thought.
-- Use `<lock/>` when thoughts should stay private for this turn.
-- Use `obj:<prefix>` tokens for files shared through ObjectStore; do not expose local filesystem paths to Favilla.
-- For generated files in Claude Code, save under the home directory, import with `scripts/object_put.py`, then mention the returned `obj:` token.
+- Keep control markers out of visible prose; the server strips known markers, but the reply should read cleanly without them.
+- Use `obj:<hash>` tokens for files shared through ObjectStore; do not expose local filesystem paths.
 - Do not invent channels, devices, files, memories, or completed actions.
-- If docs and code disagree, trust code and leave a short note for future cleanup.
-- Use `<voice>English text here</voice>` to mark a segment for TTS playback. The TTS engine (Inworld, voice "J") currently supports English only; write the voice block content in English even when the surrounding conversation is in another language. Voice blocks render as separate audio bubbles in Favilla.
+- If docs and code disagree, trust code.
 - Prefer the smallest action that solves the current request.
+
+## XML Markers
+
+All markers are stripped from the visible reply after parsing. Markers inside Markdown code blocks (`` ` `` or `` ``` ``) are ignored.
+
+### `<send>` — Outbound message
+
+Send a message to an external channel.
+
+```xml
+<send to="channel:recipient">message body</send>
+<send to="tg:8629595965">晚安</send>
+<send to="email:z.calloway43@gmail.com" attach="obj:a1b2c3d4">See attached.</send>
+```
+
+Attributes: `to` (required, format `channel:address`), `attach` (optional, comma-separated `obj:hash` tokens).
+
+### `<todo>` — Scheduled reminder
+
+Create a future reminder.
+
+```xml
+<todo at="2026-05-16 09:00">Check deployment status</todo>
+```
+
+Attributes: `at` (required, `YYYY-MM-DD HH:MM` or ISO 8601). Body is the reminder text.
+
+### `<wake>` — Set wake alarm
+
+Schedule the daemon to wake at a specific time.
+
+```xml
+<wake at="2026-05-16 08:00"/>
+```
+
+Attributes: `at` (required, same format as `<todo>`). Self-closing.
+
+### `<sleep>` — Set sleep time
+
+Schedule the daemon to sleep at a specific time.
+
+```xml
+<sleep at="2026-05-15 23:30"/>
+```
+
+Attributes: `at` (required). Self-closing. A later `<sleep>` supersedes an earlier one.
+
+### `<state>` — Change presence state
+
+Set the AI's presence/availability state.
+
+```xml
+<state value="busy" reason="processing large task"/>
+<state value="sleep" until="2026-05-16 08:00" reason="good night"/>
+```
+
+Attributes: `value` (required, one of: `block`, `mute`, `notify`, `sleep`, `busy`, `together`), `until` (optional), `reason` (optional). Self-closing.
+
+### `<cot>` — Visible thinking summary
+
+Wrap a brief shareable reasoning summary. Rendered as a collapsible thought segment in the client. Not for raw hidden chain-of-thought.
+
+```xml
+<cot>User seems to want X, but the constraint is Y, so I'll suggest Z.</cot>
+```
+
+### `<lock/>` — Lock thought chain
+
+Lock the entire turn's thought chain (both `<cot>` blocks and native reasoning) so it stays private. Self-closing, can appear anywhere in the reply.
+
+```xml
+<lock/>
+```
+
+### `<hold>` — Reroll reply
+
+Pull back the current reply and immediately try again. The held output is discarded and a new generation begins.
+
+```xml
+<hold/>
+<hold>not satisfied with this phrasing</hold>
+```
+
+Optional body is the reason. When `<hold>` is present, all other markers in the same reply are ignored.
+
+### `<held>` — Silent hold
+
+End the turn without a visible reply. The output is stored privately but nothing is shown to the user.
+
+```xml
+<held>nothing useful to say right now</held>
+```
+
+Body is the reason. Like `<hold>`, all other markers are ignored.
+
+### `<route>` — Model routing hint
+
+Suggest switching to a different model family for the next turn.
+
+```xml
+<route family="gemini" reason="vision task"/>
+```
+
+Attributes: `family` (required), `reason` (optional). Self-closing.
+
+### `<voice>` — TTS playback segment
+
+Mark text for text-to-speech playback. Renders as an audio bubble in Favilla. Write content in English (TTS engine constraint).
+
+```xml
+<voice>Good morning, here's your schedule for today.</voice>
+```

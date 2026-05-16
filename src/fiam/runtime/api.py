@@ -10,7 +10,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from fiam.runtime.prompt import PromptAssembler, _valid_transcript_message
 from fiam.runtime.tools import TOOL_SCHEMAS, execute_tool_call
@@ -94,6 +94,23 @@ def _image_attachment_blocks(config, attachments: list[dict[str, Any]] | None) -
             "image_url": {"url": f"data:{mime};base64,{encoded}"},
         })
     return blocks
+
+
+def _summarize_tool_input(name: str, raw_args: str) -> str:
+    try:
+        args = json.loads(raw_args)
+    except (json.JSONDecodeError, TypeError):
+        return raw_args[:200]
+    if name == "Bash":
+        return str(args.get("command") or "")[:200]
+    if name == "Read":
+        return str(args.get("path") or args.get("file_path") or "")[:200]
+    if name in ("Edit", "Write"):
+        return str(args.get("path") or args.get("file_path") or "")[:200]
+    parts = []
+    for k, v in (args if isinstance(args, dict) else {}).items():
+        parts.append(f"{k}={str(v)[:60]}")
+    return ", ".join(parts)[:200]
 
 
 def _bounded_tool_result(config, text: str, *, limit: int = 4000) -> tuple[str, str, int]:
@@ -669,6 +686,7 @@ class ApiRuntime:
         recall_context: "RecallContext | None" = None,
         extra_context: str = "",
         image_attachments: list[dict[str, Any]] | None = None,
+        on_tool_event: "Callable[[dict[str, Any]], None] | None" = None,
     ) -> ApiRuntimeResult:
         """Run an API model call and return structured result only."""
         clean = text.strip()
@@ -743,7 +761,7 @@ class ApiRuntime:
             # the tool_call_ids the model issued.
             assistant_msg: dict[str, Any] = {
                 "role": "assistant",
-                "content": completion.text or None,
+                "content": completion.text or "",
                 "tool_calls": completion.tool_calls,
             }
             messages.append(assistant_msg)
@@ -751,10 +769,14 @@ class ApiRuntime:
                 fn = call.get("function") or {}
                 name = str(fn.get("name") or "")
                 raw_args = str(fn.get("arguments") or "{}")
+                call_id = str(call.get("id") or "")
+                summary = _summarize_tool_input(name, raw_args)
+                if on_tool_event:
+                    on_tool_event({"event": "tool_use", "tool_use_id": call_id, "tool_name": name, "input_summary": summary})
                 result = execute_tool_call(self.config, name, raw_args)
                 bounded_result, result_object_hash, result_size = _bounded_tool_result(self.config, result)
                 executed_calls.append({
-                    "id": str(call.get("id") or ""),
+                    "id": call_id,
                     "name": name,
                     "arguments": raw_args,
                     "result_preview": bounded_result[:300],
@@ -762,9 +784,11 @@ class ApiRuntime:
                     "result_size": result_size,
                     "loop": loops,
                 })
+                if on_tool_event:
+                    on_tool_event({"event": "tool_result", "tool_use_id": call_id, "tool_name": name, "result_summary": bounded_result[:300], "is_error": False})
                 messages.append({
                     "role": "tool",
-                    "tool_call_id": str(call.get("id") or ""),
+                    "tool_call_id": call_id,
                     "name": name,
                     "content": bounded_result,
                 })

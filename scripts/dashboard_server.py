@@ -3017,8 +3017,9 @@ def _favilla_chat_send(payload: dict) -> dict:
         context_block, stroll_context = build_context_block(_CONFIG, payload.get("stroll_context") if isinstance(payload.get("stroll_context"), dict) else payload.get("context"))
         runtime_text = f"{context_block}\n\n[user_message]\n{user_text}"
     record_turn = payload.get("record_turn", payload.get("record", True)) is not False
+    on_tool_event = payload.get("_on_tool_event")
     if runtime == "api":
-        result = _run_api_favilla_chat(text=runtime_text, channel=channel, surface=surface, attachments=safe_attachments, record_turn=record_turn, family=family, turn_id=turn_id, request_id=request_id)
+        result = _run_api_favilla_chat(text=runtime_text, channel=channel, surface=surface, attachments=safe_attachments, record_turn=record_turn, family=family, turn_id=turn_id, request_id=request_id, on_tool_event=on_tool_event)
     elif runtime == "cc":
         result = _run_cc_favilla_chat(text=runtime_text, channel=channel, surface=surface, attachments=safe_attachments, turn_id=turn_id, request_id=request_id)
     else:
@@ -3159,19 +3160,40 @@ def _favilla_chat_send_stream(payload: dict):
         runtime_text = f"{context_block}\n\n[user_message]\n{user_text}"
 
     if runtime != "cc":
-        # Non-streaming runtime: do single-shot and emit start + done.
+        import queue as _queue
+        tool_ev_queue: "_queue.Queue[dict]" = _queue.Queue()
+        def _on_tool_event(ev: dict) -> None:
+            tool_ev_queue.put({"event": ev.get("event", "tool_use"), "data": ev})
         yield {"event": "start", "data": {"runtime": runtime}}
         runtime_started = datetime.now(timezone.utc)
-        try:
-            routed_payload = dict(payload)
-            routed_payload["runtime"] = runtime
-            routed_payload["turn_id"] = turn_id
-            routed_payload["request_id"] = request_id
-            routed_payload["_receive_trace_recorded"] = True
-            if family:
-                routed_payload["family"] = family
-            result = _favilla_chat_send(routed_payload)
-        except Exception as e:
+        api_thread_result: list = []
+        api_thread_error: list = []
+        def _api_worker():
+            try:
+                routed_payload = dict(payload)
+                routed_payload["runtime"] = runtime
+                routed_payload["turn_id"] = turn_id
+                routed_payload["request_id"] = request_id
+                routed_payload["_receive_trace_recorded"] = True
+                if family:
+                    routed_payload["family"] = family
+                routed_payload["_on_tool_event"] = _on_tool_event
+                result = _favilla_chat_send(routed_payload)
+                api_thread_result.append(result)
+            except Exception as e:
+                api_thread_error.append(e)
+            finally:
+                tool_ev_queue.put(None)
+        t = threading.Thread(target=_api_worker, daemon=True)
+        t.start()
+        while True:
+            ev = tool_ev_queue.get()
+            if ev is None:
+                break
+            yield ev
+        t.join(timeout=5)
+        if api_thread_error:
+            e = api_thread_error[0]
             _append_dashboard_trace_phase(
                 turn_id=turn_id,
                 request_id=request_id,
@@ -3185,6 +3207,7 @@ def _favilla_chat_send_stream(payload: dict):
             )
             yield {"event": "error", "data": {"message": str(e)[:500]}}
             return
+        result = api_thread_result[0] if api_thread_result else {}
         _append_dashboard_trace_phase(
             turn_id=turn_id,
             request_id=request_id,
@@ -3198,7 +3221,7 @@ def _favilla_chat_send_stream(payload: dict):
         yield {"event": "commit", "data": {
             "turn_id": turn_id,
             "request_id": request_id,
-            "surface": _surface_for_app_channel(str(routed_payload.get("channel") or "chat"), str(routed_payload.get("surface") or "")),
+            "surface": _surface_for_app_channel(channel, str(payload.get("surface") or "")),
             "transcript_id": result.get("transcript_id") or "",
             "trace": result.get("trace") or {},
         }}
@@ -3890,7 +3913,7 @@ def _cc_project_transcript_path(session_id: str) -> Path | None:
 
 
 _MIMO_BASE_URL = "https://token-plan-cn.xiaomimimo.com/v1"
-_MIMO_CHAT_MODEL = "mimo-v2.5"
+_MIMO_CHAT_MODEL = "mimo-v2-omni"
 
 
 def _mimo_api_key() -> str:
@@ -3932,12 +3955,13 @@ def _translate_text(text: str) -> dict:
     else:
         source_lang, target_lang = "en", "zh"
     system = (
-        "You are a translator. Translate the given text faithfully. "
-        "If the input is Chinese (or mostly Chinese), translate to English. "
-        "If the input is English (or mostly English), translate to Chinese. "
-        "Output ONLY the translation, nothing else — no quotes, no explanation, no labels."
+        "You are a silent translator. Your ONLY job is to translate text. "
+        "NEVER reply, converse, explain, or add anything. "
+        "Chinese input → output English translation. "
+        "English input → output Chinese translation. "
+        "Output the translated text ONLY. No quotes, no labels, no commentary, no greetings."
     )
-    result = _mimo_chat(system, text, max_tokens=max(len(text) * 3, 200))
+    result = _mimo_chat(system, f"[TRANSLATE]\n{text}\n[/TRANSLATE]", max_tokens=max(len(text) * 3, 400))
     if not result:
         return {"translated": "", "source_lang": source_lang, "target_lang": target_lang, "error": "mimo unavailable"}
     return {"translated": result, "source_lang": source_lang, "target_lang": target_lang}
@@ -4460,7 +4484,7 @@ def _parse_cot(reply: str) -> tuple[str, list[dict], bool, list[dict]]:
     return parsed.reply, parsed.thoughts, parsed.locked, parsed.segments
 
 
-_NON_COT_CONTROL_NAMES = {"send", "hold", "held", "todo", "wake", "sleep", "state", "route"}
+_NON_COT_CONTROL_NAMES = {"send", "hold", "held", "todo", "wake", "sleep", "state", "route", "voice"}
 
 
 def _strip_control_from_cot_result(
@@ -5758,7 +5782,7 @@ def _record_api_turn_light(user_text: str, assistant_reply: str, channel: str, *
     ), channel=channel)
 
 
-def _run_api_favilla_chat(*, text: str, channel: str, surface: str = "", attachments: list | None = None, record_turn: bool = True, family: str = "", turn_id: str = "", request_id: str = "") -> dict:
+def _run_api_favilla_chat(*, text: str, channel: str, surface: str = "", attachments: list | None = None, record_turn: bool = True, family: str = "", turn_id: str = "", request_id: str = "", on_tool_event=None) -> dict:
     if not _CONFIG or not _POOL:
         raise RuntimeError("config not loaded")
     config = _config_for_catalog_family(_CONFIG, family)
@@ -5801,6 +5825,7 @@ def _run_api_favilla_chat(*, text: str, channel: str, surface: str = "", attachm
             recall_context=pending_recall_context,
             extra_context=extras,
             image_attachments=attachments or [],
+            on_tool_event=on_tool_event,
         )
     except Exception as exc:
         _append_dashboard_trace_phase(
@@ -7879,6 +7904,93 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         pass  # suppress access logs
 
 
+# ---------------------------------------------------------------------------
+# WebSocket PTY terminal (fiet.cc/terminal → /ws/terminal via Caddy)
+# ---------------------------------------------------------------------------
+
+def _start_terminal_ws(port: int = 8767):
+    try:
+        import asyncio
+        import fcntl
+        import pty as _pty
+        import struct
+        import subprocess
+        import termios
+        import websockets  # type: ignore[import-untyped]
+    except ImportError:
+        logging.warning("websockets not installed — terminal endpoint disabled")
+        return
+
+    view_token = os.environ.get("FIAM_VIEW_TOKEN", "")
+
+    async def _handler(ws):
+        cookie = ws.request.headers.get("Cookie", "") if ws.request else ""
+        if view_token and f"fiam_view={view_token}" not in cookie:
+            await ws.close(4001, "Unauthorized")
+            return
+
+        master_fd, slave_fd = _pty.openpty()
+        env = {**os.environ, "TERM": "xterm-256color", "LANG": "en_US.UTF-8"}
+        proc = subprocess.Popen(
+            ["/bin/bash", "-l"],
+            stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
+            close_fds=True, start_new_session=True, env=env,
+            cwd=str(_ROOT),
+        )
+        os.close(slave_fd)
+
+        loop = asyncio.get_event_loop()
+
+        async def _read_pty():
+            while True:
+                try:
+                    data = await loop.run_in_executor(None, lambda: os.read(master_fd, 4096))
+                    if not data:
+                        break
+                    await ws.send(data)
+                except (OSError, websockets.exceptions.ConnectionClosed):
+                    break
+
+        read_task = asyncio.create_task(_read_pty())
+        try:
+            async for msg in ws:
+                if isinstance(msg, str) and msg.startswith("{"):
+                    try:
+                        obj = json.loads(msg)
+                        if obj.get("type") == "resize":
+                            winsize = struct.pack("HHHH", obj["rows"], obj["cols"], 0, 0)
+                            fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
+                            continue
+                    except (json.JSONDecodeError, KeyError):
+                        pass
+                raw = msg.encode("utf-8") if isinstance(msg, str) else msg
+                os.write(master_fd, raw)
+        except websockets.exceptions.ConnectionClosed:
+            pass
+        finally:
+            read_task.cancel()
+            try:
+                os.close(master_fd)
+            except OSError:
+                pass
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+    async def _serve(p: int):
+        async with websockets.serve(_handler, "127.0.0.1", p, max_size=2**20):
+            await asyncio.Future()
+
+    def _run():
+        asyncio.run(_serve(port))
+
+    t = threading.Thread(target=_run, daemon=True, name="terminal-ws")
+    t.start()
+    logging.info("Terminal WS on 127.0.0.1:%d", port)
+
+
 def main():
     parser = argparse.ArgumentParser(description="fiam debug dashboard")
     parser.add_argument("--port", type=int, default=8766)
@@ -7906,6 +8018,7 @@ def main():
     server = ThreadingHTTPServer((args.bind, args.port), DashboardHandler)
     print(f"Dashboard: http://{args.bind}:{args.port}/")
     _start_stroll_tick_thread()
+    _start_terminal_ws(port=args.port + 1)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

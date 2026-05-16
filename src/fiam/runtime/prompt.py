@@ -289,6 +289,9 @@ def _valid_transcript_message(message: Any) -> dict[str, Any] | None:
     if role not in {"system", "user", "assistant", "tool"}:
         return None
     out = {k: v for k, v in message.items() if k in {"role", "content", "tool_calls", "tool_call_id", "name"}}
+    # Normalize None content to empty string (Anthropic rejects null content)
+    if out.get("content") is None and "content" in out:
+        out["content"] = ""
     # Favilla stores body as "text"; map to "content"
     if "content" not in out and "text" in message:
         text = message["text"]

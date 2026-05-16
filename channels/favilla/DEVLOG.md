@@ -12,6 +12,20 @@
 **Backend Settings**：`AI` = server auto-router（同一个 AI 身份可按任务在 API/CC 能力面间切换）；`API`/`CC` = 用户手动强制本轮请求后端，AI 仍应理解这是 transport/capability surface，不是身份变化。
 **Settings**：背景 `rgba(0,0,0,0.45)` 纯变暗不模糊；卡片 `backdrop-filter: blur(20px)` + `rgba(255,250,243,0.55)` 半透明磨砂；居中固定，CSS-only fade 120ms。
 
+## Session 2026-05-15 — Terminal, notification, STT prep
+
+**Commit 724ec63** (pushed, CI building):
+- Terminal page via easter egg slot — currently chat-connected, **needs rework to real xterm.js shell terminal**
+- Notification: `fiam_messages` channel importance=MAX (heads-up popup), `f_logo.png` as largeIcon
+- Capacitor config: LocalNotifications plugin defaults added
+
+**Next build (do together)**:
+- Terminal → real shell: xterm.js + WebSocket shell bridge on dashboard server
+- STT: Google Cloud Speech-to-Text (`cmn-Hans-CN`), add as provider in `voice.ts`
+- Voice recording UX: long-press → record, release → send, swipe-up → cancel
+- Auto-transcribe then send to AI
+- Voice message bubbles: parse `<voice>` XML blocks as separate audio bubbles between text
+
 ## Session 2026-05-13 — Runtime/settings/object transfer
 
 - Chat now sends `appConfig.defaultRuntime` to the Favilla SSE endpoint, so Settings-forced `API`/`CC` actually overrides auto routing.

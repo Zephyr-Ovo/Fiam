@@ -46,6 +46,11 @@ class RouteMarker:
 
 
 @dataclass(frozen=True)
+class VoiceMarker:
+    text: str = ""
+
+
+@dataclass(frozen=True)
 class HoldMarker:
     reason: str = ""
     status: str = "reroll"
@@ -256,6 +261,18 @@ def parse_cot_markers(text: str) -> list[str]:
         cleaned = (body or "").strip()
         if cleaned:
             out.append(cleaned)
+    return out
+
+
+def parse_voice_markers(text: str) -> list[VoiceMarker]:
+    """Parse ``<voice>text for TTS</voice>`` markers."""
+    out: list[VoiceMarker] = []
+    for name, _attrs, body in _xml_markers(text):
+        if name != "voice":
+            continue
+        cleaned = (body or "").strip()
+        if cleaned:
+            out.append(VoiceMarker(text=cleaned))
     return out
 
 

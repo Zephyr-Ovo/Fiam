@@ -16,6 +16,8 @@ from fiam.config import FiamConfig
 # the entire turn's thought chain (covers marker thoughts + any native
 # reasoning the runtime carries).
 _COT_BLOCK_RE = re.compile(r"<cot>\s*(.*?)\s*</cot>", re.DOTALL | re.IGNORECASE)
+_VOICE_BLOCK_RE = re.compile(r"<voice>\s*(.*?)\s*</voice>", re.DOTALL | re.IGNORECASE)
+_COT_OR_VOICE_RE = re.compile(r"<(cot|voice)>\s*(.*?)\s*</\1>", re.DOTALL | re.IGNORECASE)
 _LOCK_RE = re.compile(r"<lock\s*/>", re.IGNORECASE)
 _CODE_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
 _INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
@@ -47,20 +49,22 @@ def _unmask_code_spans(text: str, placeholders: dict[str, str]) -> str:
 
 
 def split_cot_segments(chunk: str) -> list[tuple[str, str]]:
-    """Split a text chunk into ordered ('text'|'thought', body) segments,
-    skipping <cot> tags that appear inside markdown code spans."""
+    """Split a text chunk into ordered ('text'|'thought'|'voice', body) segments,
+    skipping tags that appear inside markdown code spans."""
     if not chunk:
         return []
     masked, placeholders = _mask_code_spans(chunk)
     segs: list[tuple[str, str]] = []
     cursor = 0
-    for m in _COT_BLOCK_RE.finditer(masked):
+    for m in _COT_OR_VOICE_RE.finditer(masked):
         before = masked[cursor:m.start()]
         if before.strip():
             segs.append(("text", _unmask_code_spans(before, placeholders)))
-        body = (m.group(1) or "").strip()
+        tag = m.group(1).lower()
+        kind = "thought" if tag == "cot" else "voice"
+        body = (m.group(2) or "").strip()
         if body:
-            segs.append(("thought", _unmask_code_spans(body, placeholders)))
+            segs.append((kind, _unmask_code_spans(body, placeholders)))
         cursor = m.end()
     tail = masked[cursor:]
     if tail.strip():
@@ -89,6 +93,8 @@ def parse_app_cot(reply: str, config: FiamConfig | None = None) -> AppCotResult:
             cleaned = _strip_cot_control(body).strip()
             if cleaned:
                 segments.append({"type": "text", "text": cleaned})
+        elif kind == "voice":
+            segments.append({"type": "voice", "text": body})
         else:
             step = {"kind": "think", "text": body, "source": "fiam"}
             thoughts_raw.append(step)
@@ -157,7 +163,7 @@ def summarize_cot_steps(steps: list[dict[str, Any]], *, locked: bool, config: Fi
         return fallback
 
     base_url = (getattr(config, "app_cot_summary_base_url", "") or "https://token-plan-cn.xiaomimimo.com/v1").rstrip("/")
-    model = getattr(config, "app_cot_summary_model", "") or "mimo-v2.5"
+    model = getattr(config, "app_cot_summary_model", "") or "mimo-v2-omni"
     prompt = {
         "locked": locked,
         "items": [{"index": i, "text": str(step.get("text") or "")[:1800]} for i, step in enumerate(steps)],
@@ -176,7 +182,7 @@ def summarize_cot_steps(steps: list[dict[str, Any]], *, locked: bool, config: Fi
             {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
         ],
         "temperature": 0.35,
-        "max_tokens": 220,
+        "max_tokens": 800,
     }
     request = urllib.request.Request(
         f"{base_url}/chat/completions",
@@ -185,7 +191,7 @@ def summarize_cot_steps(steps: list[dict[str, Any]], *, locked: bool, config: Fi
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=8) as response:
+        with urllib.request.urlopen(request, timeout=20) as response:
             data = json.loads(response.read().decode("utf-8"))
         content = str(((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "")
         parsed = _parse_summary_json(content)
@@ -256,7 +262,7 @@ def narrate_recall_fragments(
         return None
 
     base_url = (getattr(config, "app_cot_summary_base_url", "") or "https://token-plan-cn.xiaomimimo.com/v1").rstrip("/")
-    model = getattr(config, "app_cot_summary_model", "") or "mimo-v2.5"
+    model = getattr(config, "app_cot_summary_model", "") or "mimo-v2-omni"
     items = [
         {"index": i, "hint": str(f.get("hint") or ""), "text": str(f.get("text") or "")[:1800]}
         for i, f in enumerate(fragments)
@@ -278,7 +284,7 @@ def narrate_recall_fragments(
             {"role": "user", "content": json.dumps({"items": items}, ensure_ascii=False)},
         ],
         "temperature": 0.4,
-        "max_tokens": 1800,
+        "max_tokens": 4000,
     }
     request = urllib.request.Request(
         f"{base_url}/chat/completions",

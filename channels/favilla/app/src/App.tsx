@@ -19,6 +19,7 @@ import {
   Check,
   Share2,
   Square,
+  Volume2,
 } from "lucide-react"
 import { DynamicIcon, iconNames, type IconName } from "lucide-react/dynamic"
 import { LockIcon } from "./components/LockIcon"
@@ -330,6 +331,50 @@ function VoiceChip({ seconds }: { seconds: number }) {
         style={{ color: "rgba(63,47,41,0.65)", fontFamily: "var(--font-mono)" }}
       >
         0:{String(seconds).padStart(2, "0")}
+      </span>
+    </div>
+  )
+}
+
+// ---------- AI voice segment (TTS playback bubble) ----------
+function VoiceSegmentBubble({ text }: { text: string }) {
+  const [playing, setPlaying] = useState(false)
+  const handlePlay = async () => {
+    if (playing) return
+    setPlaying(true)
+    try {
+      await speakText(text)
+    } catch {
+      // TTS failed silently
+    } finally {
+      setPlaying(false)
+    }
+  }
+  return (
+    <div
+      className="flex items-center gap-2 rounded-2xl px-3 py-2 cursor-pointer select-none"
+      style={{
+        background: "rgba(199,195,176,0.35)",
+        border: "1px solid rgba(63,47,41,0.08)",
+        maxWidth: 320,
+      }}
+      onClick={handlePlay}
+    >
+      <div
+        className="grid h-7 w-7 shrink-0 place-items-center rounded-full"
+        style={{
+          background: playing ? "rgba(63,47,41,0.15)" : "var(--color-cocoa)",
+          color: playing ? "var(--color-cocoa)" : "var(--color-cream)",
+          transition: "background 0.2s",
+        }}
+      >
+        <Volume2 className="h-3.5 w-3.5" strokeWidth={2} />
+      </div>
+      <span
+        className="text-[13px] leading-snug"
+        style={{ color: "rgba(63,47,41,0.75)" }}
+      >
+        {text}
       </span>
     </div>
   )
@@ -929,6 +974,7 @@ type RenderItem =
   | { kind: "text"; index: number; text: string }
   | { kind: "thought"; index: number; step: ThinkStep; locked?: boolean }
   | { kind: "tools"; index: number; steps: ThinkStep[] }
+  | { kind: "voice-seg"; index: number; text: string }
 
 function buildRenderItems(segments: ChatSegment[] | undefined): RenderItem[] {
   if (!segments || segments.length === 0) return []
@@ -944,6 +990,8 @@ function buildRenderItems(segments: ChatSegment[] | undefined): RenderItem[] {
       if (seg.text || seg.summary) {
         out.push({ kind: "thought", index: idx, step: stepFromSegment(seg), locked: seg.locked })
       }
+    } else if (seg.type === "voice") {
+      if (seg.text) out.push({ kind: "voice-seg", index: idx, text: seg.text })
     } else if (seg.type === "tool_use") {
       const id = seg.tool_use_id || `anon-${idx}`
       const existing = toolMap.get(id)
@@ -1028,6 +1076,7 @@ function Bubble({
     | { kind: "text-group"; items: Extract<RenderItem, { kind: "text" }>[]; firstIndex: number }
     | { kind: "chain-thought"; item: Extract<RenderItem, { kind: "thought" }> }
     | { kind: "chain-tools"; item: Extract<RenderItem, { kind: "tools" }> }
+    | { kind: "voice-block"; item: Extract<RenderItem, { kind: "voice-seg" }> }
     | { kind: "voice" }
     | { kind: "files" }
   const blocks: Block[] = []
@@ -1049,6 +1098,9 @@ function Bubble({
       } else if (item.kind === "thought") {
         flush()
         blocks.push({ kind: "chain-thought", item })
+      } else if (item.kind === "voice-seg") {
+        flush()
+        blocks.push({ kind: "voice-block", item })
       } else {
         flush()
         blocks.push({ kind: "chain-tools", item })
@@ -1117,6 +1169,9 @@ function Bubble({
               locked={msg.thinkingLocked}
               peerName={peerName}
             />
+          )}
+          {block.kind === "voice-block" && (
+            <VoiceSegmentBubble text={block.item.text} />
           )}
           {block.kind === "text-group" && (
             <BubbleBody
@@ -1448,6 +1503,8 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const mediaStreamRef = useRef<MediaStream | null>(null)
   const mediaChunksRef = useRef<Blob[]>([])
+  const voiceCancelledRef = useRef(false)
+  const voiceStartYRef = useRef(0)
   const confirmTimerRef = useRef<number | null>(null)
   const maxViewportHeightRef = useRef(0)
   const stickToBottomRef = useRef(true)
@@ -1753,7 +1810,7 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
     setInput((cur) => (cur.trim() ? `${cur.trimEnd()} ${clean}` : clean))
   }
 
-  async function startApiSttRecording() {
+  async function startApiSttRecording(autoSend = false) {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
     mediaStreamRef.current = stream
     mediaChunksRef.current = []
@@ -1764,17 +1821,30 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
     }
     recorder.onstop = () => {
       setVoiceRecording(false)
+      const cancelled = voiceCancelledRef.current
+      voiceCancelledRef.current = false
       const blob = new Blob(mediaChunksRef.current, { type: mediaChunksRef.current[0]?.type || "audio/webm" })
       mediaChunksRef.current = []
       mediaRecorderRef.current = null
       mediaStreamRef.current?.getTracks().forEach((track) => track.stop())
       mediaStreamRef.current = null
 
+      if (cancelled) {
+        setVoiceBusy(false)
+        return
+      }
+
       void (async () => {
-        if (blob.size <= 0) return
+        if (blob.size <= 0) { setVoiceBusy(false); return }
         try {
           const text = await transcribeAudioOpenAICompatible(blob)
-          appendVoiceText(text)
+          if (text.trim()) {
+            if (autoSend) {
+              void sendChatTurns([{ text, filesToSend: [], recallUsed: false }])
+            } else {
+              appendVoiceText(text)
+            }
+          }
         } catch (error) {
           setVoiceError(error instanceof Error ? error.message : String(error))
         } finally {
@@ -1788,50 +1858,78 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
     setVoiceBusy(true)
   }
 
-  async function toggleVoiceInput() {
-    if (voiceRecording) {
-      if (appConfig.sttProvider === "browser") {
-        browserSttRef.current?.stop()
-      } else {
-        mediaRecorderRef.current?.stop()
-      }
-      return
+  function cancelVoiceRecording() {
+    voiceCancelledRef.current = true
+    if (appConfig.sttProvider === "browser") {
+      browserSttRef.current?.stop()
+    } else {
+      mediaRecorderRef.current?.stop()
     }
+  }
 
+  function stopVoiceRecording() {
+    if (appConfig.sttProvider === "browser") {
+      browserSttRef.current?.stop()
+    } else {
+      mediaRecorderRef.current?.stop()
+    }
+  }
+
+  async function startVoiceHold(e: React.PointerEvent) {
+    if (voiceBusy) return
+    e.preventDefault()
+    voiceCancelledRef.current = false
+    voiceStartYRef.current = e.clientY
     try {
       setVoiceError(null)
       if (appConfig.sttProvider === "openai_compatible") {
-        await startApiSttRecording()
-        return
+        await startApiSttRecording(true)
+      } else {
+        const session = createBrowserSttSession({
+          onFinalText: (text) => {
+            if (!voiceCancelledRef.current && text.trim()) {
+              void sendChatTurns([{ text, filesToSend: [], recallUsed: false }])
+            }
+          },
+          onError: (message) => {
+            setVoiceError(message)
+            setVoiceBusy(false)
+            setVoiceRecording(false)
+          },
+          onEnd: () => {
+            setVoiceBusy(false)
+            setVoiceRecording(false)
+          },
+        })
+        if (!session) {
+          setVoiceError("speech recognition is not available")
+          return
+        }
+        browserSttRef.current = session
+        setVoiceBusy(true)
+        setVoiceRecording(true)
+        session.start()
       }
-
-      const session = createBrowserSttSession({
-        onFinalText: appendVoiceText,
-        onError: (message) => {
-          setVoiceError(message)
-          setVoiceBusy(false)
-          setVoiceRecording(false)
-        },
-        onEnd: () => {
-          setVoiceBusy(false)
-          setVoiceRecording(false)
-        },
-      })
-      if (!session) {
-        setVoiceError("speech recognition is not available")
-        return
-      }
-
-      browserSttRef.current = session
-      setVoiceBusy(true)
-      setVoiceRecording(true)
-      session.start()
     } catch (error) {
       setVoiceBusy(false)
       setVoiceRecording(false)
       setVoiceError(error instanceof Error ? error.message : String(error))
     }
   }
+
+  function onVoicePointerMove(e: React.PointerEvent) {
+    if (!voiceRecording) return
+    const dy = voiceStartYRef.current - e.clientY
+    if (dy > 40) {
+      cancelVoiceRecording()
+    }
+  }
+
+  function onVoicePointerUp() {
+    if (!voiceRecording) return
+    stopVoiceRecording()
+  }
+
 
   async function sendChatTurns(items: PendingChatTurn[]) {
     if (!items.length) return
@@ -2511,20 +2609,21 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
                 <div className="flex-1" />
                 <button
                   type="button"
-                  onPointerDown={onStableControlPointerDown}
-                  onClick={() => {
-                    void toggleVoiceInput()
-                  }}
+                  onPointerDown={(e) => { void startVoiceHold(e) }}
+                  onPointerMove={onVoicePointerMove}
+                  onPointerUp={onVoicePointerUp}
+                  onPointerCancel={onVoicePointerUp}
                   disabled={voiceBusy && !voiceRecording}
-                  className="grid h-9 w-9 shrink-0 place-items-center rounded-full"
+                  className="grid h-9 w-9 shrink-0 place-items-center rounded-full select-none"
                   style={{
                     color: "var(--color-cocoa)",
                     background: voiceRecording ? "rgba(176, 76, 76, 0.14)" : "transparent",
                     opacity: voiceBusy && !voiceRecording ? 0.55 : 1,
+                    touchAction: "none",
                   }}
-                  aria-label={voiceRecording ? "Stop voice input" : "Voice input"}
+                  aria-label={voiceRecording ? "Release to send, swipe up to cancel" : "Hold to speak"}
                   aria-busy={voiceBusy && !voiceRecording}
-                  title={voiceRecording ? "Tap to stop recording" : "Tap to start speech-to-text"}
+                  title={voiceRecording ? "Release to send · Swipe up to cancel" : "Hold to speak"}
                 >
                   <Mic className="h-5 w-5" strokeWidth={1.6} />
                 </button>
