@@ -227,6 +227,7 @@ export type TtsPlayerState = {
   status: "idle" | "loading" | "playing" | "paused" | "error"
   duration: number
   currentTime: number
+  sourceId?: string
   error?: string
 }
 
@@ -266,54 +267,80 @@ export class TtsPlayer {
     if (this.rafId !== null) { cancelAnimationFrame(this.rafId); this.rafId = null }
   }
 
-  async playUrl(url: string): Promise<void> {
+  private attachAudioHandlers(sourceId?: string) {
+    if (!this.audio) return
+    this.audio.onended = () => { this.emit({ status: "idle", currentTime: 0, sourceId }); this.stopTick() }
+    this.audio.onerror = () => { this.emit({ status: "error", error: "playback failed", sourceId }); this.stopTick() }
+    this.audio.onloadedmetadata = () => { this.emit({ duration: this.audio!.duration || 0, sourceId }) }
+  }
+
+  private async playPreparedAudio(sourceId?: string): Promise<void> {
+    if (!this.audio) return
+    this.attachAudioHandlers(sourceId)
+    await this.audio.play()
+    this.emit({ status: "playing", sourceId })
+    this.startTick()
+  }
+
+  async playUrl(url: string, sourceId?: string): Promise<void> {
     this.stop()
-    this.emit({ status: "loading", duration: 0, currentTime: 0 })
+    this.emit({ status: "loading", duration: 0, currentTime: 0, sourceId })
     try {
       this.audio = getSharedAudio()
       this.audio.src = url
-      this.audio.onended = () => { this.emit({ status: "idle", currentTime: 0 }); this.stopTick() }
-      this.audio.onerror = () => { this.emit({ status: "error", error: "playback failed" }); this.stopTick() }
-      this.audio.onloadedmetadata = () => { this.emit({ duration: this.audio!.duration || 0 }) }
-      await this.audio.play()
-      this.emit({ status: "playing" })
-      this.startTick()
+      await this.playPreparedAudio(sourceId)
     } catch (e) {
-      this.emit({ status: "error", error: e instanceof Error ? e.message : String(e) })
+      this.emit({ status: "error", error: e instanceof Error ? e.message : String(e), sourceId })
     }
   }
 
-  async play(text: string): Promise<void> {
+  async playBlob(blob: Blob, sourceId?: string): Promise<void> {
+    this.stop()
+    this.emit({ status: "loading", duration: 0, currentTime: 0, sourceId })
+    try {
+      this.objectUrl = URL.createObjectURL(blob)
+      this.audio = getSharedAudio()
+      this.audio.src = this.objectUrl
+      await this.playPreparedAudio(sourceId)
+    } catch (e) {
+      this.emit({ status: "error", error: e instanceof Error ? e.message : String(e), sourceId })
+    }
+  }
+
+  async playFetched(fetcher: () => Promise<Blob>, sourceId?: string): Promise<void> {
+    this.stop()
+    this.emit({ status: "loading", duration: 0, currentTime: 0, sourceId })
+    try {
+      const blob = await fetcher()
+      await this.playBlob(blob, sourceId)
+    } catch (e) {
+      this.emit({ status: "error", error: e instanceof Error ? e.message : String(e), sourceId })
+    }
+  }
+
+  async play(text: string, sourceId?: string): Promise<void> {
     this.stop()
     const clean = String(text || "").trim()
     if (!clean) return
 
     const provider = (appConfig.ttsProvider || "browser") as VoicePlaybackProvider
     if (provider === "browser") {
-      this.playBrowser(clean)
+      this.playBrowser(clean, sourceId)
       return
     }
 
-    this.emit({ status: "loading", duration: 0, currentTime: 0 })
+    this.emit({ status: "loading", duration: 0, currentTime: 0, sourceId })
     try {
       const blob = await fetchTtsAudio(clean, provider)
-      this.objectUrl = URL.createObjectURL(blob)
-      this.audio = getSharedAudio()
-      this.audio.src = this.objectUrl
-      this.audio.onended = () => { this.emit({ status: "idle", currentTime: 0 }); this.stopTick() }
-      this.audio.onerror = () => { this.emit({ status: "error", error: "playback failed" }); this.stopTick() }
-      this.audio.onloadedmetadata = () => { this.emit({ duration: this.audio!.duration || 0 }) }
-      await this.audio.play()
-      this.emit({ status: "playing" })
-      this.startTick()
+      await this.playBlob(blob, sourceId)
     } catch (e) {
-      this.emit({ status: "error", error: e instanceof Error ? e.message : String(e) })
+      this.emit({ status: "error", error: e instanceof Error ? e.message : String(e), sourceId })
     }
   }
 
-  private playBrowser(text: string) {
+  private playBrowser(text: string, sourceId?: string) {
     if (typeof window.speechSynthesis === "undefined") {
-      this.emit({ status: "error", error: "speech synthesis unavailable" })
+      this.emit({ status: "error", error: "speech synthesis unavailable", sourceId })
       return
     }
     const utterance = new SpeechSynthesisUtterance(text)
@@ -322,12 +349,12 @@ export class TtsPlayer {
       const v = window.speechSynthesis.getVoices().find((i) => i.name === appConfig.ttsVoice || i.voiceURI === appConfig.ttsVoice)
       if (v) utterance.voice = v
     }
-    utterance.onstart = () => this.emit({ status: "playing" })
-    utterance.onend = () => this.emit({ status: "idle", currentTime: 0 })
-    utterance.onerror = () => this.emit({ status: "error", error: "speech synthesis error" })
+    utterance.onstart = () => this.emit({ status: "playing", sourceId })
+    utterance.onend = () => this.emit({ status: "idle", currentTime: 0, sourceId })
+    utterance.onerror = () => this.emit({ status: "error", error: "speech synthesis error", sourceId })
     window.speechSynthesis.cancel()
     window.speechSynthesis.speak(utterance)
-    this.emit({ status: "loading" })
+    this.emit({ status: "loading", sourceId })
   }
 
   pause() {
@@ -362,7 +389,7 @@ export class TtsPlayer {
     }
     if (this.objectUrl) { URL.revokeObjectURL(this.objectUrl); this.objectUrl = null }
     window.speechSynthesis?.cancel()
-    this.emit({ status: "idle", duration: 0, currentTime: 0 })
+    this.emit({ status: "idle", duration: 0, currentTime: 0, sourceId: undefined })
   }
 }
 

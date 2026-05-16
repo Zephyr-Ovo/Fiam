@@ -12,7 +12,7 @@
  */
 
 import bgDefault from "./assets/brand/bg.jpg"
-import { loadBgImage } from "./lib/bg-store"
+import { loadBgImage, saveBgImage } from "./lib/bg-store"
 
 /** Sentinel stored in the (size-limited) config blob when the real
  *  background image lives in IndexedDB. Resolved to the actual data URI at
@@ -152,8 +152,22 @@ function resolveBgSentinel() {
     .catch(() => {})
 }
 
+function migrateInlineBgToIndexedDb() {
+  if (!String(appConfig.bg || "").startsWith("data:image/")) return
+  const dataUri = appConfig.bg
+  saveBgImage(dataUri)
+    .then(() => {
+      const overrides = { ...loadOverrides(), bg: BG_IDB }
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(overrides))
+      appConfig.bg = dataUri
+      window.dispatchEvent(new CustomEvent("favilla:config-changed"))
+    })
+    .catch(() => {})
+}
+
 applyThemeVars(appConfig)
 resolveBgSentinel()
+migrateInlineBgToIndexedDb()
 
 /** Persist a partial config patch and update the live `appConfig` object. */
 export function saveConfig(patch: Partial<AppConfig>) {

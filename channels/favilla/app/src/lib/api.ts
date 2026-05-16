@@ -499,6 +499,24 @@ export async function downloadObject(token: string, fallbackName = "attachment")
   window.setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
+export async function fetchObjectBlob(token: string): Promise<Blob> {
+  const clean = token.trim()
+  if (!clean) throw new Error("missing object token")
+  const res = await fetch(`${getBase()}/favilla/object/${encodeURIComponent(clean)}`, {
+    method: "GET",
+    headers: authHeaders(),
+  })
+  if (!res.ok) {
+    let message = `HTTP ${res.status}`
+    try {
+      const data = await res.json()
+      if (data && typeof data.error === "string") message = data.error
+    } catch { /* ignore */ }
+    throw new Error(message)
+  }
+  return res.blob()
+}
+
 export async function sendStrollMessage(
   text: string,
   context: StrollSpatialContext,

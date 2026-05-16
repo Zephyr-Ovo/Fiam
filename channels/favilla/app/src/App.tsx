@@ -30,10 +30,10 @@ import { TranslateIcon } from "./components/TranslateIcon"
 import { ConfirmModal } from "./components/ConfirmModal"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
-import { abortChat, downloadObject, fetchChatTranscript, recordChatMessage, sendChatStream, translateText, uploadFiles, recallNow, cutFlow, processFlow, type ChatAttachment, type ChatSegment, type StoredChatMessage } from "./lib/api"
+import { abortChat, downloadObject, fetchChatTranscript, fetchObjectBlob, recordChatMessage, sendChatStream, translateText, uploadFiles, recallNow, cutFlow, processFlow, type ChatAttachment, type ChatSegment, type StoredChatMessage } from "./lib/api"
 import { useComputerStatus, describeEvent } from "./lib/computerStatus"
-import { appConfig } from "./config"
-import { createBrowserSttSession, speakText, TtsPlayer, type TtsPlayerState } from "./lib/voice"
+import { appConfig, type AppConfig } from "./config"
+import { createBrowserSttSession, unlockAudio, TtsPlayer, type TtsPlayerState } from "./lib/voice"
 import { transcribeAudioServer, fetchStickers } from "./lib/api"
 import { cacheMessages, getCachedMessages } from "./lib/msg-cache"
 
@@ -349,6 +349,32 @@ function formatDuration(s: number): string {
   return `${m}:${String(sec).padStart(2, "0")}`
 }
 
+function voiceSourceId(text: string, objectHash?: string) {
+  return objectHash ? `object:${objectHash}` : `text:${text}`
+}
+
+function firstPlayableVoice(segments: ChatSegment[] | undefined, fallbackText: string) {
+  const voice = (segments || []).find((seg) => seg.type === "voice" && (seg.text || seg.object_hash))
+  if (voice?.type === "voice") {
+    return {
+      text: voice.text || "",
+      objectHash: voice.object_hash,
+      sourceId: voiceSourceId(voice.text || "", voice.object_hash),
+    }
+  }
+  const text = String(fallbackText || "").trim()
+  return text ? { text, objectHash: undefined, sourceId: `reply:${text}` } : null
+}
+
+function autoplayAiVoice(segments: ChatSegment[] | undefined, fallbackText: string) {
+  const item = firstPlayableVoice(segments, fallbackText)
+  if (!item) return Promise.resolve()
+  if (item.objectHash) {
+    return _ttsPlayer.playFetched(() => fetchObjectBlob(item.objectHash!), item.sourceId)
+  }
+  return _ttsPlayer.play(item.text, item.sourceId)
+}
+
 function VoiceSegmentBubble({ text, objectHash }: { text: string; objectHash?: string }) {
   const [ps, setPs] = useState<TtsPlayerState>({ status: "idle", duration: 0, currentTime: 0 })
   const playerRef = useRef(_ttsPlayer)
@@ -359,18 +385,21 @@ function VoiceSegmentBubble({ text, objectHash }: { text: string; objectHash?: s
     return unsub
   }, [])
 
-  const active = ps.status === "playing" || ps.status === "paused" || ps.status === "loading"
-  const progress = ps.duration > 0 ? ps.currentTime / ps.duration : 0
+  const sourceId = voiceSourceId(text, objectHash)
+  const current = ps.sourceId === sourceId
+  const active = current && (ps.status === "playing" || ps.status === "paused" || ps.status === "loading")
+  const progress = active && ps.duration > 0 ? ps.currentTime / ps.duration : 0
 
   const handleTap = () => {
-    if (ps.status === "playing") {
+    unlockAudio()
+    if (current && ps.status === "playing") {
       playerRef.current.pause()
-    } else if (ps.status === "paused") {
+    } else if (current && ps.status === "paused") {
       playerRef.current.resume()
     } else if (objectHash) {
-      void playerRef.current.playUrl(`${(appConfig.apiBase || "").replace(/\/+$/, "")}/favilla/object/${encodeURIComponent(objectHash)}`)
+      void playerRef.current.playFetched(() => fetchObjectBlob(objectHash), sourceId)
     } else {
-      void playerRef.current.play(text)
+      void playerRef.current.play(text, sourceId)
     }
   }
 
@@ -422,7 +451,7 @@ function VoiceSegmentBubble({ text, objectHash }: { text: string; objectHash?: s
           className="text-[11px] tabular-nums shrink-0"
           style={{ color: "rgba(63,47,41,0.55)", fontFamily: "var(--font-mono)" }}
         >
-          {active ? formatDuration(ps.currentTime) : formatDuration(ps.duration)}
+          {active ? formatDuration(ps.currentTime) : formatDuration(current ? ps.duration : 0)}
         </span>
       </div>
       <div
@@ -1761,7 +1790,8 @@ function SendButton({
 }
 
 export default function App({ onBack, active = true }: { onBack?: () => void; active?: boolean } = {}) {
-  const peerName = appConfig.aiName || "ai"
+  const [liveConfig, setLiveConfig] = useState<AppConfig>(() => ({ ...appConfig }))
+  const peerName = liveConfig.aiName || "ai"
   const computerStatus = useComputerStatus(active)
   const [messages, setMessages] = useState<Msg[]>([])
   const [input, setInput] = useState("")
@@ -1801,6 +1831,13 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
   // config-changed) can bail out without racing an in-flight stream.
   const sendingRef = useRef(false)
   useEffect(() => { sendingRef.current = sending }, [sending])
+
+  useEffect(() => {
+    const syncConfig = () => setLiveConfig({ ...appConfig })
+    syncConfig()
+    window.addEventListener("favilla:config-changed", syncConfig)
+    return () => window.removeEventListener("favilla:config-changed", syncConfig)
+  }, [])
 
   const mergeServerMessages = useCallback((serverMessages: StoredChatMessage[], opts: { dropLocalId?: string; dropLocalUserText?: string } = {}) => {
     const fromServer = serverMessagesToMsgs(serverMessages)
@@ -2340,8 +2377,8 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
               }),
             )
           } catch { /* ignore */ }
-          if (appConfig.ttsAutoPlayAi && String(r.reply || "").trim()) {
-            void speakText(String(r.reply || "")).catch((error) => {
+          if (appConfig.ttsAutoPlayAi) {
+            void autoplayAiVoice(r.segments, String(r.reply || "")).catch((error) => {
               setVoiceError(error instanceof Error ? error.message : String(error))
             })
           }
@@ -2490,7 +2527,7 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
     <div className="relative flex h-full w-full flex-col overflow-hidden">
       <div
         className="absolute inset-0 -z-10 bg-cover bg-center"
-        style={{ backgroundImage: `url(${appConfig.bg})` }}
+        style={{ backgroundImage: `url(${liveConfig.bg})` }}
       />
 
       <div className="relative flex h-full min-h-0 flex-col">
