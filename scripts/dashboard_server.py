@@ -322,7 +322,10 @@ def _generate_voice_audio(text: str) -> str | None:
         if not tts_base:
             tts_base = "https://api.inworld.ai/tts/v1/voice"
         if not tts_key:
-            tts_key = os.environ.get("FIAM_INWORLD_API_KEY", "").strip()
+            tts_key = (
+                os.environ.get("FIAM_INWORLD_API_KEY", "").strip()
+                or os.environ.get("INWORLD_API_KEY", "").strip()
+            )
     if not tts_base and is_mimo:
         tts_base = "https://token-plan-cn.xiaomimimo.com/v1"
     if not tts_key and is_mimo:
