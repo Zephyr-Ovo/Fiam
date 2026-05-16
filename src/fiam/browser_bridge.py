@@ -471,6 +471,48 @@ def browser_snapshot_meta(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# Host → coarse activity kind + a stable Chinese label. mimo writes the vivid
+# live narration; this just picks the verb/icon the card frames it with. Order
+# matters: first endswith match wins. Unknown hosts fall back to "browsing".
+_SITE_KINDS: tuple[tuple[tuple[str, ...], str, str], ...] = (
+    (("bilibili.com", "youtube.com", "youtu.be", "iqiyi.com", "v.qq.com", "douyin.com"), "watching", "在看视频"),
+    (("xiaohongshu.com", "xhslink.com"), "reading", "在看小红书"),
+    (("zhihu.com", "medium.com", "sspai.com"), "reading", "在看文章"),
+    (("x.com", "twitter.com", "weibo.com", "reddit.com"), "browsing", "在刷动态"),
+)
+_DEFAULT_SITE_KIND = ("browsing", "在逛网页")
+
+
+def _host_of(url: str) -> str:
+    try:
+        from urllib.parse import urlparse
+
+        host = (urlparse(url).hostname or "").lower()
+    except (ValueError, TypeError):
+        host = ""
+    return host[4:] if host.startswith("www.") else host
+
+
+def classify_site(url: str, title: str = "") -> dict[str, str]:
+    """Map a URL to ``{host, kind, label, favicon, title}`` for the activity
+    card. ``kind`` ∈ watching|reading|browsing; ``label`` is a stable Chinese
+    verb the card frames mimo's live narration with; ``favicon`` is a derived
+    hint the client may swap for the page's real icon."""
+    host = _host_of(url)
+    kind, label = _DEFAULT_SITE_KIND
+    for hosts, k, lbl in _SITE_KINDS:
+        if any(host == h or host.endswith("." + h) for h in hosts):
+            kind, label = k, lbl
+            break
+    return {
+        "host": host,
+        "kind": kind,
+        "label": label,
+        "favicon": f"https://{host}/favicon.ico" if host else "",
+        "title": _clean_text(title, limit=160),
+    }
+
+
 def _truncate_url(url: str) -> str:
     if len(url) <= MAX_URL_DISPLAY:
         return url

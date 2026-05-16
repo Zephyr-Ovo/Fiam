@@ -1327,6 +1327,81 @@ def _apply_browse_intents(result: dict, *, channel: str, runtime: str) -> None:
             logger.exception("computer bus publish (browse_intent) failed")
     if queued:
         result["browse_intents"] = queued
+        last = queued[-1]
+        _emit_browser_card(url=last["url"], title="", why=last.get("why") or "", trail=[], force=True)
+
+
+# One evolving "what it's doing" card per browse session, coarsened so the
+# chat shows a single in-place card instead of a row per click. Re-narrated
+# (via mimo, off the AI's main context) only on site change or every few
+# ticks / ~25s. Frontends render computer-event type "card" in place.
+_BROWSER_CARD: dict[str, Any] = {}
+_CARD_TICK_EVERY = 6
+_CARD_MIN_INTERVAL_S = 25.0
+
+
+def _emit_browser_card(*, url: str, title: str, why: str = "", trail: list | None = None, force: bool = False) -> None:
+    if not _CONFIG or not str(url or "").lower().startswith(("http://", "https://")):
+        return
+    try:
+        from fiam.browser_bridge import classify_site
+        site = classify_site(url, title or "")
+    except Exception:
+        logger.exception("classify_site failed")
+        return
+    now = time.time()
+    prev = _BROWSER_CARD
+    host_changed = site["host"] != prev.get("host")
+    ticks = 0 if (force or host_changed) else int(prev.get("ticks") or 0) + 1
+    due = (
+        force
+        or host_changed
+        or ticks % _CARD_TICK_EVERY == 0
+        or (now - float(prev.get("updated_at") or 0)) >= _CARD_MIN_INTERVAL_S
+    )
+    if not due:
+        _BROWSER_CARD["ticks"] = ticks
+        return
+    narration = None
+    try:
+        from fiam_lib.app_markers import narrate_browser_activity
+        narration = narrate_browser_activity(
+            _CONFIG, label=site["label"], title=title or "", url=url,
+            trail=trail or [], why=why or str(prev.get("why") or ""),
+        )
+    except Exception:
+        logger.exception("narrate_browser_activity failed")
+    if not narration:
+        narration = str(prev.get("narration") or "") if not host_changed else ""
+    if not narration:
+        narration = site["label"]
+    since = float(prev.get("since") or now) if not host_changed else now
+    card = {
+        "type": "browser_card",
+        "host": site["host"],
+        "url": url[:2000],
+        "favicon": site["favicon"],
+        "kind": site["kind"],
+        "label": site["label"],
+        "title": site["title"],
+        "narration": narration,
+        "why": why or str(prev.get("why") or ""),
+        "since": since,
+        "updated_at": now,
+        "ticks": ticks,
+    }
+    _BROWSER_CARD.clear()
+    _BROWSER_CARD.update(card)
+    try:
+        from fiam_lib import life_state
+        life_state.set_activity(_CONFIG, site["kind"], summary=narration, target=url, surface="atrium")
+    except Exception:
+        logger.exception("life_state set_activity (card) failed")
+    try:
+        from fiam_lib.computer_events import get_bus as _ce_bus
+        _ce_bus().publish("card", {"surface": "b", **card})
+    except Exception:
+        logger.exception("computer bus publish (card) failed")
 
 
 def _browser_screenshot_attachments(payload: dict) -> list[dict]:
@@ -1696,6 +1771,16 @@ def _browser_control_tick(payload: dict) -> dict:
     if screenshot_error:
         result["screenshot_fallback_error"] = screenshot_error
     _append_browser_ai_decision_flow(cleaned_reply, browser_actions, browser_done, runtime=runtime)
+    try:
+        snap = payload.get("snapshot") if isinstance(payload.get("snapshot"), dict) else {}
+        _emit_browser_card(
+            url=str(snap.get("url") or ""),
+            title=str(snap.get("title") or ""),
+            trail=payload.get("controlTrail") or [],
+            force=bool(browser_done),
+        )
+    except Exception:
+        logger.exception("browser card emit (tick) failed")
     return result
 
 

@@ -335,6 +335,69 @@ def narrate_recall_fragments(
     return "\n".join(out_lines)
 
 
+def narrate_browser_activity(
+    config: FiamConfig | None,
+    *,
+    label: str,
+    title: str,
+    url: str,
+    trail: list[dict[str, Any]] | None = None,
+    why: str = "",
+) -> str | None:
+    """One vivid first-person present-tense line of what the AI is doing on a
+    page, for the live browser activity card. Runs on the lightweight mimo
+    model in its own context — independent of the AI's main conversation, so
+    it never pollutes memory. Returns None if mimo is unavailable; the caller
+    falls back to ``label``.
+    """
+    if config is None or not getattr(config, "app_cot_summary_enabled", True):
+        return None
+    api_key, _ = _summary_api_key(config)
+    if not api_key:
+        return None
+    base_url = (getattr(config, "app_cot_summary_base_url", "") or "https://token-plan-cn.xiaomimimo.com/v1").rstrip("/")
+    model = getattr(config, "app_cot_summary_model", "") or "mimo-v2-omni"
+    steps = [
+        {"action": str(t.get("action") or ""), "name": str(t.get("name") or ""), "result": str(t.get("result") or "")}
+        for t in (trail or [])[-8:]
+    ]
+    payload = {"label": label, "page_title": (title or "")[:200], "url": url[:300], "why": why[:160], "recent_actions": steps}
+    system = (
+        "RESPOND IMMEDIATELY. DO NOT THINK. You narrate, in the AI's own "
+        "first-person voice ('我'), what the AI is doing on a web page right "
+        "now, for a small live status card a friend watches. ONE short "
+        "present-tense line, Chinese, casual, vivid, concrete — name what it "
+        "is looking at or just did. No preamble, no quotes, no markdown. "
+        "Max ~30 characters. Output ONLY that line."
+    )
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        ],
+        "temperature": 0.6,
+        # mimo-v2-omni is a reasoning model: the chain-of-thought eats the
+        # token budget before any content is emitted. Keep this generous or
+        # the response comes back finish_reason=length with empty content.
+        "max_tokens": 2000,
+    }
+    request = urllib.request.Request(
+        f"{base_url}/chat/completions",
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        content = str(((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "")
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, IndexError, KeyError, TypeError, ValueError):
+        return None
+    line = " ".join(content.split()).strip().strip('"').strip("「」")
+    return line[:60] or None
+
+
 def _fallback_summary(text: str, locked: bool) -> str:
     if locked:
         return "thinking privately"
