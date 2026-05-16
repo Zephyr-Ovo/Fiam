@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react"
+import { currentHomeBackground } from "../config"
 
 /**
  * Home — collage of paper cutouts. Layout coords come from the Figma
@@ -58,6 +59,13 @@ export function Home({ onNavigate, unread = false }: Props) {
   // the available height differs — we scale uniformly so the whole collage fits.
   const wrapRef = useRef<HTMLDivElement | null>(null)
   const [scale, setScale] = useState(1)
+  const [homeBg, setHomeBg] = useState(currentHomeBackground)
+  useEffect(() => {
+    const refresh = () => setHomeBg(currentHomeBackground())
+    window.addEventListener("favilla:config-changed", refresh)
+    refresh()
+    return () => window.removeEventListener("favilla:config-changed", refresh)
+  }, [])
   useEffect(() => {
     function fit() {
       const el = wrapRef.current
@@ -91,7 +99,7 @@ export function Home({ onNavigate, unread = false }: Props) {
       >
       {/* background collage layer (texture + flowers) */}
       <img
-        src="/home/bg.png"
+        src={homeBg}
         alt=""
         className="pointer-events-none absolute select-none"
         style={{

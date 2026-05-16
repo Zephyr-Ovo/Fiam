@@ -161,7 +161,10 @@ export function Settings({ open, onClose }: Props) {
         />
         <BgField
           value={draft.bg}
-          onChange={(v) => setDraft({ ...draft, bg: v })}
+          onChange={(v) => {
+            setDraft((cur) => ({ ...cur, bg: v }))
+            saveConfig({ bg: v })
+          }}
         />
         </div>
 

@@ -42,7 +42,7 @@ import { cacheMessages, getCachedMessages } from "./lib/msg-cache"
 const SEEN_BUBBLE_IDS = new Set<string>()
 
 type Attachment =
-  | { kind: "voice"; seconds: number }
+  | { kind: "voice"; seconds: number; object_hash?: string; mime?: string; name?: string }
   | { kind: "file"; name: string; size?: string | number; object_hash?: string; mime?: string }
   | { kind: "image"; name: string; object_hash?: string; mime?: string; size?: string | number }
 
@@ -90,6 +90,31 @@ function currentT() {
 
 const MAX_RENDERED_MESSAGES = 32
 
+type ServerAttachment = NonNullable<StoredChatMessage["attachments"]>[number]
+
+function attachmentFromServer(att: ServerAttachment): Attachment {
+  const mime = String(att.mime || "")
+  if (att.kind === "voice" || mime.startsWith("audio/")) {
+    const seconds = Number((att as { duration?: number; seconds?: number }).duration ?? (att as { seconds?: number }).seconds ?? 0) || 0
+    return { kind: "voice", seconds, object_hash: att.object_hash, mime, name: att.name }
+  }
+  if (att.kind === "image") {
+    return { kind: "image", name: att.name, object_hash: att.object_hash, mime, size: att.size }
+  }
+  return { kind: "file", name: att.name, size: att.size, object_hash: att.object_hash, mime }
+}
+
+function attachmentFromUpload(file: ChatAttachment): Attachment {
+  const mime = String(file.mime || "")
+  if (mime.startsWith("audio/")) {
+    return { kind: "voice", seconds: 0, object_hash: file.object_hash, mime, name: file.name }
+  }
+  if (mime.startsWith("image/")) {
+    return { kind: "image", name: file.name, object_hash: file.object_hash, mime, size: file.size }
+  }
+  return { kind: "file", name: file.name, size: file.size, object_hash: file.object_hash, mime }
+}
+
 function serverMessagesToMsgs(serverMessages: StoredChatMessage[]): Msg[] {
   const seen = new Set<string>()
   const deduped: StoredChatMessage[] = []
@@ -101,11 +126,7 @@ function serverMessagesToMsgs(serverMessages: StoredChatMessage[]): Msg[] {
   }
   return deduped.map((msg) => ({
     ...msg,
-    attachments: (msg.attachments || []).map((att) => {
-      if (att.kind === "voice") return { kind: "voice", seconds: Number(att.size || 0) || 0 }
-      if (att.kind === "image") return { kind: "image", name: att.name, object_hash: att.object_hash, mime: att.mime, size: att.size }
-      return { kind: "file", name: att.name, size: att.size, object_hash: att.object_hash, mime: att.mime }
-    }),
+    attachments: (msg.attachments || []).map(attachmentFromServer),
   }))
 }
 
@@ -299,8 +320,35 @@ async function shareBlob(blob: Blob) {
 }
 
 // ---------- Voice (waveform) chip ----------
-function VoiceChip({ seconds }: { seconds: number }) {
+function VoiceChip({ seconds, objectHash }: { seconds: number; objectHash?: string }) {
+  const [ps, setPs] = useState<TtsPlayerState>({ status: "idle", duration: 0, currentTime: 0 })
+  const playerRef = useRef(_ttsPlayer)
   const bars = [4, 9, 6, 12, 8, 14, 10, 6, 11, 7, 13, 8]
+  useEffect(() => {
+    const unsub = playerRef.current.subscribe(setPs)
+    return unsub
+  }, [])
+
+  const sourceId = objectHash ? `attachment:${objectHash}` : "attachment:missing"
+  const current = ps.sourceId === sourceId
+  const active = current && (ps.status === "playing" || ps.status === "paused" || ps.status === "loading")
+  const duration = active && ps.duration > 0 ? ps.duration : seconds
+  const currentTime = active ? ps.currentTime : 0
+  const progress = duration > 0 ? Math.max(0, Math.min(1, currentTime / duration)) : 0
+  const canPlay = !!objectHash
+
+  const handleTap = () => {
+    if (!objectHash) return
+    unlockAudio()
+    if (current && ps.status === "playing") {
+      playerRef.current.pause()
+    } else if (current && ps.status === "paused") {
+      playerRef.current.resume()
+    } else {
+      void playerRef.current.playFetched(() => fetchObjectBlob(objectHash), sourceId)
+    }
+  }
+
   return (
     <div
       className="flex items-center gap-2.5 rounded-full px-3"
@@ -311,21 +359,34 @@ function VoiceChip({ seconds }: { seconds: number }) {
         WebkitBackdropFilter: "blur(6px)",
         width: 200,
         height: 44,
+        cursor: canPlay ? "pointer" : "default",
+        opacity: canPlay ? 1 : 0.78,
       }}
+      onClick={handleTap}
+      title={canPlay ? "Play voice" : "Voice object unavailable"}
     >
       <button
         type="button"
         className="grid h-7 w-7 shrink-0 place-items-center rounded-full"
         style={{ background: "var(--color-cocoa)", color: "var(--color-cream)" }}
+        onClick={(e) => { e.stopPropagation(); handleTap() }}
+        disabled={!canPlay}
       >
-        <Play className="h-3 w-3" strokeWidth={2} fill="currentColor" />
+        {ps.status === "loading" && current
+          ? <Loader2 className="h-3 w-3 animate-spin" strokeWidth={2} />
+          : ps.status === "playing" && current
+            ? <Pause className="h-3 w-3" strokeWidth={2.4} />
+            : <Play className="h-3 w-3" strokeWidth={2} fill="currentColor" />}
       </button>
       <div className="flex flex-1 items-center justify-between gap-[2px]">
         {bars.map((h, i) => (
           <span
             key={i}
             className="block w-[2px] rounded-full"
-            style={{ height: h, background: "rgba(63,47,41,0.5)" }}
+            style={{
+              height: h,
+              background: active && i / bars.length <= progress ? "var(--color-cocoa)" : "rgba(63,47,41,0.5)",
+            }}
           />
         ))}
       </div>
@@ -333,7 +394,7 @@ function VoiceChip({ seconds }: { seconds: number }) {
         className="text-[11px] tabular-nums"
         style={{ color: "rgba(63,47,41,0.65)", fontFamily: "var(--font-mono)" }}
       >
-        0:{String(seconds).padStart(2, "0")}
+        {formatDuration(active ? currentTime : duration)}
       </span>
     </div>
   )
@@ -742,7 +803,7 @@ function Attachments({ list, isUser }: { list: Attachment[]; isUser: boolean }) 
       <div className="flex flex-wrap items-center gap-1.5 justify-end">
         {list.map((a, i) =>
           a.kind === "voice" ? (
-            <VoiceChip key={i} seconds={a.seconds} />
+            <VoiceChip key={i} seconds={a.seconds} objectHash={a.object_hash} />
           ) : (
             <FilePill key={i} a={a} />
           ),
@@ -755,7 +816,7 @@ function Attachments({ list, isUser }: { list: Attachment[]; isUser: boolean }) 
   return (
     <div className="flex flex-col gap-2 items-start">
       {list.map((a, i) => {
-        if (a.kind === "voice") return <VoiceChip key={i} seconds={a.seconds} />
+        if (a.kind === "voice") return <VoiceChip key={i} seconds={a.seconds} objectHash={a.object_hash} />
         if (a.kind === "image") return <InlineImage key={i} a={a} />
         return <FileCard key={i} a={a} />
       })}
@@ -1297,7 +1358,7 @@ function buildRenderItems(segments: ChatSegment[] | undefined): RenderItem[] {
     } else if (seg.type === "sticker") {
       out.push({ kind: "sticker-seg", index: idx, objectHash: seg.object_hash, name: seg.name })
     } else if (seg.type === "voice") {
-      if (seg.text) out.push({ kind: "voice-seg", index: idx, text: seg.text, objectHash: seg.object_hash })
+      if (seg.text || seg.object_hash) out.push({ kind: "voice-seg", index: idx, text: seg.text || "", objectHash: seg.object_hash })
     } else if (seg.type === "tool_use") {
       const id = seg.tool_use_id || `anon-${idx}`
       const existing = toolMap.get(id)
@@ -1804,6 +1865,7 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
     text: string
     filesToSend: File[]
     recallUsed: boolean
+    showUserAfterUpload?: boolean
   }
   const scrollRef = useRef<HTMLElement | null>(null)
   const composerRef = useRef<HTMLDivElement | null>(null)
@@ -2171,7 +2233,7 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
           if (text.trim()) {
             if (autoSend) {
               const voiceFile = new File([blob], "voice.webm", { type: blob.type || "audio/webm" })
-              void sendChatTurns([{ text, filesToSend: [voiceFile], recallUsed: false }])
+              void sendChatTurns([{ text, filesToSend: [voiceFile], recallUsed: false, showUserAfterUpload: true }])
             } else {
               appendVoiceText(text)
             }
@@ -2243,8 +2305,10 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
     stickToBottomRef.current = true
     const sendStartedMinute = currentT()
     const aiId = `a-${Date.now()}`
+    const aiMsg: Msg = { id: aiId, role: "ai", t: currentT(), text: "" }
+    const showUserAfterUpload = items.some((x) => x.showUserAfterUpload)
     let expectedStreamText = ""
-    setMessages((m) => [...m, { id: aiId, role: "ai", t: currentT(), text: "" }])
+    if (!showUserAfterUpload) setMessages((m) => [...m, aiMsg])
 
     try {
       if (items.some((x) => x.recallUsed)) {
@@ -2256,13 +2320,8 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
       if (filesToSend.length > 0) {
         const up = await uploadFiles(filesToSend)
         if (!up.ok || !up.files) {
-          setMessages((m) =>
-            m.map((x) =>
-              x.id === aiId
-                ? { ...x, text: `upload failed: ${up.error || "unknown"}`, error: true }
-                : x,
-            ),
-          )
+          const err: Msg = { ...aiMsg, text: `upload failed: ${up.error || "unknown"}`, error: true }
+          setMessages((m) => showUserAfterUpload ? [...m, err] : m.map((x) => x.id === aiId ? err : x))
           return
         }
         attachments = up.files
@@ -2270,6 +2329,17 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
 
       const combinedText = items.map((x) => x.text).filter(Boolean).join("\n\n")
       expectedStreamText = combinedText || "(see attached file)"
+      if (showUserAfterUpload) {
+        const userMsg: Msg = {
+          id: `u-${Date.now()}`,
+          role: "user",
+          t: sendStartedMinute,
+          text: combinedText,
+          attachments: attachments.map(attachmentFromUpload),
+          recallUsed: items.some((x) => x.recallUsed),
+        }
+        setMessages((m) => [...m, userMsg, aiMsg])
+      }
       const segs: ChatSegment[] = []
       const thoughts: ThinkStep[] = []
       const thoughtSegIdx = new Map<number, number>()
@@ -2364,11 +2434,7 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
             thoughts: finalThoughts,
             thoughtsLocked: !!r.thoughts_locked,
             hold: r.hold,
-            attachments: (r.attachments || []).map((att) => {
-              if (att.kind === "voice") return { kind: "voice", seconds: Number(att.size || 0) || 0 }
-              if (att.kind === "image") return { kind: "image", name: att.name, object_hash: att.object_hash, mime: att.mime, size: att.size }
-              return { kind: "file", name: att.name, size: att.size, object_hash: att.object_hash, mime: att.mime }
-            }),
+            attachments: (r.attachments || []).map(attachmentFromServer),
           })
           try {
             window.dispatchEvent(
@@ -2453,6 +2519,8 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
     const filesToSend = pendingFiles.map((p) => p.file)
     const userPills = pendingFiles.map((p) => {
       const isImage = p.file.type.startsWith("image/")
+      const isVoice = p.file.type.startsWith("audio/")
+      if (isVoice) return { kind: "voice", seconds: 0, name: p.file.name, mime: p.file.type } as const
       return isImage
         ? ({ kind: "image", name: p.file.name } as const)
         : ({ kind: "file", name: p.file.name } as const)
@@ -2473,11 +2541,7 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
           }])
           return
         }
-        const uploadedPills = up.files.map((file) => (
-          file.mime?.startsWith("image/")
-            ? ({ kind: "image", name: file.name, object_hash: file.object_hash, mime: file.mime, size: file.size } as const)
-            : ({ kind: "file", name: file.name, size: file.size, object_hash: file.object_hash, mime: file.mime } as const)
-        ))
+        const uploadedPills = up.files.map(attachmentFromUpload)
         const userMsg: Msg = {
           id: `u-${Date.now()}`,
           role: "user",
@@ -2488,7 +2552,7 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
         stickToBottomRef.current = true
         setMessages((m) => [...m, userMsg])
         await recordChatMessage({ role: "user", attachments: up.files.map((file) => ({
-          kind: file.mime?.startsWith("image/") ? "image" : "file",
+          kind: file.mime?.startsWith("audio/") ? "voice" : file.mime?.startsWith("image/") ? "image" : "file",
           name: file.name,
           path: file.path,
           object_hash: file.object_hash,

@@ -307,14 +307,23 @@ def _generate_voice_audio(text: str) -> str | None:
     tts_key = os.environ.get(tts_key_env, "").strip()
     tts_model = getattr(_CONFIG, "tts_model", "")
     tts_voice = getattr(_CONFIG, "tts_voice", "")
-    if not tts_base and tts_provider == "mimo":
+    is_mimo = (
+        tts_provider == "mimo"
+        or "xiaomimimo.com" in tts_base
+        or str(tts_model or "").startswith("mimo-")
+    )
+    if not tts_base and is_mimo:
         tts_base = "https://token-plan-cn.xiaomimimo.com/v1"
-    if not tts_key and tts_provider == "mimo":
+    if not tts_key and is_mimo:
         tts_key = os.environ.get("FIAM_MIMO_API_KEY", "") or os.environ.get("MIMO_API_KEY", "")
     if not tts_base or not tts_key:
+        logger.info("TTS generation skipped: missing %s or base_url", tts_key_env)
         return None
     try:
-        if tts_provider == "openai_compatible":
+        if is_mimo:
+            body = json.dumps({"text": text.strip(), "voice": tts_voice, "model": tts_model or "mimo-v2.5-tts", "format": "mp3"}).encode()
+            url = f"{tts_base.rstrip('/')}/tts"
+        elif tts_provider == "openai_compatible":
             body = json.dumps({"model": tts_model or "gpt-4o-mini-tts", "voice": tts_voice or "alloy", "input": text.strip(), "format": "mp3"}).encode()
             url = f"{tts_base.rstrip('/')}/audio/speech"
         else:
@@ -328,6 +337,7 @@ def _generate_voice_audio(text: str) -> str | None:
         from fiam.store.objects import ObjectStore
         store = ObjectStore(_CONFIG.object_dir)
         object_hash = store.put_bytes(audio_data, suffix=".mp3")
+        logger.info("TTS generated object: hash=%s bytes=%s provider=%s", object_hash, len(audio_data), "mimo" if is_mimo else tts_provider)
         return object_hash
     except Exception as exc:
         logger.warning("TTS generation failed: %s", exc)
@@ -381,11 +391,16 @@ def _enrich_sticker_segments(segments: list[dict]) -> list[dict]:
 
 
 def _enrich_voice_segments(segments: list[dict]) -> list[dict]:
-    """Strip HTML tags from voice segment text (AI sometimes adds <p> etc)."""
+    """Normalize voice segments and attach generated audio when possible."""
     for seg in segments:
         if seg.get("type") == "voice":
             text = str(seg.get("text") or "")
-            seg["text"] = re.sub(r"</?[a-zA-Z][^>]*>", "", text).strip()
+            clean = re.sub(r"</?[a-zA-Z][^>]*>", "", text).strip()
+            seg["text"] = clean
+            if clean and not seg.get("object_hash"):
+                object_hash = _generate_voice_audio(clean)
+                if object_hash:
+                    seg["object_hash"] = object_hash
     return segments
 
 
@@ -2569,12 +2584,14 @@ def _history_attachments(attachments: list[dict]) -> list[dict]:
     out = []
     for att in attachments:
         mime = str(att.get("mime") or "")
+        kind = "voice" if mime.startswith("audio/") else "image" if mime.startswith("image/") else "file"
         out.append({
-            "kind": "image" if mime.startswith("image/") else "file",
+            "kind": kind,
             "name": str(att.get("name") or Path(str(att.get("path") or "file")).name),
             "object_hash": str(att.get("object_hash") or ""),
             "mime": mime,
             "size": att.get("size"),
+            "duration": att.get("duration") or att.get("seconds") or 0,
         })
     return out
 
@@ -3375,6 +3392,7 @@ def _validate_app_attachments(attachments: list) -> list[dict]:
             "name": str(att.get("name") or resolved.name),
             "mime": str(att.get("mime") or ""),
             "size": int(att.get("size") or resolved.stat().st_size),
+            "duration": att.get("duration") or att.get("seconds") or 0,
         })
     return safe_attachments
 

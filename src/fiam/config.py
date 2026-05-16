@@ -174,7 +174,7 @@ class FiamConfig:
     stt_model: str = "whisper-1"
     stt_base_url: str = ""
     stt_api_key_env: str = "FIAM_STT_API_KEY"
-    tts_provider: str = "openai_compatible"
+    tts_provider: str = "mimo"
     tts_model: str = "mimo-v2.5-tts"
     tts_base_url: str = "https://token-plan-cn.xiaomimimo.com/v1"
     tts_api_key_env: str = "FIAM_TTS_API_KEY"

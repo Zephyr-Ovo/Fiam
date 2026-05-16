@@ -78,7 +78,7 @@ export type StoredChatMessage = {
   text?: string
   raw_text?: string
   runtime?: "cc" | "api" | string
-  attachments?: Array<{ kind: "voice" | "file" | "image"; name: string; size?: string | number; path?: string; object_hash?: string; mime?: string }>
+  attachments?: Array<{ kind: "voice" | "file" | "image"; name: string; size?: string | number; path?: string; object_hash?: string; mime?: string; duration?: number; seconds?: number }>
   thinking?: ChatThought[]
   thinkingLocked?: boolean
   segments?: ChatSegment[]

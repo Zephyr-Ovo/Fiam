@@ -151,7 +151,7 @@ api_key_env = "FIAM_STT_API_KEY"
 
 [voice.tts]
 # Stroll mode may speak aloud through an attached app/device.
-provider = "openai_compatible"
+provider = "mimo"
 model = "mimo-v2.5-tts"
 base_url = "https://token-plan-cn.xiaomimimo.com/v1"
 api_key_env = "FIAM_MIMO_API_KEY"
