@@ -223,6 +223,27 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "SaveSticker",
+            "description": (
+                "Save an image as a sticker to the shared sticker collection. "
+                "Accepts either a URL (downloads and converts to webp) or an existing obj:<hash> reference. "
+                "Returns the sticker entry. Use this to save images you like from the web or from chat."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "Image URL to download. Omit if using obj_ref."},
+                    "obj_ref": {"type": "string", "description": "Existing obj:<hash> from ObjectStore. Omit if using url."},
+                    "name": {"type": "string", "description": "Short name for the sticker, e.g. 'happy cat'."},
+                    "tags": {"type": "array", "items": {"type": "string"}, "description": "Search tags."},
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "Bash",
             "description": (
                 "Run a shell command and return its combined stdout+stderr. "
@@ -581,6 +602,64 @@ def _object_import(config: "FiamConfig", args: dict[str, Any]) -> str:
     )
 
 
+def _save_sticker(config: "FiamConfig", args: dict[str, Any]) -> str:
+    name = str(args.get("name") or "").strip()
+    if not name:
+        raise ToolError("name is required")
+    url = str(args.get("url") or "").strip()
+    obj_ref = str(args.get("obj_ref") or "").strip()
+    tags = _clean_tags(args.get("tags"))
+
+    sticker_dir = config.home_path / "stickers"
+    sticker_dir.mkdir(parents=True, exist_ok=True)
+    manifest = sticker_dir / "manifest.jsonl"
+
+    from fiam.store.objects import ObjectStore
+    store = ObjectStore(config.object_dir)
+
+    if url:
+        import tempfile
+        req = __import__("urllib.request", fromlist=["urlopen"]).Request(url, headers={"User-Agent": "fiam/1.0"})
+        with __import__("urllib.request", fromlist=["urlopen"]).urlopen(req, timeout=30) as resp:
+            img_data = resp.read()
+        with tempfile.NamedTemporaryFile(suffix=".tmp", delete=False) as tmp:
+            tmp.write(img_data)
+            tmp_path = tmp.name
+        try:
+            webp_path = tmp_path + ".webp"
+            result = subprocess.run(["cwebp", "-q", "80", "-resize", "512", "0", tmp_path, "-o", webp_path],
+                                    capture_output=True, timeout=15)
+            if result.returncode != 0:
+                webp_path = tmp_path + ".webp"
+                result = subprocess.run(["cwebp", "-q", "80", tmp_path, "-o", webp_path],
+                                        capture_output=True, timeout=15)
+            if result.returncode != 0:
+                raise ToolError(f"cwebp failed: {result.stderr.decode()[:200]}")
+            webp_data = Path(webp_path).read_bytes()
+            os.unlink(webp_path)
+        finally:
+            os.unlink(tmp_path) if os.path.exists(tmp_path) else None
+        object_hash = store.put_bytes(webp_data, suffix=".webp")
+    elif obj_ref:
+        digest = obj_ref.replace("obj:", "").strip()
+        from fiam.store.object_catalog import ObjectCatalog
+        catalog = ObjectCatalog.from_config(config)
+        object_hash = catalog.resolve_token(digest)
+    else:
+        raise ToolError("provide either url or obj_ref")
+
+    entry = {
+        "hash": object_hash,
+        "name": name,
+        "tags": tags,
+        "added_by": "ai",
+        "added_at": datetime.now(timezone.utc).isoformat(),
+    }
+    with manifest.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    return json.dumps({"ok": True, "sticker": entry, "ref": f"obj:{object_hash}"}, ensure_ascii=False)
+
+
 def _store_object_tool_result(
     config: "FiamConfig",
     data: bytes,
@@ -814,7 +893,7 @@ def execute_tool_call(config: "FiamConfig", name: str, raw_args: str) -> str:
             return "error: arguments must be a JSON object"
         return _book_tool(config, name, args)
     handler = _DISPATCH.get(name)
-    if handler is None and name not in {"ObjectSearch", "ObjectSave", "ObjectImport"}:
+    if handler is None and name not in {"ObjectSearch", "ObjectSave", "ObjectImport", "SaveSticker"}:
         return f"error: unknown tool {name!r}"
     try:
         args = json.loads(raw_args) if raw_args else {}
@@ -843,6 +922,11 @@ def execute_tool_call(config: "FiamConfig", name: str, raw_args: str) -> str:
         try:
             return _object_import(config, args)
         except (OSError, ValueError, ToolError, KeyError) as exc:
+            return f"error: {exc}"
+    if name == "SaveSticker":
+        try:
+            return _save_sticker(config, args)
+        except Exception as exc:
             return f"error: {exc}"
     try:
         return handler(config.home_path, args)

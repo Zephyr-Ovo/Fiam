@@ -226,6 +226,42 @@ def _vision_route() -> dict:
     }
 
 
+def _gcp_speech_to_text(audio_b64: str) -> str:
+    """Transcribe base64-encoded audio via GCP Speech-to-Text v1 REST API."""
+    import google.auth
+    import google.auth.transport.requests
+
+    credentials, project = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+    credentials.refresh(google.auth.transport.requests.Request())
+    token = credentials.token
+
+    body = {
+        "config": {
+            "encoding": "WEBM_OPUS",
+            "sampleRateHertz": 48000,
+            "languageCode": "cmn-Hans-CN",
+            "alternativeLanguageCodes": ["en-US"],
+            "model": "latest_long",
+        },
+        "audio": {"content": audio_b64},
+    }
+    req = urllib.request.Request(
+        "https://speech.googleapis.com/v1/speech:recognize",
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    results = data.get("results") or []
+    parts = []
+    for r in results:
+        alts = r.get("alternatives") or []
+        if alts:
+            parts.append(alts[0].get("transcript", ""))
+    return " ".join(parts).strip()
+
+
 def _voice_routes() -> dict:
     if not _CONFIG:
         return {"stt": {}, "tts": {}}
@@ -243,6 +279,101 @@ def _voice_routes() -> dict:
             "api_key_env": getattr(_CONFIG, "tts_api_key_env", "FIAM_TTS_API_KEY"),
         },
     }
+
+
+def _generate_voice_audio(text: str) -> str | None:
+    """Generate TTS audio for a voice segment, store in ObjectStore, return hash."""
+    if not _CONFIG or not text.strip():
+        return None
+    tts_provider = getattr(_CONFIG, "tts_provider", "mimo")
+    tts_base = getattr(_CONFIG, "tts_base_url", "").strip()
+    tts_key_env = getattr(_CONFIG, "tts_api_key_env", "FIAM_TTS_API_KEY")
+    tts_key = os.environ.get(tts_key_env, "").strip()
+    tts_model = getattr(_CONFIG, "tts_model", "")
+    tts_voice = getattr(_CONFIG, "tts_voice", "")
+    if not tts_base and tts_provider == "mimo":
+        tts_base = "https://token-plan-cn.xiaomimimo.com/v1"
+    if not tts_key and tts_provider == "mimo":
+        tts_key = os.environ.get("FIAM_MIMO_API_KEY", "") or os.environ.get("MIMO_API_KEY", "")
+    if not tts_base or not tts_key:
+        return None
+    try:
+        if tts_provider == "openai_compatible":
+            body = json.dumps({"model": tts_model or "gpt-4o-mini-tts", "voice": tts_voice or "alloy", "input": text.strip(), "format": "mp3"}).encode()
+            url = f"{tts_base.rstrip('/')}/audio/speech"
+        else:
+            body = json.dumps({"text": text.strip(), "voice": tts_voice, "model": tts_model or "mimo-v2.5-tts", "format": "mp3"}).encode()
+            url = f"{tts_base.rstrip('/')}/tts"
+        req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json", "Authorization": f"Bearer {tts_key}"}, method="POST")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            audio_data = resp.read()
+        if len(audio_data) < 100:
+            return None
+        from fiam.store.objects import ObjectStore
+        store = ObjectStore(_CONFIG.object_dir)
+        object_hash = store.put_bytes(audio_data, suffix=".mp3")
+        return object_hash
+    except Exception as exc:
+        logger.warning("TTS generation failed: %s", exc)
+        return None
+
+
+def _list_stickers() -> list[dict]:
+    if not _CONFIG:
+        return []
+    manifest = _CONFIG.home_path / "stickers" / "manifest.jsonl"
+    if not manifest.exists():
+        return []
+    stickers = []
+    for line in manifest.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            stickers.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return stickers
+
+
+def _resolve_sticker_name(name: str) -> str | None:
+    """Look up a sticker hash by name from the manifest."""
+    stickers = _list_stickers()
+    name_lower = name.lower().strip()
+    for s in stickers:
+        if str(s.get("name") or "").lower().strip() == name_lower:
+            return str(s.get("hash") or "")
+    for s in stickers:
+        if name_lower in str(s.get("name") or "").lower():
+            return str(s.get("hash") or "")
+    return None
+
+
+def _enrich_sticker_segments(segments: list[dict]) -> list[dict]:
+    """Resolve sticker name → object_hash for rendering."""
+    for seg in segments:
+        if seg.get("type") == "sticker" and not seg.get("object_hash"):
+            name = str(seg.get("name") or "").strip()
+            ref = str(seg.get("ref") or "").strip()
+            if ref and ref.startswith("obj:"):
+                seg["object_hash"] = ref.replace("obj:", "").strip()
+            elif name:
+                obj_hash = _resolve_sticker_name(name)
+                if obj_hash:
+                    seg["object_hash"] = obj_hash
+    return segments
+
+
+def _enrich_voice_segments(segments: list[dict]) -> list[dict]:
+    """Generate TTS audio for voice segments that don't have object_hash yet."""
+    for seg in segments:
+        if seg.get("type") == "voice" and not seg.get("object_hash"):
+            text = str(seg.get("text") or "").strip()
+            if text:
+                obj_hash = _generate_voice_audio(text)
+                if obj_hash:
+                    seg["object_hash"] = obj_hash
+    return segments
 
 
 def _display_type_from_text(text: str, explicit: str = "") -> tuple[str, str]:
@@ -2914,7 +3045,8 @@ def _apply_app_control_markers(
 def _interpret_app_control_markers(reply: str):
     from fiam.turn import MarkerInterpreter
 
-    return MarkerInterpreter(object_resolver=_object_token_resolver()).interpret(reply or "")
+    tz = _CONFIG.project_tz() if _CONFIG else None
+    return MarkerInterpreter(object_resolver=_object_token_resolver(), default_tz=tz).interpret(reply or "")
 
 
 def _app_hold_payload(interpretation) -> dict | None:
@@ -4484,7 +4616,7 @@ def _parse_cot(reply: str) -> tuple[str, list[dict], bool, list[dict]]:
     return parsed.reply, parsed.thoughts, parsed.locked, parsed.segments
 
 
-_NON_COT_CONTROL_NAMES = {"send", "hold", "held", "todo", "wake", "sleep", "state", "route", "voice"}
+_NON_COT_CONTROL_NAMES = {"send", "hold", "held", "todo", "wake", "sleep", "state", "route", "voice", "sticker"}
 
 
 def _strip_control_from_cot_result(
@@ -4889,6 +5021,8 @@ def _run_cc_favilla_chat_locked(*, text: str, channel: str, surface: str = "", a
     )
     cleaned_reply, thoughts, thoughts_locked, segments = _parse_cot(raw_reply)
     cleaned_reply, segments = _strip_control_from_cot_result(cleaned_reply, segments)
+    segments = _enrich_voice_segments(segments)
+    segments = _enrich_sticker_segments(segments)
     native_thoughts, native_segments = _official_thought_payloads(thinking_events, locked=thoughts_locked)
     if native_thoughts:
         thoughts = native_thoughts + thoughts
@@ -5334,6 +5468,8 @@ def _iter_cc_favilla_chat_events_locked(*, text: str, channel: str, surface: str
     route = interpretation.route_hint
     cleaned_reply, thoughts, thoughts_locked, segments = _parse_cot(raw_reply)
     cleaned_reply, segments = _strip_control_from_cot_result(cleaned_reply, segments)
+    segments = _enrich_voice_segments(segments)
+    segments = _enrich_sticker_segments(segments)
     thinking_events = state.get("thinking_events") or []
     native_thoughts, native_segments = _official_thought_payloads(thinking_events, locked=thoughts_locked)
     if native_thoughts:
@@ -5599,7 +5735,8 @@ def _record_cc_app_turn(user_text: str, assistant_reply: str, channel: str, *, s
                 },
                 surface=surface,
             ))
-    interpretation = MarkerInterpreter(object_resolver=_object_token_resolver()).interpret(assistant_reply)
+    _tz = _CONFIG.project_tz() if _CONFIG else None
+    interpretation = MarkerInterpreter(object_resolver=_object_token_resolver(), default_tz=_tz).interpret(assistant_reply)
     for beat in assistant_text_beats(
         assistant_reply,
         t=datetime.now(timezone.utc),
@@ -5751,7 +5888,8 @@ def _record_api_turn_light(user_text: str, assistant_reply: str, channel: str, *
                 meta=meta,
                 surface=surface,
             ))
-    interpretation = MarkerInterpreter(object_resolver=_object_token_resolver()).interpret(assistant_reply)
+    _tz2 = _CONFIG.project_tz() if _CONFIG else None
+    interpretation = MarkerInterpreter(object_resolver=_object_token_resolver(), default_tz=_tz2).interpret(assistant_reply)
     assistant_beats = assistant_text_beats(
         assistant_reply,
         t=datetime.now(timezone.utc),
@@ -5922,6 +6060,8 @@ def _run_api_favilla_chat(*, text: str, channel: str, surface: str = "", attachm
     )
     cleaned_reply, thoughts, thoughts_locked, segments = _parse_cot(raw_reply)
     cleaned_reply, segments = _strip_control_from_cot_result(cleaned_reply, segments)
+    segments = _enrich_voice_segments(segments)
+    segments = _enrich_sticker_segments(segments)
     api_thinking_blocks = list(getattr(result, "thinking_blocks", None) or [])
     if api_thinking_blocks:
         native_events = [
@@ -6969,6 +7109,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.wfile.write(body)
             return
 
+        if path == "/favilla/stickers":
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            self._serve_json({"ok": True, "stickers": _list_stickers()})
+            return
+
         if path in ("/favilla/chat/transcript", "/favilla/stroll/transcript"):
             if not _ingest_token_ok(self):
                 self._serve_json({"error": "unauthorized"}, status=401)
@@ -7352,6 +7499,25 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 self._serve_json({"error": str(e)}, status=500)
                 return
             self._serve_json(result)
+            return
+
+        if path == "/favilla/stt":
+            if not _ingest_token_ok(self):
+                self._serve_json({"error": "unauthorized"}, status=401)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                body = self.rfile.read(length).decode("utf-8")
+                payload = json.loads(body)
+                audio_b64 = payload.get("audio", "")
+                if not audio_b64:
+                    self._serve_json({"error": "missing audio"}, status=400)
+                    return
+                text = _gcp_speech_to_text(audio_b64)
+                self._serve_json({"ok": True, "text": text})
+            except Exception as e:
+                logger.exception("STT error")
+                self._serve_json({"error": str(e)[:300]}, status=500)
             return
 
         if path == "/favilla/upload":

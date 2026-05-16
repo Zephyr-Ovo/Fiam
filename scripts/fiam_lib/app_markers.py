@@ -18,6 +18,11 @@ from fiam.config import FiamConfig
 _COT_BLOCK_RE = re.compile(r"<cot>\s*(.*?)\s*</cot>", re.DOTALL | re.IGNORECASE)
 _VOICE_BLOCK_RE = re.compile(r"<voice>\s*(.*?)\s*</voice>", re.DOTALL | re.IGNORECASE)
 _COT_OR_VOICE_RE = re.compile(r"<(cot|voice)>\s*(.*?)\s*</\1>", re.DOTALL | re.IGNORECASE)
+_STICKER_RE = re.compile(r'<sticker\s+(?:name|ref)="([^"]+)"(?:\s+(?:name|ref)="([^"]*)")?\s*/>', re.IGNORECASE)
+_SEGMENT_SPLIT_RE = re.compile(
+    r'(<(?:cot|voice)>.*?</(?:cot|voice)>|<sticker\s+[^>]+/>)',
+    re.DOTALL | re.IGNORECASE,
+)
 _LOCK_RE = re.compile(r"<lock\s*/>", re.IGNORECASE)
 _CODE_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
 _INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
@@ -49,26 +54,33 @@ def _unmask_code_spans(text: str, placeholders: dict[str, str]) -> str:
 
 
 def split_cot_segments(chunk: str) -> list[tuple[str, str]]:
-    """Split a text chunk into ordered ('text'|'thought'|'voice', body) segments,
+    """Split a text chunk into ordered ('text'|'thought'|'voice'|'sticker', body) segments,
     skipping tags that appear inside markdown code spans."""
     if not chunk:
         return []
     masked, placeholders = _mask_code_spans(chunk)
     segs: list[tuple[str, str]] = []
-    cursor = 0
-    for m in _COT_OR_VOICE_RE.finditer(masked):
-        before = masked[cursor:m.start()]
-        if before.strip():
-            segs.append(("text", _unmask_code_spans(before, placeholders)))
-        tag = m.group(1).lower()
-        kind = "thought" if tag == "cot" else "voice"
-        body = (m.group(2) or "").strip()
-        if body:
-            segs.append((kind, _unmask_code_spans(body, placeholders)))
-        cursor = m.end()
-    tail = masked[cursor:]
-    if tail.strip():
-        segs.append(("text", _unmask_code_spans(tail, placeholders)))
+    parts = _SEGMENT_SPLIT_RE.split(masked)
+    for part in parts:
+        if not part:
+            continue
+        cot_or_voice = _COT_OR_VOICE_RE.fullmatch(part)
+        if cot_or_voice:
+            tag = cot_or_voice.group(1).lower()
+            kind = "thought" if tag == "cot" else "voice"
+            body = (cot_or_voice.group(2) or "").strip()
+            if body:
+                segs.append((kind, _unmask_code_spans(body, placeholders)))
+            continue
+        sticker_m = _STICKER_RE.fullmatch(part)
+        if sticker_m:
+            val1 = (sticker_m.group(1) or "").strip()
+            val2 = (sticker_m.group(2) or "").strip()
+            segs.append(("sticker", val1 or val2))
+            continue
+        text = _unmask_code_spans(part, placeholders)
+        if text.strip():
+            segs.append(("text", text))
     return segs
 
 
@@ -95,6 +107,8 @@ def parse_app_cot(reply: str, config: FiamConfig | None = None) -> AppCotResult:
                 segments.append({"type": "text", "text": cleaned})
         elif kind == "voice":
             segments.append({"type": "voice", "text": body})
+        elif kind == "sticker":
+            segments.append({"type": "sticker", "name": body})
         else:
             step = {"kind": "think", "text": body, "source": "fiam"}
             thoughts_raw.append(step)
@@ -163,17 +177,17 @@ def summarize_cot_steps(steps: list[dict[str, Any]], *, locked: bool, config: Fi
         return fallback
 
     base_url = (getattr(config, "app_cot_summary_base_url", "") or "https://token-plan-cn.xiaomimimo.com/v1").rstrip("/")
-    model = getattr(config, "app_cot_summary_model", "") or "mimo-v2-omni"
+    model = getattr(config, "app_cot_summary_model", "") or "mimo-v2.5-pro"
     prompt = {
         "locked": locked,
         "items": [{"index": i, "text": str(step.get("text") or "")[:1800]} for i, step in enumerate(steps)],
     }
     system = (
-        "You write tiny English UI state labels for a chat thought chain. "
-        "Return only a JSON array of objects: {index, summary, icon}. "
-        "summary should be casual, emotional when relevant, 2-7 words, not formal, and need not cover every detail. "
-        "icon must be a lucide-react PascalCase icon component name. "
-        "For locked=true, do not reveal names, facts, files, plans, conclusions, or specific content from the text; only capture mood or process."
+        "RESPOND IMMEDIATELY. DO NOT THINK. Just output the JSON array. "
+        "Write tiny English UI state labels for a chat thought chain. "
+        "Return ONLY a JSON array: [{index, summary, icon}]. "
+        "summary: casual, 2-7 words. icon: lucide-react PascalCase name. "
+        "If locked=true, hide specifics; only capture mood/process."
     )
     body = {
         "model": model,
@@ -262,7 +276,7 @@ def narrate_recall_fragments(
         return None
 
     base_url = (getattr(config, "app_cot_summary_base_url", "") or "https://token-plan-cn.xiaomimimo.com/v1").rstrip("/")
-    model = getattr(config, "app_cot_summary_model", "") or "mimo-v2-omni"
+    model = getattr(config, "app_cot_summary_model", "") or "mimo-v2.5-pro"
     items = [
         {"index": i, "hint": str(f.get("hint") or ""), "text": str(f.get("text") or "")[:1800]}
         for i, f in enumerate(fragments)

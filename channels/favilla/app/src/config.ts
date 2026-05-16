@@ -135,8 +135,13 @@ export function saveConfig(patch: Partial<AppConfig>) {
   const merged = { ...loadOverrides(), ...patch }
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(merged))
-  } catch {
-    /* quota / privacy mode */
+  } catch (e) {
+    console.warn("saveConfig: localStorage write failed (quota?)", e)
+    if (patch.bg && typeof patch.bg === "string" && patch.bg.length > 50000) {
+      const withoutBg = { ...merged }
+      delete (withoutBg as Record<string, unknown>).bg
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(withoutBg)) } catch { /* give up */ }
+    }
   }
   applyThemeVars(appConfig)
   // Notify subscribers so live components (header peer name, etc.) re-read.

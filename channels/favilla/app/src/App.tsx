@@ -19,7 +19,8 @@ import {
   Check,
   Share2,
   Square,
-  Volume2,
+  Pause,
+  Loader2,
 } from "lucide-react"
 import { DynamicIcon, iconNames, type IconName } from "lucide-react/dynamic"
 import { LockIcon } from "./components/LockIcon"
@@ -32,7 +33,9 @@ import remarkGfm from "remark-gfm"
 import { abortChat, downloadObject, fetchChatTranscript, recordChatMessage, sendChatStream, translateText, uploadFiles, recallNow, cutFlow, processFlow, type ChatAttachment, type ChatSegment, type StoredChatMessage } from "./lib/api"
 import { useComputerStatus, describeEvent } from "./lib/computerStatus"
 import { appConfig } from "./config"
-import { createBrowserSttSession, transcribeAudioOpenAICompatible, speakText } from "./lib/voice"
+import { createBrowserSttSession, speakText, TtsPlayer, type TtsPlayerState } from "./lib/voice"
+import { transcribeAudioServer, fetchStickers } from "./lib/api"
+import { cacheMessages, getCachedMessages } from "./lib/msg-cache"
 
 // Module-level set of bubble ids whose entrance animation has already played.
 // Skipping replay prevents jank on tab switch / re-render of long histories.
@@ -337,71 +340,327 @@ function VoiceChip({ seconds }: { seconds: number }) {
 }
 
 // ---------- AI voice segment (TTS playback bubble) ----------
-function VoiceSegmentBubble({ text }: { text: string }) {
-  const [playing, setPlaying] = useState(false)
+const _ttsPlayer = new TtsPlayer()
+
+function formatDuration(s: number): string {
+  if (!s || !isFinite(s)) return "0:00"
+  const m = Math.floor(s / 60)
+  const sec = Math.floor(s % 60)
+  return `${m}:${String(sec).padStart(2, "0")}`
+}
+
+function VoiceSegmentBubble({ text, objectHash }: { text: string; objectHash?: string }) {
+  const [ps, setPs] = useState<TtsPlayerState>({ status: "idle", duration: 0, currentTime: 0 })
+  const [expanded, setExpanded] = useState(false)
+  const playerRef = useRef(_ttsPlayer)
   const bars = [4, 9, 6, 12, 8, 14, 10, 6, 11, 7, 13, 8, 5, 10, 7, 12, 6, 9]
-  const handlePlay = async () => {
-    if (playing) return
-    setPlaying(true)
-    try {
-      await speakText(text)
-    } catch {
-      // TTS failed silently
-    } finally {
-      setPlaying(false)
+
+  useEffect(() => {
+    const unsub = playerRef.current.subscribe(setPs)
+    return unsub
+  }, [])
+
+  const active = ps.status === "playing" || ps.status === "paused" || ps.status === "loading"
+  const progress = ps.duration > 0 ? ps.currentTime / ps.duration : 0
+
+  const handleTap = () => {
+    if (ps.status === "playing") {
+      playerRef.current.pause()
+    } else if (ps.status === "paused") {
+      playerRef.current.resume()
+    } else if (objectHash) {
+      void playerRef.current.playUrl(`${(appConfig.apiBase || "").replace(/\/+$/, "")}/favilla/object/${encodeURIComponent(objectHash)}`)
+    } else {
+      void playerRef.current.play(text)
     }
   }
+
   return (
-    <div
-      className="flex items-center gap-2.5 rounded-2xl px-3 select-none"
-      style={{
-        background: "rgba(255,255,255,0.82)",
-        border: "1px solid rgba(63,47,41,0.12)",
-        backdropFilter: "blur(6px)",
-        WebkitBackdropFilter: "blur(6px)",
-        minWidth: 200,
-        maxWidth: 300,
-        height: 48,
-        cursor: "pointer",
-      }}
-      onClick={handlePlay}
-    >
+    <div className="flex flex-col gap-1" style={{ minWidth: 200, maxWidth: 300 }}>
       <div
-        className="grid h-8 w-8 shrink-0 place-items-center rounded-full"
+        className="flex items-center gap-2.5 rounded-2xl px-3 select-none"
         style={{
-          background: playing ? "rgba(176,76,76,0.15)" : "var(--color-cocoa)",
-          color: playing ? "var(--color-cocoa)" : "var(--color-cream)",
-          transition: "all 0.2s",
+          background: "rgba(255,255,255,0.82)",
+          border: "1px solid rgba(63,47,41,0.12)",
+          backdropFilter: "blur(6px)",
+          WebkitBackdropFilter: "blur(6px)",
+          height: 48,
+          cursor: "pointer",
         }}
+        onClick={handleTap}
       >
-        {playing
-          ? <Volume2 className="h-3.5 w-3.5" strokeWidth={2} />
-          : <Play className="h-3.5 w-3.5 ml-0.5" strokeWidth={2} fill="currentColor" />}
+        <div
+          className="grid h-8 w-8 shrink-0 place-items-center rounded-full transition-all"
+          style={{
+            background: active ? "rgba(176,76,76,0.14)" : "var(--color-cocoa)",
+            color: active ? "var(--color-cocoa)" : "var(--color-cream)",
+          }}
+        >
+          {ps.status === "loading"
+            ? <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2} />
+            : ps.status === "playing"
+              ? <Pause className="h-3.5 w-3.5" strokeWidth={2} fill="currentColor" />
+              : <Play className="h-3.5 w-3.5 ml-0.5" strokeWidth={2} fill="currentColor" />}
+        </div>
+        <div className="flex flex-1 items-center gap-[2px] relative">
+          {bars.map((h, i) => {
+            const barProgress = (i + 1) / bars.length
+            const filled = active && barProgress <= progress
+            return (
+              <span
+                key={i}
+                className="block w-[2px] rounded-full transition-all"
+                style={{
+                  height: ps.status === "playing" ? h * (1 + Math.sin(Date.now() / 200 + i) * 0.3) : h,
+                  background: filled ? "rgba(176,76,76,0.7)" : "rgba(63,47,41,0.35)",
+                }}
+              />
+            )
+          })}
+        </div>
+        <span
+          className="text-[11px] tabular-nums shrink-0"
+          style={{ color: "rgba(63,47,41,0.55)", fontFamily: "var(--font-mono)" }}
+        >
+          {active ? formatDuration(ps.currentTime) : formatDuration(ps.duration)}
+        </span>
       </div>
-      <div className="flex flex-1 items-center justify-between gap-[2px]">
-        {bars.map((h, i) => (
-          <span
-            key={i}
-            className="block w-[2px] rounded-full"
-            style={{
-              height: playing ? h * 1.2 : h,
-              background: playing ? "rgba(176,76,76,0.6)" : "rgba(63,47,41,0.4)",
-              transition: "height 0.3s, background 0.3s",
-            }}
-          />
-        ))}
-      </div>
+      <button
+        type="button"
+        className="text-[12px] px-1 self-start"
+        style={{ color: "rgba(63,47,41,0.45)" }}
+        onClick={() => setExpanded((v) => !v)}
+      >
+        {expanded ? "▾ hide text" : "▸ show text"}
+      </button>
+      {expanded && (
+        <div
+          className="text-[13px] leading-relaxed px-2 pb-1"
+          style={{ color: "rgba(63,47,41,0.7)" }}
+        >
+          {text}
+        </div>
+      )}
     </div>
   )
 }
 
-// ---------- File / image pill (colored by type) ----------
+// ---------- Helpers: object URL + size formatting ----------
+
+const _STICKER_TAG_RE = /<sticker\s+(?:name|ref)="([^"]+)"(?:\s+(?:name|ref)="([^"]*)")?\s*\/>/gi
+
+function parseUserSegments(text?: string): ChatSegment[] | undefined {
+  if (!text || !/<sticker\s/i.test(text)) return undefined
+  _STICKER_TAG_RE.lastIndex = 0
+  const segs: ChatSegment[] = []
+  let cursor = 0
+  let m: RegExpExecArray | null
+  while ((m = _STICKER_TAG_RE.exec(text)) !== null) {
+    const before = text.slice(cursor, m.index).trim()
+    if (before) segs.push({ type: "text", text: before })
+    segs.push({ type: "sticker", name: m[1] })
+    cursor = m.index + m[0].length
+  }
+  const tail = text.slice(cursor).trim()
+  if (tail) segs.push({ type: "text", text: tail })
+  return segs.length > 0 ? segs : undefined
+}
+
+function StickerBubble({ objectHash, name }: { objectHash?: string; name?: string }) {
+  if (!objectHash) return <span className="text-[12px] opacity-40">[sticker: {name || "?"}]</span>
+  const src = getObjectUrl(objectHash)
+  return (
+    <img
+      src={src}
+      alt={name || "sticker"}
+      className="rounded-lg"
+      style={{ maxWidth: 160, maxHeight: 160 }}
+      loading="lazy"
+    />
+  )
+}
+
+function getObjectUrl(objectHash: string): string {
+  const base = (appConfig.apiBase || (import.meta.env.VITE_API_BASE as string) || "").trim().replace(/\/+$/, "")
+  return `${base}/favilla/object/${encodeURIComponent(objectHash)}`
+}
+
+function formatFileSize(size: string | number | undefined): string {
+  if (size === undefined || size === null) return ""
+  const bytes = typeof size === "string" ? parseInt(size, 10) : size
+  if (!isFinite(bytes) || bytes < 0) return ""
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function getFileExtension(name: string): string {
+  const m = name.match(/\.([^.]+)$/)
+  return m ? m[1].toUpperCase() : "FILE"
+}
+
+// ---------- Inline image (for image attachments) ----------
+
+function InlineImage({ a }: { a: Extract<Attachment, { kind: "image" }> }) {
+  const [loaded, setLoaded] = useState(false)
+  const [fullView, setFullView] = useState(false)
+  const displayName = (() => {
+    const raw = a.name || ""
+    if (!raw) return raw
+    const m = raw.match(/[^/\\]+$/)
+    return m ? m[0] : raw
+  })()
+
+  const src = a.object_hash ? getObjectUrl(a.object_hash) : ""
+
+  if (!src) {
+    return (
+      <div
+        className="flex items-center gap-1.5 rounded-lg px-2 py-1"
+        style={{ background: "rgba(199,195,176,0.85)" }}
+      >
+        <ImageIcon className="h-[14px] w-[14px]" strokeWidth={1.7} style={{ color: "#5a5840" }} />
+        <span className="text-[12px] truncate" style={{ color: INK }}>{displayName}</span>
+      </div>
+    )
+  }
+
+  return (
+    <>
+      <div
+        className="relative rounded-xl overflow-hidden cursor-pointer select-none"
+        style={{ maxWidth: 260 }}
+        onClick={() => setFullView(true)}
+      >
+        {!loaded && (
+          <div
+            className="flex items-center justify-center rounded-xl"
+            style={{
+              width: 200,
+              height: 120,
+              background: "rgba(63,47,41,0.06)",
+              border: "1px solid rgba(63,47,41,0.08)",
+            }}
+          >
+            <Loader2 className="h-5 w-5 animate-spin" style={{ color: "rgba(63,47,41,0.35)" }} />
+          </div>
+        )}
+        <img
+          src={src}
+          alt={displayName}
+          className="rounded-xl"
+          style={{
+            maxWidth: 260,
+            maxHeight: 320,
+            objectFit: "cover",
+            display: loaded ? "block" : "none",
+          }}
+          onLoad={() => setLoaded(true)}
+        />
+      </div>
+      {/* Full-screen lightbox overlay */}
+      {fullView && (
+        <div
+          className="fixed inset-0 z-[9999] flex items-center justify-center"
+          style={{ background: "rgba(0,0,0,0.85)" }}
+          onClick={() => setFullView(false)}
+        >
+          <button
+            type="button"
+            className="absolute top-4 right-4 text-white/80 hover:text-white"
+            onClick={() => setFullView(false)}
+          >
+            <X className="h-7 w-7" />
+          </button>
+          <img
+            src={src}
+            alt={displayName}
+            style={{ maxWidth: "92vw", maxHeight: "90vh", objectFit: "contain", borderRadius: 8 }}
+          />
+        </div>
+      )}
+    </>
+  )
+}
+
+// ---------- File card (WeChat-style for non-image, non-voice) ----------
+
+function FileCard({ a }: { a: Extract<Attachment, { kind: "file" }> }) {
+  const displayName = (() => {
+    const raw = a.name || ""
+    if (!raw) return raw
+    const m = raw.match(/[^/\\]+$/)
+    return m ? m[0] : raw
+  })()
+  const ext = getFileExtension(displayName)
+  const sizeStr = formatFileSize(a.size)
+
+  const handleDownload = () => {
+    if (a.object_hash) {
+      downloadObject(`obj:${a.object_hash}`, displayName).catch(() => undefined)
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-left"
+      style={{
+        background: "rgba(255,255,255,0.92)",
+        border: "1px solid rgba(63,47,41,0.10)",
+        width: 280,
+        cursor: a.object_hash ? "pointer" : "default",
+        boxShadow: "0 1px 3px rgba(63,47,41,0.04)",
+      }}
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={handleDownload}
+      title={a.object_hash ? "Tap to download" : displayName}
+    >
+      {/* File type icon */}
+      <div
+        className="flex items-center justify-center rounded-lg shrink-0"
+        style={{
+          width: 40,
+          height: 40,
+          background: "rgba(255,232,214,0.85)",
+        }}
+      >
+        <FileText className="h-5 w-5" strokeWidth={1.6} style={{ color: "var(--color-cocoa)" }} />
+      </div>
+      {/* Name + size */}
+      <div className="flex-1 min-w-0 flex flex-col gap-0.5">
+        <span
+          className="text-[13px] font-medium truncate leading-tight"
+          style={{ color: INK }}
+        >
+          {displayName}
+        </span>
+        <span
+          className="text-[11px]"
+          style={{ color: "rgba(63,47,41,0.5)" }}
+        >
+          {sizeStr ? `${sizeStr}  ·  ${ext}` : ext}
+        </span>
+      </div>
+      {/* Download indicator */}
+      {a.object_hash && (
+        <div className="shrink-0" style={{ color: "rgba(63,47,41,0.35)" }}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="7 10 12 15 17 10" />
+            <line x1="12" y1="15" x2="12" y2="3" />
+          </svg>
+        </div>
+      )}
+    </button>
+  )
+}
+
+// ---------- File / image pill (compact, for user-side) ----------
 
 function FilePill({ a }: { a: Extract<Attachment, { kind: "file" | "image" }> }) {
   const isImage = a.kind === "image"
   const Icon = isImage ? ImageIcon : FileText
-  // Strip directory portion: server sometimes hands us absolute paths
-  // ("/home/fiet/.../foo.md") and the long path overflows the pill.
   const displayName = (() => {
     const raw = a.name || ""
     if (!raw) return raw
@@ -458,19 +717,29 @@ function FilePill({ a }: { a: Extract<Attachment, { kind: "file" | "image" }> })
 }
 
 function Attachments({ list, isUser }: { list: Attachment[]; isUser: boolean }) {
+  if (isUser) {
+    // User side: keep compact pills for everything
+    return (
+      <div className="flex flex-wrap items-center gap-1.5 justify-end">
+        {list.map((a, i) =>
+          a.kind === "voice" ? (
+            <VoiceChip key={i} seconds={a.seconds} />
+          ) : (
+            <FilePill key={i} a={a} />
+          ),
+        )}
+      </div>
+    )
+  }
+
+  // AI side: rich rendering
   return (
-    <div
-      className={`flex flex-wrap items-center gap-1.5 ${
-        isUser ? "justify-end" : "justify-start"
-      }`}
-    >
-      {list.map((a, i) =>
-        a.kind === "voice" ? (
-          <VoiceChip key={i} seconds={a.seconds} />
-        ) : (
-          <FilePill key={i} a={a} />
-        ),
-      )}
+    <div className="flex flex-col gap-2 items-start">
+      {list.map((a, i) => {
+        if (a.kind === "voice") return <VoiceChip key={i} seconds={a.seconds} />
+        if (a.kind === "image") return <InlineImage key={i} a={a} />
+        return <FileCard key={i} a={a} />
+      })}
     </div>
   )
 }
@@ -989,7 +1258,8 @@ type RenderItem =
   | { kind: "text"; index: number; text: string }
   | { kind: "thought"; index: number; step: ThinkStep; locked?: boolean }
   | { kind: "tools"; index: number; steps: ThinkStep[] }
-  | { kind: "voice-seg"; index: number; text: string }
+  | { kind: "voice-seg"; index: number; text: string; objectHash?: string }
+  | { kind: "sticker-seg"; index: number; objectHash?: string; name?: string }
 
 function buildRenderItems(segments: ChatSegment[] | undefined): RenderItem[] {
   if (!segments || segments.length === 0) return []
@@ -1005,8 +1275,10 @@ function buildRenderItems(segments: ChatSegment[] | undefined): RenderItem[] {
       if (seg.text || seg.summary) {
         out.push({ kind: "thought", index: idx, step: stepFromSegment(seg), locked: seg.locked })
       }
+    } else if (seg.type === "sticker") {
+      out.push({ kind: "sticker-seg", index: idx, objectHash: seg.object_hash, name: seg.name })
     } else if (seg.type === "voice") {
-      if (seg.text) out.push({ kind: "voice-seg", index: idx, text: seg.text })
+      if (seg.text) out.push({ kind: "voice-seg", index: idx, text: seg.text, objectHash: seg.object_hash })
     } else if (seg.type === "tool_use") {
       const id = seg.tool_use_id || `anon-${idx}`
       const existing = toolMap.get(id)
@@ -1077,7 +1349,9 @@ function Bubble({
   const fileAttachments = (msg.attachments ?? []).filter(
     (a) => a.kind !== "voice",
   )
-  const orderedSegments: RenderItem[] = !isUser ? buildRenderItems(msg.segments) : []
+  const orderedSegments: RenderItem[] = !isUser
+    ? buildRenderItems(msg.segments)
+    : buildRenderItems(parseUserSegments(msg.text))
   // Only animate the FIRST time we see this message id; on re-render skip
   // entrance entirely (no jank scrolling/switching tabs back to chat).
   const wasSeen = SEEN_BUBBLE_IDS.has(msg.id)
@@ -1092,6 +1366,7 @@ function Bubble({
     | { kind: "chain-thought"; item: Extract<RenderItem, { kind: "thought" }> }
     | { kind: "chain-tools"; item: Extract<RenderItem, { kind: "tools" }> }
     | { kind: "voice-block"; item: Extract<RenderItem, { kind: "voice-seg" }> }
+    | { kind: "sticker-block"; item: Extract<RenderItem, { kind: "sticker-seg" }> }
     | { kind: "voice" }
     | { kind: "files" }
   const blocks: Block[] = []
@@ -1116,6 +1391,9 @@ function Bubble({
       } else if (item.kind === "voice-seg") {
         flush()
         blocks.push({ kind: "voice-block", item })
+      } else if (item.kind === "sticker-seg") {
+        flush()
+        blocks.push({ kind: "sticker-block", item })
       } else {
         flush()
         blocks.push({ kind: "chain-tools", item })
@@ -1186,7 +1464,10 @@ function Bubble({
             />
           )}
           {block.kind === "voice-block" && (
-            <VoiceSegmentBubble text={block.item.text} />
+            <VoiceSegmentBubble text={block.item.text} objectHash={block.item.objectHash} />
+          )}
+          {block.kind === "sticker-block" && (
+            <StickerBubble objectHash={block.item.objectHash} name={block.item.name} />
           )}
           {block.kind === "text-group" && (
             <BubbleBody
@@ -1509,6 +1790,9 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const cameraInputRef = useRef<HTMLInputElement | null>(null)
   const [attachOpen, setAttachOpen] = useState(false)
+  const [stickerOpen, setStickerOpen] = useState(false)
+  const [stickerList, setStickerList] = useState<Array<{ hash: string; name: string }>>([])
+  const stickerLoadedRef = useRef(false)
   const [translating, setTranslating] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const [voiceRecording, setVoiceRecording] = useState(false)
@@ -1680,15 +1964,17 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
   useEffect(() => {
     if (!active) return
     let cancelled = false
+    getCachedMessages().then((cached) => {
+      if (cancelled || cached.length === 0) return
+      mergeServerMessages(cached as StoredChatMessage[])
+    }).catch(() => {})
     function loadTranscript() {
-      // Skip while a stream is in flight — replacing messages mid-stream
-      // wipes the in-progress AI bubble and the streamed segments never
-      // surface (root cause of "回复消失，去网页才看到").
       if (sendingRef.current) return
       fetchChatTranscript("chat")
         .then((res) => {
           if (cancelled || !res.ok || !res.messages || res.messages.length === 0) return
           mergeServerMessages(res.messages)
+          void cacheMessages(res.messages)
         })
         .catch(() => {})
     }
@@ -1852,10 +2138,13 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
       void (async () => {
         if (blob.size <= 0) { setVoiceBusy(false); return }
         try {
-          const text = await transcribeAudioOpenAICompatible(blob)
+          const sttResult = await transcribeAudioServer(blob)
+          const text = sttResult.text || ""
+          if (sttResult.error) throw new Error(sttResult.error)
           if (text.trim()) {
             if (autoSend) {
-              void sendChatTurns([{ text, filesToSend: [], recallUsed: false }])
+              const voiceFile = new File([blob], "voice.webm", { type: blob.type || "audio/webm" })
+              void sendChatTurns([{ text, filesToSend: [voiceFile], recallUsed: false }])
             } else {
               appendVoiceText(text)
             }
@@ -1897,40 +2186,14 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
     voiceStartYRef.current = e.clientY
     try {
       setVoiceError(null)
-      if (appConfig.sttProvider === "openai_compatible") {
-        await startApiSttRecording(true)
-      } else {
-        const session = createBrowserSttSession({
-          onFinalText: (text) => {
-            if (!voiceCancelledRef.current && text.trim()) {
-              void sendChatTurns([{ text, filesToSend: [], recallUsed: false }])
-            }
-          },
-          onError: (message) => {
-            setVoiceError(message)
-            setVoiceBusy(false)
-            setVoiceRecording(false)
-          },
-          onEnd: () => {
-            setVoiceBusy(false)
-            setVoiceRecording(false)
-          },
-        })
-        if (!session) {
-          setVoiceError("speech recognition is not available")
-          return
-        }
-        browserSttRef.current = session
-        setVoiceBusy(true)
-        setVoiceRecording(true)
-        session.start()
-      }
+      await startApiSttRecording(true)
     } catch (error) {
       setVoiceBusy(false)
       setVoiceRecording(false)
       setVoiceError(error instanceof Error ? error.message : String(error))
     }
   }
+
 
   function onVoicePointerMove(e: React.PointerEvent) {
     if (!voiceRecording) return
@@ -2398,6 +2661,41 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
             className="pointer-events-none absolute inset-x-0 bottom-0 px-3 pt-2"
             style={{ paddingBottom: "max(16px, calc(env(safe-area-inset-bottom) + 8px))" }}
           >
+            <AnimatePresence>
+              {stickerOpen && (
+                <motion.div
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: "auto", opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  transition={{ duration: 0.2 }}
+                  className="pointer-events-auto mb-2 overflow-hidden rounded-2xl"
+                  style={{ background: "rgba(255,255,255,0.92)", border: "1px solid rgba(63,47,41,0.1)" }}
+                >
+                  <div className="grid grid-cols-4 gap-2 p-3" style={{ maxHeight: 200, overflowY: "auto" }}>
+                    {stickerList.length === 0 && (
+                      <div className="col-span-4 text-center text-[12px] py-4" style={{ color: "rgba(63,47,41,0.4)" }}>
+                        no stickers yet
+                      </div>
+                    )}
+                    {stickerList.map((s) => (
+                      <button
+                        key={s.hash}
+                        type="button"
+                        className="aspect-square rounded-lg overflow-hidden hover:bg-black/5 active:scale-95 transition-transform"
+                        title={s.name}
+                        onClick={() => {
+                          const tag = `<sticker name="${s.name}"/>`
+                          setInput((cur) => cur ? `${cur} ${tag} ` : `${tag} `)
+                          setStickerOpen(false)
+                        }}
+                      >
+                        <img src={getObjectUrl(s.hash)} alt={s.name} className="w-full h-full object-contain" loading="lazy" />
+                      </button>
+                    ))}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
             {pendingFiles.length > 0 && (
               <div className="pointer-events-auto mb-2 flex flex-wrap gap-1.5">
                 {pendingFiles.map((p) => {
@@ -2563,6 +2861,42 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
                 </div>
                 <button
                   type="button"
+                  onPointerDown={onStableControlPointerDown}
+                  onClick={() => {
+                    setStickerOpen((v) => !v)
+                    if (!stickerLoadedRef.current) {
+                      stickerLoadedRef.current = true
+                      void fetchStickers().then((r) => { if (r.ok && r.stickers) setStickerList(r.stickers) })
+                    }
+                  }}
+                  className="grid h-9 w-9 shrink-0 place-items-center rounded-full hover:bg-black/5"
+                  style={{ color: "var(--color-cocoa)" }}
+                  aria-label="Stickers"
+                >
+                  <svg width="19" height="19" viewBox="0 0 32 32" fill="none"><path d="M16 3C13.43 3 10.92 3.76 8.78 5.19C6.64 6.62 4.97 8.65 3.99 11.03C3.01 13.4 2.75 16.01 3.25 18.54C3.75 21.06 4.99 23.37 6.81 25.19C8.63 27.01 10.94 28.25 13.46 28.75C15.99 29.25 18.6 28.99 20.97 28.01C23.35 27.03 25.38 25.36 26.81 23.22C28.24 21.08 29 18.57 29 16C29 12.55 27.63 9.25 25.19 6.81C22.75 4.37 19.45 3 16 3ZM16 27C13.82 27 11.7 26.35 9.89 25.15C8.08 23.94 6.67 22.22 5.84 20.21C5 18.2 4.79 15.99 5.21 13.85C5.64 11.72 6.68 9.76 8.22 8.22C9.76 6.68 11.72 5.64 13.85 5.21C15.99 4.79 18.2 5 20.21 5.84C22.22 6.67 23.94 8.08 25.15 9.89C26.35 11.7 27 13.82 27 16C27 18.92 25.84 21.71 23.77 23.77C21.71 25.84 18.92 27 16 27ZM10 13.5C10 13.1 10.18 12.72 10.44 12.44C10.72 12.16 11.1 12 11.5 12C11.9 12 12.28 12.16 12.56 12.44C12.84 12.72 13 13.1 13 13.5C13 13.9 12.84 14.28 12.56 14.56C12.28 14.84 11.9 15 11.5 15C11.1 15 10.72 14.84 10.44 14.56C10.16 14.28 10 13.9 10 13.5ZM23 13.5C23 13.77 22.89 14.02 22.71 14.21C22.52 14.39 22.27 14.5 22 14.5H19C18.73 14.5 18.48 14.39 18.29 14.21C18.11 14.02 18 13.77 18 13.5C18 13.23 18.11 12.98 18.29 12.79C18.48 12.61 18.73 12.5 19 12.5H22C22.27 12.5 22.52 12.61 22.71 12.79C22.89 12.98 23 13.23 23 13.5ZM21.87 19.5C20.58 21.72 18.44 23 16 23C13.56 23 11.42 21.73 10.13 19.5C9.87 19.05 10.03 18.47 10.5 18.13C10.97 17.87 11.55 18.03 11.87 18.5C12.8 20.11 14.27 21 16 21C17.73 21 19.2 20.11 20.14 18.5C20.46 18.03 21.03 17.87 21.52 18.1C21.98 18.38 22.15 18.97 21.87 19.5Z" fill="currentColor" opacity="0.75"/></svg>
+                </button>
+                <button
+                  type="button"
+                  disabled={translating || !input.trim()}
+                  onPointerDown={onStableControlPointerDown}
+                  onClick={async () => {
+                    if (!input.trim() || translating) return
+                    setTranslating(true)
+                    try {
+                      const res = await translateText(input.trim())
+                      if (res.translated) setInput(res.translated)
+                    } finally {
+                      setTranslating(false)
+                    }
+                  }}
+                  className="grid h-9 w-9 shrink-0 place-items-center rounded-full transition-colors hover:bg-black/5 disabled:opacity-40"
+                  style={{ color: "var(--color-cocoa)" }}
+                  aria-label="Translate input"
+                >
+                  <TranslateIcon size={15} />
+                </button>
+                <button
+                  type="button"
                   onPointerDown={onHourglassPressStart}
                   onTouchStart={(e) => e.preventDefault()}
                   onPointerUp={onHourglassPressEnd}
@@ -2599,26 +2933,6 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
                     sandColor="#FAEC8C"
                     cycleSeconds={1}
                   />
-                </button>
-                <button
-                  type="button"
-                  disabled={translating || !input.trim()}
-                  onPointerDown={onStableControlPointerDown}
-                  onClick={async () => {
-                    if (!input.trim() || translating) return
-                    setTranslating(true)
-                    try {
-                      const res = await translateText(input.trim())
-                      if (res.translated) setInput(res.translated)
-                    } finally {
-                      setTranslating(false)
-                    }
-                  }}
-                  className="grid h-9 w-9 shrink-0 place-items-center rounded-full transition-colors hover:bg-black/5 disabled:opacity-40"
-                  style={{ color: "var(--color-cocoa)" }}
-                  aria-label="Translate input"
-                >
-                  <TranslateIcon size={15} />
                 </button>
                 {/* spacer */}
                 <div className="flex-1" />

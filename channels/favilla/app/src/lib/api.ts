@@ -60,7 +60,8 @@ export type ChatSegment =
       result_summary?: string
       is_error?: boolean
     }
-  | { type: "voice"; text: string }
+  | { type: "voice"; text: string; object_hash?: string }
+  | { type: "sticker"; name?: string; ref?: string; object_hash?: string }
 
 export type ChatAttachment = {
   object_hash?: string
@@ -513,6 +514,35 @@ export async function sendStrollMessage(
   const data = await res.json().catch(() => ({}))
   if (!res.ok) return { ok: false, reply: "", error: data.error || `HTTP ${res.status}` }
   return data as ChatResponse
+}
+
+export type StickerEntry = { hash: string; name: string; tags?: string[]; added_by?: string; added_at?: string }
+
+export async function fetchStickers(): Promise<{ ok: boolean; stickers?: StickerEntry[]; error?: string }> {
+  const res = await fetch(`${getBase()}/favilla/stickers`, { headers: authHeaders() })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) return { ok: false, error: data.error || `HTTP ${res.status}` }
+  return data as { ok: boolean; stickers: StickerEntry[] }
+}
+
+export async function transcribeAudioServer(audioBlob: Blob): Promise<{ ok: boolean; text?: string; error?: string }> {
+  const reader = new FileReader()
+  const b64 = await new Promise<string>((resolve, reject) => {
+    reader.onload = () => {
+      const result = reader.result as string
+      resolve(result.split(",")[1] || "")
+    }
+    reader.onerror = reject
+    reader.readAsDataURL(audioBlob)
+  })
+  const res = await fetch(`${getBase()}/favilla/stt`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify({ audio: b64 }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) return { ok: false, error: data.error || `HTTP ${res.status}` }
+  return { ok: true, text: data.text || "" }
 }
 
 export async function fetchChatTranscript(source = "chat", limit = 300): Promise<TranscriptResponse> {

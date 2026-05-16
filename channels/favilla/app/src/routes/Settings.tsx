@@ -134,70 +134,6 @@ export function Settings({ open, onClose }: Props) {
           value={draft.defaultRuntime}
           onChange={(v) => setDraft({ ...draft, defaultRuntime: v })}
         />
-        <VoiceProviderField
-          label="STT provider"
-          value={draft.sttProvider}
-          options={["browser", "openai_compatible"]}
-          onChange={(v) => setDraft({ ...draft, sttProvider: v as AppConfig["sttProvider"] })}
-        />
-        {draft.sttProvider === "openai_compatible" && (
-          <>
-            <Field
-              label="STT base"
-              value={draft.sttBaseUrl}
-              onChange={(v) => setDraft({ ...draft, sttBaseUrl: v })}
-              placeholder="https://.../v1"
-            />
-            <Field
-              label="STT key"
-              value={draft.sttApiKey}
-              onChange={(v) => setDraft({ ...draft, sttApiKey: v })}
-              placeholder="Bearer key"
-              secret
-            />
-            <Field
-              label="STT model"
-              value={draft.sttModel}
-              onChange={(v) => setDraft({ ...draft, sttModel: v })}
-              placeholder="whisper-1"
-            />
-          </>
-        )}
-        <VoiceProviderField
-          label="TTS provider"
-          value={draft.ttsProvider}
-          options={["browser", "openai_compatible", "mimo"]}
-          onChange={(v) => setDraft({ ...draft, ttsProvider: v as AppConfig["ttsProvider"] })}
-        />
-        {draft.ttsProvider !== "browser" && (
-          <>
-            <Field
-              label="TTS base"
-              value={draft.ttsBaseUrl}
-              onChange={(v) => setDraft({ ...draft, ttsBaseUrl: v })}
-              placeholder={draft.ttsProvider === "mimo" ? "https://..." : "https://.../v1"}
-            />
-            <Field
-              label="TTS key"
-              value={draft.ttsApiKey}
-              onChange={(v) => setDraft({ ...draft, ttsApiKey: v })}
-              placeholder="Bearer key"
-              secret
-            />
-            <Field
-              label="TTS model"
-              value={draft.ttsModel}
-              onChange={(v) => setDraft({ ...draft, ttsModel: v })}
-              placeholder={draft.ttsProvider === "mimo" ? "mimo-clone" : "gpt-4o-mini-tts"}
-            />
-          </>
-        )}
-        <Field
-          label="TTS voice"
-          value={draft.ttsVoice}
-          onChange={(v) => setDraft({ ...draft, ttsVoice: v })}
-          placeholder="jarvis / alloy / voice-id"
-        />
         <BoolField
           label="Auto speak AI"
           value={draft.ttsAutoPlayAi}
@@ -357,6 +293,65 @@ function Field({
 // underneath. Saves vertical space and lets users compare the three
 // theme colors side-by-side. Non-hex existing values are coerced into
 // hex via toHex on first interaction.
+function ColorSwatch({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
+  const hex = toHex(value) || "#cccccc"
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(hex)
+
+  const commitHex = () => {
+    setEditing(false)
+    const clean = draft.trim()
+    if (/^#[0-9a-fA-F]{6}$/.test(clean)) {
+      onChange(clean)
+    } else if (/^[0-9a-fA-F]{6}$/.test(clean)) {
+      onChange(`#${clean}`)
+    }
+  }
+
+  return (
+    <div className="flex flex-col items-center gap-1">
+      <span
+        aria-hidden
+        style={{
+          display: "inline-block", width: 32, height: 32, borderRadius: 8,
+          background: hex, border: "1px solid rgba(63,47,41,0.18)",
+          position: "relative", overflow: "hidden",
+        }}
+      >
+        <input
+          type="color"
+          value={hex}
+          onChange={(e) => onChange(e.target.value)}
+          aria-label={`${label} color`}
+          style={{ position: "absolute", inset: 0, width: "100%", height: "100%", opacity: 0, cursor: "pointer", border: 0, padding: 0 }}
+        />
+      </span>
+      <span className="text-[10px] tracking-tight" style={{ color: "rgba(63,47,41,0.7)", fontFamily: "var(--font-mono, var(--font-sans))" }}>
+        {label}
+      </span>
+      {editing ? (
+        <input
+          autoFocus
+          className="text-[10px] w-16 text-center rounded border outline-none"
+          style={{ color: "rgba(63,47,41,0.8)", fontFamily: "var(--font-mono)", borderColor: "rgba(63,47,41,0.2)", padding: "1px 2px" }}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commitHex}
+          onKeyDown={(e) => { if (e.key === "Enter") commitHex() }}
+        />
+      ) : (
+        <span
+          className="text-[10px] cursor-pointer"
+          style={{ color: "rgba(63,47,41,0.5)", fontFamily: "var(--font-mono)" }}
+          onClick={() => { setDraft(hex); setEditing(true) }}
+        >
+          {hex}
+        </span>
+      )}
+    </div>
+  )
+}
+
 function ColorRow({
   items,
 }: {
@@ -364,71 +359,15 @@ function ColorRow({
 }) {
   return (
     <div
-      style={{
-        paddingTop: 10,
-        paddingBottom: 10,
-        borderBottom: "1px solid rgba(63, 47, 41, 0.12)",
-      }}
+      style={{ paddingTop: 10, paddingBottom: 10, borderBottom: "1px solid rgba(63, 47, 41, 0.12)" }}
     >
-      <div
-        className="text-[10.5px] uppercase tracking-[0.08em]"
-        style={{ color: "rgba(63, 47, 41, 0.55)" }}
-      >
+      <div className="text-[10.5px] uppercase tracking-[0.08em]" style={{ color: "rgba(63, 47, 41, 0.55)" }}>
         Colors
       </div>
       <div className="mt-2 flex items-center gap-4">
-        {items.map((it) => {
-          const hex = toHex(it.value) || "#cccccc"
-          return (
-            <div key={it.label} className="flex flex-col items-center gap-1">
-              <span
-                aria-hidden
-                style={{
-                  display: "inline-block",
-                  width: 32,
-                  height: 32,
-                  borderRadius: 8,
-                  background: hex,
-                  border: "1px solid rgba(63,47,41,0.18)",
-                  position: "relative",
-                  overflow: "hidden",
-                }}
-              >
-                <input
-                  type="color"
-                  value={hex}
-                  onChange={(e) => it.onChange(e.target.value)}
-                  aria-label={`${it.label} color`}
-                  style={{
-                    position: "absolute",
-                    inset: 0,
-                    width: "100%",
-                    height: "100%",
-                    opacity: 0,
-                    cursor: "pointer",
-                    border: 0,
-                    padding: 0,
-                  }}
-                />
-              </span>
-              <span
-                className="text-[10px] tracking-tight"
-                style={{
-                  color: "rgba(63, 47, 41, 0.7)",
-                  fontFamily: "var(--font-mono, var(--font-sans))",
-                }}
-              >
-                {it.label}
-              </span>
-              <span
-                className="text-[10px]"
-                style={{ color: "rgba(63,47,41,0.5)", fontFamily: "var(--font-mono)" }}
-              >
-                {hex}
-              </span>
-            </div>
-          )
-        })}
+        {items.map((it) => (
+          <ColorSwatch key={it.label} label={it.label} value={it.value} onChange={it.onChange} />
+        ))}
       </div>
     </div>
   )
@@ -557,51 +496,6 @@ function BgField({
   )
 }
 
-function VoiceProviderField({
-  label,
-  value,
-  options,
-  onChange,
-}: {
-  label: string
-  value: string
-  options: string[]
-  onChange: (value: string) => void
-}) {
-  return (
-    <label
-      className="block"
-      style={{
-        paddingTop: 8,
-        paddingBottom: 8,
-        borderBottom: "1px solid rgba(63, 47, 41, 0.12)",
-      }}
-    >
-      <div
-        className="text-[10.5px] uppercase tracking-[0.08em]"
-        style={{ color: "rgba(63, 47, 41, 0.55)" }}
-      >
-        {label}
-      </div>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="mt-1 w-full bg-transparent text-[13px]"
-        style={{
-          color: "#3f2f29",
-          border: "none",
-          outline: "none",
-          fontFamily: "var(--font-sans)",
-        }}
-      >
-        {options.map((item) => (
-          <option key={item} value={item}>{item}</option>
-        ))}
-      </select>
-    </label>
-  )
-}
-
 function BoolField({
   label,
   value,
@@ -613,7 +507,7 @@ function BoolField({
 }) {
   return (
     <label
-      className="flex items-center justify-between"
+      className="flex items-center justify-between cursor-pointer"
       style={{
         paddingTop: 8,
         paddingBottom: 8,
@@ -626,11 +520,24 @@ function BoolField({
       >
         {label}
       </span>
-      <input
-        type="checkbox"
-        checked={value}
-        onChange={(e) => onChange(e.target.checked)}
-      />
+      <div
+        className="relative rounded-full transition-colors"
+        style={{
+          width: 40,
+          height: 22,
+          background: value ? "var(--color-cocoa)" : "rgba(63, 47, 41, 0.2)",
+        }}
+        onClick={() => onChange(!value)}
+      >
+        <div
+          className="absolute top-[2px] rounded-full bg-white shadow-sm transition-transform"
+          style={{
+            width: 18,
+            height: 18,
+            transform: value ? "translateX(20px)" : "translateX(2px)",
+          }}
+        />
+      </div>
     </label>
   )
 }

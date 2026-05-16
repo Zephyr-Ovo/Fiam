@@ -209,10 +209,11 @@ class TurnCommit:
 class MarkerInterpreter:
     """Single parser for model-authored XML markers."""
 
-    CONTROL_NAMES = {"send", "cot", "hold", "held", "todo", "wake", "sleep", "state", "route", "lock", "voice"}
+    CONTROL_NAMES = {"send", "cot", "hold", "held", "todo", "wake", "sleep", "state", "route", "lock", "voice", "sticker"}
 
-    def __init__(self, object_resolver: Callable[[str], str] | None = None) -> None:
+    def __init__(self, object_resolver: Callable[[str], str] | None = None, default_tz: Any = None) -> None:
         self.object_resolver = object_resolver
+        self.default_tz = default_tz
 
     def interpret(self, text: str) -> MarkerInterpretation:
         dispatches: list[DispatchRequest] = []
@@ -248,13 +249,13 @@ class MarkerInterpreter:
             route_hint = {"family": marker.family, "reason": marker.reason}
         todo_changes: list[TodoChange] = []
         marker_index = 0
-        for marker in parse_todo_markers(text):
+        for marker in parse_todo_markers(text, default_tz=self.default_tz):
             todo_changes.append(TodoChange(at=marker.at, kind="todo", reason=marker.text, marker_index=marker_index))
             marker_index += 1
-        for marker in parse_wake_markers(text):
+        for marker in parse_wake_markers(text, default_tz=self.default_tz):
             todo_changes.append(TodoChange(at=marker.at, kind="wake", marker_index=marker_index))
             marker_index += 1
-        for marker in parse_sleep_markers(text):
+        for marker in parse_sleep_markers(text, default_tz=self.default_tz):
             todo_changes.append(TodoChange(at=marker.at, kind="sleep", marker_index=marker_index))
             marker_index += 1
         state_markers = parse_state_markers(text)

@@ -51,6 +51,12 @@ class VoiceMarker:
 
 
 @dataclass(frozen=True)
+class StickerMarker:
+    name: str = ""
+    ref: str = ""
+
+
+@dataclass(frozen=True)
 class HoldMarker:
     reason: str = ""
     status: str = "reroll"
@@ -261,6 +267,19 @@ def parse_cot_markers(text: str) -> list[str]:
         cleaned = (body or "").strip()
         if cleaned:
             out.append(cleaned)
+    return out
+
+
+def parse_sticker_markers(text: str) -> list[StickerMarker]:
+    """Parse ``<sticker name="happy cat"/>`` or ``<sticker ref="obj:hash"/>`` markers."""
+    out: list[StickerMarker] = []
+    for tag_name, attrs, _body in _xml_markers(text):
+        if tag_name != "sticker":
+            continue
+        sticker_name = (attrs.get("name") or "").strip()
+        ref = (attrs.get("ref") or "").strip()
+        if sticker_name or ref:
+            out.append(StickerMarker(name=sticker_name, ref=ref))
     return out
 
 

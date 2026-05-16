@@ -119,8 +119,18 @@ Attributes: `family` (required), `reason` (optional). Self-closing.
 
 ### `<voice>` — TTS playback segment
 
-Mark text for text-to-speech playback. Renders as an audio bubble in Favilla. Write content in English (TTS engine constraint).
+Mark text for text-to-speech playback. Renders as an audio bubble in Favilla. Server generates audio and stores it for replay.
 
 ```xml
 <voice>Good morning, here's your schedule for today.</voice>
 ```
+
+### `<sticker>` — Sticker image
+
+Send a sticker from the shared collection. Renders as an inline image bubble. Use `SaveSticker` tool to add new stickers first.
+
+```xml
+<sticker ref="obj:a1b2c3d4"/>
+```
+
+Attributes: `ref` (required, `obj:hash` from sticker collection). Self-closing. Both user and AI can send stickers.

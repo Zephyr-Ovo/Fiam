@@ -1,52 +1,85 @@
-import { useState, useRef, useEffect } from "react"
-import { sendChatStream } from "../lib/api"
-import type { StreamChatEvent } from "../lib/api"
+import { useState, useRef, useEffect, useCallback } from "react"
 import { appConfig } from "../config"
-import { ArrowLeft, Send } from "lucide-react"
-
-type Line = { role: "you" | "ai" | "sys"; text: string }
+import { ArrowLeft } from "lucide-react"
 
 export function Terminal({ onBack }: { onBack: () => void }) {
-  const [lines, setLines] = useState<Line[]>([])
+  const [lines, setLines] = useState<string[]>([])
   const [input, setInput] = useState("")
-  const [busy, setBusy] = useState(false)
+  const [connected, setConnected] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const wsRef = useRef<WebSocket | null>(null)
+  const bufRef = useRef("")
+
+  const pushText = useCallback((text: string) => {
+    bufRef.current += text
+    const parts = bufRef.current.split("\n")
+    bufRef.current = parts.pop() || ""
+    if (parts.length > 0) {
+      setLines((p) => {
+        const updated = [...p]
+        if (updated.length > 0) {
+          updated[updated.length - 1] += parts[0]
+          parts.shift()
+        }
+        updated.push(...parts)
+        while (updated.length > 500) updated.shift()
+        return updated
+      })
+    }
+    if (bufRef.current) {
+      setLines((p) => {
+        const updated = [...p]
+        if (updated.length > 0) {
+          updated[updated.length - 1] = updated[updated.length - 1].split("\r").pop() || ""
+        }
+        return updated
+      })
+    }
+  }, [])
+
+  useEffect(() => {
+    const base = (appConfig.apiBase || "").trim().replace(/\/+$/, "")
+    const wsBase = base.replace(/^http/, "ws").replace(/:\d+/, ":8767")
+    const wsUrl = wsBase || "ws://127.0.0.1:8767"
+
+    const ws = new WebSocket(wsUrl)
+    wsRef.current = ws
+
+    ws.onopen = () => {
+      setConnected(true)
+      setLines(["connected."])
+    }
+    ws.onmessage = (ev) => {
+      if (typeof ev.data === "string") {
+        const cleaned = ev.data.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "").replace(/\r/g, "")
+        pushText(cleaned)
+      } else if (ev.data instanceof Blob) {
+        ev.data.text().then((t) => {
+          const cleaned = t.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "").replace(/\r/g, "")
+          pushText(cleaned)
+        })
+      }
+    }
+    ws.onerror = () => setLines((p) => [...p, "[connection error]"])
+    ws.onclose = () => {
+      setConnected(false)
+      setLines((p) => [...p, "[disconnected]"])
+    }
+
+    return () => { ws.close() }
+  }, [pushText])
+
+  function send() {
+    const text = input.trim()
+    if (!text || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
+    wsRef.current.send(text + "\n")
+    setInput("")
+  }
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" })
   }, [lines])
-
-  async function send() {
-    const text = input.trim()
-    if (!text || busy) return
-    setInput("")
-    setLines((p) => [...p, { role: "you", text }])
-    setBusy(true)
-    let buf = ""
-    try {
-      await sendChatStream(text, "chat", [], appConfig.defaultRuntime, (ev: StreamChatEvent) => {
-        if (ev.event === "text_delta") {
-          buf += ev.data.text
-          setLines((p) => {
-            const last = p[p.length - 1]
-            if (last?.role === "ai") return [...p.slice(0, -1), { role: "ai", text: buf }]
-            return [...p, { role: "ai", text: buf }]
-          })
-        }
-        if (ev.event === "error") {
-          setLines((p) => [...p, { role: "sys", text: ev.data.message }])
-        }
-      })
-    } catch (e) {
-      setLines((p) => [...p, { role: "sys", text: String(e) }])
-    }
-    setBusy(false)
-    inputRef.current?.focus()
-  }
-
-  const aiLabel = (appConfig.aiName || "ai").toLowerCase()
-  const roleColor = { you: "#d99477", ai: "#8b9a6b", sys: "#c0392b" }
 
   return (
     <div className="flex flex-col h-full select-text" style={{ background: "#1a1612", color: "#d4c8b8", fontFamily: "var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace)" }}>
@@ -55,23 +88,17 @@ export function Terminal({ onBack }: { onBack: () => void }) {
           <ArrowLeft size={18} />
         </button>
         <span className="ml-1 text-[13px] opacity-50">terminal</span>
-        <span className="ml-auto text-[11px] opacity-30 tracking-wide">{aiLabel}@isp</span>
+        <span className="ml-auto text-[11px] tracking-wide" style={{ color: connected ? "#8b9a6b" : "#c0392b" }}>
+          {connected ? "● connected" : "○ offline"}
+        </span>
       </div>
 
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-2" style={{ fontSize: 13, lineHeight: 1.6 }}>
-        {lines.length === 0 && (
-          <div className="opacity-25 text-[12px] pt-1">connected. type to begin.</div>
-        )}
+      <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-2" style={{ fontSize: 12, lineHeight: 1.55 }}>
         {lines.map((line, i) => (
-          <div key={i} className="mb-0.5">
-            <span style={{ color: roleColor[line.role] }}>
-              {line.role === "you" ? "you" : line.role === "sys" ? "sys" : aiLabel}
-            </span>
-            <span className="opacity-30"> › </span>
-            <span style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{line.text}</span>
+          <div key={i} style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", minHeight: "1.2em" }}>
+            {line}
           </div>
         ))}
-        {busy && <span className="opacity-40 animate-pulse text-[15px]">▋</span>}
       </div>
 
       <form
@@ -79,20 +106,17 @@ export function Terminal({ onBack }: { onBack: () => void }) {
         className="flex items-center gap-2 px-3 py-2.5 shrink-0"
         style={{ borderTop: "1px solid rgba(212,200,184,0.12)" }}
       >
-        <span className="opacity-30 text-[14px]">›</span>
+        <span className="opacity-30 text-[14px]">$</span>
         <input
           ref={inputRef}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           className="flex-1 bg-transparent outline-none text-[13px]"
           style={{ color: "#d4c8b8", caretColor: "#d99477" }}
-          placeholder={busy ? "waiting…" : ""}
-          disabled={busy}
+          placeholder=""
+          disabled={!connected}
           autoFocus
         />
-        <button type="submit" disabled={busy || !input.trim()} className="opacity-40 active:opacity-100 disabled:opacity-15 transition-opacity" style={{ color: "#d99477" }}>
-          <Send size={15} />
-        </button>
       </form>
     </div>
   )
