@@ -46,15 +46,35 @@ Fiam is an AI agent architecture. Developer: Zephyr (iris.zhou43@outlook.com).
 
 ## Deploying Favilla (Android)
 
-The app is built via GitHub Actions, not locally (server has no Java/Android SDK).
+APK is built by GitHub Actions. Two-step workflow:
 
-1. Commit and push to `main` (changes under `channels/favilla/app/` trigger the workflow)
-2. CI runs `.github/workflows/favilla-android.yml`: npm ci → vite build → cap sync → gradle assembleDebug
-3. APK artifact uploaded as `favilla-debug-apk`
-4. Download artifact: `gh run download <run-id> -n favilla-debug-apk`
-5. Install via adb (phone connected via reverse tunnel): `adb install -r -d app-debug.apk`
+1. **Server (Claude Code)**: build frontend, commit, push to main
+2. **Zephyr's PC**: pull + run deploy script
 
-Windows shortcut: `pwsh scripts/deploy_favilla.ps1` (push → poll CI → download → adb install)
+### Server side (Claude Code does this)
+
+```bash
+cd /home/fiet/fiam-code/channels/favilla/app && npm run build
+cd /home/fiet/fiam-code
+git add channels/favilla/app/src/ channels/favilla/app/dist/ ...
+git commit -m "..." && git push origin main
+# CI auto-triggers on changes to channels/favilla/app/**
+```
+
+### Zephyr's PC (after push)
+
+```powershell
+cd F:\Fiam
+pwsh scripts/deploy_favilla.ps1
+```
+
+Script does: git pull → wait CI → download APK artifact → adb uninstall + install.
+
+### Details
+- CI workflow: `.github/workflows/favilla-android.yml`
+- adb path: `D:\scrcpy-win64-v3.3.4\adb.exe`
+- PAT: `~/.fiam/github_pat.dpapi` (DPAPI-encrypted)
+- App package: `cc.fiet.favilla`
 
 ## Restarting Services
 
