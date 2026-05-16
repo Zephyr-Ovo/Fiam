@@ -90,10 +90,16 @@ export function Settings({ open, onClose }: Props) {
         }}
       >
         <div
-          className="mb-3 text-center text-[15px] font-medium tracking-wide"
+          className="mb-0.5 text-center text-[15px] font-medium tracking-wide"
           style={{ color: "#3f2f29" }}
         >
           Settings
+        </div>
+        <div
+          className="mb-2.5 text-center text-[10px]"
+          style={{ color: "rgba(63,47,41,0.4)", fontFamily: "var(--font-mono, var(--font-sans))" }}
+        >
+          build {__BUILD_ID__}
         </div>
 
         <div

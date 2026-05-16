@@ -2,6 +2,17 @@ import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'node:path'
+import { execSync } from 'node:child_process'
+
+function buildId(): string {
+  try {
+    const sha = execSync('git rev-parse --short HEAD', { cwd: __dirname }).toString().trim()
+    const day = new Date().toISOString().slice(0, 10)
+    return `${sha} · ${day}`
+  } catch {
+    return new Date().toISOString().slice(0, 16).replace('T', ' ')
+  }
+}
 
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
@@ -11,6 +22,9 @@ export default defineConfig(({ mode }) => {
   const appNodeModules = path.resolve(__dirname, './node_modules')
   return {
     envDir: __dirname,
+    define: {
+      __BUILD_ID__: JSON.stringify(buildId()),
+    },
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {
