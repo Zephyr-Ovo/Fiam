@@ -31,15 +31,14 @@ idle_timeout_minutes = 30    # post-session triggers after this many idle minute
 poll_interval_seconds = 30
 email_poll_interval = 600    # seconds between email inbox polls
 events_per_session = 10      # rotate CC session after N wake events
-daily_budget_usd = 5.0       # 0 = unlimited; daily CC spend cap for auto-wakes
+daily_budget_usd = 5.0       # 0 = unlimited; daily cc spend cap for auto-wakes
 cc_model = ""                # CC model alias: "opus", "sonnet", or full name; empty = CC default
+cc_effort = ""               # CC effort: "low", "medium", "high", "max"; empty = CC default
 cc_disallowed_tools = ""     # comma-separated CC tools to disable (e.g. "WebFetch,NotebookEdit")
 
 [api]
-# OpenAI-compatible AI source used outside Claude Code. Keep the key in env, never here.
-# Default points at Poe (https://api.poe.com/v1) — single subscription gives access to
-# Claude / Gemini / GPT family. Swap `model` to any Poe bot id (PascalCase, e.g.
-# "Claude-Opus-4.6", "Claude-Sonnet-4.6", "Gemini-3.1-Pro").
+# Default API source used outside cc. Keep the key in env, never here.
+# Families are configured below in [catalog.<family>] and editable from /panel.
 provider = "openai_compatible"
 model = "Claude-Opus-4.6"
 base_url = "https://api.poe.com/v1"
@@ -49,6 +48,8 @@ max_tokens = 2048
 timeout_seconds = 60
 tools_enabled = true
 tools_max_loops = 10
+extended_thinking = false
+budget_tokens = 0
 
 [api.fallback]
 # Fall back to Gemini Flash if the primary call fails (rate-limited or 5xx).
@@ -64,6 +65,34 @@ cot_summary_enabled = true        # summarize visible/locked COT into short UI s
 cot_summary_model = "deepseek-chat"
 cot_summary_base_url = "https://api.deepseek.com"
 cot_summary_api_key_env = "FIAM_COT_SUMMARY_API_KEY"
+
+[catalog.claude]
+provider = "poe"                  # openrouter | poe | anthropic
+model = "Claude-Opus-4.6"
+fallbacks = ["Claude-Sonnet-4.6"]
+extended_thinking = false
+budget_tokens = 0
+
+[catalog.gpt]
+provider = "openrouter"
+model = "openai/gpt-5.1"
+fallbacks = []
+extended_thinking = false
+budget_tokens = 0
+
+[catalog.deepseek]
+provider = "deepseek"
+model = "deepseek-chat"
+fallbacks = []
+extended_thinking = false
+budget_tokens = 0
+
+[catalog.gemini]
+provider = "aistudio"             # aistudio | vertex | openrouter
+model = "gemini-2.5-flash"
+fallbacks = []
+extended_thinking = false
+budget_tokens = 0
 
 [debug]
 enabled = false

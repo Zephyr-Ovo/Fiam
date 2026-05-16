@@ -38,13 +38,15 @@ class FakeClient:
         self.reply = reply
         self.calls: list[dict] = []
 
-    def complete(self, *, messages, model, temperature, max_tokens, tools=None) -> ApiCompletion:
+    def complete(self, *, messages, model, temperature, max_tokens, tools=None, reasoning_effort="", thinking_budget_tokens=0) -> ApiCompletion:
         self.calls.append({
             "messages": messages,
             "model": model,
             "temperature": temperature,
             "max_tokens": max_tokens,
             "tools": tools,
+            "reasoning_effort": reasoning_effort,
+            "thinking_budget_tokens": thinking_budget_tokens,
         })
         return ApiCompletion(
             text=self.reply,
@@ -59,8 +61,8 @@ class FailingClient:
         self.message = message
         self.calls: list[dict] = []
 
-    def complete(self, *, messages, model, temperature, max_tokens, tools=None) -> ApiCompletion:
-        self.calls.append({"messages": messages, "model": model, "tools": tools})
+    def complete(self, *, messages, model, temperature, max_tokens, tools=None, reasoning_effort="", thinking_budget_tokens=0) -> ApiCompletion:
+        self.calls.append({"messages": messages, "model": model, "tools": tools, "reasoning_effort": reasoning_effort, "thinking_budget_tokens": thinking_budget_tokens})
         raise RuntimeError(self.message)
 
 
@@ -68,8 +70,8 @@ class ToolLoopClient:
     def __init__(self) -> None:
         self.calls: list[dict] = []
 
-    def complete(self, *, messages, model, temperature, max_tokens, tools=None) -> ApiCompletion:
-        self.calls.append({"messages": messages, "tools": tools})
+    def complete(self, *, messages, model, temperature, max_tokens, tools=None, reasoning_effort="", thinking_budget_tokens=0) -> ApiCompletion:
+        self.calls.append({"messages": messages, "tools": tools, "reasoning_effort": reasoning_effort, "thinking_budget_tokens": thinking_budget_tokens})
         if len(self.calls) == 1:
             return ApiCompletion(
                 text="",
@@ -94,8 +96,8 @@ class LargeToolResultClient:
     def __init__(self) -> None:
         self.calls: list[dict] = []
 
-    def complete(self, *, messages, model, temperature, max_tokens, tools=None) -> ApiCompletion:
-        self.calls.append({"messages": messages, "tools": tools})
+    def complete(self, *, messages, model, temperature, max_tokens, tools=None, reasoning_effort="", thinking_budget_tokens=0) -> ApiCompletion:
+        self.calls.append({"messages": messages, "tools": tools, "reasoning_effort": reasoning_effort, "thinking_budget_tokens": thinking_budget_tokens})
         if len(self.calls) == 1:
             command = f'"{sys.executable}" -c "print(\'x\'*5000)"'
             return ApiCompletion(

@@ -13,9 +13,18 @@
 	let plugins = $state<PluginManifest[]>([]);
 	let err = $state<string | null>(null);
 	let busy = $state(false);
+	let runtimeErr = $state<string | null>(null);
+	let runtimeBusy = $state(false);
 	let editingCatalog = $state(false);
 	let catalogErr = $state<string | null>(null);
 	let catalogBusy = $state(false);
+	let runtimeForm = $state({
+		default_runtime: 'auto' as 'auto' | 'api' | 'cc',
+		recall_include_recent: true,
+		cc_model: '',
+		cc_effort: '',
+		cc_disallowed_tools: ''
+	});
 	let catalogForm = $state({
 		family: 'claude',
 		provider: 'poe',
@@ -35,6 +44,7 @@
 				api.plugins().catch(() => ({ plugins: [] }))
 			]);
 			config = cfg;
+			if (cfg) syncRuntimeForm(cfg);
 			catalog = cat;
 			plugins = pluginPayload.plugins || [];
 		} catch (e) {
@@ -45,6 +55,44 @@
 	}
 
 	onMount(refresh);
+
+	function syncRuntimeForm(cfg: RuntimeConfig) {
+		runtimeForm = {
+			default_runtime: cfg.app?.default_runtime || 'auto',
+			recall_include_recent: Boolean(cfg.app?.recall_include_recent ?? true),
+			cc_model: cfg.cc?.model || '',
+			cc_effort: cfg.cc?.effort || '',
+			cc_disallowed_tools: cfg.cc?.disallowed_tools || ''
+		};
+	}
+
+	function defaultProviderForFamily(family: string) {
+		if (family === 'gemini') return 'aistudio';
+		if (family === 'deepseek') return 'deepseek';
+		if (family === 'gpt') return 'openrouter';
+		return 'poe';
+	}
+
+	async function saveRuntime(clearRouteState = false) {
+		runtimeBusy = true;
+		runtimeErr = null;
+		try {
+			const result = await api.saveRuntimeConfig({
+				default_runtime: runtimeForm.default_runtime,
+				recall_include_recent: runtimeForm.recall_include_recent,
+				cc_model: runtimeForm.cc_model,
+				cc_effort: runtimeForm.cc_effort,
+				cc_disallowed_tools: runtimeForm.cc_disallowed_tools,
+				clear_route_state: clearRouteState
+			});
+			config = result.config;
+			syncRuntimeForm(result.config);
+		} catch (e) {
+			runtimeErr = (e as Error).message;
+		} finally {
+			runtimeBusy = false;
+		}
+	}
 
 	async function setMemoryMode(mode: 'manual' | 'auto') {
 		if (!config || config.memory_mode === mode) return;
@@ -68,7 +116,7 @@
 	function startCatalogEdit(family: string, entry?: CatalogEntry) {
 		catalogForm = {
 			family,
-			provider: entry?.provider || (family === 'gemini' ? 'aistudio' : 'poe'),
+			provider: entry?.provider || defaultProviderForFamily(family),
 			model: entry?.model || '',
 			fallbacks: (entry?.fallbacks || []).join(', '),
 			extended_thinking: Boolean(entry?.extended_thinking),
@@ -140,8 +188,37 @@
 
 	<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
 		<div class="bg-[var(--color-mantle)] border border-[var(--color-surface0)] p-3">
-			<h2 class="text-xs uppercase tracking-wide text-[var(--color-subtext0)] mb-2">runtime</h2>
-			<div class="flex items-center gap-4 text-xs font-mono">
+			<div class="flex items-center justify-between gap-3 mb-3">
+				<h2 class="text-xs uppercase tracking-wide text-[var(--color-subtext0)]">runtime</h2>
+				<span class="text-xs font-mono text-[var(--color-overlay0)]">{config?.cc?.transport || 'legacy'}</span>
+			</div>
+			<div class="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs font-mono">
+				<label class="grid gap-1">
+					<span class="text-[var(--color-subtext0)]">default</span>
+					<select bind:value={runtimeForm.default_runtime} class="bg-[var(--color-base)] border border-[var(--color-surface1)] p-2">
+						<option value="auto">auto</option>
+						<option value="api">api</option>
+						<option value="cc">cc</option>
+					</select>
+				</label>
+				<label class="grid gap-1">
+					<span class="text-[var(--color-subtext0)]">cc model</span>
+					<input bind:value={runtimeForm.cc_model} placeholder="opus, sonnet, ..." class="bg-[var(--color-base)] border border-[var(--color-surface1)] p-2" />
+				</label>
+				<label class="grid gap-1">
+					<span class="text-[var(--color-subtext0)]">cc effort</span>
+					<input bind:value={runtimeForm.cc_effort} placeholder="max, high, ..." class="bg-[var(--color-base)] border border-[var(--color-surface1)] p-2" />
+				</label>
+				<label class="grid gap-1 sm:col-span-3">
+					<span class="text-[var(--color-subtext0)]">cc disallowed tools</span>
+					<input bind:value={runtimeForm.cc_disallowed_tools} placeholder="WebFetch,NotebookEdit" class="bg-[var(--color-base)] border border-[var(--color-surface1)] p-2" />
+				</label>
+			</div>
+			<div class="flex flex-wrap items-center gap-4 text-xs font-mono mt-3">
+				<label class="flex items-center gap-2">
+					<input type="checkbox" bind:checked={runtimeForm.recall_include_recent} />
+					<span>recent recall</span>
+				</label>
 				<label class="flex items-center gap-2">
 					<input
 						type="radio"
@@ -149,7 +226,7 @@
 						checked={config?.memory_mode === 'manual'}
 						onchange={() => setMemoryMode('manual')}
 					/>
-					<span>manual</span>
+					<span>manual memory</span>
 				</label>
 				<label class="flex items-center gap-2">
 					<input
@@ -158,9 +235,36 @@
 						checked={config?.memory_mode === 'auto'}
 						onchange={() => setMemoryMode('auto')}
 					/>
-					<span>auto</span>
+					<span>auto memory</span>
 				</label>
 			</div>
+			<div class="flex items-center justify-between gap-3 mt-3 text-xs font-mono">
+				<div class="min-w-0 text-[var(--color-overlay0)] truncate">
+					route: {config?.route_state?.family || 'none'}
+					{#if config?.route_state?.remaining_turns}
+						· {config.route_state.remaining_turns} turns
+					{/if}
+				</div>
+				<div class="flex gap-2">
+					<button
+						class="border border-[var(--color-surface1)] px-2 py-1 hover:bg-[var(--color-surface0)] disabled:opacity-50"
+						disabled={runtimeBusy || !config?.route_state?.family}
+						onclick={() => saveRuntime(true)}
+					>
+						clear route
+					</button>
+					<button
+						class="border border-[var(--color-green)] px-3 py-1 hover:bg-[var(--color-green)]/10 disabled:opacity-50"
+						disabled={runtimeBusy}
+						onclick={() => saveRuntime(false)}
+					>
+						save
+					</button>
+				</div>
+			</div>
+			{#if runtimeErr}
+				<p class="text-xs font-mono text-[var(--color-red)] mt-2">{runtimeErr}</p>
+			{/if}
 		</div>
 
 		<div class="bg-[var(--color-mantle)] border border-[var(--color-surface0)] p-3">
@@ -235,7 +339,7 @@
 					<label class="grid gap-1">
 						<span class="text-[var(--color-subtext0)]">family</span>
 						<select bind:value={catalogForm.family} class="bg-[var(--color-mantle)] border border-[var(--color-surface1)] p-2">
-							{#each catalog?.families || ['claude', 'gemini'] as family}
+							{#each catalog?.families || ['claude', 'gpt', 'deepseek', 'gemini'] as family}
 								<option value={family}>{family}</option>
 							{/each}
 						</select>
@@ -243,7 +347,7 @@
 					<label class="grid gap-1">
 						<span class="text-[var(--color-subtext0)]">provider</span>
 						<select bind:value={catalogForm.provider} class="bg-[var(--color-mantle)] border border-[var(--color-surface1)] p-2">
-							{#each catalog?.providers || ['poe', 'anthropic', 'aistudio'] as provider}
+							{#each catalog?.providers || ['openrouter', 'poe', 'deepseek', 'aistudio', 'vertex', 'anthropic'] as provider}
 								<option value={provider}>{provider}</option>
 							{/each}
 						</select>

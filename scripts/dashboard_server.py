@@ -62,6 +62,22 @@ POE_KNOWN_MODELS = [
     "GPT-5.1",
     "GPT-5-mini",
 ]
+API_MODEL_FAMILIES = ("claude", "gpt", "deepseek", "gemini")
+API_MODEL_PROVIDERS = ("openrouter", "poe", "deepseek", "aistudio", "vertex", "anthropic")
+PROVIDER_DEFAULTS = {
+    "openrouter": {"api_provider": "openai_compatible", "api_base_url": "https://openrouter.ai/api/v1", "api_key_env": "OPENROUTER_API_KEY"},
+    "poe": {"api_provider": "openai_compatible", "api_base_url": "https://api.poe.com/v1", "api_key_env": "POE_API_KEY"},
+    "deepseek": {"api_provider": "openai_compatible", "api_base_url": "https://api.deepseek.com", "api_key_env": "DEEPSEEK_API_KEY"},
+    "aistudio": {"api_provider": "google_openai", "api_base_url": "", "api_key_env": "GEMINI_API_KEY"},
+    "vertex": {"api_provider": "vertex_openai", "api_base_url": "", "api_key_env": "GOOGLE_APPLICATION_CREDENTIALS"},
+    "anthropic": {"api_provider": "anthropic", "api_base_url": "https://api.anthropic.com/v1", "api_key_env": "ANTHROPIC_API_KEY"},
+}
+VERTEX_KNOWN_MODELS = [
+    "google/gemini-3-pro-preview",
+    "google/gemini-2.5-pro",
+    "google/gemini-2.5-flash",
+    "google/gemini-2.5-flash-lite",
+]
 
 # Fix sys.path before importing helpers that may themselves import fiam.*.
 _src_dir = str(_ROOT / "src")
@@ -737,6 +753,18 @@ def _api_config() -> dict:
         return {"memory_mode": "manual", "annotation": {"processed_until": 0}}
     return {
         "memory_mode": _CONFIG.memory_mode,
+        "app": {
+            "default_runtime": getattr(_CONFIG, "app_default_runtime", "auto") or "auto",
+            "recall_include_recent": bool(getattr(_CONFIG, "app_recall_include_recent", True)),
+        },
+        "cc": {
+            "model": getattr(_CONFIG, "cc_model", "") or "",
+            "effort": getattr(_CONFIG, "cc_effort", "") or "",
+            "disallowed_tools": getattr(_CONFIG, "cc_disallowed_tools", "") or "",
+            "transport": os.environ.get("FIAM_CC_TRANSPORT", "").strip() or "legacy",
+            "warm_alive": bool(_CC_WARM_RUNNER and _CC_WARM_RUNNER.is_alive()),
+        },
+        "route_state": _load_route_state(),
         "annotation": _annotation_state(),
         "catalog": {
             family: _catalog_item_to_dict(item)
@@ -792,15 +820,7 @@ def _catalog_item_to_dict(item) -> dict:
 
 def _provider_api_settings(provider: str) -> dict:
     provider = (provider or "").strip().lower()
-    if provider == "poe":
-        return {"api_provider": "openai_compatible", "api_base_url": "https://api.poe.com/v1", "api_key_env": "POE_API_KEY"}
-    if provider == "anthropic":
-        return {"api_provider": "anthropic", "api_base_url": "https://api.anthropic.com/v1", "api_key_env": "ANTHROPIC_API_KEY"}
-    if provider == "aistudio":
-        return {"api_provider": "google_openai", "api_base_url": "", "api_key_env": "GEMINI_API_KEY"}
-    if provider == "vertex":
-        return {"api_provider": "vertex_openai", "api_base_url": "", "api_key_env": "GOOGLE_APPLICATION_CREDENTIALS"}
-    return {"api_provider": provider or "openai_compatible", "api_base_url": "", "api_key_env": "FIAM_API_KEY"}
+    return dict(PROVIDER_DEFAULTS.get(provider) or {"api_provider": provider or "openai_compatible", "api_base_url": "", "api_key_env": "FIAM_API_KEY"})
 
 
 def _config_for_catalog_family(config, family: str):
@@ -822,7 +842,21 @@ def _config_for_catalog_family(config, family: str):
         api_fallback_model=fallback_model,
         api_fallback_base_url=settings["api_base_url"] if fallback_model else "",
         api_fallback_key_env=settings["api_key_env"] if fallback_model else "",
+        extended_thinking=bool(getattr(item, "extended_thinking", False)),
+        budget_tokens=int(getattr(item, "budget_tokens", 0) or 0),
     )
+
+
+def _family_from_text(text: str) -> str:
+    lowered = (text or "").lower()
+    for family in API_MODEL_FAMILIES:
+        if family == "deepseek":
+            if "deepseek" in lowered or "deep seek" in lowered:
+                return family
+            continue
+        if re.search(rf"(?<![a-z0-9]){re.escape(family)}(?![a-z0-9])", lowered):
+            return family
+    return ""
 
 
 def _route_state_path() -> Path:
@@ -876,10 +910,10 @@ def _consume_route_family() -> str:
 
 def _runtime_for_family(family: str, *, fallback: str = "cc") -> str:
     family = (family or "").strip().lower()
-    if family == "gemini":
+    if _CONFIG and family in (getattr(_CONFIG, "catalog", {}) or {}):
         return "api"
-    if family == "claude":
-        return fallback if fallback in {"api", "cc"} else "cc"
+    if family in API_MODEL_FAMILIES:
+        return "api"
     return fallback if fallback in {"api", "cc"} else "cc"
 
 
@@ -887,18 +921,20 @@ def _select_favilla_chat_route(text: str, attachments: list[dict] | None = None)
     if attachments:
         return {"runtime": "cc", "family": "claude", "source": "attachments"}
     lowered = text.lower()
-    api_token = r"(?<![a-z0-9])api(?![a-z0-9])|gemini"
+    family = _family_from_text(lowered)
+    api_token = r"(?<![a-z0-9])api(?![a-z0-9])|gemini|gpt|deepseek|deep seek|claude\s*api"
     cc_token = r"(?<![a-z0-9])cc(?![a-z0-9])|claude\s*code"
     if re.search(rf"runtime\s*(=|:|：)\s*({api_token})|(换|切|切换|转|去|到|用|走).{{0,8}}({api_token})|({api_token}).{{0,8}}(模式|运行|runtime)", lowered):
-        family = "gemini" if "gemini" in lowered else "claude"
-        return {"runtime": "api", "family": family, "source": "user_text"}
+        return {"runtime": "api", "family": family or "claude", "source": "user_text"}
     if re.search(rf"runtime\s*(=|:|：)\s*({cc_token})|(换|切|切换|转|去|到|用|走).{{0,8}}({cc_token})|({cc_token}).{{0,8}}(模式|运行|runtime)", lowered):
         return {"runtime": "cc", "family": "claude", "source": "user_text"}
     if re.search(r"(另一边|另一侧|另一端|切换过去|换过去|切过去)", lowered):
-        return {"runtime": "api", "family": "claude", "source": "user_text"}
+        return {"runtime": "api", "family": family or "claude", "source": "user_text"}
     family = _consume_route_family()
     if family:
         return {"runtime": _runtime_for_family(family), "family": family, "source": "route_state"}
+    if re.search(r"pytest|traceback|stacktrace|报错|bug|代码|仓库|repo|git|diff|shell|终端|文件|脚本|script|build|lint|test", lowered):
+        return {"runtime": "cc", "family": "claude", "source": "heuristic"}
     return {"runtime": "api", "family": "claude", "source": "default"}
 
 
@@ -986,8 +1022,8 @@ def _api_catalog_list() -> dict:
             for family, item in sorted((getattr(_CONFIG, "catalog", {}) or {}).items())
         },
         "cache": cache if isinstance(cache, dict) else {},
-        "providers": ["poe", "anthropic", "aistudio"],
-        "families": ["claude", "gemini"],
+        "providers": list(API_MODEL_PROVIDERS),
+        "families": list(API_MODEL_FAMILIES),
     }
 
 
@@ -1014,6 +1050,32 @@ def _fetch_anthropic_models() -> list[str]:
     return sorted(set(models))
 
 
+def _fetch_openrouter_models() -> list[str]:
+    data = _fetch_json("https://openrouter.ai/api/v1/models")
+    rows = data.get("data") if isinstance(data, dict) else []
+    models = [str(row.get("id") or "").strip() for row in rows if isinstance(row, dict) and row.get("id")]
+    return sorted(set(models))
+
+
+def _fetch_poe_models() -> list[str]:
+    key = os.environ.get("POE_API_KEY", "").strip()
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    data = _fetch_json("https://api.poe.com/v1/models", headers=headers)
+    rows = data.get("data") if isinstance(data, dict) else []
+    models = [str(row.get("id") or "").strip() for row in rows if isinstance(row, dict) and row.get("id")]
+    return sorted(set(models)) or list(POE_KNOWN_MODELS)
+
+
+def _fetch_deepseek_models() -> list[str]:
+    key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+    if not key:
+        raise RuntimeError("Missing env var: DEEPSEEK_API_KEY")
+    data = _fetch_json("https://api.deepseek.com/models", headers={"Authorization": f"Bearer {key}"})
+    rows = data.get("data") if isinstance(data, dict) else []
+    models = [str(row.get("id") or "").strip() for row in rows if isinstance(row, dict) and row.get("id")]
+    return sorted(set(models))
+
+
 def _fetch_aistudio_models() -> list[str]:
     key = os.environ.get("GOOGLE_AI_STUDIO_KEY", "").strip() or os.environ.get("GEMINI_API_KEY", "").strip()
     if not key:
@@ -1035,18 +1097,66 @@ def _fetch_aistudio_models() -> list[str]:
     return sorted(set(models))
 
 
+def _fetch_vertex_models() -> list[str]:
+    try:
+        from google.auth.transport.requests import Request
+        from google.oauth2 import service_account
+    except ImportError:
+        return list(VERTEX_KNOWN_MODELS)
+    key_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+    if not key_path:
+        raise RuntimeError("Missing env var: GOOGLE_APPLICATION_CREDENTIALS")
+    credentials = service_account.Credentials.from_service_account_file(
+        key_path,
+        scopes=["https://www.googleapis.com/auth/cloud-platform"],
+    )
+    info = json.loads(Path(key_path).read_text(encoding="utf-8"))
+    project = (
+        os.environ.get("GOOGLE_CLOUD_PROJECT", "").strip()
+        or os.environ.get("VERTEX_PROJECT", "").strip()
+        or str(info.get("project_id") or "").strip()
+    )
+    location = (
+        os.environ.get("GOOGLE_CLOUD_LOCATION", "").strip()
+        or os.environ.get("VERTEX_LOCATION", "").strip()
+        or "us-central1"
+    )
+    if not project:
+        raise RuntimeError("Missing Google Cloud project id")
+    credentials.refresh(Request())
+    data = _fetch_json(
+        f"https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/publishers/google/models",
+        headers={"Authorization": f"Bearer {credentials.token}"},
+    )
+    rows = data.get("publisherModels") or data.get("models") if isinstance(data, dict) else []
+    models: list[str] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name") or "").strip().split("/")[-1]
+        if name and "gemini" in name.lower():
+            models.append(f"google/{name}")
+    return sorted(set(models)) or list(VERTEX_KNOWN_MODELS)
+
+
 def _api_catalog_refresh(payload: dict) -> dict:
     if not _CONFIG:
         raise RuntimeError("config not loaded")
     provider = str(payload.get("provider") or "").strip().lower()
-    if provider not in {"poe", "anthropic", "aistudio"}:
-        raise ValueError("provider must be poe, anthropic, or aistudio")
-    if provider == "poe":
-        models = list(POE_KNOWN_MODELS)
+    if provider not in API_MODEL_PROVIDERS:
+        raise ValueError(f"provider must be one of: {', '.join(API_MODEL_PROVIDERS)}")
+    if provider == "openrouter":
+        models = _fetch_openrouter_models()
+    elif provider == "poe":
+        models = _fetch_poe_models()
+    elif provider == "deepseek":
+        models = _fetch_deepseek_models()
     elif provider == "anthropic":
         models = _fetch_anthropic_models()
-    else:
+    elif provider == "aistudio":
         models = _fetch_aistudio_models()
+    else:
+        models = _fetch_vertex_models()
     cache = {}
     path = _catalog_cache_path()
     if path.exists():
@@ -1102,6 +1212,105 @@ def _replace_toml_section(text: str, section: str, new_lines: list[str]) -> str:
     return "\n".join(out).rstrip() + "\n"
 
 
+def _toml_value(value) -> str:
+    if isinstance(value, bool):
+        return str(value).lower()
+    if isinstance(value, int):
+        return str(value)
+    return _toml_quote(str(value))
+
+
+def _replace_toml_keys(text: str, section: str, updates: dict[str, object]) -> str:
+    lines = text.splitlines()
+    header = f"[{section}]"
+    start = -1
+    end = len(lines)
+    for idx, line in enumerate(lines):
+        if line.strip() == header:
+            start = idx
+            break
+    if start >= 0:
+        for idx in range(start + 1, len(lines)):
+            stripped = lines[idx].strip()
+            if stripped.startswith("[") and stripped.endswith("]"):
+                end = idx
+                break
+        body = list(lines[start + 1:end])
+        seen: set[str] = set()
+        new_body: list[str] = []
+        for line in body:
+            stripped = line.strip()
+            key = stripped.split("=", 1)[0].strip() if "=" in stripped and not stripped.startswith("#") else ""
+            if key in updates:
+                new_body.append(f"{key} = {_toml_value(updates[key])}")
+                seen.add(key)
+            else:
+                new_body.append(line)
+        for key, value in updates.items():
+            if key not in seen:
+                new_body.append(f"{key} = {_toml_value(value)}")
+        out = lines[:start + 1] + new_body + lines[end:]
+    else:
+        out = list(lines)
+        if out and out[-1].strip():
+            out.append("")
+        out.append(header)
+        out.extend(f"{key} = {_toml_value(value)}" for key, value in updates.items())
+    return "\n".join(out).rstrip() + "\n"
+
+
+def _update_runtime_config(payload: dict) -> dict:
+    if not _CONFIG:
+        raise RuntimeError("config not loaded")
+    app_updates: dict[str, object] = {}
+    daemon_updates: dict[str, object] = {}
+    if "default_runtime" in payload:
+        default_runtime = str(payload.get("default_runtime") or "").strip().lower()
+        if default_runtime not in {"auto", "api", "cc"}:
+            raise ValueError("default_runtime must be auto, api, or cc")
+        app_updates["default_runtime"] = default_runtime
+    if "recall_include_recent" in payload:
+        app_updates["recall_include_recent"] = bool(payload.get("recall_include_recent"))
+    if "cc_model" in payload:
+        cc_model = str(payload.get("cc_model") or "").strip()
+        if "\n" in cc_model or len(cc_model) > 120:
+            raise ValueError("cc_model is invalid")
+        daemon_updates["cc_model"] = cc_model
+    if "cc_effort" in payload:
+        cc_effort = str(payload.get("cc_effort") or "").strip()
+        if "\n" in cc_effort or len(cc_effort) > 40:
+            raise ValueError("cc_effort is invalid")
+        daemon_updates["cc_effort"] = cc_effort
+    if "cc_disallowed_tools" in payload:
+        tools_raw = str(payload.get("cc_disallowed_tools") or "")
+        tools = [item.strip() for item in tools_raw.split(",") if item.strip()]
+        cc_disallowed_tools = ",".join(tools)
+        if len(cc_disallowed_tools) > 500:
+            raise ValueError("cc_disallowed_tools is too long")
+        daemon_updates["cc_disallowed_tools"] = cc_disallowed_tools
+    if not app_updates and not daemon_updates and not payload.get("clear_route_state"):
+        raise ValueError("no runtime config changes")
+
+    path = _CONFIG.toml_path
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    if app_updates:
+        text = _replace_toml_keys(text, "app", app_updates)
+    if daemon_updates:
+        text = _replace_toml_keys(text, "daemon", daemon_updates)
+    path.write_text(text, encoding="utf-8")
+
+    for key, value in app_updates.items():
+        setattr(_CONFIG, f"app_{key}", value)
+    for key, value in daemon_updates.items():
+        setattr(_CONFIG, key, value)
+    if payload.get("clear_route_state"):
+        _route_state_path().unlink(missing_ok=True)
+    if daemon_updates:
+        with _CC_RUNTIME_LOCK:
+            _cc_warm_shutdown_locked("runtime config changed")
+    return {"ok": True, "config": _api_config()}
+
+
 def _update_catalog(payload: dict) -> dict:
     if not _CONFIG:
         raise RuntimeError("config not loaded")
@@ -1109,8 +1318,8 @@ def _update_catalog(payload: dict) -> dict:
     if not re.fullmatch(r"[a-z0-9_-]+", family):
         raise ValueError("family must be a simple identifier")
     provider = str(payload.get("provider") or "").strip().lower()
-    if provider not in {"poe", "anthropic", "aistudio", "vertex"}:
-        raise ValueError("provider must be poe, anthropic, aistudio, or vertex")
+    if provider not in API_MODEL_PROVIDERS:
+        raise ValueError(f"provider must be one of: {', '.join(API_MODEL_PROVIDERS)}")
     model = str(payload.get("model") or "").strip()
     if not model:
         raise ValueError("model is required")
@@ -3898,7 +4107,7 @@ def _record_debug_context(runtime: str, *, metrics: dict | None = None,
 # - Default = unlocked. AI must opt-in to lock.
 
 _APP_RUNTIME_CONTEXT_BASE = """[Direct runtime awareness]
-The scene tag describes where this turn appears in the narrative. User-side scenes use canonical channel plus surface: user@chat/favilla is Favilla chat, user@stroll/favilla is the Favilla Stroll surface, and user@browser/atrium is browser context. AI-side scenes mirror the same channel/surface pair; ai@think is internal reasoning; ai@action is a tool call. The runtime tag describes the capability surface for this turn: api is the OpenAI-compatible API surface, cc is Claude Code with file/shell/tool capability, and auto means the server selected one. Do not infer a fixed personal name from the runtime tag. The web dashboard is view-only and never originates a user turn — there is no console scene. Reply naturally for the active scene while staying precise about the runtime."""
+The scene tag describes where this turn appears in the narrative. User-side scenes use canonical channel plus surface: user@chat/favilla is Favilla chat, user@stroll/favilla is the Favilla Stroll surface, and user@browser/atrium is browser context. AI-side scenes mirror the same channel/surface pair; ai@think is internal reasoning; ai@action is a tool call. The runtime tag describes the capability surface for this turn: cc is the main local work platform, api is a freer model-family route, and auto means the server selected one. Do not infer a fixed personal name from the runtime tag. The web dashboard is view-only and never originates a user turn. Reply naturally for the active scene while staying precise about the runtime."""
 
 
 def _app_runtime_context() -> str:
@@ -3911,9 +4120,9 @@ def _app_runtime_context() -> str:
     return "\n\n".join([
         _APP_RUNTIME_CONTEXT_BASE,
         f"[uploads]\nFavilla uploads are canonical object refs in {objects_dir}; the index is {uploads_dir / 'manifest.jsonl'}. Current attachment prompt lines include obj:<sha256> plus a materialized path for inspection. Do not mention old uploaded files just because they exist. Only inspect or discuss uploads when the current user message asks about files/images/uploads or includes current attachments.",
-        f"[object_transfer]\nTo send a generated file back to Favilla, store it in ObjectStore and mention the returned obj token in the visible reply. In Claude Code, create the file under the home directory, then run: python {object_put} --config {config_path} --path <relative-file> --direction outbound",
+        f"[object_transfer]\nTo send a generated file back to Favilla, store it in ObjectStore and mention the returned obj token in the visible reply. In cc, create the file under the home directory, then run: python {object_put} --config {config_path} --path <relative-file> --direction outbound",
         f"[server_time]\nutc={now_utc.isoformat()}\nlocal={local}",
-        "[tool_mode]\nUse the structured file/shell tools (Read/Write/Edit/Glob/Grep/Bash/git_diff) only when you must wait on a real result. For fire-and-forget side effects use XML markers: <send to=\"channel:address\">message</send>, <todo at=\"...\">desc</todo>, <wake at=\"...\"/>, <sleep at=\"...\"/>, and <state value=\"mute|notify|block|busy|sleep|together\" reason=\"...\"/>. Keep tool details out of the user-facing reply unless the user asks for them.",
+        "[tool_mode]\nUse the runtime's available tools only when you must wait on a real result. cc provides its own file/shell/tool surface; api exposes Fiam tool names such as Read/Edit/Glob/Write/Grep/Bash/git_diff/ObjectSearch/ObjectSave/ObjectImport/SaveSticker/Recall/book_search/book_fetch. For fire-and-forget side effects use XML markers: <send to=\"channel:address\">message</send>, <todo at=\"...\">desc</todo>, <wake at=\"...\"/>, <sleep at=\"...\"/>, and <state value=\"mute|notify|block|busy|sleep|together\" reason=\"...\"/>. Keep tool details out of the user-facing reply unless the user asks for them.",
         "[app_markers]\nFor visible thinking summaries, wrap shareable state notes in <cot>...</cot>. To lock the entire turn's thought chain (both <cot> blocks and any native reasoning), include <lock/> anywhere in the reply. The server strips these markers into structured segments; clients may or may not render them visibly. Do not promise a specific button, bubble, or visual affordance unless the current client explicitly supports it. To pull back a reply and immediately try again, include <hold/> or <hold>reason</hold>. To end this turn without a visible reply, include <held>reason</held>. Held output is stored privately and is not queued as a user todo.",
     ])
 
@@ -3992,11 +4201,21 @@ def _cc_stable_prompt_fingerprint() -> str:
 def _split_cc_warm_system_context(system_context: str) -> tuple[str, str]:
     stable_parts: list[str] = []
     turn_parts: list[str] = []
+    turn_prefixes = (
+        "[context]",
+        "[timeline]",
+        "[server_time]",
+        "[uploads]",
+        "[object_transfer]",
+        "[tool_mode]",
+        "[app_markers]",
+        "[Direct runtime awareness]",
+    )
     for part in (system_context or "").split("\n\n"):
         text = part.strip()
         if not text:
             continue
-        if text.startswith("[context]") or text.startswith("[timeline]"):
+        if text.startswith(turn_prefixes):
             turn_parts.append(text)
         else:
             stable_parts.append(text)
@@ -4024,7 +4243,7 @@ def _build_cc_favilla_prompt_parts(prompt_text: str, *, channel: str, recall_con
         channel=channel,
         include_recall=True,
         recall_context=recall_context,
-        extra_context="" if warm else _app_runtime_context(),
+        extra_context=_app_runtime_context(),
     )
     if not warm:
         return system_context, user_prompt
@@ -4573,9 +4792,10 @@ def _cc_warm_runner_locked(system_context: str) -> _CCWarmRunner:
     fingerprint = _cc_stable_prompt_fingerprint()
     runner = _CC_WARM_RUNNER
     if runner and runner.is_alive():
-        if runner.fingerprint != fingerprint:
-            runner.system_dirty = True
-        return runner
+        if runner.fingerprint == fingerprint:
+            return runner
+        _cc_warm_shutdown_locked("stable prompt changed")
+        runner = None
     if runner:
         _cc_warm_shutdown_locked("dead process")
     session = _load_app_active_session()
@@ -7318,7 +7538,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         pool_write_paths = {"/api/pool/edge", "/api/pool/edge/delete"}
         pool_write_prefixes = ("/api/pool/event/",)
         annotate_paths = {"/api/annotate/request", "/api/annotate/edges", "/api/annotate/confirm"}
-        config_paths = {"/api/config/memory-mode", "/api/config/plugin", "/api/config/catalog", "/api/catalog/refresh"}
+        config_paths = {"/api/config/memory-mode", "/api/config/runtime", "/api/config/plugin", "/api/config/catalog", "/api/catalog/refresh"}
         is_pool_write = path in pool_write_paths or any(path.startswith(p) for p in pool_write_prefixes)
         is_annotate = path in annotate_paths
         is_config_write = path in config_paths
@@ -7940,6 +8160,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             try:
                 if path == "/api/config/memory-mode":
                     result = _update_memory_mode(payload)
+                elif path == "/api/config/runtime":
+                    result = _update_runtime_config(payload)
                 elif path == "/api/config/plugin":
                     result = _update_plugin(payload)
                 elif path == "/api/config/catalog":

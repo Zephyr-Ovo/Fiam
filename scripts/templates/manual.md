@@ -107,15 +107,15 @@ End the turn without a visible reply. The output is stored privately but nothing
 
 Body is the reason. Like `<hold>`, all other markers are ignored.
 
-### `<route>` — Model routing hint
+### `<route>` — API family routing hint
 
-Suggest switching to a different model family for the next turn.
+Suggest switching to a different API model family for the next turn. cc remains the main platform; use this when a freer API model is a better fit.
 
 ```xml
 <route family="gemini" reason="vision task"/>
 ```
 
-Attributes: `family` (required), `reason` (optional). Self-closing.
+Attributes: `family` (required: `claude`, `gpt`, `deepseek`, or `gemini`), `reason` (optional). Self-closing.
 
 ### `<voice>` — TTS playback segment
 
