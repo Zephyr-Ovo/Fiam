@@ -178,7 +178,7 @@ class FiamConfig:
     tts_model: str = "inworld-tts-1"
     tts_base_url: str = "https://api.inworld.ai/tts/v1/voice"
     tts_api_key_env: str = "FIAM_TTS_API_KEY"
-    tts_voice: str = "Ashley"
+    tts_voice: str = "default-jrq0urujrs9lcljdmjooca__j"
 
     # ------------------------------------------------------------------
     # Debug
