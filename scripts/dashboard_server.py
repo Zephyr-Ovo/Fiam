@@ -11,6 +11,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import logging
 import os
@@ -321,8 +322,12 @@ def _generate_voice_audio(text: str) -> str | None:
         return None
     try:
         if is_mimo:
-            body = json.dumps({"text": text.strip(), "voice": tts_voice, "model": tts_model or "mimo-v2.5-tts", "format": "mp3"}).encode()
-            url = f"{tts_base.rstrip('/')}/tts"
+            body = json.dumps({
+                "model": tts_model or "mimo-v2.5-tts",
+                "messages": [{"role": "assistant", "content": text.strip()}],
+                "audio": {"voice": tts_voice or "mimo_default", "format": "mp3"},
+            }).encode()
+            url = f"{tts_base.rstrip('/')}/chat/completions"
         elif tts_provider == "openai_compatible":
             body = json.dumps({"model": tts_model or "gpt-4o-mini-tts", "voice": tts_voice or "alloy", "input": text.strip(), "format": "mp3"}).encode()
             url = f"{tts_base.rstrip('/')}/audio/speech"
@@ -331,7 +336,17 @@ def _generate_voice_audio(text: str) -> str | None:
             url = f"{tts_base.rstrip('/')}/tts"
         req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json", "Authorization": f"Bearer {tts_key}"}, method="POST")
         with urllib.request.urlopen(req, timeout=30) as resp:
-            audio_data = resp.read()
+            raw_response = resp.read()
+        if is_mimo:
+            payload = json.loads(raw_response.decode("utf-8"))
+            audio_b64 = (
+                ((payload.get("choices") or [{}])[0].get("message") or {})
+                .get("audio", {})
+                .get("data", "")
+            )
+            audio_data = base64.b64decode(audio_b64)
+        else:
+            audio_data = raw_response
         if len(audio_data) < 100:
             return None
         from fiam.store.objects import ObjectStore
