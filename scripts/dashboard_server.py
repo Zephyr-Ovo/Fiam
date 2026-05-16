@@ -899,7 +899,7 @@ def _select_favilla_chat_route(text: str, attachments: list[dict] | None = None)
     family = _consume_route_family()
     if family:
         return {"runtime": _runtime_for_family(family), "family": family, "source": "route_state"}
-    return {"runtime": "cc", "family": "claude", "source": "default"}
+    return {"runtime": "api", "family": "claude", "source": "default"}
 
 
 def _apply_route_from_result(result: dict) -> None:
@@ -4669,7 +4669,7 @@ def _official_thought_payloads(thinking_events: list[dict] | None, *, locked: bo
             "summary": str(summary.get("summary") or ""),
             "source": "official",
             "locked": locked,
-            "icon": "Brain",
+            "icon": str(summary.get("icon") or "Brain"),
         }
         if locked:
             item.pop("text", None)
@@ -6821,7 +6821,7 @@ def _viewer_token_ok(handler) -> bool:
     """
     import os
     forwarded_user = handler.headers.get("X-Forwarded-User", "").lower()
-    if forwarded_user in {"Zephyr", "ai", "live"}:
+    if forwarded_user in {"zephyr", "ai", "live"}:
         return True
     expected = os.environ.get("FIAM_VIEW_TOKEN", "")
     if not expected:
@@ -6898,7 +6898,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             elif path == "/api/whoami":
                 # Determine role from Caddy-forwarded header (basic-auth user)
                 user = self.headers.get("X-Forwarded-User", "anon").lower()
-                role = user if user in ("Zephyr", "ai", "live") else "anon"
+                role = user if user in ("zephyr", "ai", "live") else "anon"
                 self._serve_json({"role": role})
             elif path == "/api/health":
                 self._serve_json(_api_health())

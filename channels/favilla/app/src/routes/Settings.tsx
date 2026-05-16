@@ -413,22 +413,36 @@ function BgField({
   const onPick = (file: File | null | undefined) => {
     if (!file) return
     setError("")
-    if (file.size > 3 * 1024 * 1024) {
-      setError(`图片 ${(file.size / 1024 / 1024).toFixed(1)}MB 太大了，建议 ≤3MB`)
+    if (file.size > 10 * 1024 * 1024) {
+      setError("图片太大")
       return
     }
     setBusy(true)
-    const reader = new FileReader()
-    reader.onload = () => {
+    const img = new Image()
+    const url = URL.createObjectURL(file)
+    img.onload = () => {
+      const canvas = document.createElement("canvas")
+      const maxDim = 1200
+      let w = img.width, h = img.height
+      if (w > maxDim || h > maxDim) {
+        const scale = maxDim / Math.max(w, h)
+        w = Math.round(w * scale)
+        h = Math.round(h * scale)
+      }
+      canvas.width = w
+      canvas.height = h
+      canvas.getContext("2d")!.drawImage(img, 0, 0, w, h)
+      const dataUrl = canvas.toDataURL("image/jpeg", 0.75)
+      URL.revokeObjectURL(url)
       setBusy(false)
-      const result = typeof reader.result === "string" ? reader.result : ""
-      if (result) onChange(result)
+      onChange(dataUrl)
     }
-    reader.onerror = () => {
+    img.onerror = () => {
+      URL.revokeObjectURL(url)
       setBusy(false)
-      setError("读取失败")
+      setError("图片读取失败")
     }
-    reader.readAsDataURL(file)
+    img.src = url
   }
 
   return (

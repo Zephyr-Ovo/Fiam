@@ -25,6 +25,8 @@ class ApiClient(Protocol):
         temperature: float,
         max_tokens: int,
         tools: list[dict[str, Any]] | None = None,
+        reasoning_effort: str = "",
+        thinking_budget_tokens: int = 0,
     ) -> "ApiCompletion":
         ...
 
@@ -370,6 +372,8 @@ class AnthropicMessagesClient:
         temperature: float,
         max_tokens: int,
         tools: list[dict[str, Any]] | None = None,
+        reasoning_effort: str = "",
+        thinking_budget_tokens: int = 0,
     ) -> ApiCompletion:
         system, converted = self._convert_messages(messages)
         body: dict[str, Any] = {
@@ -378,6 +382,8 @@ class AnthropicMessagesClient:
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
+        if thinking_budget_tokens > 0:
+            body["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget_tokens}
         if system:
             body["system"] = system
         if tools:
