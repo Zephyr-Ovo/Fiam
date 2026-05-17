@@ -252,7 +252,7 @@ async function makeShareImage(selected: Msg[], peerName: string) {
   let y = 72
   for (const block of blocks) {
     const x = block.isUser ? width - pad - block.width : pad
-    ctx.font = `italic 600 20px ${serif}`
+    ctx.font = `600 20px ${serif}`
     ctx.fillStyle = "rgba(63,47,41,0.70)"
     ctx.textAlign = block.isUser ? "right" : "left"
     ctx.fillText(block.name, block.isUser ? x + block.width - 4 : x + 4, y)

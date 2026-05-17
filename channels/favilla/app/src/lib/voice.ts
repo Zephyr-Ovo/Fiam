@@ -298,6 +298,13 @@ export class TtsPlayer {
     this.stop()
     this.emit({ status: "loading", duration: 0, currentTime: 0, sourceId })
     try {
+      // Android WebView's <audio> will not decode a blob whose type is empty
+      // or a non-audio MIME (e.g. application/octet-stream). The server now
+      // sends a real audio MIME, but coerce defensively so a bad Content-Type
+      // can never reproduce the silent / 0:00 failure.
+      if (!blob.type || !blob.type.startsWith("audio/")) {
+        blob = new Blob([blob], { type: "audio/mpeg" })
+      }
       this.objectUrl = URL.createObjectURL(blob)
       this.audio = getSharedAudio()
       this.audio.src = this.objectUrl
