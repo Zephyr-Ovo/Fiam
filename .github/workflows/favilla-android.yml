@@ -70,3 +70,16 @@ jobs:
           name: favilla-debug-apk
           path: channels/favilla/app/android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+      - name: Push APK to fiet.cc (phone-direct download, no PC/adb needed)
+        if: success()
+        env:
+          INGEST_TOKEN: ${{ secrets.VITE_INGEST_TOKEN }}
+        run: |
+          APK=android/app/build/outputs/apk/debug/app-debug.apk
+          curl -fsS --max-time 120 \
+            -H "X-Fiam-Token: ${INGEST_TOKEN}" \
+            -H "Content-Type: application/octet-stream" \
+            --data-binary @"${APK}" \
+            http://fiet.cc/favilla/apk \
+            && echo "APK pushed to http://fiet.cc/favilla/apk"
