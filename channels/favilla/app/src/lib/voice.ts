@@ -1,5 +1,45 @@
 import { appConfig } from "../config"
 
+// --- Remote debug log -------------------------------------------------------
+// The phone WebView's console is invisible without a computer (adb logcat).
+// Fire-and-forget POST so real voice errors land in server /tmp/dash.log.
+// Never throws, never blocks playback.
+export function remoteLog(tag: string, msg: unknown): void {
+  try {
+    const base = (
+      appConfig.apiBase ||
+      (import.meta.env.VITE_API_BASE as string) ||
+      ""
+    ).trim().replace(/\/+$/, "")
+    const token = (
+      appConfig.ingestToken ||
+      (import.meta.env.VITE_INGEST_TOKEN as string) ||
+      ""
+    ).trim()
+    if (!base) return
+    const text =
+      typeof msg === "string"
+        ? msg
+        : (() => { try { return JSON.stringify(msg) } catch { return String(msg) } })()
+    const h: Record<string, string> = { "Content-Type": "application/json" }
+    if (token) h["X-Fiam-Token"] = token
+    void fetch(`${base}/favilla/clientlog`, {
+      method: "POST",
+      headers: h,
+      body: JSON.stringify({ tag, msg: text }),
+      keepalive: true,
+    }).catch(() => { /* swallow */ })
+  } catch { /* swallow */ }
+}
+
+function errName(e: unknown): string {
+  if (e && typeof e === "object") {
+    const o = e as { name?: string; message?: string; code?: number }
+    return `${o.name || "Error"}: ${o.message || ""}${o.code !== undefined ? ` (code=${o.code})` : ""}`
+  }
+  return String(e)
+}
+
 // --- Autoplay / Android WebView unlock --------------------------------------
 // HTMLAudioElement.play() is rejected with NotAllowedError unless it runs in
 // (or after) a real user gesture. Two paths hit this: auto-playing an AI reply
@@ -28,11 +68,14 @@ export function unlockAudio(): void {
       try { a.pause(); a.currentTime = 0 } catch { /* */ }
       a.muted = false
       _audioUnlocked = true
+      remoteLog("unlock", "ok (silent clip played, _audioUnlocked=true)")
     }
-    if (p && typeof p.then === "function") p.then(done).catch(() => { a.muted = false })
-    else done()
-  } catch {
+    if (p && typeof p.then === "function") {
+      p.then(done).catch((e) => { a.muted = false; remoteLog("unlock", `play() REJECTED ${errName(e)}`) })
+    } else { done() }
+  } catch (e) {
     a.muted = false
+    remoteLog("unlock", `threw ${errName(e)}`)
   }
 }
 
@@ -275,14 +318,25 @@ export class TtsPlayer {
   private attachAudioHandlers(sourceId?: string) {
     if (!this.audio) return
     this.audio.onended = () => { this.emit({ status: "idle", currentTime: 0, sourceId }); this.stopTick() }
-    this.audio.onerror = () => { this.emit({ status: "error", error: "playback failed", sourceId }); this.stopTick() }
+    this.audio.onerror = () => {
+      const me = this.audio?.error
+      remoteLog("audio.onerror", `MediaError code=${me?.code ?? "?"} msg=${me?.message ?? ""} src=${(this.audio?.src || "").slice(0, 40)}`)
+      this.emit({ status: "error", error: "playback failed", sourceId }); this.stopTick()
+    }
     this.audio.onloadedmetadata = () => { this.emit({ duration: this.audio!.duration || 0, sourceId }) }
   }
 
   private async playPreparedAudio(sourceId?: string): Promise<void> {
     if (!this.audio) return
     this.attachAudioHandlers(sourceId)
-    await this.audio.play()
+    remoteLog("play", `calling audio.play() unlocked=${_audioUnlocked} src=${(this.audio.src || "").slice(0, 40)}`)
+    try {
+      await this.audio.play()
+    } catch (e) {
+      remoteLog("play", `audio.play() REJECTED ${errName(e)}`)
+      throw e
+    }
+    remoteLog("play", "audio.play() resolved -> playing")
     this.emit({ status: "playing", sourceId })
     this.startTick()
   }
@@ -315,6 +369,7 @@ export class TtsPlayer {
       this.audio.src = this.objectUrl
       await this.playPreparedAudio(sourceId)
     } catch (e) {
+      remoteLog("playBlob", `catch ${errName(e)}`)
       this.emit({ status: "error", error: e instanceof Error ? e.message : String(e), sourceId })
     }
   }
@@ -324,8 +379,10 @@ export class TtsPlayer {
     this.emit({ status: "loading", duration: 0, currentTime: 0, sourceId })
     try {
       const blob = await fetcher()
+      remoteLog("fetched", `blob size=${blob.size} type="${blob.type}"`)
       await this.playBlob(blob, sourceId)
     } catch (e) {
+      remoteLog("playFetched", `catch ${errName(e)}`)
       this.emit({ status: "error", error: e instanceof Error ? e.message : String(e), sourceId })
     }
   }

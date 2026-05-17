@@ -16,7 +16,25 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        // Stable, checked-in debug key. Without this, `assembleDebug` signs
+        // with the GitHub runner's auto-generated ~/.android/debug.keystore,
+        // which is random per CI run -> every APK has a different signature
+        // -> "签名不一致" on upgrade install. A fixed key means every APK
+        // installs over the previous one with NO uninstall. A debug key is
+        // non-secret by design (well-known password "android").
+        debug {
+            storeFile file('fiam-debug.p12')
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+            storeType 'PKCS12'
+        }
+    }
     buildTypes {
+        debug {
+            signingConfig signingConfigs.debug
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
