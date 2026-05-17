@@ -377,7 +377,7 @@ function VoiceChip({ seconds, objectHash }: { seconds: number; objectHash?: stri
             ? <Pause className="h-3 w-3" strokeWidth={2.4} />
             : <Play className="h-3 w-3" strokeWidth={2} fill="currentColor" />}
       </button>
-      <div className="flex flex-1 items-center justify-between gap-[2px]">
+      <div className="flex flex-1 items-center justify-evenly">
         {bars.map((h, i) => (
           <span
             key={i}
@@ -485,13 +485,13 @@ function VoiceSegmentBubble({ text, objectHash }: { text: string; objectHash?: s
             color: active ? "var(--color-cocoa)" : "var(--color-cream)",
           }}
         >
-          {ps.status === "loading"
+          {ps.status === "loading" && current
             ? <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2} />
-            : ps.status === "playing"
+            : ps.status === "playing" && current
               ? <Pause className="h-3.5 w-3.5" strokeWidth={2} fill="currentColor" />
               : <Play className="h-3.5 w-3.5 ml-0.5" strokeWidth={2} fill="currentColor" />}
         </div>
-        <div className="flex flex-1 items-center gap-[2px]">
+        <div className="flex flex-1 items-center justify-evenly">
           {bars.map((h, i) => {
             const barProgress = (i + 1) / bars.length
             const filled = active && barProgress <= progress
@@ -500,7 +500,7 @@ function VoiceSegmentBubble({ text, objectHash }: { text: string; objectHash?: s
                 key={i}
                 className="block w-[2px] rounded-full transition-all"
                 style={{
-                  height: ps.status === "playing" ? h * (1 + Math.sin(Date.now() / 200 + i) * 0.3) : h,
+                  height: ps.status === "playing" && current ? h * (1 + Math.sin(Date.now() / 200 + i) * 0.3) : h,
                   background: filled ? "rgba(176,76,76,0.7)" : "rgba(63,47,41,0.35)",
                 }}
               />
@@ -1416,15 +1416,16 @@ function buildRenderItems(segments: ChatSegment[] | undefined): RenderItem[] {
   return out
 }
 
-function Avatar({ src, name, isUser }: { src?: string; name: string; isUser: boolean }) {
+function Avatar({ src, name, isUser, size }: { src?: string; name: string; isUser: boolean; size?: number }) {
+  const s = size || appConfig.avatarSize || 30
   const letter = (name || (isUser ? "U" : "A")).trim().charAt(0).toUpperCase()
   return (
     <span
       aria-hidden
       className="grid shrink-0 place-items-center select-none"
       style={{
-        width: 30,
-        height: 30,
+        width: s,
+        height: s,
         borderRadius: "50%",
         overflow: "hidden",
         background: src ? "transparent" : (isUser ? "var(--user-bubble-bg, #d0bcbe)" : "var(--agent-bubble-bg, #e8e8e8)"),
@@ -1433,7 +1434,7 @@ function Avatar({ src, name, isUser }: { src?: string; name: string; isUser: boo
         backgroundPosition: "center",
         border: "1px solid rgba(63,47,41,0.14)",
         color: "rgba(63,47,41,0.7)",
-        fontSize: 13,
+        fontSize: Math.max(10, Math.round(s * 0.43)),
         fontWeight: 600,
         fontFamily: "var(--font-sans)",
       }}
@@ -2501,6 +2502,9 @@ export default function App({ onBack, active = true }: { onBack?: () => void; ac
               setVoiceError(error instanceof Error ? error.message : String(error))
             })
           }
+          // Incrementally cache messages locally so they survive app restarts
+          // without waiting for the next full transcript fetch.
+          setMessages((m) => { void cacheMessages(m as Record<string, unknown>[]); return m })
         } else if (ev.event === "error") {
           lastError = ev.data.message || "unknown"
         }

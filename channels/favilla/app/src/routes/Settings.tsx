@@ -207,6 +207,23 @@ export function Settings({ open, onClose }: Props) {
             saveConfig({ aiAvatar: v })
           }}
         />
+        <label className="flex items-center gap-2 text-[13px]" style={{ color: "rgba(63,47,41,0.7)" }}>
+          Avatar size
+          <input
+            type="range"
+            min={20}
+            max={48}
+            step={2}
+            value={draft.avatarSize ?? 30}
+            onChange={(e) => {
+              const v = Number(e.target.value)
+              setDraft((cur) => ({ ...cur, avatarSize: v }))
+              saveConfig({ avatarSize: v })
+            }}
+            className="flex-1"
+          />
+          <span className="w-6 text-center tabular-nums">{draft.avatarSize ?? 30}</span>
+        </label>
         </div>
 
         <div className="mt-4 flex shrink-0 justify-end gap-2">

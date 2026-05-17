@@ -213,13 +213,18 @@ export async function speakText(text: string): Promise<void> {
   }
 
   const blob = await response.blob()
-  const url = URL.createObjectURL(blob)
-  try {
-    const audio = new Audio(url)
-    await audio.play()
-  } finally {
-    URL.revokeObjectURL(url)
-  }
+  // Coerce MIME defensively (Android WebView won't decode non-audio types)
+  const safeBlob = (!blob.type || !blob.type.startsWith("audio/"))
+    ? new Blob([blob], { type: "audio/mpeg" })
+    : blob
+  const url = URL.createObjectURL(safeBlob)
+  const audio = getSharedAudio()
+  audio.src = url
+  // Revoke only after playback ends, not when play() resolves (which is
+  // just "started playing"). Revoking too early kills the stream mid-play.
+  audio.onended = () => { URL.revokeObjectURL(url) }
+  audio.onerror = () => { URL.revokeObjectURL(url) }
+  await audio.play()
 }
 
 

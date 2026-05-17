@@ -70,6 +70,8 @@ export type AppConfig = {
   userAvatar: string
   /** AI avatar (IndexedDB sentinel or data URI). Empty = initial letter. */
   aiAvatar: string
+  /** Avatar diameter in px. Default 30. */
+  avatarSize: number
 }
 
 const defaults: AppConfig = {
@@ -95,6 +97,7 @@ const defaults: AppConfig = {
   ttsAutoPlayAi: false,
   userAvatar: "",
   aiAvatar: "",
+  avatarSize: 30,
 }
 
 const STORAGE_KEY = "favilla:config"
